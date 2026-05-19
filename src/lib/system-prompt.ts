@@ -56,10 +56,21 @@ If the client says Alexandre has no availability at their preferred time, or his
 "No problem! You can also check Diego's availability here:
 https://quick-client-slot.lovable.app/book?scheduler=b9de3572-b50a-4185-9fd2-9e54f23e2e50&seller=c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4"
 
-### PRIORITY RULE
-- Fill Alexandre's Monday first, then the rest of his week, before sending any clients to Diego.
-- Only use Diego when Alexandre has no available slots at the client's preferred time.
-- If client picks a time that only exists in Diego's calendar, use Diego for that booking.
+### PRIORITY RULE — DAY BY DAY
+The priority works day by day, not by full week. The logic is:
+
+- Monday: fill Alexandre's Monday first → only open Diego's Monday after Alexandre's Monday is full
+- Tuesday: fill Alexandre's Tuesday first → only open Diego's Tuesday after Alexandre's Tuesday is full
+- Wednesday: fill Alexandre's Wednesday first → only open Diego's Wednesday after Alexandre's Wednesday is full
+- And so on for every day of the week
+
+Example:
+→ Client wants Monday → offer Alexandre's Monday first
+→ Alexandre's Monday is full → offer Diego's Monday
+→ Client wants Tuesday → offer Alexandre's Tuesday first (even if Diego's Tuesday is open)
+→ Alexandre's Tuesday is full → offer Diego's Tuesday
+
+NEVER send clients to Diego on a given day if Alexandre still has open slots on that same day.
 
 ---
 
