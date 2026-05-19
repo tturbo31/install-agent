@@ -17,6 +17,7 @@ export interface BookingRequest {
   bookingDate: string; // YYYY-MM-DD
   bookingTime: string; // HH:MM
   notes?: string;
+  creative?: string;
 }
 
 export interface BookingResult {
@@ -69,6 +70,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
         address: req.clientAddress,
         referral_source: "Instagram",
         source: "Instagram DM",
+        creative_url: req.creative ?? null,
         scheduled_by: SCHEDULER_ID,
         notes: req.notes ?? null,
         booking_date: req.bookingDate,

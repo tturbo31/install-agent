@@ -32,6 +32,7 @@ async function processBookingCommand(aiResponse: string): Promise<string> {
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
       notes: bookingData.notes ?? "",
+      creative: bookingData.creative ?? "",
     });
 
     const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -62,13 +63,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "echo_skipped" }, { status: 200 });
     }
 
-    if (!messaging.message?.text) {
-      return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
+    const senderIgsid = messaging.sender.id;
+    const messageMid = messaging.message.mid;
+
+    // Capture creative/image attachments for ad tracking
+    const attachments = messaging.message?.attachments ?? [];
+    const imageAttachment = attachments.find((a) => a.type === "image" || a.type === "share");
+    const creativeUrl = imageAttachment?.payload?.url ?? null;
+
+    // Build message text — include creative URL if client sent an image
+    let messageText = messaging.message?.text ?? "";
+    if (!messageText && creativeUrl) {
+      messageText = `[Client sent a creative/image: ${creativeUrl}]`;
+    } else if (creativeUrl && messageText) {
+      messageText = `${messageText} [Creative: ${creativeUrl}]`;
     }
 
-    const senderIgsid = messaging.sender.id;
-    const messageText = messaging.message.text;
-    const messageMid = messaging.message.mid;
+    if (!messageText) {
+      return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
+    }
 
     let { data: conversation } = await supabaseAdmin
       .from("instagram_conversations")
