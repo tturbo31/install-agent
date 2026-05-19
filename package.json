@@ -1,0 +1,9 @@
+{
+  "name": "ozzi-floors",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix instagram-dm-agent",
+    "build": "npm run build --prefix instagram-dm-agent",
+    "start": "npm run start --prefix instagram-dm-agent"
+  }
+}
