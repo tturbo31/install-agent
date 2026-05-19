@@ -19,12 +19,30 @@ export async function GET(req: NextRequest) {
 }
 
 // Intercept [BOOK:{...}] command from AI response
-async function processBookingCommand(aiResponse: string): Promise<string> {
+async function processBookingCommand(
+  aiResponse: string,
+  conversationId: string
+): Promise<string> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
 
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // Get stored creative from Instagram ad referral (auto-captured on first message)
+    const { data: convData } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("creative_url, ad_id, ad_title")
+      .eq("id", conversationId)
+      .single();
+
+    const creativeRef =
+      convData?.ad_title ??
+      convData?.creative_url ??
+      convData?.ad_id ??
+      bookingData.creative ??
+      "Instagram DM";
+
     const result = await createBooking({
       clientName: bookingData.name ?? "Instagram Client",
       clientPhone: bookingData.phone ?? "",
@@ -32,7 +50,7 @@ async function processBookingCommand(aiResponse: string): Promise<string> {
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
       notes: bookingData.notes ?? "",
-      creative: bookingData.creative ?? "",
+      creative: creativeRef,
     });
 
     const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -66,17 +84,20 @@ export async function POST(req: NextRequest) {
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
-    // Capture creative/image attachments for ad tracking
-    const attachments = messaging.message?.attachments ?? [];
-    const imageAttachment = attachments.find((a) => a.type === "image" || a.type === "share");
-    const creativeUrl = imageAttachment?.payload?.url ?? null;
+    // Auto-detect creative from Instagram ad referral (when client comes via ad click)
+    const referral = messaging.referral;
+    const creativeUrl =
+      referral?.ads_context_data?.photo_url ??
+      referral?.ads_context_data?.video_url ??
+      null;
+    const adId = referral?.ad_id ?? null;
+    const adTitle = referral?.ads_context_data?.ad_title ?? null;
 
-    // Build message text — include creative URL if client sent an image
-    let messageText = messaging.message?.text ?? "";
-    if (!messageText && creativeUrl) {
-      messageText = `[Client sent a creative/image: ${creativeUrl}]`;
-    } else if (creativeUrl && messageText) {
-      messageText = `${messageText} [Creative: ${creativeUrl}]`;
+    // Build message text
+    const messageText = messaging.message?.text ?? "";
+
+    if (!messageText && !creativeUrl) {
+      return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
     }
 
     if (!messageText) {
@@ -104,9 +125,18 @@ export async function POST(req: NextRequest) {
 
     try {
       const profile = await fetchInstagramProfile(senderIgsid);
+      // Save profile + creative data from Instagram ad referral
+      const updateData: Record<string, unknown> = {
+        ...profile,
+        updated_at: new Date().toISOString(),
+      };
+      if (creativeUrl) updateData.creative_url = creativeUrl;
+      if (adId) updateData.ad_id = adId;
+      if (adTitle) updateData.ad_title = adTitle;
+
       await supabaseAdmin
         .from("instagram_conversations")
-        .update({ ...profile, updated_at: new Date().toISOString() })
+        .update(updateData)
         .eq("igsid", senderIgsid);
     } catch (err) {
       console.warn("Failed to fetch Instagram profile:", err);
@@ -149,7 +179,7 @@ export async function POST(req: NextRequest) {
     const rawAiResponse = await getAIResponse(aiMessages);
 
     // Process booking command if AI included one
-    const finalResponse = await processBookingCommand(rawAiResponse);
+    const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
 
     await sendInstagramMessage(senderIgsid, finalResponse);
 
