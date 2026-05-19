@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage } from "@/lib/instagram";
 import { getAIResponse } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
-import { createBooking } from "@/lib/scheduler";
+import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -176,7 +176,17 @@ export async function POST(req: NextRequest) {
       content: m.content,
     }));
 
-    const rawAiResponse = await getAIResponse(aiMessages);
+    // Always inject real-time availability so AI never mentions a taken slot
+    const availabilityContext = await getRealAvailabilityContext();
+    const aiMessagesWithAvailability = [
+      ...aiMessages,
+      {
+        role: "system" as const,
+        content: availabilityContext,
+      },
+    ];
+
+    const rawAiResponse = await getAIResponse(aiMessagesWithAvailability);
 
     // Process booking command if AI included one
     const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);

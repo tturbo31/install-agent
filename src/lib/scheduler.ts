@@ -150,6 +150,87 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
   }
 }
 
+export async function getRealAvailabilityContext(): Promise<string> {
+  try {
+    const db = await getAuthenticatedClient();
+
+    const today = new Date();
+    const next10Days: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      next10Days.push(d.toISOString().slice(0, 10));
+    }
+
+    const fromStr = next10Days[0];
+    const toStr = next10Days[next10Days.length - 1];
+
+    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+      db
+        .from("sellers")
+        .select("id,name,priority,enabled_weekdays,time_slots,active")
+        .eq("active", true)
+        .order("priority", { ascending: true }),
+      db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
+    ]);
+
+    const sellers = (sellersData ?? []) as Seller[];
+    const bookings = (bookedData ?? []) as BookingRow[];
+
+    const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
+
+    let hasAnySlot = false;
+
+    for (const dateStr of next10Days) {
+      const date = new Date(dateStr + "T12:00:00");
+      const weekday = date.getDay();
+      const dayName = dayNames[weekday];
+      const [y, m, d] = dateStr.split("-");
+      const displayDate = `${dayName} ${m}/${d}/${y}`;
+
+      const slotSet = new Set<string>();
+      sellers.forEach((s) => {
+        if (!s.active || !s.enabled_weekdays.includes(weekday)) return;
+        s.time_slots.forEach((slot) => {
+          const taken = bookings.some(
+            (b) =>
+              b.seller_id === s.id &&
+              b.booking_date === dateStr &&
+              b.booking_time === slot
+          );
+          if (!taken) slotSet.add(slot);
+        });
+      });
+
+      const slots = Array.from(slotSet).sort();
+      if (slots.length > 0) {
+        hasAnySlot = true;
+        const formatted = slots.map((s) => {
+          const [h, min] = s.split(":").map(Number);
+          const period = h >= 12 ? "pm" : "am";
+          const h12 = h % 12 || 12;
+          return `${h12}${min === 0 ? "" : `:${min}`}${period}`;
+        });
+        lines.push(`• ${displayDate}: ${formatted.join(", ")}`);
+      } else {
+        lines.push(`• ${displayDate}: fully booked`);
+      }
+    }
+
+    if (!hasAnySlot) {
+      lines.push("No availability in the next 10 days.");
+    }
+
+    lines.push("\nIMPORTANT: ONLY offer times listed above as available. Never mention a time that shows as 'fully booked'.");
+
+    return lines.join("\n");
+  } catch (err) {
+    console.error("Failed to fetch availability:", err);
+    return "AVAILABILITY: Could not fetch real-time schedule. Ask the client for their preferred day and check manually.";
+  }
+}
+
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {
   try {
     const db = await getAuthenticatedClient();
