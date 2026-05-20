@@ -95,8 +95,7 @@ export async function POST(req: NextRequest) {
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
-    // DEDUPLICATION — Instagram retries webhooks if we take >5s
-    // Skip entirely if we already processed this exact message ID
+    // DEDUPLICATION — check if this exact message was already processed
     const { data: alreadyProcessed } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -107,23 +106,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
     }
 
-    // CONCURRENCY LOCK — atomic check-and-set to prevent parallel processing
-    // Try to claim the lock by setting processing_until = now + 45s
-    // If another request already holds the lock, skip
-    const lockUntil = new Date(Date.now() + 45000).toISOString();
-    const now = new Date().toISOString();
+    // DEBOUNCE — wait 2s then check if a newer message arrived from same sender
+    // This groups rapid-fire messages (audio+image+audio) into one response
+    await new Promise((r) => setTimeout(r, 2000));
 
-    const { data: lockResult } = await supabaseAdmin
-      .from("instagram_conversations")
-      .update({ processing_until: lockUntil })
-      .eq("igsid", senderIgsid)
-      .or(`processing_until.is.null,processing_until.lt.${now}`)
-      .select("id")
+    // Check if a newer unprocessed message arrived after this one
+    const { data: newerMessage } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id, created_at")
+      .eq("conversation_id",
+        (await supabaseAdmin
+          .from("instagram_conversations")
+          .select("id")
+          .eq("igsid", senderIgsid)
+          .maybeSingle()
+        ).data?.id ?? "none"
+      )
+      .eq("role", "user")
+      .gt("created_at", new Date(Date.now() - 2500).toISOString())
+      .neq("instagram_msg_id", messageMid)
       .maybeSingle();
 
-    if (!lockResult) {
-      // Another request holds the lock — skip this message
-      return NextResponse.json({ status: "locked_skip" }, { status: 200 });
+    // If a newer message exists, let that one handle the response
+    if (newerMessage) {
+      return NextResponse.json({ status: "debounced" }, { status: 200 });
     }
 
     // Auto-detect creative from Instagram ad referral
@@ -296,18 +302,11 @@ export async function POST(req: NextRequest) {
         .catch((err) => console.error("TTS error:", err));
     }
 
-    // Store response and release lock
-    await Promise.all([
-      supabaseAdmin.from("instagram_messages").insert({
-        conversation_id: conversation.id,
-        role: "assistant",
-        content: finalResponse,
-      }),
-      supabaseAdmin
-        .from("instagram_conversations")
-        .update({ processing_until: null })
-        .eq("igsid", senderIgsid),
-    ]);
+    await supabaseAdmin.from("instagram_messages").insert({
+      conversation_id: conversation.id,
+      role: "assistant",
+      content: finalResponse,
+    });
 
     return NextResponse.json({ status: "ok" }, { status: 200 });
   } catch (err) {
