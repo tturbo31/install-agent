@@ -107,6 +107,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
     }
 
+    // RATE LIMIT — prevent double response when client sends image+audio together
+    // If we responded to this sender in the last 8 seconds, skip
+    const eightSecsAgo = new Date(Date.now() - 8000).toISOString();
+    const { data: recentReply } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id")
+      .eq("conversation_id",
+        (await supabaseAdmin
+          .from("instagram_conversations")
+          .select("id")
+          .eq("igsid", senderIgsid)
+          .maybeSingle()
+        ).data?.id ?? "none"
+      )
+      .eq("role", "assistant")
+      .gte("created_at", eightSecsAgo)
+      .maybeSingle();
+
+    if (recentReply) {
+      return NextResponse.json({ status: "rate_limited" }, { status: 200 });
+    }
+
     // Auto-detect creative from Instagram ad referral
     const referral = messaging.referral;
     const adCreativeUrl =
