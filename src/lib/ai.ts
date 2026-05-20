@@ -68,48 +68,70 @@ export async function getAIResponse(messages: ChatMessage[]): Promise<string> {
   return "Sorry, I'm temporarily unavailable. Please try again shortly.";
 }
 
-// Analyze an image (floor photo or house plan) using a vision model
-export async function analyzeImage(imageUrl: string): Promise<string> {
-  const openai = getOpenAI();
+// Download image and convert to base64 data URL
+async function imageToBase64(imageUrl: string): Promise<string> {
+  // Try with Instagram access token first, then without
+  const attempts: RequestInit[] = [
+    { headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN ?? ""}` } },
+    {},
+  ];
 
-  for (const model of VISION_MODELS) {
+  for (const options of attempts) {
     try {
-      const response = await openai.chat.completions.create({
-        model,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: imageUrl },
-              },
-              {
-                type: "text",
-                text: `You are analyzing an image sent by a potential flooring client.
-Describe what you see in detail, focusing on:
-- If it's a floor photo: current flooring type, condition, approximate room size if visible, style
-- If it's a floor plan / blueprint: number of rooms, approximate total square footage, layout
-- Any relevant details for a flooring installation quote
-
-Be specific and practical. Keep it under 100 words.`,
-              },
-            ] as unknown as string,
-          },
-        ],
-        max_tokens: 300,
-      });
-
-      const result = response.choices[0]?.message?.content;
-      if (result) return result;
-    } catch (err: unknown) {
-      const status = (err as { status?: number })?.status;
-      if (status !== 429 && status !== 404) throw err;
-      console.warn(`Vision model ${model} failed, trying next...`);
+      const res = await fetch(imageUrl, options);
+      if (!res.ok) continue;
+      const contentType = res.headers.get("content-type") ?? "image/jpeg";
+      if (!contentType.startsWith("image/")) continue;
+      const buffer = await res.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString("base64");
+      return `data:${contentType};base64,${base64}`;
+    } catch {
+      continue;
     }
   }
+  throw new Error("Could not download image");
+}
 
-  return "Image received but could not be analyzed.";
+// Analyze an image (floor photo or house plan) using GPT-4o-mini vision
+export async function analyzeImage(imageUrl: string): Promise<string> {
+  try {
+    const openai = getOpenAIDirect();
+    const dataUrl = await imageToBase64(imageUrl);
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: dataUrl } },
+            {
+              type: "text",
+              text: `You are analyzing an image sent by a flooring client for a quote.
+
+If it's a FLOOR PLAN / blueprint:
+- List each room and its dimensions if visible (e.g. bedroom 4x3m)
+- Calculate total sq meters and convert to sq ft (1 sqm = 10.76 sqft)
+- State total: "Total: ~X sqm (~Y sqft)"
+
+If it's a PHOTO of existing floors:
+- Describe current floor type (tile, hardwood, carpet, etc.)
+- Condition (good, damaged, old)
+- Estimate room size if visible
+
+Be concise. Under 80 words. Focus on what's useful for a flooring quote.`,
+            },
+          ] as unknown as string,
+        },
+      ],
+      max_tokens: 250,
+    });
+
+    return response.choices[0]?.message?.content ?? "Image analyzed but no description generated.";
+  } catch (err) {
+    console.error("Image analysis error:", err);
+    return "Image received but could not be analyzed. Please describe what you need.";
+  }
 }
 
 // Transcribe an audio message using OpenAI Whisper
