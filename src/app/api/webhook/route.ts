@@ -117,18 +117,25 @@ export async function POST(req: NextRequest) {
     if (audioUrl && !rawText) rawText = "[voice message]";
     if (!rawText) return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
 
-    // === STEP 3: Store message IMMEDIATELY (before debounce) ===
-    const { error: insertErr } = await supabaseAdmin.from("instagram_messages").insert({
-      conversation_id: conversation.id,
-      role: "user",
-      content: rawText,
-      instagram_msg_id: messageMid,
-    });
+    // === STEP 3: Store message IMMEDIATELY (before debounce) — capture exact timestamp ===
+    const { data: insertedMsg, error: insertErr } = await supabaseAdmin
+      .from("instagram_messages")
+      .insert({
+        conversation_id: conversation.id,
+        role: "user",
+        content: rawText,
+        instagram_msg_id: messageMid,
+      })
+      .select("id, created_at")
+      .single();
+
     if (insertErr && insertErr.code !== "23505") {
       return NextResponse.json({ status: "error" }, { status: 200 });
     }
 
-    // Update conversation timestamp
+    // Get this message's exact created_at to compare against later messages
+    const thisMessageCreatedAt = insertedMsg?.created_at ?? new Date().toISOString();
+
     await supabaseAdmin
       .from("instagram_conversations")
       .update({ updated_at: new Date().toISOString() })
@@ -136,31 +143,40 @@ export async function POST(req: NextRequest) {
 
     if (conversation.mode === "human") return NextResponse.json({ status: "human_mode" }, { status: 200 });
 
-    // === STEP 4: DEBOUNCE — wait 7s for more messages to arrive ===
-    await new Promise((r) => setTimeout(r, 7000));
+    // === STEP 4: DEBOUNCE — wait 10s for more messages to arrive ===
+    await new Promise((r) => setTimeout(r, 10000));
 
-    // Check if a newer user message was stored after this one
-    const { data: newerMsg } = await supabaseAdmin
+    // Check if ANY newer user message was stored AFTER this specific message
+    // Use limit(1) — .maybeSingle() silently fails with multiple rows
+    const { data: newerMsgs } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conversation.id)
       .eq("role", "user")
-      .gt("created_at", new Date(Date.now() - 7500).toISOString())
-      .neq("instagram_msg_id", messageMid)
-      .maybeSingle();
+      .gt("created_at", thisMessageCreatedAt)
+      .limit(1);
 
-    // Let the newest message handle the response
-    if (newerMsg) return NextResponse.json({ status: "debounced" }, { status: 200 });
+    // A newer message exists — it has more context, let it handle the response
+    if (newerMsgs && newerMsgs.length > 0) {
+      return NextResponse.json({ status: "debounced" }, { status: 200 });
+    }
 
-    // === STEP 5: Process media (analyze image, transcribe audio) ===
+    // === STEP 5: Process ALL pending media from the last 15 seconds ===
+    // After debounce, this message is the "champion" — collect all recent messages
+    // and enrich them with transcriptions and image analysis
     let enrichedText = rawText;
 
-    // Analyze floor plan or photo
-    const urlToAnalyze = imageUrl ?? (shareAttachment?.payload?.url ?? null);
+    // Process image/share from THIS message
+    const urlToAnalyze = imageUrl ?? shareUrl;
     if (urlToAnalyze) {
       try {
+        console.log("Analyzing image:", urlToAnalyze.slice(0, 80));
         const analysis = await analyzeImage(urlToAnalyze);
-        enrichedText = enrichedText.replace("[floor plan or photo]", "").replace(`[shared link: ${urlToAnalyze}]`, "").trim();
+        console.log("Image analysis result:", analysis?.slice(0, 100));
+        enrichedText = enrichedText
+          .replace("[floor plan or photo]", "")
+          .replace(`[shared link: ${urlToAnalyze}]`, "")
+          .trim();
         enrichedText = enrichedText
           ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
           : `[Floor plan/photo analysis: ${analysis}]`;
@@ -169,26 +185,41 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Transcribe voice message
+    // Transcribe audio from THIS message
     if (audioUrl) {
       try {
+        console.log("Transcribing audio...");
         const transcript = await transcribeAudio(audioUrl);
+        console.log("Transcript:", transcript?.slice(0, 100));
         enrichedText = enrichedText.replace("[voice message]", "").trim();
-        enrichedText = enrichedText
-          ? `${enrichedText}\n[Voice: ${transcript}]`
-          : transcript;
+        enrichedText = enrichedText ? `${enrichedText}\n[Voice: ${transcript}]` : transcript;
       } catch (err) {
         console.warn("Transcription failed:", err);
       }
     }
 
-    // === STEP 6: Update stored message with enriched content ===
-    if (enrichedText !== rawText) {
-      await supabaseAdmin
-        .from("instagram_messages")
-        .update({ content: enrichedText })
-        .eq("instagram_msg_id", messageMid);
+    // === STEP 6: Update ALL recent unanalyzed messages in the conversation ===
+    // Enrich other recent messages (images/audios sent together) in DB
+    const fifteenSecsAgo = new Date(Date.now() - 15000).toISOString();
+    const { data: recentMsgs } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id, content, instagram_msg_id")
+      .eq("conversation_id", conversation.id)
+      .eq("role", "user")
+      .gte("created_at", fifteenSecsAgo)
+      .neq("instagram_msg_id", messageMid);
+
+    // Collect all context from recent messages for a combined enriched text
+    const recentContents = (recentMsgs ?? []).map((m) => m.content).filter(Boolean);
+    if (recentContents.length > 0) {
+      enrichedText = [...recentContents, enrichedText].join("\n");
     }
+
+    // Update this message with all enriched content
+    await supabaseAdmin
+      .from("instagram_messages")
+      .update({ content: enrichedText })
+      .eq("instagram_msg_id", messageMid);
 
     // === STEP 7: Fetch profile ===
     try {
