@@ -107,26 +107,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
     }
 
-    // RATE LIMIT — prevent double response when client sends image+audio together
-    // If we responded to this sender in the last 8 seconds, skip
-    const eightSecsAgo = new Date(Date.now() - 8000).toISOString();
-    const { data: recentReply } = await supabaseAdmin
-      .from("instagram_messages")
+    // CONCURRENCY LOCK — atomic check-and-set to prevent parallel processing
+    // Try to claim the lock by setting processing_until = now + 45s
+    // If another request already holds the lock, skip
+    const lockUntil = new Date(Date.now() + 45000).toISOString();
+    const now = new Date().toISOString();
+
+    const { data: lockResult } = await supabaseAdmin
+      .from("instagram_conversations")
+      .update({ processing_until: lockUntil })
+      .eq("igsid", senderIgsid)
+      .or(`processing_until.is.null,processing_until.lt.${now}`)
       .select("id")
-      .eq("conversation_id",
-        (await supabaseAdmin
-          .from("instagram_conversations")
-          .select("id")
-          .eq("igsid", senderIgsid)
-          .maybeSingle()
-        ).data?.id ?? "none"
-      )
-      .eq("role", "assistant")
-      .gte("created_at", eightSecsAgo)
       .maybeSingle();
 
-    if (recentReply) {
-      return NextResponse.json({ status: "rate_limited" }, { status: 200 });
+    if (!lockResult) {
+      // Another request holds the lock — skip this message
+      return NextResponse.json({ status: "locked_skip" }, { status: 200 });
     }
 
     // Auto-detect creative from Instagram ad referral
@@ -287,27 +284,30 @@ export async function POST(req: NextRequest) {
     // Process booking command if AI included one
     const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
 
-    // Send response — audio if client sent audio, otherwise text
-    let audioSent = false;
-    if (clientSentAudio && process.env.OPENAI_API_KEY) {
-      try {
-        const audioBuffer = await generateSpeech(finalResponse);
-        if (audioBuffer) {
-          audioSent = await sendInstagramAudio(senderIgsid, audioBuffer);
-        }
-      } catch (err) {
-        console.error("Audio response failed:", err);
-      }
-    }
-
-    // Always send text too (so client can read even if audio fails)
+    // Send text response
     await sendInstagramMessage(senderIgsid, finalResponse);
 
-    await supabaseAdmin.from("instagram_messages").insert({
-      conversation_id: conversation.id,
-      role: "assistant",
-      content: finalResponse,
-    });
+    // If client sent audio → also send audio response
+    if (clientSentAudio && process.env.OPENAI_API_KEY) {
+      generateSpeech(finalResponse)
+        .then(async (audioBuffer) => {
+          if (audioBuffer) await sendInstagramAudio(senderIgsid, audioBuffer);
+        })
+        .catch((err) => console.error("TTS error:", err));
+    }
+
+    // Store response and release lock
+    await Promise.all([
+      supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: finalResponse,
+      }),
+      supabaseAdmin
+        .from("instagram_conversations")
+        .update({ processing_until: null })
+        .eq("igsid", senderIgsid),
+    ]);
 
     return NextResponse.json({ status: "ok" }, { status: 200 });
   } catch (err) {
