@@ -437,19 +437,20 @@ async function handleWebhook(body: WebhookPayload) {
     const realLines = lines.filter(l => !MEDIA_PLACEHOLDERS.some(p => l.trim() === p || l.trim().startsWith(p)));
     const hasRealContent = mediaProcessed && realLines.length > 0;
 
-    // Inject availability ONLY when scheduling is relevant AND client is NOT resetting AND has real content
+    // Detect if current message is about a NEW project (floor plan / quote request)
+    const isNewProjectRequest = !!(imageUrl || shareUrl) ||
+      /planta|floor.?plan|projeto|orsamento|calcul|quote|price|sqm|sqft|metros|m²/i.test(enrichedText);
+
+    // Only inject availability if CLIENT explicitly asks about scheduling in CURRENT message
+    // Never inject just because AI mentioned scheduling in previous messages
     const schedulingKeywords = [
       "schedule", "appointment", "what day", "what time", "which day",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
       "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
       "book", "slot", "set up a",
     ];
-    const recentAiSchedule = !clientResetting && hasRealContent && (history ?? []).slice(-3).some(
-      (m) => m.role === "assistant" &&
-        ["what day", "what time", "schedule", "book", "works best"].some((k) => m.content.toLowerCase().includes(k))
-    );
-    const isScheduling = !clientResetting && hasRealContent &&
-      (schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule);
+    const isScheduling = !clientResetting && !isNewProjectRequest && hasRealContent &&
+      schedulingKeywords.some((k) => lastMsg.includes(k));
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
 
@@ -477,7 +478,9 @@ async function handleWebhook(body: WebhookPayload) {
         ? []
         : clientResetting
           ? (history ?? []).slice(-2)
-          : (history ?? []);
+          : isNewProjectRequest
+            ? (history ?? []).slice(-4) // New project: limit history to avoid old scheduling contamination
+            : (history ?? []);
       let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
