@@ -275,9 +275,12 @@ async function handleWebhook(body: WebhookPayload) {
         } else {
           analysis = await analyzeImage(shareUrl ?? imageUrl ?? "");
         }
+        // Image analysis is useful if it mentions rooms, areas, or flooring
+        const hasFlooringContext = /sqm|sqft|m²|room|floor|bedroom|bathroom|kitchen|sala|quarto|cozinha|meter|area|\d+x\d+/i.test(analysis);
         const isUseful = !analysis.toLowerCase().includes("could not") &&
                          !analysis.toLowerCase().includes("unavailable") &&
                          !analysis.toLowerCase().includes("cannot analyze") &&
+                         !analysis.toLowerCase().includes("not a floor") &&
                          analysis.length > 20;
         if (isUseful) {
           enrichedText = enrichedText
@@ -301,10 +304,20 @@ async function handleWebhook(body: WebhookPayload) {
         const transcript = preFetchedAudioBuffer
           ? await transcribeAudioFromBuffer(preFetchedAudioBuffer, preFetchedAudioType)
           : await transcribeAudio(audioUrl);
-        const isUseful = transcript &&
+
+        // Validate transcript quality:
+        // - Must be mostly ASCII/Latin chars (filters Kannada, Arabic, CJK garbage from bad audio)
+        // - Must have at least 3 real words
+        // - Must not be a fallback message
+        const nonLatinCount = (transcript || "").split("").filter(c => c.charCodeAt(0) > 1000).length;
+        const wordCount = (transcript || "").trim().split(/\s+/).length;
+        const isUseful = !!transcript &&
+          nonLatinCount < 5 &&
+          wordCount >= 2 &&
+          transcript.length > 5 &&
           !transcript.includes("please type") &&
           !transcript.includes("could not") &&
-          transcript.length > 5;
+          !transcript.includes("no speech");
         if (isUseful) {
           enrichedText = enrichedText.replace("[voice message]", "").trim();
           enrichedText = enrichedText ? `${enrichedText}\n[Voice: ${transcript}]` : transcript;
@@ -393,10 +406,11 @@ async function handleWebhook(body: WebhookPayload) {
     const clientResetting = isJustGreeting || resetKeywords.some((k) => lastMsg.includes(k));
 
     // Detect if current message has real content or just placeholder text from failed media
-    // "[voice message]" and "[floor plan or photo]" are NOT real content — media failed to process
     const MEDIA_PLACEHOLDERS = ["[voice message]", "[floor plan or photo]", "[shared link:"];
-    const isJustPlaceholder = MEDIA_PLACEHOLDERS.some((p) => enrichedText.trim() === p || enrichedText.trim().startsWith(p));
-    const hasRealContent = mediaProcessed && !isJustPlaceholder;
+    // Count how many lines are just placeholders
+    const lines = enrichedText.trim().split("\n").filter(Boolean);
+    const realLines = lines.filter(l => !MEDIA_PLACEHOLDERS.some(p => l.trim() === p || l.trim().startsWith(p)));
+    const hasRealContent = mediaProcessed && realLines.length > 0;
 
     // Inject availability ONLY when scheduling is relevant AND client is NOT resetting AND has real content
     const schedulingKeywords = [
