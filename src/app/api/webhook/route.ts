@@ -463,11 +463,11 @@ async function handleWebhook(body: WebhookPayload) {
       const hadImage = !!(imageUrl || shareUrl) || clientMentionsImage;
       const hadAudio = !!audioUrl;
       if (hadAudio && hadImage) {
-        finalResponse = "I got your voice message and floor plan! I wasn't able to read them automatically — what's the total area shown on the floor plan? Once I have that I'll calculate the quote right here.";
+        finalResponse = "Got your floor plan and voice message! I wasn't able to read the details automatically — just type the total area shown on the floor plan (in square meters or sqft) and I'll calculate the quote right here.";
       } else if (hadAudio) {
-        finalResponse = "I got your voice message but couldn't catch it — could you type it out? I'll take care of you right here!";
+        finalResponse = "Got your voice message but couldn't catch it — could you type what you need? I'll take care of you right here!";
       } else if (hadImage) {
-        finalResponse = "I can see the floor plan! What's the total area shown on it — in square meters or square feet? I'll calculate the quote immediately.";
+        finalResponse = "Got your floor plan! I wasn't able to read the details from it automatically — just type the total area (in square meters or sqft) and I'll calculate the exact price right here.";
       } else {
         finalResponse = "Hey! What can I help you with today?";
       }
