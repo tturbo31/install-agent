@@ -77,6 +77,8 @@ async function processBookingCommand(
   }
 }
 
+export const maxDuration = 60; // Vercel Pro: allow up to 60s for debounce + AI processing
+
 export async function POST(req: NextRequest) {
   try {
     const body: WebhookPayload = await req.json();
@@ -106,28 +108,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
     }
 
-    // DEBOUNCE — wait 2s then check if a newer message arrived from same sender
-    // This groups rapid-fire messages (audio+image+audio) into one response
-    await new Promise((r) => setTimeout(r, 2000));
+    // DEBOUNCE — wait 7s to collect all messages sent in quick succession
+    // This ensures audio + image + audio sent together get ONE combined response
+    await new Promise((r) => setTimeout(r, 7000));
 
-    // Check if a newer unprocessed message arrived after this one
+    // After waiting, check if a newer message arrived from same sender
+    // If yes, that newer webhook will handle the response (it has more context)
+    const convLookup = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("id")
+      .eq("igsid", senderIgsid)
+      .maybeSingle();
+
     const { data: newerMessage } = await supabaseAdmin
       .from("instagram_messages")
-      .select("id, created_at")
-      .eq("conversation_id",
-        (await supabaseAdmin
-          .from("instagram_conversations")
-          .select("id")
-          .eq("igsid", senderIgsid)
-          .maybeSingle()
-        ).data?.id ?? "none"
-      )
+      .select("id")
+      .eq("conversation_id", convLookup.data?.id ?? "none")
       .eq("role", "user")
-      .gt("created_at", new Date(Date.now() - 2500).toISOString())
+      .gt("created_at", new Date(Date.now() - 7500).toISOString())
       .neq("instagram_msg_id", messageMid)
       .maybeSingle();
 
-    // If a newer message exists, let that one handle the response
     if (newerMessage) {
       return NextResponse.json({ status: "debounced" }, { status: 200 });
     }
