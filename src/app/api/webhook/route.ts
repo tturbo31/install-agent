@@ -95,6 +95,18 @@ export async function POST(req: NextRequest) {
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
+    // DEDUPLICATION — Instagram retries webhooks if we take >5s
+    // Skip entirely if we already processed this exact message ID
+    const { data: alreadyProcessed } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id")
+      .eq("instagram_msg_id", messageMid)
+      .maybeSingle();
+
+    if (alreadyProcessed) {
+      return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
+    }
+
     // Auto-detect creative from Instagram ad referral
     const referral = messaging.referral;
     const adCreativeUrl =
@@ -216,19 +228,27 @@ export async function POST(req: NextRequest) {
       content: m.content,
     }));
 
-    // Only inject real-time availability when the conversation is about scheduling
+    // Only inject real-time availability when actively scheduling
+    // NOTE: avoid generic words like "am"/"pm" that trigger on every message
     const schedulingKeywords = [
       "schedule", "appointment", "visit", "quote", "available", "availability",
-      "when", "time", "day", "monday", "tuesday", "wednesday", "thursday",
-      "friday", "saturday", "sunday", "week", "tomorrow", "today", "morning",
-      "afternoon", "evening", "am", "pm", "book", "slot", "free quote",
+      "what day", "what time", "which day", "which time",
+      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+      "tomorrow", "next week", "this week",
+      "9am", "11am", "1pm", "3pm", "5pm", "7pm", "9 am", "11 am",
+      "book", "slot", "free quote", "schedule a", "set up a",
     ];
     const lastUserMsg = messageText.toLowerCase();
-    const isSchedulingConversation = schedulingKeywords.some((k) => lastUserMsg.includes(k)) ||
-      (history ?? []).slice(-4).some((m) =>
-        m.role === "assistant" &&
-        schedulingKeywords.some((k) => m.content.toLowerCase().includes(k))
-      );
+    // Check if AI already asked about scheduling in last 3 messages
+    const recentAiMentionedSchedule = (history ?? []).slice(-3).some((m) =>
+      m.role === "assistant" &&
+      ["what day", "what time", "which day", "schedule", "book", "slot", "works best"].some(
+        (k) => m.content.toLowerCase().includes(k)
+      )
+    );
+    const isSchedulingConversation =
+      schedulingKeywords.some((k) => lastUserMsg.includes(k)) ||
+      recentAiMentionedSchedule;
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = [...aiMessages];
