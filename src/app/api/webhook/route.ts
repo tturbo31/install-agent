@@ -214,16 +214,14 @@ async function handleWebhook(body: WebhookPayload) {
     let enrichedText = rawText;
     let mediaProcessed = false;
 
-    // Include share title as context (even if image fails)
+    // Include share title as context — don't ask for measurements yet, image analysis comes next
     if (shareAttachment) {
       const shareTitle = shareAttachment.payload?.title ?? null;
       if (shareTitle) {
         const isFloorPlan = /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle);
-        if (isFloorPlan) {
-          enrichedText = `[Client shared a floor plan: "${shareTitle}". Ask them for the total area in square meters or feet so you can calculate the quote.]`;
-        } else {
-          enrichedText = `[Client shared: "${shareTitle}"]`;
-        }
+        enrichedText = isFloorPlan
+          ? `[Client shared a floor plan image: "${shareTitle}"]`
+          : `[Client shared: "${shareTitle}"]`;
         mediaProcessed = true;
       }
     }
