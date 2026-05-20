@@ -49,7 +49,7 @@ export interface WebhookPayload {
         is_echo?: boolean;
         attachments?: Array<{
           type: "image" | "audio" | "video" | "share" | "file" | string;
-          payload: { url?: string };
+          payload: { url?: string; title?: string };
         }>;
       };
       referral?: {

@@ -164,41 +164,70 @@ async function handleWebhook(body: WebhookPayload) {
       return NextResponse.json({ status: "not_latest_skip" }, { status: 200 });
     }
 
-    // === STEP 5: Process ALL pending media from the last 15 seconds ===
-    // After debounce, this message is the "champion" — collect all recent messages
-    // and enrich them with transcriptions and image analysis
+    // === STEP 5: Process media with fallback intelligence ===
     let enrichedText = rawText;
+    let mediaProcessed = false;
 
-    // Process image/share from THIS message
+    // Include share title as context (even if image fails)
+    if (shareAttachment) {
+      const shareTitle = shareAttachment.payload?.title ?? null;
+      if (shareTitle && !enrichedText.includes(shareTitle)) {
+        enrichedText = `[Client shared: "${shareTitle}"]`;
+      }
+    }
+
+    // Analyze image/share
     const urlToAnalyze = imageUrl ?? shareUrl;
     if (urlToAnalyze) {
       try {
-        console.log("Analyzing image:", urlToAnalyze.slice(0, 80));
         const analysis = await analyzeImage(urlToAnalyze);
-        console.log("Image analysis result:", analysis?.slice(0, 100));
-        enrichedText = enrichedText
-          .replace("[floor plan or photo]", "")
-          .replace(`[shared link: ${urlToAnalyze}]`, "")
-          .trim();
-        enrichedText = enrichedText
-          ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
-          : `[Floor plan/photo analysis: ${analysis}]`;
+        const isUseful = !analysis.toLowerCase().includes("could not") &&
+                         !analysis.toLowerCase().includes("unavailable") &&
+                         !analysis.toLowerCase().includes("cannot analyze");
+        if (isUseful) {
+          enrichedText = enrichedText
+            .replace("[floor plan or photo]", "")
+            .replace(`[shared link: ${urlToAnalyze}]`, "")
+            .trim();
+          enrichedText = enrichedText
+            ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
+            : `[Floor plan/photo analysis: ${analysis}]`;
+          mediaProcessed = true;
+          console.log("Image analysis OK:", analysis.slice(0, 80));
+        } else {
+          console.warn("Image analysis not useful:", analysis.slice(0, 80));
+        }
       } catch (err) {
         console.warn("Image analysis failed:", err);
       }
     }
 
-    // Transcribe audio from THIS message
+    // Transcribe audio
     if (audioUrl) {
       try {
-        console.log("Transcribing audio...");
         const transcript = await transcribeAudio(audioUrl);
-        console.log("Transcript:", transcript?.slice(0, 100));
-        enrichedText = enrichedText.replace("[voice message]", "").trim();
-        enrichedText = enrichedText ? `${enrichedText}\n[Voice: ${transcript}]` : transcript;
+        const isUseful = transcript &&
+          !transcript.includes("please type") &&
+          !transcript.includes("could not") &&
+          transcript.length > 5;
+        if (isUseful) {
+          enrichedText = enrichedText.replace("[voice message]", "").trim();
+          enrichedText = enrichedText ? `${enrichedText}\n[Voice: ${transcript}]` : transcript;
+          mediaProcessed = true;
+          console.log("Transcription OK:", transcript.slice(0, 80));
+        } else {
+          console.warn("Transcription not useful:", transcript);
+          enrichedText = enrichedText.replace("[voice message]", "").trim();
+        }
       } catch (err) {
         console.warn("Transcription failed:", err);
       }
+    }
+
+    // If we have NO useful content at all — ask client to type
+    if (!enrichedText.trim()) {
+      enrichedText = "[SYSTEM: Client sent media but content could not be processed. Ask them to type their message. Do NOT use old scheduling context.]";
+      mediaProcessed = false;
     }
 
     // === STEP 6: Update ALL recent unanalyzed messages in the conversation ===
@@ -252,6 +281,7 @@ async function handleWebhook(body: WebhookPayload) {
       role: m.role as "user" | "assistant",
       content: m.content,
     }));
+    // (aiMessages kept for reference; actual context selection happens below)
 
     // Detect if client is resetting / starting a new project
     const resetKeywords = [
@@ -261,22 +291,31 @@ async function handleWebhook(body: WebhookPayload) {
     const lastMsg = enrichedText.toLowerCase();
     const clientResetting = resetKeywords.some((k) => lastMsg.includes(k));
 
-    // Inject availability ONLY when scheduling is relevant AND client is NOT resetting
+    // Detect if current message has real content or just failed media
+    const hasRealContent = mediaProcessed ||
+      (enrichedText.length > 10 && !enrichedText.includes("SYSTEM:") && !enrichedText.includes("[shared link:"));
+
+    // Inject availability ONLY when scheduling is relevant AND client is NOT resetting AND has real content
     const schedulingKeywords = [
       "schedule", "appointment", "what day", "what time", "which day",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
       "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
       "book", "slot", "set up a",
     ];
-    const recentAiSchedule = !clientResetting && (history ?? []).slice(-3).some(
+    const recentAiSchedule = !clientResetting && hasRealContent && (history ?? []).slice(-3).some(
       (m) => m.role === "assistant" &&
         ["what day", "what time", "schedule", "book", "works best"].some((k) => m.content.toLowerCase().includes(k))
     );
-    const isScheduling = !clientResetting &&
+    const isScheduling = !clientResetting && hasRealContent &&
       (schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule);
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
-    let messagesForAI: AiMsg[] = [...aiMessages];
+    // When media failed, use ONLY last 3 messages of history (not full history) to avoid stale context
+    const historyToUse = hasRealContent ? (history ?? []) : (history ?? []).slice(-3);
+    let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
     if (isScheduling) {
       const availability = await getRealAvailabilityContext();
       messagesForAI = [...aiMessages, { role: "system" as const, content: availability }];
