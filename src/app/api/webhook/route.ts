@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { fetchInstagramProfile, sendInstagramMessage } from "@/lib/instagram";
-import { getAIResponse } from "@/lib/ai";
+import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
+import { getAIResponse, analyzeImage, transcribeAudio, generateSpeech } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 
@@ -84,19 +84,48 @@ export async function POST(req: NextRequest) {
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
-    // Auto-detect creative from Instagram ad referral (when client comes via ad click)
+    // Auto-detect creative from Instagram ad referral
     const referral = messaging.referral;
-    const creativeUrl =
+    const adCreativeUrl =
       referral?.ads_context_data?.photo_url ??
       referral?.ads_context_data?.video_url ??
       null;
     const adId = referral?.ad_id ?? null;
     const adTitle = referral?.ads_context_data?.ad_title ?? null;
 
-    // Build message text
-    const messageText = messaging.message?.text ?? "";
+    // Detect attachments
+    const attachments = messaging.message?.attachments ?? [];
+    const imageAttachment = attachments.find((a) => a.type === "image" || a.type === "share");
+    const audioAttachment = attachments.find((a) => a.type === "audio");
+    const clientSentAudio = !!audioAttachment;
 
-    if (!messageText && !creativeUrl) {
+    let messageText = messaging.message?.text ?? "";
+
+    // Analyze image if client sent a photo (floor or house plan)
+    if (imageAttachment?.payload?.url) {
+      try {
+        const imageAnalysis = await analyzeImage(imageAttachment.payload.url);
+        messageText = messageText
+          ? `${messageText}\n[Client sent a photo. Analysis: ${imageAnalysis}]`
+          : `[Client sent a photo. Analysis: ${imageAnalysis}]`;
+      } catch {
+        messageText = messageText || "[Client sent a photo — could not analyze]";
+      }
+    }
+
+    // Transcribe audio if client sent a voice message
+    if (audioAttachment?.payload?.url) {
+      try {
+        const transcript = await transcribeAudio(audioAttachment.payload.url);
+        messageText = messageText
+          ? `${messageText}\n[Voice message: ${transcript}]`
+          : `[Voice message: ${transcript}]`;
+      } catch {
+        messageText = messageText || "[Voice message received — could not transcribe]";
+      }
+    }
+
+    if (!messageText) {
       return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
     }
 
@@ -130,7 +159,7 @@ export async function POST(req: NextRequest) {
         ...profile,
         updated_at: new Date().toISOString(),
       };
-      if (creativeUrl) updateData.creative_url = creativeUrl;
+      if (adCreativeUrl) updateData.creative_url = adCreativeUrl;
       if (adId) updateData.ad_id = adId;
       if (adTitle) updateData.ad_title = adTitle;
 
@@ -191,7 +220,18 @@ export async function POST(req: NextRequest) {
     // Process booking command if AI included one
     const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
 
-    await sendInstagramMessage(senderIgsid, finalResponse);
+    // If client sent audio → respond with audio (TTS) + text
+    // If client sent image or text → respond with text only
+    if (clientSentAudio && process.env.OPENAI_API_KEY) {
+      const audioBuffer = await generateSpeech(finalResponse);
+      if (audioBuffer) {
+        await sendInstagramAudio(senderIgsid, audioBuffer);
+      } else {
+        await sendInstagramMessage(senderIgsid, finalResponse);
+      }
+    } else {
+      await sendInstagramMessage(senderIgsid, finalResponse);
+    }
 
     await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conversation.id,

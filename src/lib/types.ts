@@ -48,7 +48,7 @@ export interface WebhookPayload {
         text?: string;
         is_echo?: boolean;
         attachments?: Array<{
-          type: string;
+          type: "image" | "audio" | "video" | "share" | "file" | string;
           payload: { url?: string };
         }>;
       };

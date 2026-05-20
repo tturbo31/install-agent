@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
+// OpenRouter client — for text + vision responses
 let _openai: OpenAI | null = null;
-
 function getOpenAI(): OpenAI {
   if (!_openai) {
     _openai = new OpenAI({
@@ -13,11 +13,28 @@ function getOpenAI(): OpenAI {
   return _openai;
 }
 
+// OpenAI direct client — for Whisper transcription + TTS audio
+let _openaiDirect: OpenAI | null = null;
+function getOpenAIDirect(): OpenAI {
+  if (!_openaiDirect) {
+    _openaiDirect = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY!,
+    });
+  }
+  return _openaiDirect;
+}
+
 const FALLBACK_MODELS = [
   "google/gemma-3-12b-it:free",
   "google/gemma-3-4b-it:free",
   "google/gemma-2-9b-it:free",
   "mistralai/mistral-small-3.1-24b-instruct:free",
+];
+
+const VISION_MODELS = [
+  "meta-llama/llama-3.2-11b-vision-instruct:free",
+  "google/gemini-flash-1.5:free",
+  "openai/gpt-4o-mini",
 ];
 
 function getModels(): string[] {
@@ -49,4 +66,97 @@ export async function getAIResponse(messages: ChatMessage[]): Promise<string> {
   }
 
   return "Sorry, I'm temporarily unavailable. Please try again shortly.";
+}
+
+// Analyze an image (floor photo or house plan) using a vision model
+export async function analyzeImage(imageUrl: string): Promise<string> {
+  const openai = getOpenAI();
+
+  for (const model of VISION_MODELS) {
+    try {
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: imageUrl },
+              },
+              {
+                type: "text",
+                text: `You are analyzing an image sent by a potential flooring client.
+Describe what you see in detail, focusing on:
+- If it's a floor photo: current flooring type, condition, approximate room size if visible, style
+- If it's a floor plan / blueprint: number of rooms, approximate total square footage, layout
+- Any relevant details for a flooring installation quote
+
+Be specific and practical. Keep it under 100 words.`,
+              },
+            ] as unknown as string,
+          },
+        ],
+        max_tokens: 300,
+      });
+
+      const result = response.choices[0]?.message?.content;
+      if (result) return result;
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status !== 429 && status !== 404) throw err;
+      console.warn(`Vision model ${model} failed, trying next...`);
+    }
+  }
+
+  return "Image received but could not be analyzed.";
+}
+
+// Transcribe an audio message using OpenAI Whisper
+export async function transcribeAudio(audioUrl: string): Promise<string> {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      return "[Voice message received — please type your message so I can help you better]";
+    }
+
+    // Fetch the audio file from Instagram CDN
+    const audioRes = await fetch(audioUrl);
+    if (!audioRes.ok) throw new Error("Failed to fetch audio");
+
+    const audioBuffer = await audioRes.arrayBuffer();
+    const audioFile = new File([audioBuffer], "audio.m4a", { type: "audio/mp4" });
+
+    const openai = getOpenAIDirect();
+    const transcription = await openai.audio.transcriptions.create({
+      file: audioFile,
+      model: "whisper-1",
+      language: "en",
+    });
+
+    return transcription.text;
+  } catch (err) {
+    console.error("Transcription error:", err);
+    return "[Voice message received — please type your message so I can help you better]";
+  }
+}
+
+// Generate TTS audio and return the audio buffer
+export async function generateSpeech(text: string): Promise<Buffer | null> {
+  try {
+    if (!process.env.OPENAI_API_KEY) return null;
+
+    const openai = getOpenAIDirect();
+    const response = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: "nova",
+      input: text,
+      response_format: "mp3",
+    });
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer;
+  } catch (err) {
+    console.error("TTS error:", err);
+    return null;
+  }
 }
