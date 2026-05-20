@@ -146,29 +146,58 @@ Be concise. Under 80 words. Focus on what's useful for a flooring quote.`,
 
 // Transcribe an audio message using OpenAI Whisper
 export async function transcribeAudio(audioUrl: string): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) {
+    return "[Voice message received — please type your message]";
+  }
+
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return "[Voice message received — please type your message so I can help you better]";
+    // Try with Instagram access token first, then without
+    const fetchAttempts: RequestInit[] = [
+      { headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN ?? ""}` } },
+      {},
+    ];
+
+    let audioBuffer: ArrayBuffer | null = null;
+    let contentType = "audio/mp4";
+
+    for (const opts of fetchAttempts) {
+      try {
+        const res = await fetch(audioUrl, { ...opts, redirect: "follow" });
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") ?? "";
+        if (!ct.startsWith("audio/") && !ct.startsWith("video/") && !ct.includes("octet-stream")) continue;
+        audioBuffer = await res.arrayBuffer();
+        contentType = ct.split(";")[0] || "audio/mp4";
+        if (audioBuffer.byteLength > 1000) break;
+      } catch { continue; }
     }
 
-    // Fetch the audio file from Instagram CDN
-    const audioRes = await fetch(audioUrl);
-    if (!audioRes.ok) throw new Error("Failed to fetch audio");
+    if (!audioBuffer || audioBuffer.byteLength < 1000) {
+      console.warn("Audio download failed or too small:", audioUrl);
+      return "[Voice message received — please type your message]";
+    }
 
-    const audioBuffer = await audioRes.arrayBuffer();
-    const audioFile = new File([audioBuffer], "audio.m4a", { type: "audio/mp4" });
+    // Determine file extension from content type
+    const ext = contentType.includes("ogg") ? "ogg"
+      : contentType.includes("mpeg") || contentType.includes("mp3") ? "mp3"
+      : contentType.includes("wav") ? "wav"
+      : "m4a";
+
+    const audioFile = new File([audioBuffer], `audio.${ext}`, { type: contentType });
 
     const openai = getOpenAIDirect();
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
       model: "whisper-1",
-      language: "en",
+      // No language specified — Whisper auto-detects (handles Portuguese too)
     });
 
-    return transcription.text;
+    const text = transcription.text?.trim();
+    console.log("Transcription:", text?.slice(0, 100));
+    return text || "[Voice message — no speech detected]";
   } catch (err) {
     console.error("Transcription error:", err);
-    return "[Voice message received — please type your message so I can help you better]";
+    return "[Voice message received — please type your message]";
   }
 }
 
