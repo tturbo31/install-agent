@@ -283,13 +283,18 @@ async function handleWebhook(body: WebhookPayload) {
     }));
     // (aiMessages kept for reference; actual context selection happens below)
 
+    const lastMsg = enrichedText.toLowerCase().trim();
+
+    // Detect greetings — treat as fresh start, ignore old scheduling context
+    const greetings = ["hi", "hello", "hey", "oi", "olá", "ola", "bom dia", "boa tarde", "good morning", "good afternoon", "what's up", "sup"];
+    const isJustGreeting = greetings.some((g) => lastMsg === g || lastMsg === g + "!" || lastMsg === g + ".");
+
     // Detect if client is resetting / starting a new project
     const resetKeywords = [
       "cancel", "forget", "different", "new project", "new apartment", "new house",
       "instead", "actually", "change", "another", "start over", "not that",
     ];
-    const lastMsg = enrichedText.toLowerCase();
-    const clientResetting = resetKeywords.some((k) => lastMsg.includes(k));
+    const clientResetting = isJustGreeting || resetKeywords.some((k) => lastMsg.includes(k));
 
     // Detect if current message has real content or just failed media
     const hasRealContent = mediaProcessed ||
@@ -310,8 +315,14 @@ async function handleWebhook(body: WebhookPayload) {
       (schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule);
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
-    // When media failed, use ONLY last 3 messages of history (not full history) to avoid stale context
-    const historyToUse = hasRealContent ? (history ?? []) : (history ?? []).slice(-3);
+    // Greetings and resets: use minimal history to avoid stale scheduling context
+    const historyToUse = isJustGreeting
+      ? [] // Fresh start — no history at all
+      : clientResetting
+        ? (history ?? []).slice(-2) // Only last 2 for resets
+        : hasRealContent
+          ? (history ?? [])
+          : (history ?? []).slice(-3);
     let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
