@@ -70,14 +70,21 @@ export async function getAIResponse(messages: ChatMessage[]): Promise<string> {
 
 // Download image and convert to base64 data URL
 async function imageToBase64(imageUrl: string): Promise<string> {
-  const attempts: RequestInit[] = [
-    { headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN ?? ""}` } },
-    {},
+  // Instagram CDN URLs require access_token as query param (not Bearer header)
+  const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
+  const urlWithToken = imageUrl.includes("?")
+    ? `${imageUrl}&access_token=${token}`
+    : `${imageUrl}?access_token=${token}`;
+
+  const attempts: [string, RequestInit][] = [
+    [urlWithToken, {}],                                                     // query param auth
+    [imageUrl, { headers: { Authorization: `Bearer ${token}` } }],        // bearer header
+    [imageUrl, {}],                                                         // no auth
   ];
 
-  for (const options of attempts) {
+  for (const [url, options] of attempts) {
     try {
-      const res = await fetch(imageUrl, { ...options, redirect: "follow" });
+      const res = await fetch(url, { ...options, redirect: "follow" });
       if (!res.ok) continue;
       const contentType = res.headers.get("content-type") ?? "";
 
@@ -151,18 +158,24 @@ export async function transcribeAudio(audioUrl: string): Promise<string> {
   }
 
   try {
-    // Try with Instagram access token first, then without
-    const fetchAttempts: RequestInit[] = [
-      { headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN ?? ""}` } },
-      {},
+    // Instagram CDN requires access_token as query param
+    const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
+    const audioUrlWithToken = audioUrl.includes("?")
+      ? `${audioUrl}&access_token=${token}`
+      : `${audioUrl}?access_token=${token}`;
+
+    const fetchAttempts: [string, RequestInit][] = [
+      [audioUrlWithToken, {}],
+      [audioUrl, { headers: { Authorization: `Bearer ${token}` } }],
+      [audioUrl, {}],
     ];
 
     let audioBuffer: ArrayBuffer | null = null;
     let contentType = "audio/mp4";
 
-    for (const opts of fetchAttempts) {
+    for (const [url, opts] of fetchAttempts) {
       try {
-        const res = await fetch(audioUrl, { ...opts, redirect: "follow" });
+        const res = await fetch(url, { ...opts, redirect: "follow" });
         if (!res.ok) continue;
         const ct = res.headers.get("content-type") ?? "";
         if (!ct.startsWith("audio/") && !ct.startsWith("video/") && !ct.includes("octet-stream")) continue;

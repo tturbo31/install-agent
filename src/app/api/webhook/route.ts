@@ -347,9 +347,11 @@ async function handleWebhook(body: WebhookPayload) {
     ];
     const clientResetting = isJustGreeting || resetKeywords.some((k) => lastMsg.includes(k));
 
-    // Detect if current message has real content or just failed media
-    const hasRealContent = mediaProcessed ||
-      (enrichedText.length > 10 && !enrichedText.includes("SYSTEM:") && !enrichedText.includes("[shared link:"));
+    // Detect if current message has real content or just placeholder text from failed media
+    // "[voice message]" and "[floor plan or photo]" are NOT real content — media failed to process
+    const MEDIA_PLACEHOLDERS = ["[voice message]", "[floor plan or photo]", "[shared link:"];
+    const isJustPlaceholder = MEDIA_PLACEHOLDERS.some((p) => enrichedText.trim() === p || enrichedText.trim().startsWith(p));
+    const hasRealContent = mediaProcessed && !isJustPlaceholder;
 
     // Inject availability ONLY when scheduling is relevant AND client is NOT resetting AND has real content
     const schedulingKeywords = [
