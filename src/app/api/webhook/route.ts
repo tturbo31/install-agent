@@ -24,6 +24,36 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // --- Hard validation: require phone AND address-like text in the last 15 min ---
+    // This prevents the AI from booking using stale profile data the client never
+    // explicitly provided in the current session.
+    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const { data: recentUserMsgs } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("content")
+      .eq("conversation_id", conversationId)
+      .eq("role", "user")
+      .gte("created_at", fifteenMinAgo);
+
+    const recentText = (recentUserMsgs ?? []).map((m) => m.content).join(" ");
+
+    const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)\s?\d{3}[-.\s]?\d{4}/;
+    // Address: at least 3 words with a leading number (e.g. "123 Main St")
+    const addressPattern = /\d+\s+\w+(?:\s+\w+){1,}/;
+
+    const hasPhone = phonePattern.test(recentText);
+    const hasAddress = addressPattern.test(recentText);
+
+    if (!hasPhone || !hasAddress) {
+      console.warn(
+        `Booking blocked — missing explicit confirmation in recent messages. ` +
+          `hasPhone=${hasPhone}, hasAddress=${hasAddress}`
+      );
+      return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
+    }
+    // --- End validation ---
+
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
       .select("creative_url, ad_id, ad_title, username, igsid")
@@ -144,8 +174,9 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (conversation.mode === "human") return NextResponse.json({ status: "human_mode" }, { status: 200 });
 
-    // === STEP 4: DEBOUNCE — wait 10s for more messages to arrive ===
-    await new Promise((r) => setTimeout(r, 10000));
+    // === STEP 4: DEBOUNCE — wait 3s for more messages to arrive ===
+    // NOTE: 3 s keeps us well under Vercel Hobby's 10 s function timeout.
+    await new Promise((r) => setTimeout(r, 3000));
 
     // SIMPLE RELIABLE CHECK: after waiting, am I still the latest user message?
     // Order by created_at DESC, then id DESC (tiebreaker for same timestamp)
@@ -232,7 +263,8 @@ async function handleWebhook(body: WebhookPayload) {
 
     // === STEP 6: Update ALL recent unanalyzed messages in the conversation ===
     // Enrich other recent messages (images/audios sent together) in DB
-    const fifteenSecsAgo = new Date(Date.now() - 15000).toISOString();
+    // Window matches debounce period (3 s) plus a small buffer
+    const fifteenSecsAgo = new Date(Date.now() - 3500).toISOString();
     const { data: recentMsgs } = await supabaseAdmin
       .from("instagram_messages")
       .select("id, content, instagram_msg_id")
