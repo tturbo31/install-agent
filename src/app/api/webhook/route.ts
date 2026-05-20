@@ -133,8 +133,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: "error" }, { status: 200 });
     }
 
-    // Get this message's exact created_at to compare against later messages
+    // Get this message's exact created_at and id for tiebreaking
     const thisMessageCreatedAt = insertedMsg?.created_at ?? new Date().toISOString();
+    const thisMessageId = insertedMsg?.id ?? "";
 
     await supabaseAdmin
       .from("instagram_conversations")
@@ -146,17 +147,19 @@ export async function POST(req: NextRequest) {
     // === STEP 4: DEBOUNCE — wait 10s for more messages to arrive ===
     await new Promise((r) => setTimeout(r, 10000));
 
-    // Check if ANY newer user message was stored AFTER this specific message
-    // Use limit(1) — .maybeSingle() silently fails with multiple rows
+    // Check for newer messages using BOTH timestamp AND uuid tiebreaker
+    // This handles the case where two messages arrive at the exact same millisecond
+    // Rule: among messages with same created_at, the one with the LARGEST uuid wins
+    // (UUIDs are random — largest UUID = last one in alphabetical order = winner)
     const { data: newerMsgs } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conversation.id)
       .eq("role", "user")
-      .gt("created_at", thisMessageCreatedAt)
+      .or(`created_at.gt.${thisMessageCreatedAt},and(created_at.eq.${thisMessageCreatedAt},id.gt.${thisMessageId})`)
       .limit(1);
 
-    // A newer message exists — it has more context, let it handle the response
+    // Another message will handle the response (it's newer or wins the tiebreak)
     if (newerMsgs && newerMsgs.length > 0) {
       return NextResponse.json({ status: "debounced" }, { status: 200 });
     }
