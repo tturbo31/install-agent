@@ -165,17 +165,42 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     if (imageUrl) {
-      const urlWithToken = imageUrl.includes("?") ? `${imageUrl}&access_token=${igToken}` : `${imageUrl}?access_token=${igToken}`;
-      for (const [u, opts] of [[urlWithToken, {}], [imageUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [imageUrl, {}]] as [string, RequestInit][]) {
-        try {
-          const r = await fetch(u, { ...opts, redirect: "follow" });
-          if (!r.ok) continue;
-          const ct = r.headers.get("content-type") || "";
-          if (!ct.startsWith("image/") && !ct.includes("html")) continue;
-          if (ct.includes("html")) { /* skip HTML */ continue; }
-          const buf = await r.arrayBuffer();
-          if (buf.byteLength > 3000) { preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`; break; }
-        } catch { continue; }
+      // First try: Graph API with message ID to get authenticated URL (most reliable)
+      try {
+        const graphRes = await fetch(
+          `https://graph.instagram.com/v24.0/${messageMid}?fields=attachments&access_token=${igToken}`
+        );
+        if (graphRes.ok) {
+          const graphData = await graphRes.json();
+          const attachmentUrl = graphData?.attachments?.data?.[0]?.image_data?.url
+            ?? graphData?.attachments?.data?.[0]?.file_url
+            ?? null;
+          if (attachmentUrl) {
+            const imgRes = await fetch(attachmentUrl, { redirect: "follow" });
+            if (imgRes.ok) {
+              const ct = imgRes.headers.get("content-type") || "image/jpeg";
+              const buf = await imgRes.arrayBuffer();
+              if (buf.byteLength > 3000) {
+                preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`;
+              }
+            }
+          }
+        }
+      } catch { /* graph api attempt failed */ }
+
+      // Fallback: try CDN URL directly (various auth methods)
+      if (!preFetchedImageBase64) {
+        const urlWithToken = imageUrl.includes("?") ? `${imageUrl}&access_token=${igToken}` : `${imageUrl}?access_token=${igToken}`;
+        for (const [u, opts] of [[urlWithToken, {}], [imageUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [imageUrl, {}]] as [string, RequestInit][]) {
+          try {
+            const r = await fetch(u, { ...opts, redirect: "follow" });
+            if (!r.ok) continue;
+            const ct = r.headers.get("content-type") || "";
+            if (!ct.startsWith("image/")) continue;
+            const buf = await r.arrayBuffer();
+            if (buf.byteLength > 3000) { preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`; break; }
+          } catch { continue; }
+        }
       }
       console.log(`Image pre-fetch: ${preFetchedImageBase64 ? `${Math.round(preFetchedImageBase64.length / 1000)}KB` : "FAILED"}`);
     }
@@ -430,17 +455,19 @@ async function handleWebhook(body: WebhookPayload) {
 
     let finalResponse: string;
 
-    // When ALL media failed → bypass AI entirely, send a fixed helpful message
-    // This prevents AI from defaulting to old scheduling context
+    // Detect if client mentioned sending an image in text
+    const clientMentionsImage = /imag|foto|plant|floor.?plan|projeto|here.?is|this.?is|consegue calcular/i.test(enrichedText);
+
+    // When ALL media failed → bypass AI, send specific helpful message
     if (!hasRealContent && !isJustGreeting) {
-      const hadImage = !!(imageUrl || shareUrl);
+      const hadImage = !!(imageUrl || shareUrl) || clientMentionsImage;
       const hadAudio = !!audioUrl;
       if (hadAudio && hadImage) {
-        finalResponse = "I got your voice message and floor plan! I wasn't able to process them automatically — could you type what you're looking for and share the approximate area of the space?";
+        finalResponse = "I got your voice message and floor plan! I wasn't able to read them automatically — what's the total area shown on the floor plan? Once I have that I'll calculate the quote right here.";
       } else if (hadAudio) {
-        finalResponse = "I got your voice message but couldn't catch it clearly — could you type it out for me? I want to make sure I give you the right info!";
+        finalResponse = "I got your voice message but couldn't catch it — could you type it out? I'll take care of you right here!";
       } else if (hadImage) {
-        finalResponse = "I can see you shared a floor plan! Could you type what you need and share the total area in square feet or meters?";
+        finalResponse = "I can see the floor plan! What's the total area shown on it — in square meters or square feet? I'll calculate the quote immediately.";
       } else {
         finalResponse = "Hey! What can I help you with today?";
       }
