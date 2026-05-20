@@ -368,25 +368,41 @@ async function handleWebhook(body: WebhookPayload) {
       (schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule);
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
-    // Greetings and resets: use minimal history to avoid stale scheduling context
-    const historyToUse = isJustGreeting
-      ? [] // Fresh start — no history at all
-      : clientResetting
-        ? (history ?? []).slice(-2) // Only last 2 for resets
-        : hasRealContent
-          ? (history ?? [])
-          : (history ?? []).slice(-3);
-    let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
-    if (isScheduling) {
-      const availability = await getRealAvailabilityContext();
-      messagesForAI = [...aiMessages, { role: "system" as const, content: availability }];
-    }
 
-    const rawAiResponse = await getAIResponse(messagesForAI);
-    const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
+    let finalResponse: string;
+
+    // When ALL media failed → bypass AI entirely, send a fixed helpful message
+    // This prevents AI from defaulting to old scheduling context
+    if (!hasRealContent && !isJustGreeting) {
+      const hadImage = !!(imageUrl || shareUrl);
+      const hadAudio = !!audioUrl;
+      if (hadAudio && hadImage) {
+        finalResponse = "I got your voice message and floor plan! I wasn't able to process them automatically — could you type what you're looking for and share the approximate area of the space?";
+      } else if (hadAudio) {
+        finalResponse = "I got your voice message but couldn't catch it clearly — could you type it out for me? I want to make sure I give you the right info!";
+      } else if (hadImage) {
+        finalResponse = "I can see you shared a floor plan! Could you type what you need and share the total area in square feet or meters?";
+      } else {
+        finalResponse = "Hey! What can I help you with today?";
+      }
+    } else {
+      // Normal AI flow with appropriate history
+      const historyToUse = isJustGreeting
+        ? []
+        : clientResetting
+          ? (history ?? []).slice(-2)
+          : (history ?? []);
+      let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
+      if (isScheduling) {
+        const availability = await getRealAvailabilityContext();
+        messagesForAI = [...messagesForAI, { role: "system" as const, content: availability }];
+      }
+      const rawAiResponse = await getAIResponse(messagesForAI);
+      finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
+    }
 
     // === STEP 9: Send response ===
     await sendInstagramMessage(senderIgsid, finalResponse);
