@@ -216,33 +216,50 @@ export async function POST(req: NextRequest) {
       content: m.content,
     }));
 
-    // Always inject real-time availability so AI never mentions a taken slot
-    const availabilityContext = await getRealAvailabilityContext();
-    const aiMessagesWithAvailability = [
-      ...aiMessages,
-      {
-        role: "system" as const,
-        content: availabilityContext,
-      },
+    // Only inject real-time availability when the conversation is about scheduling
+    const schedulingKeywords = [
+      "schedule", "appointment", "visit", "quote", "available", "availability",
+      "when", "time", "day", "monday", "tuesday", "wednesday", "thursday",
+      "friday", "saturday", "sunday", "week", "tomorrow", "today", "morning",
+      "afternoon", "evening", "am", "pm", "book", "slot", "free quote",
     ];
+    const lastUserMsg = messageText.toLowerCase();
+    const isSchedulingConversation = schedulingKeywords.some((k) => lastUserMsg.includes(k)) ||
+      (history ?? []).slice(-4).some((m) =>
+        m.role === "assistant" &&
+        schedulingKeywords.some((k) => m.content.toLowerCase().includes(k))
+      );
 
-    const rawAiResponse = await getAIResponse(aiMessagesWithAvailability);
+    type AiMsg = { role: "system" | "user" | "assistant"; content: string };
+    let messagesForAI: AiMsg[] = [...aiMessages];
+    if (isSchedulingConversation) {
+      const availabilityContext = await getRealAvailabilityContext();
+      messagesForAI = [
+        ...aiMessages,
+        { role: "system" as const, content: availabilityContext },
+      ];
+    }
+
+    const rawAiResponse = await getAIResponse(messagesForAI);
 
     // Process booking command if AI included one
     const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
 
-    // If client sent audio → respond with audio (TTS) + text
-    // If client sent image or text → respond with text only
+    // Send response — audio if client sent audio, otherwise text
+    let audioSent = false;
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
-      const audioBuffer = await generateSpeech(finalResponse);
-      if (audioBuffer) {
-        await sendInstagramAudio(senderIgsid, audioBuffer);
-      } else {
-        await sendInstagramMessage(senderIgsid, finalResponse);
+      try {
+        const audioBuffer = await generateSpeech(finalResponse);
+        if (audioBuffer) {
+          audioSent = await sendInstagramAudio(senderIgsid, audioBuffer);
+        }
+      } catch (err) {
+        console.error("Audio response failed:", err);
       }
-    } else {
-      await sendInstagramMessage(senderIgsid, finalResponse);
     }
+
+    // Always send text too (so client can read even if audio fails)
+    await sendInstagramMessage(senderIgsid, finalResponse);
 
     await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conversation.id,
