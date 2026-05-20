@@ -121,14 +121,24 @@ export async function analyzeImageFromBase64(base64DataUrl: string): Promise<str
           { type: "image_url", image_url: { url: base64DataUrl } },
           {
             type: "text",
-            text: `You are analyzing a floor plan or photo sent by a flooring client.
-If FLOOR PLAN: list rooms with dimensions, calculate total sqm and sqft (1sqm=10.76sqft). State "Total: ~Xsqm (~Ysqft)".
-If FLOOR PHOTO: describe floor type, condition, estimated room size.
-Be concise, under 80 words.`
+            text: `This is a floor plan image sent by a flooring client for a quote.
+
+IMPORTANT: READ ALL TEXT AND NUMBERS visible in the image carefully.
+
+If it's a FLOOR PLAN:
+1. List every room label and its dimensions exactly as written (e.g. "Sala 3.00x3.00m", "Cozinha 1.90x3.00m")
+2. Calculate each room area (length × width = m²)
+3. Sum all areas and convert: Total sqm × 10.76 = sqft
+4. State clearly: "Total: ~Xsqm (~Ysqft)"
+
+If measurements are not visible, describe the rooms you can see.
+If it's a photo of existing floors: describe floor type and condition.
+
+Be specific. Under 100 words.`
           }
         ] as unknown as string,
       }],
-      max_tokens: 250,
+      max_tokens: 300,
     });
     return response.choices[0]?.message?.content ?? "Image analyzed but no description generated.";
   } catch (err) {
