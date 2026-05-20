@@ -192,7 +192,22 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
 
     if (!latestMsg || latestMsg.id !== thisMessageId) {
-      return NextResponse.json({ status: "not_latest_skip" }, { status: 200 });
+      return;
+    }
+
+    // RATE LIMIT: if we already sent a response in the last 20 seconds, skip
+    // This catches cases where the debounce window is too tight (e.g. share arrives late)
+    const twentySecsAgo = new Date(Date.now() - 20000).toISOString();
+    const { data: recentReply } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id")
+      .eq("conversation_id", conversation.id)
+      .eq("role", "assistant")
+      .gte("created_at", twentySecsAgo)
+      .limit(1);
+
+    if (recentReply && recentReply.length > 0) {
+      return; // Already responded recently — skip duplicate
     }
 
     // === STEP 5: Process media with fallback intelligence ===
@@ -202,8 +217,14 @@ async function handleWebhook(body: WebhookPayload) {
     // Include share title as context (even if image fails)
     if (shareAttachment) {
       const shareTitle = shareAttachment.payload?.title ?? null;
-      if (shareTitle && !enrichedText.includes(shareTitle)) {
-        enrichedText = `[Client shared: "${shareTitle}"]`;
+      if (shareTitle) {
+        const isFloorPlan = /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle);
+        if (isFloorPlan) {
+          enrichedText = `[Client shared a floor plan: "${shareTitle}". Ask them for the total area in square meters or feet so you can calculate the quote.]`;
+        } else {
+          enrichedText = `[Client shared: "${shareTitle}"]`;
+        }
+        mediaProcessed = true;
       }
     }
 
