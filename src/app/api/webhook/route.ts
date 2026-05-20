@@ -147,21 +147,21 @@ export async function POST(req: NextRequest) {
     // === STEP 4: DEBOUNCE — wait 10s for more messages to arrive ===
     await new Promise((r) => setTimeout(r, 10000));
 
-    // Check for newer messages using BOTH timestamp AND uuid tiebreaker
-    // This handles the case where two messages arrive at the exact same millisecond
-    // Rule: among messages with same created_at, the one with the LARGEST uuid wins
-    // (UUIDs are random — largest UUID = last one in alphabetical order = winner)
-    const { data: newerMsgs } = await supabaseAdmin
+    // SIMPLE RELIABLE CHECK: after waiting, am I still the latest user message?
+    // Order by created_at DESC, then id DESC (tiebreaker for same timestamp)
+    // If the latest message ID is not mine → skip, let the latest handle it
+    const { data: latestMsg } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conversation.id)
       .eq("role", "user")
-      .or(`created_at.gt.${thisMessageCreatedAt},and(created_at.eq.${thisMessageCreatedAt},id.gt.${thisMessageId})`)
-      .limit(1);
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(1)
+      .single();
 
-    // Another message will handle the response (it's newer or wins the tiebreak)
-    if (newerMsgs && newerMsgs.length > 0) {
-      return NextResponse.json({ status: "debounced" }, { status: 200 });
+    if (!latestMsg || latestMsg.id !== thisMessageId) {
+      return NextResponse.json({ status: "not_latest_skip" }, { status: 200 });
     }
 
     // === STEP 5: Process ALL pending media from the last 15 seconds ===
