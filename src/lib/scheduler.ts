@@ -30,6 +30,7 @@ export interface BookingRequest {
   bookingTime: string;
   notes?: string;
   creative?: string;
+  instagramHandle?: string;
 }
 
 export interface BookingResult {
@@ -119,8 +120,10 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
         email: `ia-${Date.now()}@instagram.ozzifloors.com`,
         phone: req.clientPhone.trim().slice(0, 30) || null,
         address: req.clientAddress.trim().slice(0, 300),
-        referral_source: "Instagram",
-        source: "Instagram DM",
+        referral_source: req.instagramHandle
+          ? `Instagram DM — ${req.instagramHandle}`
+          : "Instagram DM",
+        source: req.creative ?? "Instagram DM",
         creative_url: req.creative ?? null,
         creative_urls: [],
         scheduled_by: SCHEDULER_ID,

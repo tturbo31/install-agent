@@ -29,13 +29,14 @@ async function processBookingCommand(
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // Get stored creative from Instagram ad referral (auto-captured on first message)
+    // Get full conversation data: creative, ad info, and Instagram username
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
-      .select("creative_url, ad_id, ad_title")
+      .select("creative_url, ad_id, ad_title, username, igsid")
       .eq("id", conversationId)
       .single();
 
+    // Build creative reference — ad title > creative URL > ad ID > fallback
     const creativeRef =
       convData?.ad_title ??
       convData?.creative_url ??
@@ -43,14 +44,24 @@ async function processBookingCommand(
       bookingData.creative ??
       "Instagram DM";
 
+    // Build enriched notes with Instagram handle and ad source
+    const instagramHandle = convData?.username ? `@${convData.username}` : convData?.igsid ?? "";
+    const noteParts = [
+      bookingData.notes ?? "",
+      instagramHandle ? `Instagram: ${instagramHandle}` : "",
+      creativeRef !== "Instagram DM" ? `Ad/Source: ${creativeRef}` : "",
+    ].filter(Boolean);
+    const enrichedNotes = noteParts.join(" | ");
+
     const result = await createBooking({
       clientName: bookingData.name ?? "Instagram Client",
       clientPhone: bookingData.phone ?? "",
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
-      notes: bookingData.notes ?? "",
+      notes: enrichedNotes,
       creative: creativeRef,
+      instagramHandle: convData?.username ?? undefined,
     });
 
     const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
