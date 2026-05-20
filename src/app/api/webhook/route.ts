@@ -5,53 +5,38 @@ import { getAIResponse, analyzeImage, transcribeAudio, generateSpeech } from "@/
 import { WebhookPayload } from "@/lib/types";
 import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 
+export const maxDuration = 60;
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
-
   if (mode === "subscribe" && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
     return new NextResponse(challenge, { status: 200 });
   }
-
   return new NextResponse("Forbidden", { status: 403 });
 }
 
-// Intercept [BOOK:{...}] command from AI response
-async function processBookingCommand(
-  aiResponse: string,
-  conversationId: string
-): Promise<string> {
+async function processBookingCommand(aiResponse: string, conversationId: string): Promise<string> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
-
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
-
-    // Get full conversation data: creative, ad info, and Instagram username
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
       .select("creative_url, ad_id, ad_title, username, igsid")
       .eq("id", conversationId)
       .single();
 
-    // Build creative reference — ad title > creative URL > ad ID > fallback
     const creativeRef =
-      convData?.ad_title ??
-      convData?.creative_url ??
-      convData?.ad_id ??
-      bookingData.creative ??
-      "Instagram DM";
-
-    // Build enriched notes with Instagram handle and ad source
+      convData?.ad_title ?? convData?.creative_url ?? convData?.ad_id ?? bookingData.creative ?? "Instagram DM";
     const instagramHandle = convData?.username ? `@${convData.username}` : convData?.igsid ?? "";
     const noteParts = [
       bookingData.notes ?? "",
       instagramHandle ? `Instagram: ${instagramHandle}` : "",
-      creativeRef !== "Instagram DM" ? `Ad/Source: ${creativeRef}` : "",
+      creativeRef !== "Instagram DM" ? `Ad: ${creativeRef}` : "",
     ].filter(Boolean);
-    const enrichedNotes = noteParts.join(" | ");
 
     const result = await createBooking({
       clientName: bookingData.name ?? "Instagram Client",
@@ -59,129 +44,44 @@ async function processBookingCommand(
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
-      notes: enrichedNotes,
+      notes: noteParts.join(" | "),
       creative: creativeRef,
       instagramHandle: convData?.username ?? undefined,
     });
 
     const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
-
     if (result.success) {
-      return `${cleanResponse}\n\n✅ Appointment confirmed! 40 minutes before arriving at your home, I'll send you a heads up. My name is ${result.sellerName} and I'm looking forward to meeting you and helping with your project! 🏠`;
+      return `${cleanResponse}\n\nAppointment confirmed! I'll reach out 40 minutes before arriving. My name is ${result.sellerName} and I look forward to meeting you!`;
     } else {
-      return `${cleanResponse}\n\nI'm sorry, that time slot is no longer available. Could you choose another time? Available slots are: 9am, 11am, 1pm, 3pm, 5pm, or 7pm.`;
+      return `${cleanResponse}\n\nThat slot just got taken. Can you pick another time?`;
     }
   } catch (err) {
-    console.error("Booking command parse error:", err);
+    console.error("Booking parse error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
   }
 }
 
-export const maxDuration = 60; // Vercel Pro: allow up to 60s for debounce + AI processing
-
 export async function POST(req: NextRequest) {
   try {
     const body: WebhookPayload = await req.json();
-
-    if (body.object !== "instagram") {
-      return NextResponse.json({ status: "ignored" }, { status: 200 });
-    }
+    if (body.object !== "instagram") return NextResponse.json({ status: "ignored" }, { status: 200 });
 
     const messaging = body.entry?.[0]?.messaging?.[0];
     if (!messaging) return NextResponse.json({ status: "ok" }, { status: 200 });
-
-    if (messaging.message?.is_echo) {
-      return NextResponse.json({ status: "echo_skipped" }, { status: 200 });
-    }
+    if (messaging.message?.is_echo) return NextResponse.json({ status: "echo_skipped" }, { status: 200 });
 
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
-    // DEDUPLICATION — check if this exact message was already processed
+    // Skip already processed messages
     const { data: alreadyProcessed } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("instagram_msg_id", messageMid)
       .maybeSingle();
+    if (alreadyProcessed) return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
 
-    if (alreadyProcessed) {
-      return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
-    }
-
-    // DEBOUNCE — wait 7s to collect all messages sent in quick succession
-    // This ensures audio + image + audio sent together get ONE combined response
-    await new Promise((r) => setTimeout(r, 7000));
-
-    // After waiting, check if a newer message arrived from same sender
-    // If yes, that newer webhook will handle the response (it has more context)
-    const convLookup = await supabaseAdmin
-      .from("instagram_conversations")
-      .select("id")
-      .eq("igsid", senderIgsid)
-      .maybeSingle();
-
-    const { data: newerMessage } = await supabaseAdmin
-      .from("instagram_messages")
-      .select("id")
-      .eq("conversation_id", convLookup.data?.id ?? "none")
-      .eq("role", "user")
-      .gt("created_at", new Date(Date.now() - 7500).toISOString())
-      .neq("instagram_msg_id", messageMid)
-      .maybeSingle();
-
-    if (newerMessage) {
-      return NextResponse.json({ status: "debounced" }, { status: 200 });
-    }
-
-    // Auto-detect creative from Instagram ad referral
-    const referral = messaging.referral;
-    const adCreativeUrl =
-      referral?.ads_context_data?.photo_url ??
-      referral?.ads_context_data?.video_url ??
-      null;
-    const adId = referral?.ad_id ?? null;
-    const adTitle = referral?.ads_context_data?.ad_title ?? null;
-
-    // Detect attachments
-    const attachments = messaging.message?.attachments ?? [];
-    const imageAttachment = attachments.find((a) => a.type === "image" || a.type === "share");
-    const audioAttachment = attachments.find((a) => a.type === "audio");
-    const clientSentAudio = !!audioAttachment;
-
-    let messageText = messaging.message?.text ?? "";
-
-    // Analyze image if client sent a photo (floor or house plan)
-    if (imageAttachment?.payload?.url) {
-      try {
-        const imageAnalysis = await analyzeImage(imageAttachment.payload.url);
-        messageText = messageText
-          ? `${messageText}\n[Client sent a photo. Analysis: ${imageAnalysis}]`
-          : `[Client sent a photo. Analysis: ${imageAnalysis}]`;
-      } catch {
-        messageText = messageText || "[Client sent a photo — could not analyze]";
-      }
-    }
-
-    // Transcribe audio if client sent a voice message
-    if (audioAttachment?.payload?.url) {
-      try {
-        const transcript = await transcribeAudio(audioAttachment.payload.url);
-        messageText = messageText
-          ? `${messageText}\n[Voice message: ${transcript}]`
-          : `[Voice message: ${transcript}]`;
-      } catch {
-        messageText = messageText || "[Voice message received — could not transcribe]";
-      }
-    }
-
-    if (!messageText) {
-      return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
-    }
-
-    if (!messageText) {
-      return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
-    }
-
+    // === STEP 1: Find or create conversation IMMEDIATELY ===
     let { data: conversation } = await supabaseAdmin
       .from("instagram_conversations")
       .select("*")
@@ -196,52 +96,117 @@ export async function POST(req: NextRequest) {
         .single();
       conversation = newConv;
     }
+    if (!conversation) return NextResponse.json({ status: "error" }, { status: 200 });
 
-    if (!conversation) {
+    // === STEP 2: Detect attachments ===
+    const attachments = messaging.message?.attachments ?? [];
+    const imageAttachment = attachments.find((a) => a.type === "image");
+    const shareAttachment = attachments.find((a) => a.type === "share");
+    const audioAttachment = attachments.find((a) => a.type === "audio");
+    const clientSentAudio = !!audioAttachment;
+
+    // Build raw message text to store immediately
+    let rawText = messaging.message?.text ?? "";
+    const imageUrl = imageAttachment?.payload?.url ?? null;
+    const shareUrl = shareAttachment?.payload?.url ?? null;
+    const audioUrl = audioAttachment?.payload?.url ?? null;
+
+    // Note image/audio/share in raw text for context
+    if (imageUrl && !rawText) rawText = "[floor plan or photo]";
+    if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
+    if (audioUrl && !rawText) rawText = "[voice message]";
+    if (!rawText) return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
+
+    // === STEP 3: Store message IMMEDIATELY (before debounce) ===
+    const { error: insertErr } = await supabaseAdmin.from("instagram_messages").insert({
+      conversation_id: conversation.id,
+      role: "user",
+      content: rawText,
+      instagram_msg_id: messageMid,
+    });
+    if (insertErr && insertErr.code !== "23505") {
       return NextResponse.json({ status: "error" }, { status: 200 });
     }
 
-    try {
-      const profile = await fetchInstagramProfile(senderIgsid);
-      // Save profile + creative data from Instagram ad referral
-      const updateData: Record<string, unknown> = {
-        ...profile,
-        updated_at: new Date().toISOString(),
-      };
-      if (adCreativeUrl) updateData.creative_url = adCreativeUrl;
-      if (adId) updateData.ad_id = adId;
-      if (adTitle) updateData.ad_title = adTitle;
-
-      await supabaseAdmin
-        .from("instagram_conversations")
-        .update(updateData)
-        .eq("igsid", senderIgsid);
-    } catch (err) {
-      console.warn("Failed to fetch Instagram profile:", err);
-    }
-
-    const { error: msgError } = await supabaseAdmin
-      .from("instagram_messages")
-      .insert({
-        conversation_id: conversation.id,
-        role: "user",
-        content: messageText,
-        instagram_msg_id: messageMid,
-      });
-
-    if (msgError && msgError.code !== "23505") {
-      return NextResponse.json({ status: "error" }, { status: 200 });
-    }
-
+    // Update conversation timestamp
     await supabaseAdmin
       .from("instagram_conversations")
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conversation.id);
 
-    if (conversation.mode === "human") {
-      return NextResponse.json({ status: "human_mode" }, { status: 200 });
+    if (conversation.mode === "human") return NextResponse.json({ status: "human_mode" }, { status: 200 });
+
+    // === STEP 4: DEBOUNCE — wait 7s for more messages to arrive ===
+    await new Promise((r) => setTimeout(r, 7000));
+
+    // Check if a newer user message was stored after this one
+    const { data: newerMsg } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id")
+      .eq("conversation_id", conversation.id)
+      .eq("role", "user")
+      .gt("created_at", new Date(Date.now() - 7500).toISOString())
+      .neq("instagram_msg_id", messageMid)
+      .maybeSingle();
+
+    // Let the newest message handle the response
+    if (newerMsg) return NextResponse.json({ status: "debounced" }, { status: 200 });
+
+    // === STEP 5: Process media (analyze image, transcribe audio) ===
+    let enrichedText = rawText;
+
+    // Analyze floor plan or photo
+    const urlToAnalyze = imageUrl ?? (shareAttachment?.payload?.url ?? null);
+    if (urlToAnalyze) {
+      try {
+        const analysis = await analyzeImage(urlToAnalyze);
+        enrichedText = enrichedText.replace("[floor plan or photo]", "").replace(`[shared link: ${urlToAnalyze}]`, "").trim();
+        enrichedText = enrichedText
+          ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
+          : `[Floor plan/photo analysis: ${analysis}]`;
+      } catch (err) {
+        console.warn("Image analysis failed:", err);
+      }
     }
 
+    // Transcribe voice message
+    if (audioUrl) {
+      try {
+        const transcript = await transcribeAudio(audioUrl);
+        enrichedText = enrichedText.replace("[voice message]", "").trim();
+        enrichedText = enrichedText
+          ? `${enrichedText}\n[Voice: ${transcript}]`
+          : transcript;
+      } catch (err) {
+        console.warn("Transcription failed:", err);
+      }
+    }
+
+    // === STEP 6: Update stored message with enriched content ===
+    if (enrichedText !== rawText) {
+      await supabaseAdmin
+        .from("instagram_messages")
+        .update({ content: enrichedText })
+        .eq("instagram_msg_id", messageMid);
+    }
+
+    // === STEP 7: Fetch profile ===
+    try {
+      const profile = await fetchInstagramProfile(senderIgsid);
+      const referral = messaging.referral;
+      const updateData: Record<string, unknown> = {
+        ...profile,
+        updated_at: new Date().toISOString(),
+      };
+      if (referral?.ads_context_data?.photo_url) updateData.creative_url = referral.ads_context_data.photo_url;
+      if (referral?.ad_id) updateData.ad_id = referral.ad_id;
+      if (referral?.ads_context_data?.ad_title) updateData.ad_title = referral.ads_context_data.ad_title;
+      await supabaseAdmin.from("instagram_conversations").update(updateData).eq("igsid", senderIgsid);
+    } catch (err) {
+      console.warn("Profile fetch failed:", err);
+    }
+
+    // === STEP 8: Load history and call AI ===
     const { data: history } = await supabaseAdmin
       .from("instagram_messages")
       .select("role, content")
@@ -254,53 +219,38 @@ export async function POST(req: NextRequest) {
       content: m.content,
     }));
 
-    // Only inject real-time availability when actively scheduling
-    // NOTE: avoid generic words like "am"/"pm" that trigger on every message
+    // Inject availability only when scheduling is relevant
     const schedulingKeywords = [
       "schedule", "appointment", "visit", "quote", "available", "availability",
       "what day", "what time", "which day", "which time",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-      "tomorrow", "next week", "this week",
-      "9am", "11am", "1pm", "3pm", "5pm", "7pm", "9 am", "11 am",
+      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
       "book", "slot", "free quote", "schedule a", "set up a",
     ];
-    const lastUserMsg = messageText.toLowerCase();
-    // Check if AI already asked about scheduling in last 3 messages
-    const recentAiMentionedSchedule = (history ?? []).slice(-3).some((m) =>
-      m.role === "assistant" &&
-      ["what day", "what time", "which day", "schedule", "book", "slot", "works best"].some(
-        (k) => m.content.toLowerCase().includes(k)
-      )
+    const lastMsg = enrichedText.toLowerCase();
+    const recentAiSchedule = (history ?? []).slice(-3).some(
+      (m) => m.role === "assistant" &&
+        ["what day", "what time", "schedule", "book", "works best"].some((k) => m.content.toLowerCase().includes(k))
     );
-    const isSchedulingConversation =
-      schedulingKeywords.some((k) => lastUserMsg.includes(k)) ||
-      recentAiMentionedSchedule;
+    const isScheduling = schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule;
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = [...aiMessages];
-    if (isSchedulingConversation) {
-      const availabilityContext = await getRealAvailabilityContext();
-      messagesForAI = [
-        ...aiMessages,
-        { role: "system" as const, content: availabilityContext },
-      ];
+    if (isScheduling) {
+      const availability = await getRealAvailabilityContext();
+      messagesForAI = [...aiMessages, { role: "system" as const, content: availability }];
     }
 
     const rawAiResponse = await getAIResponse(messagesForAI);
-
-    // Process booking command if AI included one
     const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
 
-    // Send text response
+    // === STEP 9: Send response ===
     await sendInstagramMessage(senderIgsid, finalResponse);
 
-    // If client sent audio → also send audio response
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
       generateSpeech(finalResponse)
-        .then(async (audioBuffer) => {
-          if (audioBuffer) await sendInstagramAudio(senderIgsid, audioBuffer);
-        })
-        .catch((err) => console.error("TTS error:", err));
+        .then(async (buf) => { if (buf) await sendInstagramAudio(senderIgsid, buf); })
+        .catch((e) => console.error("TTS error:", e));
     }
 
     await supabaseAdmin.from("instagram_messages").insert({
