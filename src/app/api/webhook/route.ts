@@ -432,17 +432,23 @@ async function handleWebhook(body: WebhookPayload) {
 
     // Detect if current message has real content or just placeholder text from failed media
     const MEDIA_PLACEHOLDERS = ["[voice message]", "[floor plan or photo]", "[shared link:"];
-    // Count how many lines are just placeholders
     const lines = enrichedText.trim().split("\n").filter(Boolean);
     const realLines = lines.filter(l => !MEDIA_PLACEHOLDERS.some(p => l.trim() === p || l.trim().startsWith(p)));
-    const hasRealContent = mediaProcessed && realLines.length > 0;
 
-    // Detect if current message is about a NEW project (floor plan / quote request)
-    const isNewProjectRequest = !!(imageUrl || shareUrl) ||
+    // Plain text messages from client ARE real content (no media = no mediaProcessed, but text is real)
+    const clientSentPlainText = !audioUrl && !imageUrl && !shareUrl && !!messaging.message?.text;
+    const hasRealContent = clientSentPlainText || (mediaProcessed && realLines.length > 0);
+
+    // Only show "media failed" fallback if client actually sent media (not just text)
+    const clientActuallySentMedia = !!(audioUrl || imageUrl || shareUrl);
+
+    // Detect if an IMAGE was actually attached (not just mentioned in text)
+    const clientSentImageAttachment = !!(imageUrl || shareUrl);
+
+    // Detect if current message is about a NEW project — ONLY if image was actually sent
+    const isNewProjectRequest = clientSentImageAttachment ||
       /planta|floor.?plan|projeto|orsamento|calcul|quote|price|sqm|sqft|metros|m²/i.test(enrichedText);
 
-    // Only inject availability if CLIENT explicitly asks about scheduling in CURRENT message
-    // Never inject just because AI mentioned scheduling in previous messages
     const schedulingKeywords = [
       "schedule", "appointment", "what day", "what time", "which day",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -456,12 +462,12 @@ async function handleWebhook(body: WebhookPayload) {
 
     let finalResponse: string;
 
-    // Detect if client mentioned sending an image in text
-    const clientMentionsImage = /imag|foto|plant|floor.?plan|projeto|here.?is|this.?is|consegue calcular/i.test(enrichedText);
+    // Detect if client actually sent an image attachment (not just mentioned one)
+    const clientMentionsImage = clientSentImageAttachment;
 
-    // When ALL media failed → bypass AI, send specific helpful message
-    if (!hasRealContent && !isJustGreeting) {
-      const hadImage = !!(imageUrl || shareUrl) || clientMentionsImage;
+    // When ALL media failed AND client actually sent media → bypass AI with helpful message
+    if (!hasRealContent && !isJustGreeting && clientActuallySentMedia) {
+      const hadImage = clientSentImageAttachment;
       const hadAudio = !!audioUrl;
       if (hadAudio && hadImage) {
         finalResponse = "Got your floor plan and voice message! I wasn't able to read the details automatically — just type the total area shown on the floor plan (in square meters or sqft) and I'll calculate the quote right here.";
