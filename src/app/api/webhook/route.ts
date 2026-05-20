@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { getAIResponse, analyzeImage, transcribeAudio, generateSpeech } from "@/lib/ai";
@@ -61,14 +62,13 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handleWebhook(body: WebhookPayload) {
   try {
-    const body: WebhookPayload = await req.json();
-    if (body.object !== "instagram") return NextResponse.json({ status: "ignored" }, { status: 200 });
+    if (body.object !== "instagram") return;
 
     const messaging = body.entry?.[0]?.messaging?.[0];
-    if (!messaging) return NextResponse.json({ status: "ok" }, { status: 200 });
-    if (messaging.message?.is_echo) return NextResponse.json({ status: "echo_skipped" }, { status: 200 });
+    if (!messaging) return;
+    if (messaging.message?.is_echo) return;
 
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
@@ -293,9 +293,26 @@ export async function POST(req: NextRequest) {
       content: finalResponse,
     });
 
-    return NextResponse.json({ status: "ok" }, { status: 200 });
   } catch (err) {
-    console.error("Webhook error:", err);
-    return NextResponse.json({ status: "error" }, { status: 200 });
+    console.error("Webhook processing error:", err);
   }
+}
+
+export async function POST(req: NextRequest) {
+  // Parse body first for quick validation
+  const body: WebhookPayload = await req.json().catch(() => null);
+  if (!body || body.object !== "instagram") {
+    return NextResponse.json({ status: "ignored" }, { status: 200 });
+  }
+
+  const messaging = body.entry?.[0]?.messaging?.[0];
+  if (!messaging || messaging.message?.is_echo) {
+    return NextResponse.json({ status: "skipped" }, { status: 200 });
+  }
+
+  // Return 200 to Instagram IMMEDIATELY (prevents retries from slow processing)
+  // Then process everything in background via waitUntil
+  waitUntil(handleWebhook(body));
+
+  return NextResponse.json({ status: "ok" }, { status: 200 });
 }
