@@ -70,7 +70,6 @@ export async function getAIResponse(messages: ChatMessage[]): Promise<string> {
 
 // Download image and convert to base64 data URL
 async function imageToBase64(imageUrl: string): Promise<string> {
-  // Try with Instagram access token first, then without
   const attempts: RequestInit[] = [
     { headers: { Authorization: `Bearer ${process.env.INSTAGRAM_ACCESS_TOKEN ?? ""}` } },
     {},
@@ -78,11 +77,22 @@ async function imageToBase64(imageUrl: string): Promise<string> {
 
   for (const options of attempts) {
     try {
-      const res = await fetch(imageUrl, options);
+      const res = await fetch(imageUrl, { ...options, redirect: "follow" });
       if (!res.ok) continue;
-      const contentType = res.headers.get("content-type") ?? "image/jpeg";
+      const contentType = res.headers.get("content-type") ?? "";
+
+      // If it's HTML (shared post URL), extract og:image
+      if (contentType.includes("text/html")) {
+        const html = await res.text();
+        const ogImage = html.match(/property="og:image"\s+content="([^"]+)"/)?.[1] ??
+          html.match(/content="([^"]+)"\s+property="og:image"/)?.[1];
+        if (ogImage) return imageToBase64(ogImage);
+        throw new Error("No og:image found in shared page");
+      }
+
       if (!contentType.startsWith("image/")) continue;
       const buffer = await res.arrayBuffer();
+      if (buffer.byteLength < 2000) continue; // Skip tiny placeholder images
       const base64 = Buffer.from(buffer).toString("base64");
       return `data:${contentType};base64,${base64}`;
     } catch {

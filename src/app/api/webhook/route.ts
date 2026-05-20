@@ -253,20 +253,27 @@ async function handleWebhook(body: WebhookPayload) {
       content: m.content,
     }));
 
-    // Inject availability only when scheduling is relevant
-    const schedulingKeywords = [
-      "schedule", "appointment", "visit", "quote", "available", "availability",
-      "what day", "what time", "which day", "which time",
-      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
-      "book", "slot", "free quote", "schedule a", "set up a",
+    // Detect if client is resetting / starting a new project
+    const resetKeywords = [
+      "cancel", "forget", "different", "new project", "new apartment", "new house",
+      "instead", "actually", "change", "another", "start over", "not that",
     ];
     const lastMsg = enrichedText.toLowerCase();
-    const recentAiSchedule = (history ?? []).slice(-3).some(
+    const clientResetting = resetKeywords.some((k) => lastMsg.includes(k));
+
+    // Inject availability ONLY when scheduling is relevant AND client is NOT resetting
+    const schedulingKeywords = [
+      "schedule", "appointment", "what day", "what time", "which day",
+      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
+      "book", "slot", "set up a",
+    ];
+    const recentAiSchedule = !clientResetting && (history ?? []).slice(-3).some(
       (m) => m.role === "assistant" &&
         ["what day", "what time", "schedule", "book", "works best"].some((k) => m.content.toLowerCase().includes(k))
     );
-    const isScheduling = schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule;
+    const isScheduling = !clientResetting &&
+      (schedulingKeywords.some((k) => lastMsg.includes(k)) || recentAiSchedule);
 
     type AiMsg = { role: "system" | "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = [...aiMessages];
