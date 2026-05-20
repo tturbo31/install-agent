@@ -109,6 +109,51 @@ async function imageToBase64(imageUrl: string): Promise<string> {
   throw new Error("Could not download image");
 }
 
+// Analyze from already-downloaded base64 data (avoids re-fetching expired URLs)
+export async function analyzeImageFromBase64(base64DataUrl: string): Promise<string> {
+  try {
+    const openai = getOpenAIDirect();
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: base64DataUrl } },
+          {
+            type: "text",
+            text: `You are analyzing a floor plan or photo sent by a flooring client.
+If FLOOR PLAN: list rooms with dimensions, calculate total sqm and sqft (1sqm=10.76sqft). State "Total: ~Xsqm (~Ysqft)".
+If FLOOR PHOTO: describe floor type, condition, estimated room size.
+Be concise, under 80 words.`
+          }
+        ] as unknown as string,
+      }],
+      max_tokens: 250,
+    });
+    return response.choices[0]?.message?.content ?? "Image analyzed but no description generated.";
+  } catch (err) {
+    console.error("analyzeImageFromBase64 error:", err);
+    return "Image received but could not be analyzed.";
+  }
+}
+
+// Transcribe from already-downloaded audio buffer
+export async function transcribeAudioFromBuffer(buffer: ArrayBuffer, contentType: string): Promise<string> {
+  if (!process.env.OPENAI_API_KEY) return "[Voice message received — please type your message]";
+  try {
+    const ext = contentType.includes("ogg") ? "ogg" : contentType.includes("mpeg") || contentType.includes("mp3") ? "mp3" : contentType.includes("wav") ? "wav" : "m4a";
+    const audioFile = new File([buffer], `audio.${ext}`, { type: contentType });
+    const openai = getOpenAIDirect();
+    const transcription = await openai.audio.transcriptions.create({ file: audioFile, model: "whisper-1" });
+    const text = transcription.text?.trim();
+    console.log("Transcription (from buffer):", text?.slice(0, 100));
+    return text || "[Voice message — no speech detected]";
+  } catch (err) {
+    console.error("transcribeAudioFromBuffer error:", err);
+    return "[Voice message received — please type your message]";
+  }
+}
+
 // Analyze an image (floor photo or house plan) using GPT-4o-mini vision
 export async function analyzeImage(imageUrl: string): Promise<string> {
   try {

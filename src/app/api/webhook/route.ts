@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
-import { getAIResponse, analyzeImage, transcribeAudio, generateSpeech } from "@/lib/ai";
+import { getAIResponse, analyzeImage, analyzeImageFromBase64, transcribeAudio, transcribeAudioFromBuffer, generateSpeech } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 
@@ -141,6 +141,45 @@ async function handleWebhook(body: WebhookPayload) {
     const shareUrl = shareAttachment?.payload?.url ?? null;
     const audioUrl = audioAttachment?.payload?.url ?? null;
 
+    // === PRE-DEBOUNCE: Download audio/image NOW while URL is still fresh ===
+    // Instagram CDN URLs expire quickly (~60s). We download before the 3s debounce wait.
+    let preFetchedAudioBuffer: ArrayBuffer | null = null;
+    let preFetchedAudioType = "audio/mp4";
+    let preFetchedImageBase64: string | null = null;
+
+    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
+
+    if (audioUrl) {
+      const urlWithToken = audioUrl.includes("?") ? `${audioUrl}&access_token=${igToken}` : `${audioUrl}?access_token=${igToken}`;
+      for (const [u, opts] of [[urlWithToken, {}], [audioUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [audioUrl, {}]] as [string, RequestInit][]) {
+        try {
+          const r = await fetch(u, { ...opts, redirect: "follow" });
+          if (!r.ok) continue;
+          const ct = r.headers.get("content-type") || "";
+          if (!ct.startsWith("audio/") && !ct.startsWith("video/") && !ct.includes("octet-stream")) continue;
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength > 1000) { preFetchedAudioBuffer = buf; preFetchedAudioType = ct.split(";")[0] || "audio/mp4"; break; }
+        } catch { continue; }
+      }
+      console.log(`Audio pre-fetch: ${preFetchedAudioBuffer ? `${preFetchedAudioBuffer.byteLength} bytes` : "FAILED"}`);
+    }
+
+    if (imageUrl) {
+      const urlWithToken = imageUrl.includes("?") ? `${imageUrl}&access_token=${igToken}` : `${imageUrl}?access_token=${igToken}`;
+      for (const [u, opts] of [[urlWithToken, {}], [imageUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [imageUrl, {}]] as [string, RequestInit][]) {
+        try {
+          const r = await fetch(u, { ...opts, redirect: "follow" });
+          if (!r.ok) continue;
+          const ct = r.headers.get("content-type") || "";
+          if (!ct.startsWith("image/") && !ct.includes("html")) continue;
+          if (ct.includes("html")) { /* skip HTML */ continue; }
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength > 3000) { preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`; break; }
+        } catch { continue; }
+      }
+      console.log(`Image pre-fetch: ${preFetchedImageBase64 ? `${Math.round(preFetchedImageBase64.length / 1000)}KB` : "FAILED"}`);
+    }
+
     // Note image/audio/share in raw text for context
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
@@ -226,36 +265,42 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
-    // Analyze image/share
-    const urlToAnalyze = imageUrl ?? shareUrl;
-    if (urlToAnalyze) {
+    // Analyze image — use pre-fetched base64 if available (avoids re-downloading expired URL)
+    if (imageUrl || shareUrl) {
       try {
-        const analysis = await analyzeImage(urlToAnalyze);
+        let analysis: string;
+        if (preFetchedImageBase64) {
+          // Use already-downloaded image data
+          analysis = await analyzeImageFromBase64(preFetchedImageBase64);
+        } else {
+          analysis = await analyzeImage(shareUrl ?? imageUrl ?? "");
+        }
         const isUseful = !analysis.toLowerCase().includes("could not") &&
                          !analysis.toLowerCase().includes("unavailable") &&
-                         !analysis.toLowerCase().includes("cannot analyze");
+                         !analysis.toLowerCase().includes("cannot analyze") &&
+                         analysis.length > 20;
         if (isUseful) {
           enrichedText = enrichedText
             .replace("[floor plan or photo]", "")
-            .replace(`[shared link: ${urlToAnalyze}]`, "")
+            .replace(`[shared link: ${shareUrl ?? imageUrl}]`, "")
             .trim();
           enrichedText = enrichedText
             ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
             : `[Floor plan/photo analysis: ${analysis}]`;
           mediaProcessed = true;
           console.log("Image analysis OK:", analysis.slice(0, 80));
-        } else {
-          console.warn("Image analysis not useful:", analysis.slice(0, 80));
         }
       } catch (err) {
         console.warn("Image analysis failed:", err);
       }
     }
 
-    // Transcribe audio
+    // Transcribe audio — use pre-fetched buffer (avoids re-downloading expired URL)
     if (audioUrl) {
       try {
-        const transcript = await transcribeAudio(audioUrl);
+        const transcript = preFetchedAudioBuffer
+          ? await transcribeAudioFromBuffer(preFetchedAudioBuffer, preFetchedAudioType)
+          : await transcribeAudio(audioUrl);
         const isUseful = transcript &&
           !transcript.includes("please type") &&
           !transcript.includes("could not") &&
