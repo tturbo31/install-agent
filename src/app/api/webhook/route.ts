@@ -501,11 +501,20 @@ async function handleWebhook(body: WebhookPayload) {
         ? new Date((lastMsg as { created_at?: string }).created_at ?? 0) < new Date(thirtyMinAgo)
         : false;
 
-      // 3. Detect if message is a new general question (Hi + question pattern, or just general Q)
-      const isNewGeneralQuestion = isJustGreeting ||
+      // 3. Detect new general question (Hi+question, or previous user message was a greeting)
+      const userGreetingWords = ["hi", "hello", "hey", "oi", "olá", "ola", "o", "no"];
+      const prevUserMsg = allHistory.filter(m => m.role === "user").slice(-2, -1)[0];
+      const prevWasGreeting = prevUserMsg && userGreetingWords.includes(prevUserMsg.content.trim().toLowerCase().replace(/[!.,]/g, ""));
+      const isNewGeneralQuestion = isJustGreeting || prevWasGreeting ||
         /^hi[!,.]?\s|^hello[!,.]?\s|^hey[!,.]?\s|^oi[!,.]?\s/i.test(enrichedText.trim());
 
-      const historyToUse = isJustGreeting || isStaleConversation || isNewGeneralQuestion
+      // 4. Detect if last AI response was scheduling (another signal to reset)
+      const lastAiMsg = allHistory.filter(m => m.role === "assistant").slice(-1)[0];
+      const lastAiWasScheduling = lastAiMsg && /lock it in|lock you in|works great|11 am|thursday|friday|slot/i.test(lastAiMsg.content);
+      const shouldReset = isJustGreeting || isStaleConversation || isNewGeneralQuestion ||
+        (lastAiWasScheduling && !isScheduling && !lastMsg?.content?.match(/yes|sure|ok|confirm|sounds good/i));
+
+      const historyToUse = shouldReset
         ? [] // Completely fresh — no old context
         : clientResetting
           ? allHistory.slice(-2)
