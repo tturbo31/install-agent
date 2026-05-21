@@ -518,9 +518,16 @@ async function handleWebhook(body: WebhookPayload) {
       const shouldReset = isJustGreeting || isStaleConversation || isNewGeneralQuestion ||
         (lastAiWasScheduling && !isScheduling);
 
-      // CORE STRATEGY: default to last 2 messages (last AI + current)
-      // This PREVENTS old addresses/phones from contaminating new conversations
-      // Only use more history when explicitly in a booking confirmation flow
+      // Detect loop: AI asked same classification question twice in a row
+      const last2AiMsgs = allHistory.filter(m => m.role === "assistant").slice(-2);
+      const classificationPhrases = ["single room", "whole house", "one area", "just one room", "multiple rooms", "bedroom or bathroom"];
+      const aiLooping = last2AiMsgs.length >= 2 &&
+        classificationPhrases.some(p => last2AiMsgs[0].content.toLowerCase().includes(p)) &&
+        classificationPhrases.some(p => last2AiMsgs[1].content.toLowerCase().includes(p));
+
+      // If client already gave an answer to classification (single room / whole house)
+      const clientAnsweredClassification = /single room|one room|just one|whole house|entire|all rooms|bedroom|bathroom|kitchen/i.test(enrichedText);
+
       const inBookingFlow = isScheduling && !shouldReset;
 
       const historyToUse = shouldReset
@@ -531,14 +538,22 @@ async function handleWebhook(body: WebhookPayload) {
             ? allHistory.slice(-8) // Scheduling needs more context
             : lastGreetingIdx >= 0
               ? allHistory.slice(lastGreetingIdx)
-              : isShortReply
-                ? allHistory.slice(-2) // Short reply: only last AI message + current
+              : (isShortReply || aiLooping)
+                ? allHistory.slice(-2) // Short reply or loop: only last AI + current
                 : allHistory.slice(-4); // Default: last 4 messages max
+
+      // If AI was looping on classification question, inject instruction to move forward
+      const loopOverrideMsg = aiLooping && clientAnsweredClassification
+        ? { role: "system" as const, content: `The client already answered the classification question: "${enrichedText}". DO NOT ask single room vs whole house again. IMMEDIATELY proceed to the next step based on their answer.` }
+        : null;
 
       let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
       }));
+      if (loopOverrideMsg) {
+        messagesForAI = [...messagesForAI, loopOverrideMsg];
+      }
       if (isScheduling) {
         const availability = await getRealAvailabilityContext();
         messagesForAI = [...messagesForAI, { role: "system" as const, content: availability }];
