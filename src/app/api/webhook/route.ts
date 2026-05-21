@@ -9,7 +9,7 @@ import {
   generateSpeech,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
-import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
+import { createBooking, cancelBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -83,6 +83,13 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
 
     const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
     if (result.success) {
+      // Save booking ID to conversation so we can cancel it later
+      if (result.bookingId) {
+        await supabaseAdmin
+          .from("instagram_conversations")
+          .update({ last_booking_id: result.bookingId })
+          .eq("id", conversationId);
+      }
       return `${cleanResponse}\n\nAppointment confirmed! I'll reach out 40 minutes before arriving. My name is ${result.sellerName} and I look forward to meeting you!`;
     } else {
       return `${cleanResponse}\n\nThat slot just got taken. Can you pick another time?`;
@@ -91,6 +98,45 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
     console.error("Booking parse error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
   }
+}
+
+// ─── Cancel booking when AI generates [CANCEL_BOOKING] ────────────────────
+async function processCancelCommand(
+  aiResponse: string,
+  conversationId: string
+): Promise<string> {
+  if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
+
+  const cleanResponse = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
+
+  try {
+    const { data: conv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("last_booking_id")
+      .eq("id", conversationId)
+      .single();
+
+    if (!conv?.last_booking_id) {
+      console.warn("Cancel requested but no last_booking_id found");
+      return cleanResponse;
+    }
+
+    const result = await cancelBooking(conv.last_booking_id);
+
+    if (result.success) {
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ last_booking_id: null })
+        .eq("id", conversationId);
+      console.log("Booking cancelled:", conv.last_booking_id);
+    } else {
+      console.error("Cancel failed:", result.error);
+    }
+  } catch (err) {
+    console.error("processCancelCommand error:", err);
+  }
+
+  return cleanResponse;
 }
 
 // ─── Core webhook handler ──────────────────────────────────────────────────
@@ -457,7 +503,8 @@ async function handleWebhook(body: WebhookPayload) {
 
     // ── Generate AI response ─────────────────────────────────────────────
     const rawAiResponse = await getAIResponse(messagesForAI, memoryContext);
-    const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
+    const afterBooking = await processBookingCommand(rawAiResponse, conversation.id);
+    const finalResponse = await processCancelCommand(afterBooking, conversation.id);
 
     // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);
