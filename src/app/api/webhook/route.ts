@@ -367,8 +367,10 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // Fallback for media that failed to process
-    const clientActuallySentMedia = !!(audioUrl || imageUrl || shareUrl);
-    const clientSentPlainText = !audioUrl && !imageUrl && !shareUrl && !!messaging.message?.text;
+    // Text always wins: phone-number popup and Reply-to-message both arrive as
+    // share attachments alongside real text. If text is present, treat as plain text.
+    const clientSentPlainText = !!messaging.message?.text && !audioUrl && !imageUrl;
+    const clientActuallySentMedia = !!(audioUrl || imageUrl) || (!!shareUrl && !messaging.message?.text);
     const hasRealContent = clientSentPlainText || (mediaProcessed && enrichedText.trim().length > 0);
 
     if (!hasRealContent && clientActuallySentMedia) {
