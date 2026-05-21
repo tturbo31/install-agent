@@ -457,8 +457,19 @@ async function handleWebhook(body: WebhookPayload) {
       "schedule", "appointment", "what day", "what time", "which day",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
       "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm", "book", "slot",
+      "cancel", "reschedule", "visit",
     ];
     const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k));
+
+    // Always build current date context so the agent never confuses days
+    const now = new Date();
+    const dayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const todayName = dayNames[now.getDay()];
+    const tomorrowDate = new Date(now); tomorrowDate.setDate(now.getDate() + 1);
+    const tomorrowName = dayNames[tomorrowDate.getDay()];
+    const tomorrowStr = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth()+1).padStart(2,"0")}-${String(tomorrowDate.getDate()).padStart(2,"0")}`;
+    const dateContext = `TODAY: ${todayName}, ${monthNames[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${tomorrowName} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
 
     type AiMsg = { role: "user" | "assistant"; content: string };
 
@@ -467,16 +478,18 @@ async function handleWebhook(body: WebhookPayload) {
       content: m.content,
     }));
 
-    if (needsScheduling) {
-      const availability = await getRealAvailabilityContext();
-      // Inject availability as a system-level note in the last user message
-      const lastIdx = messagesForAI.length - 1;
-      if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-        messagesForAI[lastIdx] = {
-          ...messagesForAI[lastIdx],
-          content: `${messagesForAI[lastIdx].content}\n\n[SYSTEM: ${availability}]`,
-        };
+    // Always inject date context; add full availability when scheduling topic detected
+    const lastIdx = messagesForAI.length - 1;
+    if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
+      let systemNote = `[SYSTEM: ${dateContext}]`;
+      if (needsScheduling) {
+        const availability = await getRealAvailabilityContext();
+        systemNote = `[SYSTEM: ${dateContext}\n\n${availability}]`;
       }
+      messagesForAI[lastIdx] = {
+        ...messagesForAI[lastIdx],
+        content: `${messagesForAI[lastIdx].content}\n\n${systemNote}`,
+      };
     }
 
     // ── Generate AI response ─────────────────────────────────────────────
