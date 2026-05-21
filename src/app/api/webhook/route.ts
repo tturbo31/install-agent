@@ -13,9 +13,11 @@ import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "
 import {
   createClientMemoryStore,
   readClientMemory,
+  ClientMemory,
   extractMemoryUpdate,
   updateClientMemory,
 } from "@/lib/anthropic-memory";
+import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
 export const maxDuration = 60;
 
@@ -442,6 +444,17 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
+    // Load system-level learnings from Dreaming (shared across all clients)
+    let systemMemory: string | null = null;
+    if (process.env.ANTHROPIC_API_KEY) {
+      try {
+        const sysStoreId = await getOrCreateSystemStore();
+        systemMemory = await readSystemMemory(sysStoreId);
+      } catch (err) {
+        console.warn("System memory read failed:", err);
+      }
+    }
+
     // ── Load conversation history (last 15 messages, always) ─────────────
     // Fixed: use DESC + limit to get the LAST 15, then reverse for chronological order
     const { data: historyRaw } = await supabaseAdmin
@@ -495,7 +508,7 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Generate AI response ─────────────────────────────────────────────
-    const rawAiResponse = await getAIResponse(messagesForAI, memoryContext);
+    const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
     const afterBooking = await processBookingCommand(rawAiResponse, conversation.id, senderIgsid);
     const finalResponse = await processCancelCommand(afterBooking, senderIgsid);
 

@@ -1,0 +1,232 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { createClient } from "@supabase/supabase-js";
+
+const SYSTEM_STORE_NAME = "ozzifloors-system";
+
+let _anthropic: Anthropic | null = null;
+function getAnthropic(): Anthropic {
+  if (!_anthropic) _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  return _anthropic;
+}
+
+// ─── System Memory Store (shared learnings, not per-client) ─────────────────
+
+export async function getOrCreateSystemStore(): Promise<string> {
+  const anthropic = getAnthropic();
+  const stores = await anthropic.beta.memoryStores.list();
+  const existing = stores.data.find((s) => s.name === SYSTEM_STORE_NAME);
+  if (existing) return existing.id;
+
+  const store = await anthropic.beta.memoryStores.create({
+    name: SYSTEM_STORE_NAME,
+    description: "OzziFloors agent learnings, patterns, and best practices. Updated nightly by Dreaming.",
+  });
+
+  await anthropic.beta.memoryStores.memories.create(store.id, {
+    path: "/learnings.md",
+    content: [
+      "# OzziFloors Agent — System Learnings",
+      "",
+      "Initial state. Will be updated nightly by Dreaming analysis.",
+      "",
+      "## Common client patterns",
+      "(No data yet)",
+      "",
+      "## What closes bookings",
+      "(No data yet)",
+      "",
+      "## Common objections",
+      "(No data yet)",
+      "",
+      "## Where conversations stall",
+      "(No data yet)",
+    ].join("\n"),
+  });
+
+  return store.id;
+}
+
+export async function readSystemMemory(storeId: string): Promise<string | null> {
+  try {
+    const anthropic = getAnthropic();
+    const page = await anthropic.beta.memoryStores.memories.list(storeId, { path_prefix: "/" });
+    const items = page.data.filter((m) => m.type === "memory");
+    if (items.length === 0) return null;
+
+    const contents = await Promise.all(
+      items.map(async (m) => {
+        const mem = await anthropic.beta.memoryStores.memories.retrieve(
+          (m as { id: string }).id,
+          { memory_store_id: storeId }
+        );
+        return (mem as { content?: string }).content ?? null;
+      })
+    );
+    return contents.filter(Boolean).join("\n\n---\n\n") || null;
+  } catch (err) {
+    console.error("readSystemMemory error:", err);
+    return null;
+  }
+}
+
+async function updateSystemMemory(storeId: string, newContent: string): Promise<void> {
+  const anthropic = getAnthropic();
+  const page = await anthropic.beta.memoryStores.memories.list(storeId);
+  const learningsFile = page.data.find(
+    (m) => m.type === "memory" && (m as { path?: string }).path === "/learnings.md"
+  );
+  if (learningsFile) {
+    await anthropic.beta.memoryStores.memories.update((learningsFile as { id: string }).id, {
+      memory_store_id: storeId,
+      content: newContent,
+    });
+  } else {
+    await anthropic.beta.memoryStores.memories.create(storeId, {
+      path: "/learnings.md",
+      content: newContent,
+    });
+  }
+}
+
+// ─── Fetch recent conversations from Supabase ────────────────────────────────
+
+async function fetchRecentConversations(): Promise<string> {
+  const db = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: convs } = await db
+    .from("instagram_conversations")
+    .select("id, username")
+    .gte("updated_at", sevenDaysAgo)
+    .order("updated_at", { ascending: false })
+    .limit(40);
+
+  if (!convs || convs.length === 0) return "No conversations found in the last 7 days.";
+
+  const transcripts: string[] = [];
+
+  for (const conv of convs) {
+    const { data: msgs } = await db
+      .from("instagram_messages")
+      .select("role, content, created_at")
+      .eq("conversation_id", conv.id)
+      .order("created_at", { ascending: true })
+      .limit(12);
+
+    if (!msgs || msgs.length < 3) continue;
+
+    const lines = msgs.map((m) => {
+      const role = m.role === "user" ? "Client" : "Agent";
+      const content = (m.content ?? "").replace(/\[BOOK:\{[\s\S]*?\}\]/g, "[BOOKING CREATED]").slice(0, 300);
+      return `${role}: ${content}`;
+    });
+
+    transcripts.push(`--- Conversation (${conv.username || conv.id}) ---\n${lines.join("\n")}`);
+  }
+
+  return transcripts.length > 0
+    ? transcripts.join("\n\n")
+    : "No meaningful conversations found.";
+}
+
+// ─── Main Dreaming function ──────────────────────────────────────────────────
+
+export interface DreamResult {
+  summary: string;
+  learnings: string;
+  conversationsAnalyzed: number;
+  timestamp: string;
+}
+
+export async function runDreaming(): Promise<DreamResult> {
+  const anthropic = getAnthropic();
+
+  // 1. Get system store
+  const storeId = await getOrCreateSystemStore();
+  const currentLearnings = await readSystemMemory(storeId);
+
+  // 2. Fetch conversations
+  const transcripts = await fetchRecentConversations();
+  const convCount = (transcripts.match(/--- Conversation/g) || []).length;
+
+  if (convCount === 0) {
+    return {
+      summary: "No conversations to analyze.",
+      learnings: currentLearnings ?? "",
+      conversationsAnalyzed: 0,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  // 3. Claude analyzes patterns
+  const analysisResponse = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2000,
+    system: `You are analyzing sales conversations for OzziFloors, a premium flooring company in Miami, FL.
+The agent classifies leads as SMALL (<500 sqft, close by DM) or LARGE (>500 sqft, schedule free in-person visit).
+Pricing: Luxury Vinyl $5/sqft (floor+labor). Visit = free quote, agent brings samples, measures, negotiates.
+
+Your job: find patterns and generate specific, actionable improvements for the agent.`,
+    messages: [
+      {
+        role: "user",
+        content: `Here are the recent conversations from the last 7 days:\n\n${transcripts}\n\n---\n\nAnalyze these conversations and produce an updated learnings file in this EXACT markdown format:
+
+# OzziFloors Agent — System Learnings
+Updated: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+Conversations analyzed: ${convCount}
+
+## Common client questions
+(List the 3-5 most frequently asked questions with ideal short answers)
+
+## What closes bookings faster
+(List 3-5 specific phrases or approaches that led to successful bookings or visit confirmations)
+
+## Common objections and how to handle them
+(List top 3 objections and the best response for each)
+
+## Where conversations stall
+(List 2-3 patterns where leads go cold or conversations stop progressing)
+
+## Agent improvements for next week
+(List 2-4 SPECIFIC improvements — e.g. "When client says X, respond with Y instead of Z")
+
+Be specific and concise. Base everything strictly on the conversations above.`,
+      },
+    ],
+  });
+
+  const block = analysisResponse.content[0];
+  const newLearnings = block.type === "text" ? block.text : "";
+
+  // 4. Save to system memory store
+  if (newLearnings) {
+    await updateSystemMemory(storeId, newLearnings);
+  }
+
+  // 5. Generate a short summary for the dashboard
+  const summaryResponse = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "user",
+        content: `Based on this analysis, write a 3-sentence executive summary for the OzziFloors owner. What were the main findings?\n\n${newLearnings}`,
+      },
+    ],
+  });
+
+  const summaryBlock = summaryResponse.content[0];
+  const summary = summaryBlock.type === "text" ? summaryBlock.text : "Analysis complete.";
+
+  return {
+    summary,
+    learnings: newLearnings,
+    conversationsAnalyzed: convCount,
+    timestamp: new Date().toISOString(),
+  };
+}

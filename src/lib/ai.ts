@@ -25,14 +25,21 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
 export async function getAIResponse(
   messages: ChatMessage[],
-  memoryContext?: string | null
+  memoryContext?: string | null,
+  systemMemory?: string | null
 ): Promise<string> {
   const anthropic = getAnthropic();
 
-  // Build system prompt — prepend memory context when available
-  const systemContent = memoryContext
-    ? `${SYSTEM_PROMPT}\n\n---\n\n## RETURNING CLIENT — MEMORY\n${memoryContext}\n\nUse this memory to avoid repeating questions the client already answered. Do NOT ask for info you already have.`
-    : SYSTEM_PROMPT;
+  // Build system prompt — layer: base prompt + system learnings + client memory
+  let systemContent = SYSTEM_PROMPT;
+
+  if (systemMemory) {
+    systemContent += `\n\n---\n\n## AGENT LEARNINGS (from Dreaming analysis)\nUse these patterns to improve responses. Don't mention them explicitly.\n${systemMemory}`;
+  }
+
+  if (memoryContext) {
+    systemContent += `\n\n---\n\n## RETURNING CLIENT — MEMORY\n${memoryContext}\n\nUse this memory to avoid repeating questions the client already answered. Do NOT ask for info you already have.`;
+  }
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
