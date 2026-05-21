@@ -2,9 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
-import { getAIResponse, analyzeImage, analyzeImageFromBase64, transcribeAudio, transcribeAudioFromBuffer, generateSpeech } from "@/lib/ai";
+import {
+  getAIResponse,
+  analyzeImageFromBase64,
+  transcribeAudioFromBuffer,
+  generateSpeech,
+} from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { createBooking, getRealAvailabilityContext } from "@/lib/scheduler";
+import {
+  createClientMemoryStore,
+  readClientMemory,
+  extractMemoryUpdate,
+  updateClientMemory,
+} from "@/lib/anthropic-memory";
 
 export const maxDuration = 60;
 
@@ -19,15 +30,14 @@ export async function GET(req: NextRequest) {
   return new NextResponse("Forbidden", { status: 403 });
 }
 
+// ─── Parse and strip [BOOK:...] from AI response ──────────────────────────
 async function processBookingCommand(aiResponse: string, conversationId: string): Promise<string> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // --- Hard validation: require phone AND address-like text in the last 15 min ---
-    // This prevents the AI from booking using stale profile data the client never
-    // explicitly provided in the current session.
+    // Require phone + address explicitly confirmed in last 15 min
     const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const { data: recentUserMsgs } = await supabaseAdmin
       .from("instagram_messages")
@@ -37,22 +47,13 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
       .gte("created_at", fifteenMinAgo);
 
     const recentText = (recentUserMsgs ?? []).map((m) => m.content).join(" ");
-
     const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)\s?\d{3}[-.\s]?\d{4}/;
-    // Address: at least 3 words with a leading number (e.g. "123 Main St")
     const addressPattern = /\d+\s+\w+(?:\s+\w+){1,}/;
 
-    const hasPhone = phonePattern.test(recentText);
-    const hasAddress = addressPattern.test(recentText);
-
-    if (!hasPhone || !hasAddress) {
-      console.warn(
-        `Booking blocked — missing explicit confirmation in recent messages. ` +
-          `hasPhone=${hasPhone}, hasAddress=${hasAddress}`
-      );
+    if (!phonePattern.test(recentText) || !addressPattern.test(recentText)) {
+      console.warn("Booking blocked — missing phone or address in recent messages");
       return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
     }
-    // --- End validation ---
 
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
@@ -61,7 +62,7 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
       .single();
 
     const creativeRef =
-      convData?.ad_title ?? convData?.creative_url ?? convData?.ad_id ?? bookingData.creative ?? "Instagram DM";
+      convData?.ad_title ?? convData?.creative_url ?? convData?.ad_id ?? "Instagram DM";
     const instagramHandle = convData?.username ? `@${convData.username}` : convData?.igsid ?? "";
     const noteParts = [
       bookingData.notes ?? "",
@@ -92,10 +93,10 @@ async function processBookingCommand(aiResponse: string, conversationId: string)
   }
 }
 
+// ─── Core webhook handler ──────────────────────────────────────────────────
 async function handleWebhook(body: WebhookPayload) {
   try {
     if (body.object !== "instagram") return;
-
     const messaging = body.entry?.[0]?.messaging?.[0];
     if (!messaging) return;
     if (messaging.message?.is_echo) return;
@@ -103,15 +104,15 @@ async function handleWebhook(body: WebhookPayload) {
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
 
-    // Skip already processed messages
+    // Skip duplicates
     const { data: alreadyProcessed } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("instagram_msg_id", messageMid)
       .maybeSingle();
-    if (alreadyProcessed) return NextResponse.json({ status: "duplicate_skipped" }, { status: 200 });
+    if (alreadyProcessed) return;
 
-    // === STEP 1: Find or create conversation IMMEDIATELY ===
+    // ── Find or create conversation ──────────────────────────────────────
     let { data: conversation } = await supabaseAdmin
       .from("instagram_conversations")
       .select("*")
@@ -126,55 +127,66 @@ async function handleWebhook(body: WebhookPayload) {
         .single();
       conversation = newConv;
     }
-    if (!conversation) return NextResponse.json({ status: "error" }, { status: 200 });
+    if (!conversation) return;
 
-    // === STEP 2: Detect attachments ===
+    // ── Detect attachments ───────────────────────────────────────────────
     const attachments = messaging.message?.attachments ?? [];
     const imageAttachment = attachments.find((a) => a.type === "image");
     const shareAttachment = attachments.find((a) => a.type === "share");
     const audioAttachment = attachments.find((a) => a.type === "audio");
     const clientSentAudio = !!audioAttachment;
 
-    // Build raw message text to store immediately
     let rawText = messaging.message?.text ?? "";
     const imageUrl = imageAttachment?.payload?.url ?? null;
     const shareUrl = shareAttachment?.payload?.url ?? null;
     const audioUrl = audioAttachment?.payload?.url ?? null;
 
-    // === PRE-DEBOUNCE: Download audio/image NOW while URL is still fresh ===
-    // Instagram CDN URLs expire quickly (~60s). We download before the 3s debounce wait.
+    if (imageUrl && !rawText) rawText = "[floor plan or photo]";
+    if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
+    if (audioUrl && !rawText) rawText = "[voice message]";
+    if (!rawText) return;
+
+    // ── Pre-fetch media BEFORE debounce (URLs expire fast) ───────────────
+    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
     let preFetchedAudioBuffer: ArrayBuffer | null = null;
     let preFetchedAudioType = "audio/mp4";
     let preFetchedImageBase64: string | null = null;
 
-    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
-
     if (audioUrl) {
-      const urlWithToken = audioUrl.includes("?") ? `${audioUrl}&access_token=${igToken}` : `${audioUrl}?access_token=${igToken}`;
-      for (const [u, opts] of [[urlWithToken, {}], [audioUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [audioUrl, {}]] as [string, RequestInit][]) {
+      const urlWithToken = audioUrl.includes("?")
+        ? `${audioUrl}&access_token=${igToken}`
+        : `${audioUrl}?access_token=${igToken}`;
+      for (const [u, opts] of [
+        [urlWithToken, {}],
+        [audioUrl, { headers: { Authorization: `Bearer ${igToken}` } }],
+        [audioUrl, {}],
+      ] as [string, RequestInit][]) {
         try {
           const r = await fetch(u, { ...opts, redirect: "follow" });
           if (!r.ok) continue;
           const ct = r.headers.get("content-type") || "";
           if (!ct.startsWith("audio/") && !ct.startsWith("video/") && !ct.includes("octet-stream")) continue;
           const buf = await r.arrayBuffer();
-          if (buf.byteLength > 1000) { preFetchedAudioBuffer = buf; preFetchedAudioType = ct.split(";")[0] || "audio/mp4"; break; }
+          if (buf.byteLength > 1000) {
+            preFetchedAudioBuffer = buf;
+            preFetchedAudioType = ct.split(";")[0] || "audio/mp4";
+            break;
+          }
         } catch { continue; }
       }
-      console.log(`Audio pre-fetch: ${preFetchedAudioBuffer ? `${preFetchedAudioBuffer.byteLength} bytes` : "FAILED"}`);
     }
 
     if (imageUrl) {
-      // First try: Graph API with message ID to get authenticated URL (most reliable)
+      // Try Graph API first (most reliable for authenticated Instagram images)
       try {
         const graphRes = await fetch(
           `https://graph.instagram.com/v24.0/${messageMid}?fields=attachments&access_token=${igToken}`
         );
         if (graphRes.ok) {
           const graphData = await graphRes.json();
-          const attachmentUrl = graphData?.attachments?.data?.[0]?.image_data?.url
-            ?? graphData?.attachments?.data?.[0]?.file_url
-            ?? null;
+          const attachmentUrl =
+            graphData?.attachments?.data?.[0]?.image_data?.url ??
+            graphData?.attachments?.data?.[0]?.file_url ?? null;
           if (attachmentUrl) {
             const imgRes = await fetch(attachmentUrl, { redirect: "follow" });
             if (imgRes.ok) {
@@ -186,32 +198,33 @@ async function handleWebhook(body: WebhookPayload) {
             }
           }
         }
-      } catch { /* graph api attempt failed */ }
+      } catch { /* fallthrough to CDN */ }
 
-      // Fallback: try CDN URL directly (various auth methods)
       if (!preFetchedImageBase64) {
-        const urlWithToken = imageUrl.includes("?") ? `${imageUrl}&access_token=${igToken}` : `${imageUrl}?access_token=${igToken}`;
-        for (const [u, opts] of [[urlWithToken, {}], [imageUrl, { headers: { Authorization: `Bearer ${igToken}` } }], [imageUrl, {}]] as [string, RequestInit][]) {
+        const urlWithToken = imageUrl.includes("?")
+          ? `${imageUrl}&access_token=${igToken}`
+          : `${imageUrl}?access_token=${igToken}`;
+        for (const [u, opts] of [
+          [urlWithToken, {}],
+          [imageUrl, { headers: { Authorization: `Bearer ${igToken}` } }],
+          [imageUrl, {}],
+        ] as [string, RequestInit][]) {
           try {
             const r = await fetch(u, { ...opts, redirect: "follow" });
             if (!r.ok) continue;
             const ct = r.headers.get("content-type") || "";
             if (!ct.startsWith("image/")) continue;
             const buf = await r.arrayBuffer();
-            if (buf.byteLength > 3000) { preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`; break; }
+            if (buf.byteLength > 3000) {
+              preFetchedImageBase64 = `data:${ct.split(";")[0]};base64,${Buffer.from(buf).toString("base64")}`;
+              break;
+            }
           } catch { continue; }
         }
       }
-      console.log(`Image pre-fetch: ${preFetchedImageBase64 ? `${Math.round(preFetchedImageBase64.length / 1000)}KB` : "FAILED"}`);
     }
 
-    // Note image/audio/share in raw text for context
-    if (imageUrl && !rawText) rawText = "[floor plan or photo]";
-    if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
-    if (audioUrl && !rawText) rawText = "[voice message]";
-    if (!rawText) return NextResponse.json({ status: "non_text_skipped" }, { status: 200 });
-
-    // === STEP 3: Store message IMMEDIATELY (before debounce) — capture exact timestamp ===
+    // ── Store message immediately ────────────────────────────────────────
     const { data: insertedMsg, error: insertErr } = await supabaseAdmin
       .from("instagram_messages")
       .insert({
@@ -223,12 +236,7 @@ async function handleWebhook(body: WebhookPayload) {
       .select("id, created_at")
       .single();
 
-    if (insertErr && insertErr.code !== "23505") {
-      return NextResponse.json({ status: "error" }, { status: 200 });
-    }
-
-    // Get this message's exact created_at and id for tiebreaking
-    const thisMessageCreatedAt = insertedMsg?.created_at ?? new Date().toISOString();
+    if (insertErr && insertErr.code !== "23505") return;
     const thisMessageId = insertedMsg?.id ?? "";
 
     await supabaseAdmin
@@ -236,15 +244,11 @@ async function handleWebhook(body: WebhookPayload) {
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conversation.id);
 
-    if (conversation.mode === "human") return NextResponse.json({ status: "human_mode" }, { status: 200 });
+    if (conversation.mode === "human") return;
 
-    // === STEP 4: DEBOUNCE — wait 3s for more messages to arrive ===
-    // NOTE: 3 s keeps us well under Vercel Hobby's 10 s function timeout.
+    // ── Debounce: wait 3s, then check if we're still the latest message ──
     await new Promise((r) => setTimeout(r, 3000));
 
-    // SIMPLE RELIABLE CHECK: after waiting, am I still the latest user message?
-    // Order by created_at DESC, then id DESC (tiebreaker for same timestamp)
-    // If the latest message ID is not mine → skip, let the latest handle it
     const { data: latestMsg } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -255,12 +259,9 @@ async function handleWebhook(body: WebhookPayload) {
       .limit(1)
       .single();
 
-    if (!latestMsg || latestMsg.id !== thisMessageId) {
-      return;
-    }
+    if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // RATE LIMIT: if we already sent a response in the last 20 seconds, skip
-    // This catches cases where the debounce window is too tight (e.g. share arrives late)
+    // Rate limit: skip if we already replied in the last 20s
     const twentySecsAgo = new Date(Date.now() - 20000).toISOString();
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
@@ -269,87 +270,71 @@ async function handleWebhook(body: WebhookPayload) {
       .eq("role", "assistant")
       .gte("created_at", twentySecsAgo)
       .limit(1);
+    if (recentReply && recentReply.length > 0) return;
 
-    if (recentReply && recentReply.length > 0) {
-      return; // Already responded recently — skip duplicate
-    }
-
-    // === STEP 5: Process media with fallback intelligence ===
+    // ── Process media ────────────────────────────────────────────────────
     let enrichedText = rawText;
     let mediaProcessed = false;
 
-    // Include share title as context — don't ask for measurements yet, image analysis comes next
     if (shareAttachment) {
       const shareTitle = shareAttachment.payload?.title ?? null;
       if (shareTitle) {
         const isFloorPlan = /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle);
         enrichedText = isFloorPlan
-          ? `[Client shared a floor plan image: "${shareTitle}"]`
+          ? `[Client shared a floor plan: "${shareTitle}"]`
           : `[Client shared: "${shareTitle}"]`;
         mediaProcessed = true;
       }
     }
 
-    // Analyze image — use pre-fetched base64 if available (avoids re-downloading expired URL)
     if (imageUrl || shareUrl) {
       try {
-        let analysis: string;
-        if (preFetchedImageBase64) {
-          // Use already-downloaded image data
-          analysis = await analyzeImageFromBase64(preFetchedImageBase64);
-        } else {
-          analysis = await analyzeImage(shareUrl ?? imageUrl ?? "");
-        }
-        // Image analysis is useful if it mentions rooms, areas, or flooring
-        const hasFlooringContext = /sqm|sqft|m²|room|floor|bedroom|bathroom|kitchen|sala|quarto|cozinha|meter|area|\d+x\d+/i.test(analysis);
-        const isUseful = !analysis.toLowerCase().includes("could not") &&
-                         !analysis.toLowerCase().includes("unavailable") &&
-                         !analysis.toLowerCase().includes("cannot analyze") &&
-                         !analysis.toLowerCase().includes("not a floor") &&
-                         analysis.length > 20;
-        if (isUseful) {
+        const analysis = preFetchedImageBase64
+          ? await analyzeImageFromBase64(preFetchedImageBase64)
+          : null;
+
+        if (
+          analysis &&
+          !analysis.toLowerCase().includes("could not") &&
+          !analysis.toLowerCase().includes("unavailable") &&
+          analysis.length > 20
+        ) {
           enrichedText = enrichedText
             .replace("[floor plan or photo]", "")
             .replace(`[shared link: ${shareUrl ?? imageUrl}]`, "")
             .trim();
           enrichedText = enrichedText
-            ? `${enrichedText}\n[Floor plan/photo analysis: ${analysis}]`
-            : `[Floor plan/photo analysis: ${analysis}]`;
+            ? `${enrichedText}\n[Floor plan analysis: ${analysis}]`
+            : `[Floor plan analysis: ${analysis}]`;
           mediaProcessed = true;
-          console.log("Image analysis OK:", analysis.slice(0, 80));
         }
       } catch (err) {
         console.warn("Image analysis failed:", err);
       }
     }
 
-    // Transcribe audio — use pre-fetched buffer (avoids re-downloading expired URL)
     if (audioUrl) {
       try {
         const transcript = preFetchedAudioBuffer
           ? await transcribeAudioFromBuffer(preFetchedAudioBuffer, preFetchedAudioType)
-          : await transcribeAudio(audioUrl);
+          : null;
 
-        // Validate transcript quality:
-        // - Must be mostly ASCII/Latin chars (filters Kannada, Arabic, CJK garbage from bad audio)
-        // - Must have at least 3 real words
-        // - Must not be a fallback message
-        const nonLatinCount = (transcript || "").split("").filter(c => c.charCodeAt(0) > 1000).length;
+        const nonLatinCount = (transcript || "").split("").filter((c) => c.charCodeAt(0) > 1000).length;
         const wordCount = (transcript || "").trim().split(/\s+/).length;
-        const isUseful = !!transcript &&
+        const isUseful =
+          !!transcript &&
           nonLatinCount < 5 &&
           wordCount >= 2 &&
           transcript.length > 5 &&
           !transcript.includes("please type") &&
           !transcript.includes("could not") &&
           !transcript.includes("no speech");
+
         if (isUseful) {
           enrichedText = enrichedText.replace("[voice message]", "").trim();
           enrichedText = enrichedText ? `${enrichedText}\n[Voice: ${transcript}]` : transcript;
           mediaProcessed = true;
-          console.log("Transcription OK:", transcript.slice(0, 80));
         } else {
-          console.warn("Transcription not useful:", transcript);
           enrichedText = enrichedText.replace("[voice message]", "").trim();
         }
       } catch (err) {
@@ -357,37 +342,40 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
-    // If we have NO useful content at all — ask client to type
-    if (!enrichedText.trim()) {
-      enrichedText = "[SYSTEM: Client sent media but content could not be processed. Ask them to type their message. Do NOT use old scheduling context.]";
-      mediaProcessed = false;
+    // Fallback for media that failed to process
+    const clientActuallySentMedia = !!(audioUrl || imageUrl || shareUrl);
+    const clientSentPlainText = !audioUrl && !imageUrl && !shareUrl && !!messaging.message?.text;
+    const hasRealContent = clientSentPlainText || (mediaProcessed && enrichedText.trim().length > 0);
+
+    if (!hasRealContent && clientActuallySentMedia) {
+      const hadAudio = !!audioUrl;
+      const hadImage = !!(imageUrl || shareUrl);
+      let finalResponse: string;
+      if (hadAudio && hadImage) {
+        finalResponse = "Got your floor plan and voice message! I wasn't able to read the details — just type the total area (sqft or sqm) and I'll calculate right here.";
+      } else if (hadAudio) {
+        finalResponse = "Got your voice message but couldn't catch it — could you type what you need?";
+      } else {
+        finalResponse = "Got your floor plan! I wasn't able to read the details — just type the total area (sqft or sqm) and I'll calculate right here.";
+      }
+      await sendInstagramMessage(senderIgsid, finalResponse);
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: finalResponse,
+      });
+      return;
     }
 
-    // === STEP 6: Update ALL recent unanalyzed messages in the conversation ===
-    // Enrich other recent messages (images/audios sent together) in DB
-    // Window matches debounce period (3 s) plus a small buffer
-    const fifteenSecsAgo = new Date(Date.now() - 3500).toISOString();
-    const { data: recentMsgs } = await supabaseAdmin
-      .from("instagram_messages")
-      .select("id, content, instagram_msg_id")
-      .eq("conversation_id", conversation.id)
-      .eq("role", "user")
-      .gte("created_at", fifteenSecsAgo)
-      .neq("instagram_msg_id", messageMid);
+    if (!enrichedText.trim()) return;
 
-    // Collect all context from recent messages for a combined enriched text
-    const recentContents = (recentMsgs ?? []).map((m) => m.content).filter(Boolean);
-    if (recentContents.length > 0) {
-      enrichedText = [...recentContents, enrichedText].join("\n");
-    }
-
-    // Update this message with all enriched content
+    // ── Update stored message with enriched content ──────────────────────
     await supabaseAdmin
       .from("instagram_messages")
       .update({ content: enrichedText })
       .eq("instagram_msg_id", messageMid);
 
-    // === STEP 7: Fetch profile ===
+    // ── Fetch profile ────────────────────────────────────────────────────
     try {
       const profile = await fetchInstagramProfile(senderIgsid);
       const referral = messaging.referral;
@@ -403,171 +391,82 @@ async function handleWebhook(body: WebhookPayload) {
       console.warn("Profile fetch failed:", err);
     }
 
-    // === STEP 8: Load history and call AI ===
-    const { data: history } = await supabaseAdmin
+    // ── Ensure memory store exists for this client (Phase 2) ─────────────
+    let memoryStoreId: string | null = conversation.memory_store_id ?? null;
+    if (!memoryStoreId && process.env.ANTHROPIC_API_KEY) {
+      try {
+        memoryStoreId = await createClientMemoryStore(senderIgsid, conversation.username);
+        await supabaseAdmin
+          .from("instagram_conversations")
+          .update({ memory_store_id: memoryStoreId })
+          .eq("id", conversation.id);
+        conversation = { ...conversation, memory_store_id: memoryStoreId };
+      } catch (err) {
+        console.warn("Memory store creation failed:", err);
+      }
+    }
+
+    // ── Load client memory for context ───────────────────────────────────
+    let memoryContext: string | null = null;
+    if (memoryStoreId && process.env.ANTHROPIC_API_KEY) {
+      try {
+        memoryContext = await readClientMemory(memoryStoreId);
+      } catch (err) {
+        console.warn("Memory read failed:", err);
+      }
+    }
+
+    // ── Load conversation history (last 15 messages, always) ─────────────
+    // Fixed: use DESC + limit to get the LAST 15, then reverse for chronological order
+    const { data: historyRaw } = await supabaseAdmin
       .from("instagram_messages")
       .select("role, content")
       .eq("conversation_id", conversation.id)
-      .order("created_at", { ascending: true })
-      .limit(20);
+      .order("created_at", { ascending: false })
+      .limit(15);
 
-    const aiMessages = (history ?? []).map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    }));
-    // (aiMessages kept for reference; actual context selection happens below)
+    const history = (historyRaw ?? []).reverse();
 
-    const lastMsg = enrichedText.toLowerCase().trim();
-
-    // Detect greetings — treat as fresh start, ignore old scheduling context
-    const greetings = ["hi", "hello", "hey", "oi", "olá", "ola", "bom dia", "boa tarde", "good morning", "good afternoon", "what's up", "sup"];
-    const isJustGreeting = greetings.some((g) => lastMsg === g || lastMsg === g + "!" || lastMsg === g + ".");
-
-    // Detect if client is resetting / starting a new project
-    const resetKeywords = [
-      "cancel", "forget", "different", "new project", "new apartment", "new house",
-      "instead", "actually", "change", "another", "start over", "not that",
-    ];
-    const clientResetting = isJustGreeting || resetKeywords.some((k) => lastMsg.includes(k));
-
-    // Detect if current message has real content or just placeholder text from failed media
-    const MEDIA_PLACEHOLDERS = ["[voice message]", "[floor plan or photo]", "[shared link:"];
-    const lines = enrichedText.trim().split("\n").filter(Boolean);
-    const realLines = lines.filter(l => !MEDIA_PLACEHOLDERS.some(p => l.trim() === p || l.trim().startsWith(p)));
-
-    // Plain text messages from client ARE real content (no media = no mediaProcessed, but text is real)
-    const clientSentPlainText = !audioUrl && !imageUrl && !shareUrl && !!messaging.message?.text;
-    const hasRealContent = clientSentPlainText || (mediaProcessed && realLines.length > 0);
-
-    // Only show "media failed" fallback if client actually sent media (not just text)
-    const clientActuallySentMedia = !!(audioUrl || imageUrl || shareUrl);
-
-    // Detect if an IMAGE was actually attached (not just mentioned in text)
-    const clientSentImageAttachment = !!(imageUrl || shareUrl);
-
-    // Detect if current message is about a NEW project — ONLY if image was actually sent
-    const isNewProjectRequest = clientSentImageAttachment ||
-      /planta|floor.?plan|projeto|orsamento|calcul|quote|price|sqm|sqft|metros|m²/i.test(enrichedText);
-
+    // ── Detect if scheduling context is needed ───────────────────────────
+    const lastUserMsg = enrichedText.toLowerCase();
     const schedulingKeywords = [
       "schedule", "appointment", "what day", "what time", "which day",
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm",
-      "book", "slot", "set up a",
+      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm", "book", "slot",
     ];
-    const isScheduling = !clientResetting && !isNewProjectRequest && hasRealContent &&
-      schedulingKeywords.some((k) => lastMsg.includes(k));
+    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k));
 
-    type AiMsg = { role: "system" | "user" | "assistant"; content: string };
+    type AiMsg = { role: "user" | "assistant"; content: string };
 
-    let finalResponse: string;
+    let messagesForAI: AiMsg[] = history.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 
-    // Detect if client actually sent an image attachment (not just mentioned one)
-    const clientMentionsImage = clientSentImageAttachment;
-
-    // When ALL media failed AND client actually sent media → bypass AI with helpful message
-    if (!hasRealContent && !isJustGreeting && clientActuallySentMedia) {
-      const hadImage = clientSentImageAttachment;
-      const hadAudio = !!audioUrl;
-      if (hadAudio && hadImage) {
-        finalResponse = "Got your floor plan and voice message! I wasn't able to read the details automatically — just type the total area shown on the floor plan (in square meters or sqft) and I'll calculate the quote right here.";
-      } else if (hadAudio) {
-        finalResponse = "Got your voice message but couldn't catch it — could you type what you need? I'll take care of you right here!";
-      } else if (hadImage) {
-        finalResponse = "Got your floor plan! I wasn't able to read the details from it automatically — just type the total area (in square meters or sqft) and I'll calculate the exact price right here.";
-      } else {
-        finalResponse = "Hey! What can I help you with today?";
+    if (needsScheduling) {
+      const availability = await getRealAvailabilityContext();
+      // Inject availability as a system-level note in the last user message
+      const lastIdx = messagesForAI.length - 1;
+      if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
+        messagesForAI[lastIdx] = {
+          ...messagesForAI[lastIdx],
+          content: `${messagesForAI[lastIdx].content}\n\n[SYSTEM: ${availability}]`,
+        };
       }
-    } else {
-      const allHistory = history ?? [];
-
-      // === HISTORY SELECTION — prevents old scheduling from contaminating new conversations ===
-
-      // 1. Find last AI greeting — everything before it is stale context
-      const greetingPhrases = ["how can i help", "what flooring", "hey there", "hey!", "hello!", "how can i assist", "how can i help you"];
-      let lastGreetingIdx = -1;
-      for (let i = allHistory.length - 1; i >= 0; i--) {
-        const m = allHistory[i];
-        if (m.role === "assistant" && greetingPhrases.some(p => m.content.toLowerCase().includes(p))) {
-          lastGreetingIdx = i;
-          break;
-        }
-      }
-
-      // 2. Check if last activity was long ago (>30 min) — stale context
-      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const lastMsg = allHistory[allHistory.length - 1];
-      const isStaleConversation = !lastMsg || (lastMsg as { created_at?: string }).created_at
-        ? new Date((lastMsg as { created_at?: string }).created_at ?? 0) < new Date(thirtyMinAgo)
-        : false;
-
-      // 3. Detect new general question (Hi+question, or previous user message was a greeting)
-      const userGreetingWords = ["hi", "hello", "hey", "oi", "olá", "ola", "o", "no"];
-      const prevUserMsg = allHistory.filter(m => m.role === "user").slice(-2, -1)[0];
-      const prevWasGreeting = prevUserMsg && userGreetingWords.includes(prevUserMsg.content.trim().toLowerCase().replace(/[!.,]/g, ""));
-      const isNewGeneralQuestion = isJustGreeting || prevWasGreeting ||
-        /^hi[!,.]?\s|^hello[!,.]?\s|^hey[!,.]?\s|^oi[!,.]?\s/i.test(enrichedText.trim());
-
-      // 4. Find the last AI message — this is the ANCHOR for history
-      const lastAiMsg = allHistory.filter(m => m.role === "assistant").slice(-1)[0];
-      const lastAiWasScheduling = lastAiMsg && /lock it in|lock you in|works great|11 am|thursday|friday|slot/i.test(lastAiMsg.content);
-
-      // 5. Check if current message is a short reply to AI's last question
-      const isShortReply = enrichedText.trim().length < 80 && !enrichedText.includes("[Voice") && !enrichedText.includes("[Floor");
-
-      const shouldReset = isJustGreeting || isStaleConversation || isNewGeneralQuestion ||
-        (lastAiWasScheduling && !isScheduling);
-
-      // Detect loop: AI asked same classification question twice in a row
-      const last2AiMsgs = allHistory.filter(m => m.role === "assistant").slice(-2);
-      const classificationPhrases = ["single room", "whole house", "one area", "just one room", "multiple rooms", "bedroom or bathroom"];
-      const aiLooping = last2AiMsgs.length >= 2 &&
-        classificationPhrases.some(p => last2AiMsgs[0].content.toLowerCase().includes(p)) &&
-        classificationPhrases.some(p => last2AiMsgs[1].content.toLowerCase().includes(p));
-
-      // If client already gave an answer to classification (single room / whole house)
-      const clientAnsweredClassification = /single room|one room|just one|whole house|entire|all rooms|bedroom|bathroom|kitchen/i.test(enrichedText);
-
-      const inBookingFlow = isScheduling && !shouldReset;
-
-      const historyToUse = shouldReset
-        ? [] // Completely fresh
-        : clientResetting
-          ? allHistory.slice(-2)
-          : inBookingFlow
-            ? allHistory.slice(-8) // Scheduling needs more context
-            : lastGreetingIdx >= 0
-              ? allHistory.slice(lastGreetingIdx)
-              : (isShortReply || aiLooping)
-                ? allHistory.slice(-2) // Short reply or loop: only last AI + current
-                : allHistory.slice(-4); // Default: last 4 messages max
-
-      // If AI was looping on classification question, inject instruction to move forward
-      const loopOverrideMsg = aiLooping && clientAnsweredClassification
-        ? { role: "system" as const, content: `The client already answered the classification question: "${enrichedText}". DO NOT ask single room vs whole house again. IMMEDIATELY proceed to the next step based on their answer.` }
-        : null;
-
-      let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }));
-      if (loopOverrideMsg) {
-        messagesForAI = [...messagesForAI, loopOverrideMsg];
-      }
-      if (isScheduling) {
-        const availability = await getRealAvailabilityContext();
-        messagesForAI = [...messagesForAI, { role: "system" as const, content: availability }];
-      }
-      const rawAiResponse = await getAIResponse(messagesForAI);
-      finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
     }
 
-    // === STEP 9: Send response ===
+    // ── Generate AI response ─────────────────────────────────────────────
+    const rawAiResponse = await getAIResponse(messagesForAI, memoryContext);
+    const finalResponse = await processBookingCommand(rawAiResponse, conversation.id);
+
+    // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);
 
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
       generateSpeech(finalResponse)
-        .then(async (buf) => { if (buf) await sendInstagramAudio(senderIgsid, buf); })
+        .then(async (buf) => {
+          if (buf) await sendInstagramAudio(senderIgsid, buf);
+        })
         .catch((e) => console.error("TTS error:", e));
     }
 
@@ -577,13 +476,23 @@ async function handleWebhook(body: WebhookPayload) {
       content: finalResponse,
     });
 
+    // ── Update memory in background (no latency impact) ──────────────────
+    if (memoryStoreId && process.env.ANTHROPIC_API_KEY) {
+      const allMessages = [...messagesForAI, { role: "assistant" as const, content: finalResponse }];
+      const memUpdate = extractMemoryUpdate(finalResponse, allMessages, {});
+      if (memUpdate) {
+        updateClientMemory(memoryStoreId, {
+          ...memUpdate,
+          client_name: conversation.username || undefined,
+        }).catch((e) => console.error("Memory update error:", e));
+      }
+    }
   } catch (err) {
     console.error("Webhook processing error:", err);
   }
 }
 
 export async function POST(req: NextRequest) {
-  // Parse body first for quick validation
   const body: WebhookPayload = await req.json().catch(() => null);
   if (!body || body.object !== "instagram") {
     return NextResponse.json({ status: "ignored" }, { status: 200 });
@@ -594,9 +503,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "skipped" }, { status: 200 });
   }
 
-  // Return 200 to Instagram IMMEDIATELY (prevents retries from slow processing)
-  // Then process everything in background via waitUntil
+  // Return 200 immediately — process in background
   waitUntil(handleWebhook(body));
-
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }
