@@ -508,19 +508,32 @@ async function handleWebhook(body: WebhookPayload) {
       const isNewGeneralQuestion = isJustGreeting || prevWasGreeting ||
         /^hi[!,.]?\s|^hello[!,.]?\s|^hey[!,.]?\s|^oi[!,.]?\s/i.test(enrichedText.trim());
 
-      // 4. Detect if last AI response was scheduling (another signal to reset)
+      // 4. Find the last AI message — this is the ANCHOR for history
       const lastAiMsg = allHistory.filter(m => m.role === "assistant").slice(-1)[0];
       const lastAiWasScheduling = lastAiMsg && /lock it in|lock you in|works great|11 am|thursday|friday|slot/i.test(lastAiMsg.content);
+
+      // 5. Check if current message is a short reply to AI's last question
+      const isShortReply = enrichedText.trim().length < 80 && !enrichedText.includes("[Voice") && !enrichedText.includes("[Floor");
+
       const shouldReset = isJustGreeting || isStaleConversation || isNewGeneralQuestion ||
-        (lastAiWasScheduling && !isScheduling && !lastMsg?.content?.match(/yes|sure|ok|confirm|sounds good/i));
+        (lastAiWasScheduling && !isScheduling);
+
+      // CORE STRATEGY: default to last 2 messages (last AI + current)
+      // This PREVENTS old addresses/phones from contaminating new conversations
+      // Only use more history when explicitly in a booking confirmation flow
+      const inBookingFlow = isScheduling && !shouldReset;
 
       const historyToUse = shouldReset
-        ? [] // Completely fresh — no old context
+        ? [] // Completely fresh
         : clientResetting
           ? allHistory.slice(-2)
-          : lastGreetingIdx >= 0
-            ? allHistory.slice(lastGreetingIdx) // From greeting onward
-            : allHistory.slice(-6); // Absolute max: last 6 messages only
+          : inBookingFlow
+            ? allHistory.slice(-8) // Scheduling needs more context
+            : lastGreetingIdx >= 0
+              ? allHistory.slice(lastGreetingIdx)
+              : isShortReply
+                ? allHistory.slice(-2) // Short reply: only last AI message + current
+                : allHistory.slice(-4); // Default: last 4 messages max
 
       let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
         role: m.role as "user" | "assistant",
