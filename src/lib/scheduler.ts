@@ -31,6 +31,7 @@ export interface BookingRequest {
   notes?: string;
   creative?: string;
   instagramHandle?: string;
+  igsid?: string;
 }
 
 export interface BookingResult {
@@ -117,7 +118,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       .from("bookings")
       .insert({
         name: req.clientName.trim().slice(0, 100),
-        email: `ia-${Date.now()}@instagram.ozzifloors.com`,
+        email: `ia-${req.igsid || Date.now()}@instagram.ozzifloors.com`,
         phone: req.clientPhone.trim().slice(0, 30) || null,
         address: req.clientAddress.trim().slice(0, 300),
         referral_source: req.instagramHandle
@@ -164,6 +165,40 @@ export async function cancelBooking(bookingId: string): Promise<{ success: boole
     return { success: true };
   } catch (err) {
     console.error("Cancel booking exception:", err);
+    return { success: false, error: String(err) };
+  }
+}
+
+// Cancel the most recent future booking for a client by their igsid
+// No SQL migration needed — finds booking via email pattern ia-{igsid}@...
+export async function cancelClientBooking(igsid: string): Promise<{ success: boolean; cancelled?: number; error?: string }> {
+  try {
+    const db = await getAuthenticatedClient();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { data: bookings, error: fetchErr } = await db
+      .from("bookings")
+      .select("id, booking_date, booking_time")
+      .like("email", `ia-${igsid}@%`)
+      .gte("booking_date", today)
+      .order("booking_date", { ascending: true })
+      .order("booking_time", { ascending: true });
+
+    if (fetchErr) return { success: false, error: fetchErr.message };
+    if (!bookings || bookings.length === 0) return { success: false, error: "no_booking_found" };
+
+    let cancelled = 0;
+    for (const b of bookings) {
+      const { error } = await db.from("bookings").delete().eq("id", b.id);
+      if (!error) {
+        cancelled++;
+        console.log(`Cancelled booking ${b.id} on ${b.booking_date} at ${b.booking_time}`);
+      }
+    }
+
+    return { success: cancelled > 0, cancelled };
+  } catch (err) {
+    console.error("cancelClientBooking exception:", err);
     return { success: false, error: String(err) };
   }
 }
