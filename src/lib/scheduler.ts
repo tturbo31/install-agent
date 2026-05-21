@@ -221,7 +221,18 @@ export async function getRealAvailabilityContext(): Promise<string> {
         });
       });
 
-      const slots = Array.from(slotSet).sort();
+      // For today: filter out slots that are already past (add 30-min buffer)
+      const nowPlus30 = new Date(Date.now() + 30 * 60 * 1000);
+      const isToday = dateStr === new Date().toISOString().slice(0, 10);
+      const futureSlots = Array.from(slotSet).filter((slot) => {
+        if (!isToday) return true;
+        const [h, m] = slot.split(":").map(Number);
+        const slotTime = new Date();
+        slotTime.setHours(h, m, 0, 0);
+        return slotTime >= nowPlus30;
+      });
+
+      const slots = futureSlots.sort();
       if (slots.length > 0) {
         hasAnySlot = true;
         const formatted = slots.map((s) => {
