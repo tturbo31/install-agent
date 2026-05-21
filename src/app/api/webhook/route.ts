@@ -479,11 +479,12 @@ async function handleWebhook(body: WebhookPayload) {
         finalResponse = "Hey! What can I help you with today?";
       }
     } else {
-      // Build history — find last AI greeting to cut old scheduling context
       const allHistory = history ?? [];
 
-      // Find index of last AI greeting message — everything before it is stale
-      const greetingPhrases = ["how can i help", "what flooring", "hey there", "hey!", "hello!", "how can i assist"];
+      // === HISTORY SELECTION — prevents old scheduling from contaminating new conversations ===
+
+      // 1. Find last AI greeting — everything before it is stale context
+      const greetingPhrases = ["how can i help", "what flooring", "hey there", "hey!", "hello!", "how can i assist", "how can i help you"];
       let lastGreetingIdx = -1;
       for (let i = allHistory.length - 1; i >= 0; i--) {
         const m = allHistory[i];
@@ -493,17 +494,24 @@ async function handleWebhook(body: WebhookPayload) {
         }
       }
 
-      // Use history from after the last greeting (fresh conversation start)
-      // If no greeting found, use full history for scheduling or last 4 for new projects
-      const historyToUse = isJustGreeting
-        ? []
+      // 2. Check if last activity was long ago (>30 min) — stale context
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const lastMsg = allHistory[allHistory.length - 1];
+      const isStaleConversation = !lastMsg || (lastMsg as { created_at?: string }).created_at
+        ? new Date((lastMsg as { created_at?: string }).created_at ?? 0) < new Date(thirtyMinAgo)
+        : false;
+
+      // 3. Detect if message is a new general question (Hi + question pattern, or just general Q)
+      const isNewGeneralQuestion = isJustGreeting ||
+        /^hi[!,.]?\s|^hello[!,.]?\s|^hey[!,.]?\s|^oi[!,.]?\s/i.test(enrichedText.trim());
+
+      const historyToUse = isJustGreeting || isStaleConversation || isNewGeneralQuestion
+        ? [] // Completely fresh — no old context
         : clientResetting
           ? allHistory.slice(-2)
           : lastGreetingIdx >= 0
-            ? allHistory.slice(lastGreetingIdx) // Start from the greeting — drops all old scheduling
-            : isNewProjectRequest
-              ? allHistory.slice(-4)
-              : allHistory;
+            ? allHistory.slice(lastGreetingIdx) // From greeting onward
+            : allHistory.slice(-6); // Absolute max: last 6 messages only
 
       let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
         role: m.role as "user" | "assistant",
