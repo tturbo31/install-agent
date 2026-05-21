@@ -479,14 +479,32 @@ async function handleWebhook(body: WebhookPayload) {
         finalResponse = "Hey! What can I help you with today?";
       }
     } else {
-      // Normal AI flow with appropriate history
+      // Build history — find last AI greeting to cut old scheduling context
+      const allHistory = history ?? [];
+
+      // Find index of last AI greeting message — everything before it is stale
+      const greetingPhrases = ["how can i help", "what flooring", "hey there", "hey!", "hello!", "how can i assist"];
+      let lastGreetingIdx = -1;
+      for (let i = allHistory.length - 1; i >= 0; i--) {
+        const m = allHistory[i];
+        if (m.role === "assistant" && greetingPhrases.some(p => m.content.toLowerCase().includes(p))) {
+          lastGreetingIdx = i;
+          break;
+        }
+      }
+
+      // Use history from after the last greeting (fresh conversation start)
+      // If no greeting found, use full history for scheduling or last 4 for new projects
       const historyToUse = isJustGreeting
         ? []
         : clientResetting
-          ? (history ?? []).slice(-2)
-          : isNewProjectRequest
-            ? (history ?? []).slice(-4) // New project: limit history to avoid old scheduling contamination
-            : (history ?? []);
+          ? allHistory.slice(-2)
+          : lastGreetingIdx >= 0
+            ? allHistory.slice(lastGreetingIdx) // Start from the greeting — drops all old scheduling
+            : isNewProjectRequest
+              ? allHistory.slice(-4)
+              : allHistory;
+
       let messagesForAI: AiMsg[] = historyToUse.map((m) => ({
         role: m.role as "user" | "assistant",
         content: m.content,
