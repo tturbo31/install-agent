@@ -156,28 +156,11 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
 export async function cancelBooking(bookingId: string): Promise<{ success: boolean; error?: string }> {
   try {
     const db = await getAuthenticatedClient();
-
-    // Try to mark as cancelled first (if status column exists)
-    const { error: updateError } = await db
-      .from("bookings")
-      .update({ status: "cancelled" })
-      .eq("id", bookingId);
-
-    if (!updateError) {
-      return { success: true };
+    const { error } = await db.from("bookings").delete().eq("id", bookingId);
+    if (error) {
+      console.error("Cancel booking error:", error);
+      return { success: false, error: error.message };
     }
-
-    // Fallback: delete the row
-    const { error: deleteError } = await db
-      .from("bookings")
-      .delete()
-      .eq("id", bookingId);
-
-    if (deleteError) {
-      console.error("Cancel booking error:", deleteError);
-      return { success: false, error: deleteError.message };
-    }
-
     return { success: true };
   } catch (err) {
     console.error("Cancel booking exception:", err);
