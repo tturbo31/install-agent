@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import Image from "next/image";
 import { ConversationWithLastMessage, Message } from "@/lib/types";
 
@@ -116,12 +116,15 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
         <div ref={bottomRef} />
       </div>
 
+      {/* Training panel — shown when in human/training mode */}
+      <TrainingPanel conversation={conversation} messages={messages} />
+
       {/* Input */}
       <div className="border-t border-gray-800 p-4 bg-gray-900">
         {conversation.mode === "human" && (
           <p className="text-amber-400 text-xs mb-2 flex items-center gap-1">
             <span>👤</span>
-            Human mode — AI auto-reply is disabled
+            Modo treinamento — responda pelo Instagram, depois salve o exemplo acima
           </p>
         )}
         <div className="flex items-end gap-3">
@@ -143,6 +146,88 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Training Panel ────────────────────────────────────────────────────────
+function TrainingPanel({ conversation, messages }: { conversation: ConversationWithLastMessage; messages: Message[] }) {
+  const [open, setOpen] = useState(false);
+  const [ownerResponse, setOwnerResponse] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const lastClientMsg = [...messages].reverse().find((m) => m.role === "user");
+
+  const handleSave = useCallback(async () => {
+    if (!ownerResponse.trim() || !lastClientMsg) return;
+    setSaving(true);
+    try {
+      await fetch("/api/train?secret=Pepeka", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientMessage: lastClientMsg.content
+            .replace(/\[Floor plan analysis:[\s\S]*?\]/g, "[floor plan]")
+            .replace(/\[SYSTEM:[\s\S]*?\]/g, "")
+            .trim()
+            .slice(0, 300),
+          ownerResponse: ownerResponse.trim(),
+          context: conversation.username ?? conversation.igsid,
+        }),
+      });
+      setSaved(true);
+      setOwnerResponse("");
+      setOpen(false);
+      setTimeout(() => setSaved(false), 3000);
+    } catch { /* ignore */ }
+    setSaving(false);
+  }, [ownerResponse, lastClientMsg, conversation]);
+
+  if (conversation.mode !== "human") return null;
+
+  return (
+    <div className="border-t border-amber-900/40 bg-amber-950/20 px-4 py-2">
+      {saved && (
+        <p className="text-green-400 text-xs mb-1 font-medium">✓ Exemplo salvo — o agente vai aprender com essa resposta</p>
+      )}
+      {!open ? (
+        <button
+          onClick={() => setOpen(true)}
+          className="text-amber-400 text-xs hover:text-amber-300 flex items-center gap-1.5 py-1"
+        >
+          <span>📚</span>
+          Salvar minha resposta como exemplo de treinamento
+        </button>
+      ) : (
+        <div className="space-y-2 py-1">
+          <p className="text-amber-400 text-xs font-medium">Como você respondeu esse cliente?</p>
+          {lastClientMsg && (
+            <p className="text-gray-400 text-xs bg-gray-800 rounded px-2 py-1 truncate">
+              Cliente: {lastClientMsg.content.replace(/\[[\s\S]*?\]/g, "").trim().slice(0, 80)}
+            </p>
+          )}
+          <textarea
+            value={ownerResponse}
+            onChange={(e) => setOwnerResponse(e.target.value)}
+            placeholder="Digite o que você respondeu para o cliente..."
+            rows={2}
+            className="w-full bg-gray-800 text-white placeholder-gray-500 rounded-lg px-3 py-2 text-xs resize-none outline-none focus:ring-1 focus:ring-amber-500"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleSave}
+              disabled={!ownerResponse.trim() || saving}
+              className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5 rounded-lg"
+            >
+              {saving ? "Salvando..." : "Salvar exemplo"}
+            </button>
+            <button onClick={() => setOpen(false)} className="text-gray-500 text-xs hover:text-gray-300 px-2">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
