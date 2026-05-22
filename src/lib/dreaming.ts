@@ -12,6 +12,11 @@ function getAnthropic(): Anthropic {
 // ─── System Memory Store (shared learnings, not per-client) ─────────────────
 
 export async function getOrCreateSystemStore(): Promise<string> {
+  // Use cached env var to avoid slow list() API call on every message
+  if (process.env.ANTHROPIC_SYSTEM_STORE_ID) {
+    return process.env.ANTHROPIC_SYSTEM_STORE_ID;
+  }
+
   const anthropic = getAnthropic();
   const stores = await anthropic.beta.memoryStores.list();
   const existing = stores.data.find((s) => s.name === SYSTEM_STORE_NAME);

@@ -62,6 +62,12 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
 
         {messages.map((msg) => {
           const isUser = msg.role === "user";
+          // Strip internal context injections before displaying
+          const displayContent = msg.content
+            .replace(/\[Floor plan analysis:[\s\S]*?\]/g, "[floor plan image]")
+            .replace(/\[SYSTEM:[\s\S]*?\]/g, "")
+            .replace(/\[Voice:[\s\S]*?\]/g, "[voice message]")
+            .trim() || (isUser ? "[media]" : "");
           return (
             <div
               key={msg.id}
@@ -95,7 +101,7 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
                       : "bg-gradient-to-r from-purple-600 to-red-500 text-white rounded-br-sm"
                   }`}
                 >
-                  {msg.content}
+                  {displayContent}
                 </div>
                 <div className="flex items-center gap-1 mt-1 px-1">
                   {!isUser && (

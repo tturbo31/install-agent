@@ -435,25 +435,22 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Load client memory for context ───────────────────────────────────
-    let memoryContext: string | null = null;
-    if (memoryStoreId && process.env.ANTHROPIC_API_KEY) {
-      try {
-        memoryContext = await readClientMemory(memoryStoreId);
-      } catch (err) {
-        console.warn("Memory read failed:", err);
-      }
-    }
+    // Load client memory + system memory in parallel, max 3s each
+    // If either times out or fails, we proceed without it — never block the response
+    const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
+      Promise.race([p, new Promise<null>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]).catch(() => null);
 
-    // Load system-level learnings from Dreaming (shared across all clients)
-    let systemMemory: string | null = null;
-    if (process.env.ANTHROPIC_API_KEY) {
-      try {
-        const sysStoreId = await getOrCreateSystemStore();
-        systemMemory = await readSystemMemory(sysStoreId);
-      } catch (err) {
-        console.warn("System memory read failed:", err);
-      }
-    }
+    const [memoryContext, systemMemory] = await Promise.all([
+      memoryStoreId && process.env.ANTHROPIC_API_KEY
+        ? withTimeout(readClientMemory(memoryStoreId), 3000)
+        : Promise.resolve(null),
+      process.env.ANTHROPIC_API_KEY
+        ? withTimeout(
+            getOrCreateSystemStore().then((id) => readSystemMemory(id)),
+            3000
+          )
+        : Promise.resolve(null),
+    ]);
 
     // ── Load conversation history (last 15 messages, always) ─────────────
     // Fixed: use DESC + limit to get the LAST 15, then reverse for chronological order
