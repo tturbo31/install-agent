@@ -140,11 +140,11 @@ async function handleWebhook(body: WebhookPayload) {
             .eq("igsid", recipientIgsid)
             .maybeSingle();
           if (conv?.id) {
-            await supabaseAdmin.from("instagram_messages").insert({
+            void supabaseAdmin.from("instagram_messages").insert({
               conversation_id: conv.id,
               role: "assistant",
               content: `[Treino] ${echoText}`,
-            }).catch(() => {});
+            });
           }
         }
       }
