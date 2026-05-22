@@ -126,26 +126,32 @@ async function handleWebhook(body: WebhookPayload) {
     const messaging = body.entry?.[0]?.messaging?.[0];
     if (!messaging) return;
 
-    // Echo = owner sent a message from Instagram app.
-    // In training mode (AGENT_PAUSED=1): save it to DB so Dreaming can learn from it.
-    // Otherwise: ignore echoes entirely.
-    if (messaging.message?.is_echo) {
-      if (process.env.AGENT_PAUSED === "1") {
-        const echoText = messaging.message?.text;
-        const recipientIgsid = messaging.recipient?.id ?? "";
-        if (echoText && recipientIgsid) {
-          const { data: conv } = await supabaseAdmin
-            .from("instagram_conversations")
-            .select("id")
-            .eq("igsid", recipientIgsid)
-            .maybeSingle();
-          if (conv?.id) {
-            void supabaseAdmin.from("instagram_messages").insert({
-              conversation_id: conv.id,
-              role: "assistant",
-              content: `[Treino] ${echoText}`,
-            });
-          }
+    // Capture owner responses for training (echo OR agent_message from business)
+    const isEcho = !!messaging.message?.is_echo;
+    const senderIgsidRaw = messaging.sender?.id ?? "";
+    const recipientIgsidRaw = messaging.recipient?.id ?? "";
+    const BUSINESS_IGSID = "27383991237890869";
+    const isBusinessSending = senderIgsidRaw === BUSINESS_IGSID || isEcho;
+
+    if (isBusinessSending) {
+      const ownerText = messaging.message?.text;
+      // The customer is the recipient when business is sending
+      const customerIgsid = isEcho ? recipientIgsidRaw : recipientIgsidRaw;
+      console.log("Owner message detected:", isEcho ? "echo" : "agent_message", "| customer:", customerIgsid, "| text:", ownerText?.slice(0, 50));
+
+      if (ownerText && customerIgsid && customerIgsid !== BUSINESS_IGSID) {
+        const { data: conv } = await supabaseAdmin
+          .from("instagram_conversations")
+          .select("id")
+          .eq("igsid", customerIgsid)
+          .maybeSingle();
+        if (conv?.id) {
+          void supabaseAdmin.from("instagram_messages").insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: `[Treino] ${ownerText}`,
+          });
+          console.log("Training response saved for conversation", conv.id);
         }
       }
       return;
