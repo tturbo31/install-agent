@@ -125,7 +125,31 @@ async function handleWebhook(body: WebhookPayload) {
     if (body.object !== "instagram") return;
     const messaging = body.entry?.[0]?.messaging?.[0];
     if (!messaging) return;
-    if (messaging.message?.is_echo) return;
+
+    // Echo = owner sent a message from Instagram app.
+    // In training mode (AGENT_PAUSED=1): save it to DB so Dreaming can learn from it.
+    // Otherwise: ignore echoes entirely.
+    if (messaging.message?.is_echo) {
+      if (process.env.AGENT_PAUSED === "1") {
+        const echoText = messaging.message?.text;
+        const recipientIgsid = messaging.recipient?.id ?? "";
+        if (echoText && recipientIgsid) {
+          const { data: conv } = await supabaseAdmin
+            .from("instagram_conversations")
+            .select("id")
+            .eq("igsid", recipientIgsid)
+            .maybeSingle();
+          if (conv?.id) {
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conv.id,
+              role: "assistant",
+              content: `[Treino] ${echoText}`,
+            }).catch(() => {});
+          }
+        }
+      }
+      return;
+    }
 
     const senderIgsid = messaging.sender.id;
     const messageMid = messaging.message.mid;
@@ -146,9 +170,10 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
 
     if (!conversation) {
+      const defaultMode = process.env.AGENT_PAUSED === "1" ? "human" : "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
-        .insert({ igsid: senderIgsid, mode: "agent" })
+        .insert({ igsid: senderIgsid, mode: defaultMode })
         .select()
         .single();
       conversation = newConv;

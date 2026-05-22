@@ -18,6 +18,8 @@ export default function Dashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isTogglingMode, setIsTogglingMode] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
+  const [resumeMsg, setResumeMsg] = useState<string | null>(null);
 
   const loadConversations = useCallback(async () => {
     const res = await fetch("/api/conversations");
@@ -97,6 +99,17 @@ export default function Dashboard() {
     setIsTogglingMode(false);
   }
 
+  async function handleResumeAgent() {
+    if (!confirm("Reativar o agente em TODAS as conversas? Ele voltará a responder automaticamente.")) return;
+    setIsResuming(true);
+    const res = await fetch("/api/resume?secret=Pepeka", { method: "POST" });
+    const data = await res.json();
+    setResumeMsg(`Agente reativado em ${data.resumed} conversas.`);
+    await loadConversations();
+    setIsResuming(false);
+    setTimeout(() => setResumeMsg(null), 5000);
+  }
+
   async function handleSendMessage(text: string) {
     if (!selectedConv) return;
     setIsSending(true);
@@ -110,6 +123,19 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen bg-gray-950 text-white overflow-hidden">
+      {/* Training Mode Banner */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-yellow-500 text-black text-center py-2 px-4 text-sm font-medium flex items-center justify-center gap-4">
+        <span>MODO TREINAMENTO ATIVO — O agente não está respondendo. Você atende, ele aprende.</span>
+        <button
+          onClick={handleResumeAgent}
+          disabled={isResuming}
+          className="bg-black text-yellow-400 px-3 py-1 rounded text-xs font-bold hover:bg-gray-900 disabled:opacity-50"
+        >
+          {isResuming ? "Reativando..." : "REATIVAR AGENTE"}
+        </button>
+        {resumeMsg && <span className="text-green-800 font-bold">{resumeMsg}</span>}
+      </div>
+      <div className="flex h-screen w-full pt-10">
       <ConversationSidebar
         conversations={conversations}
         selectedId={selectedConv?.id ?? null}
@@ -143,6 +169,7 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+      </div>
     </div>
   );
 }
