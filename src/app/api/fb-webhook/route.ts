@@ -141,7 +141,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       const defaultMode = process.env.AGENT_PAUSED === "1" ? "human" : "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
-        .insert({ igsid: fbIgsid, mode: defaultMode, platform: "facebook" })
+        .insert({ igsid: fbIgsid, mode: defaultMode })
         .select()
         .single();
       conv = newConv;
