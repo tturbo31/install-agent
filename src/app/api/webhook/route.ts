@@ -130,7 +130,7 @@ async function handleWebhook(body: WebhookPayload) {
     const isEcho = !!messaging.message?.is_echo;
     const senderIgsidRaw = messaging.sender?.id ?? "";
     const recipientIgsidRaw = messaging.recipient?.id ?? "";
-    const BUSINESS_IGSID = "27383991237890869";
+    const BUSINESS_IGSID = "1940528653163182";
     const isBusinessSending = senderIgsidRaw === BUSINESS_IGSID || isEcho;
 
     if (isBusinessSending) {
