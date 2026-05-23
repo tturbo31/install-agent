@@ -28,9 +28,10 @@ interface Props {
   conversations: ConversationWithLastMessage[];
   selectedId: string | null;
   onSelect: (conv: ConversationWithLastMessage) => void;
+  unreadMap?: Record<string, number>;
 }
 
-export default function ConversationSidebar({ conversations, selectedId, onSelect }: Props) {
+export default function ConversationSidebar({ conversations, selectedId, onSelect, unreadMap = {} }: Props) {
   const [tab, setTab] = useState<"instagram" | "facebook">("instagram");
 
   const filtered = conversations.filter((c) =>
@@ -145,9 +146,18 @@ export default function ConversationSidebar({ conversations, selectedId, onSelec
                   </p>
                 )}
                 {conv.last_message && (
-                  <p className="text-gray-500 text-xs truncate mt-0.5">{conv.last_message}</p>
+                  <p className={`text-xs truncate mt-0.5 ${(unreadMap[conv.id] ?? 0) > 0 ? "text-white font-medium" : "text-gray-500"}`}>
+                    {conv.last_message}
+                  </p>
                 )}
               </div>
+
+              {/* Unread badge */}
+              {(unreadMap[conv.id] ?? 0) > 0 && (
+                <span className="flex-shrink-0 bg-red-500 text-white text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center ml-1">
+                  {unreadMap[conv.id]}
+                </span>
+              )}
             </button>
           );
         })}
