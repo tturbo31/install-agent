@@ -338,6 +338,11 @@ export default function TrainingSimulator() {
     const msg = messages.find((m) => m.id === id);
     if (!msg || !msg.aiMsgId || !sandboxId) return;
 
+    // Find the user message that immediately preceded this AI message
+    const msgIndex = messages.findIndex((m) => m.id === id);
+    const precedingUserMsg = messages.slice(0, msgIndex).reverse().find((m) => m.role === "user");
+    const originalQuestion = precedingUserMsg?.content ?? "";
+
     await fetch("/api/training/chat", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -345,6 +350,7 @@ export default function TrainingSimulator() {
         sandboxId,
         aiMsgId: msg.aiMsgId,
         correction,
+        originalQuestion,
       }),
     });
 

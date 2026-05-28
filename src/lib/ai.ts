@@ -22,6 +22,37 @@ function getOpenAI(): OpenAI {
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+// ─── Hard-coded intercepts — bypass AI for specific question patterns ─────────
+// These override the AI completely because the model cannot be reliably
+// instructed to omit pricing from "what's included" type questions.
+
+const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
+  {
+    patterns: [
+      /what\s+is\s+included/i,
+      /what('s|\s+is)\s+in(cluded)?\s*(in)?\s*the\s+(materials?\s+)?package/i,
+      /what\s+does\s+the\s+package\s+(include|cover|come\s+with)/i,
+      /what\s+comes?\s+with\s+(it|the\s+package)/i,
+      /is\s+(labor|installation)\s+included/i,
+      /does\s+(it|the\s+package)\s+include\s+(labor|installation)/i,
+      /what\s+does?\s+(it|that)\s+include/i,
+    ],
+    response: "Hi! The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?",
+  },
+];
+
+function checkHardcodedResponse(messages: ChatMessage[]): string | null {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "user") return null;
+  const text = last.content;
+  for (const rule of HARDCODED_RESPONSES) {
+    if (rule.patterns.some((p) => p.test(text))) {
+      return rule.response;
+    }
+  }
+  return null;
+}
+
 function removeDashes(text: string): string {
   const emDash = String.fromCharCode(0x2014);
   const enDash = String.fromCharCode(0x2013);
@@ -41,8 +72,16 @@ function removeDashes(text: string): string {
 export async function getAIResponse(
   messages: ChatMessage[],
   memoryContext?: string | null,
-  systemMemory?: string | null
+  systemMemory?: string | null,
+  ownerCorrections?: string | null
 ): Promise<string> {
+  // Check hard-coded intercepts first — bypasses AI entirely for known patterns
+  const hardcoded = checkHardcodedResponse(messages);
+  if (hardcoded) {
+    console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
+    return hardcoded;
+  }
+
   const anthropic = getAnthropic();
 
   // Build system prompt — layer: base prompt + system learnings + client memory
@@ -56,8 +95,12 @@ export async function getAIResponse(
     systemContent += `\n\n---\n\n## RETURNING CLIENT — MEMORY\n${memoryContext}\n\nUse this memory to avoid repeating questions the client already answered. Do NOT ask for info you already have.`;
   }
 
+  if (ownerCorrections) {
+    systemContent += `\n\n---\n\n## MANDATORY OWNER CORRECTIONS — THESE OVERRIDE EVERYTHING\nThe owner has already corrected these responses. When the client's question matches or is similar to a PERGUNTA below, you MUST use the exact RESPOSTA CORRETA. No exceptions.\n\n${ownerCorrections}`;
+  }
+
   // FINAL CRITICAL OVERRIDES — these come last and cannot be overridden by anything above
-  systemContent += `\n\n---\n\nFINAL RULES THAT OVERRIDE EVERYTHING ABOVE:\n1. ZERO DASHES ANYWHERE. This means no hyphen (-), no en dash (–), no em dash (—). The em dash is the most common violation. Sentences like "400 sqft [em dash] that comes out to" or "thinking [em dash] and I'll" are FAILURES. Replace every dash with a comma or split into two sentences. Scan your entire message before sending. One dash anywhere = automatic failure.\n2. NEVER say "let me have our specialist send you the catalog" or "I'll have someone send you photos." You send photos yourself right now.\n3. When a client asks for colors, options, or photos: ALWAYS use [SEND_IMAGES: color1, color2, color3] AND include both links in the same message:\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\nNo exceptions. Missing [SEND_IMAGES] or missing the links is an automatic failure.`;
+  systemContent += `\n\n---\n\nFINAL RULES THAT OVERRIDE EVERYTHING ABOVE:\n1. ZERO DASHES ANYWHERE. This means no hyphen (-), no en dash (–), no em dash (—). The em dash is the most common violation. Sentences like "400 sqft [em dash] that comes out to" or "thinking [em dash] and I'll" are FAILURES. Replace every dash with a comma or split into two sentences. Scan your entire message before sending. One dash anywhere = automatic failure.\n2. NEVER say "let me have our specialist send you the catalog" or "I'll have someone send you photos." You send photos yourself right now.\n3. When a client asks for colors, options, or photos: ALWAYS use [SEND_IMAGES: color1, color2, color3] AND include both links in the same message:\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\nNo exceptions. Missing [SEND_IMAGES] or missing the links is an automatic failure.\n4. When a client asks what is included in the package, what the package covers, or what comes with it: your reply MUST be EXACTLY this (word for word): "The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?" — ZERO variation allowed. Do NOT add "$5", "$5/sqft", "$5 per sqft", "no hidden fees", "no surprises", "Luxury Vinyl promo", or any other phrase. Any deviation from this exact reply = automatic failure.`;
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",

@@ -119,23 +119,24 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const messaging = (entry?.messaging as Record<string, unknown>[])?.[0];
     if (!messaging) return;
 
-    // Skip echoes (messages sent by the page itself)
+    // Skip echoes (messages sent by the page itself) — but save as training examples
     if ((messaging.message as Record<string, unknown>)?.is_echo) {
-      if (process.env.AGENT_PAUSED === "1") {
-        const echoText = (messaging.message as Record<string, unknown>)?.text as string;
-        const recipientId = (messaging.recipient as Record<string, unknown>)?.id as string;
-        if (echoText && recipientId === FB_PAGE_ID) {
-          const psid = (messaging.sender as Record<string, unknown>)?.id as string;
+      const echoText = (messaging.message as Record<string, unknown>)?.text as string;
+      const echoSenderId = (messaging.sender as Record<string, unknown>)?.id as string;
+      // In echo events: sender = PAGE, recipient = client PSID
+      if (echoText && echoSenderId === FB_PAGE_ID) {
+        const clientPsid = (messaging.recipient as Record<string, unknown>)?.id as string;
+        if (clientPsid) {
           const { data: conv } = await supabaseAdmin
             .from("instagram_conversations")
             .select("id")
-            .eq("igsid", `fb_${psid}`)
+            .eq("igsid", `fb_${clientPsid}`)
             .maybeSingle();
           if (conv?.id) {
             void supabaseAdmin.from("instagram_messages").insert({
               conversation_id: conv.id,
               role: "assistant",
-              content: `[Treino FB] ${echoText}`,
+              content: `[Treino] ${echoText}`,
             });
           }
         }

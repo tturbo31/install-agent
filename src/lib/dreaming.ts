@@ -138,6 +138,33 @@ async function fetchRecentConversations(): Promise<string> {
     : "No meaningful conversations found.";
 }
 
+// ─── Fetch owner corrections ([Treino] messages) from the last 30 days ───────
+
+async function fetchOwnerCorrections(): Promise<string> {
+  const db = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: msgs } = await db
+    .from("instagram_messages")
+    .select("content, created_at, conversation_id")
+    .like("content", "[Treino]%")
+    .gte("created_at", thirtyDaysAgo)
+    .order("created_at", { ascending: true })
+    .limit(50);
+
+  if (!msgs || msgs.length === 0) return "";
+
+  const lines = msgs.map((m) =>
+    m.content.replace(/^\[Treino\]\s*/, "").trim()
+  );
+
+  return lines.join("\n");
+}
+
 // ─── Main Dreaming function ──────────────────────────────────────────────────
 
 export interface DreamResult {
@@ -154,8 +181,9 @@ export async function runDreaming(): Promise<DreamResult> {
   const storeId = await getOrCreateSystemStore();
   const currentLearnings = await readSystemMemory(storeId);
 
-  // 2. Fetch conversations
+  // 2. Fetch conversations and owner corrections
   const transcripts = await fetchRecentConversations();
+  const ownerCorrections = await fetchOwnerCorrections();
   const convCount = (transcripts.match(/--- Conversation/g) || []).length;
 
   if (convCount === 0) {
@@ -167,6 +195,10 @@ export async function runDreaming(): Promise<DreamResult> {
     };
   }
 
+  const correctionsSection = ownerCorrections
+    ? `\n\n---\n\nOWNER MANUAL CORRECTIONS (highest priority — these are cases where the owner fixed the agent's response. The new learnings MUST reflect these corrections):\n${ownerCorrections}`
+    : "";
+
   // 3. Claude analyzes patterns
   const analysisResponse = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -175,11 +207,12 @@ export async function runDreaming(): Promise<DreamResult> {
 The agent classifies leads as SMALL (<500 sqft, close by DM) or LARGE (>500 sqft, schedule free in-person visit).
 Pricing: Luxury Vinyl $5/sqft (floor+labor). Visit = free quote, agent brings samples, measures, negotiates.
 
-Your job: find patterns and generate specific, actionable improvements for the agent.`,
+Your job: find patterns and generate specific, actionable improvements for the agent.
+IMPORTANT: Owner manual corrections are the highest priority signal. They show exactly where the agent failed and what the correct response is. Always incorporate them into the improvements.`,
     messages: [
       {
         role: "user",
-        content: `Here are the recent conversations from the last 7 days:\n\n${transcripts}\n\n---\n\nAnalyze these conversations and produce an updated learnings file in this EXACT markdown format:
+        content: `Here are the recent conversations from the last 7 days:\n\n${transcripts}${correctionsSection}\n\n---\n\nAnalyze these conversations and produce an updated learnings file in this EXACT markdown format:
 
 # OzziFloors Agent — System Learnings
 Updated: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}

@@ -108,17 +108,11 @@ export async function POST(req: NextRequest) {
       // Non-fatal: proceed without system memory
     }
 
-    // Load owner corrections and prepend them to system memory
+    // Load owner corrections — passed separately so they get injected with higher priority
     const ownerCorrections = await loadOwnerCorrections(sandboxId);
-    if (ownerCorrections) {
-      const correctionBlock = `## OWNER CORRECTIONS — FOLLOW THESE EXACTLY\nThese are responses the owner already corrected. When a similar situation arises, use the corrected version instead.\n\n${ownerCorrections}`;
-      systemMemory = systemMemory
-        ? `${correctionBlock}\n\n---\n\n${systemMemory}`
-        : correctionBlock;
-    }
 
     // Call the AI
-    const rawAiResponse = await getAIResponse(messagesForAI, null, systemMemory);
+    const rawAiResponse = await getAIResponse(messagesForAI, null, systemMemory, ownerCorrections);
 
     // Strip any dash characters before sending to client (belt-and-suspenders)
     const emDash = String.fromCharCode(0x2014);
@@ -170,10 +164,11 @@ export async function POST(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
-    const { sandboxId, aiMsgId, correction } = body as {
+    const { sandboxId, aiMsgId, correction, originalQuestion } = body as {
       sandboxId?: string;
       aiMsgId?: string;
       correction?: string;
+      originalQuestion?: string;
     };
 
     if (!sandboxId || !aiMsgId || !correction) {
@@ -183,11 +178,15 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // Persist the correction as a new assistant message tagged with [Training]
+    // Store correction in Q→A format so the AI knows when to apply it
+    const correctionContent = originalQuestion
+      ? `[Treino] PERGUNTA: "${originalQuestion}" → RESPOSTA CORRETA: "${correction}"`
+      : `[Treino] ${correction}`;
+
     const { error } = await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: sandboxId,
       role: "assistant",
-      content: `[Treino] ${correction}`,
+      content: correctionContent,
     });
 
     if (error) {
