@@ -22,6 +22,21 @@ function getOpenAI(): OpenAI {
 
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+function removeDashes(text: string): string {
+  const emDash = String.fromCharCode(0x2014);
+  const enDash = String.fromCharCode(0x2013);
+  const figDash = String.fromCharCode(0x2012);
+  const horizBar = String.fromCharCode(0x2015);
+  return text
+    .split(emDash).join(",")
+    .split(enDash).join(",")
+    .split(figDash).join(",")
+    .split(horizBar).join(",")
+    .replace(/ - /g, ", ")
+    .replace(/,\s*,/g, ",")
+    .replace(/,\s*\./g, ".");
+}
+
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
 export async function getAIResponse(
   messages: ChatMessage[],
@@ -41,6 +56,9 @@ export async function getAIResponse(
     systemContent += `\n\n---\n\n## RETURNING CLIENT — MEMORY\n${memoryContext}\n\nUse this memory to avoid repeating questions the client already answered. Do NOT ask for info you already have.`;
   }
 
+  // FINAL CRITICAL OVERRIDES — these come last and cannot be overridden by anything above
+  systemContent += `\n\n---\n\nFINAL RULES THAT OVERRIDE EVERYTHING ABOVE:\n1. ZERO DASHES ANYWHERE. This means no hyphen (-), no en dash (–), no em dash (—). The em dash is the most common violation. Sentences like "400 sqft [em dash] that comes out to" or "thinking [em dash] and I'll" are FAILURES. Replace every dash with a comma or split into two sentences. Scan your entire message before sending. One dash anywhere = automatic failure.\n2. NEVER say "let me have our specialist send you the catalog" or "I'll have someone send you photos." You send photos yourself right now.\n3. When a client asks for colors, options, or photos: ALWAYS use [SEND_IMAGES: color1, color2, color3] AND include both links in the same message:\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\nNo exceptions. Missing [SEND_IMAGES] or missing the links is an automatic failure.`;
+
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1024,
@@ -52,7 +70,12 @@ export async function getAIResponse(
   });
 
   const block = response.content[0];
-  if (block.type === "text") return block.text;
+  if (block.type === "text") {
+    const cleaned = removeDashes(block.text);
+    const hadDash = block.text !== cleaned;
+    console.log(`[AI v4] dash removed: ${hadDash} | preview: ${cleaned.slice(0, 60)}`);
+    return cleaned;
+  }
   return "Sorry, I couldn't generate a response.";
 }
 
