@@ -5,6 +5,22 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
 const SANDBOX_IGSID = "training_sandbox";
 
+// Load all owner corrections saved via [Treino] prefix
+async function loadOwnerCorrections(sandboxId: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from("instagram_messages")
+    .select("content")
+    .eq("conversation_id", sandboxId)
+    .eq("role", "assistant")
+    .like("content", "[Treino]%")
+    .order("created_at", { ascending: true });
+
+  if (!data || data.length === 0) return null;
+
+  const corrections = data.map((m) => m.content.replace(/^\[Treino\]\s*/, "").trim());
+  return corrections.join("\n");
+}
+
 // Ensure the sandbox conversation exists and return its id
 async function getOrCreateSandboxConversation(): Promise<string> {
   const { data: existing } = await supabaseAdmin
@@ -90,6 +106,15 @@ export async function POST(req: NextRequest) {
       systemMemory = await readSystemMemory(storeId);
     } catch {
       // Non-fatal: proceed without system memory
+    }
+
+    // Load owner corrections and prepend them to system memory
+    const ownerCorrections = await loadOwnerCorrections(sandboxId);
+    if (ownerCorrections) {
+      const correctionBlock = `## OWNER CORRECTIONS — FOLLOW THESE EXACTLY\nThese are responses the owner already corrected. When a similar situation arises, use the corrected version instead.\n\n${ownerCorrections}`;
+      systemMemory = systemMemory
+        ? `${correctionBlock}\n\n---\n\n${systemMemory}`
+        : correctionBlock;
     }
 
     // Call the AI
