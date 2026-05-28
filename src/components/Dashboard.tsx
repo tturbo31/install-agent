@@ -6,6 +6,7 @@ import { ConversationWithLastMessage, Message } from "@/lib/types";
 import ConversationSidebar from "@/components/ConversationSidebar";
 import ChatHeader from "@/components/ChatHeader";
 import ChatPanel from "@/components/ChatPanel";
+import TrainingSimulator from "@/components/TrainingSimulator";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -38,6 +39,7 @@ export default function Dashboard() {
   const [isResuming, setIsResuming] = useState(false);
   const [resumeMsg, setResumeMsg] = useState<string | null>(null);
   const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
+  const [activeTab, setActiveTab] = useState<"inbox" | "simulator">("inbox");
   const selectedConvRef = useRef<string | null>(null);
 
   const loadConversations = useCallback(async () => {
@@ -175,44 +177,108 @@ export default function Dashboard() {
       </div>
 
       <div className="flex h-screen w-full pt-10">
-        <ConversationSidebar
-          conversations={conversations}
-          selectedId={selectedConv?.id ?? null}
-          onSelect={handleSelectConversation}
-          unreadMap={unreadMap}
-        />
-
-        <main className="flex-1 flex flex-col overflow-hidden">
-          {selectedConv ? (
-            <>
-              <ChatHeader
-                conversation={selectedConv}
-                onToggleMode={handleToggleMode}
-                isTogglingMode={isTogglingMode}
-              />
-              <ChatPanel
-                conversation={selectedConv}
-                messages={messages}
-                onSendMessage={handleSendMessage}
-                isSending={isSending}
-              />
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <div className="text-5xl mb-4">💬</div>
-                <h2 className="text-gray-400 text-xl font-medium">
-                  {totalUnread > 0
-                    ? `${totalUnread} mensagem${totalUnread > 1 ? "s" : ""} nova${totalUnread > 1 ? "s" : ""} aguardando`
-                    : "Selecione uma conversa"}
-                </h2>
-                <p className="text-gray-600 text-sm mt-2">
-                  Responda pelo dashboard — o cliente recebe pelo Instagram e o agente aprende
-                </p>
-              </div>
+        {activeTab === "simulator" ? (
+          /* Simulator tab: full-width, no sidebar */
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Tab bar inside the main area */}
+            <div className="flex-shrink-0 flex border-b border-gray-800 bg-gray-900">
+              <button
+                onClick={() => setActiveTab("inbox")}
+                className="flex items-center gap-2 px-5 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors border-b-2 border-transparent"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3-1-1z" />
+                </svg>
+                Inbox
+                {totalUnread > 0 && (
+                  <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">
+                    {totalUnread}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setActiveTab("simulator")}
+                className="flex items-center gap-2 px-5 py-3 text-sm font-medium text-white transition-colors border-b-2 border-indigo-500"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.63 48.63 0 0112 20.904a48.63 48.63 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5" />
+                </svg>
+                Simulador
+              </button>
             </div>
-          )}
-        </main>
+            <TrainingSimulator />
+          </div>
+        ) : (
+          /* Inbox tab: sidebar + chat panel */
+          <>
+            <div className="flex flex-col w-80 flex-shrink-0">
+              {/* Tab bar above the sidebar */}
+              <div className="flex border-b border-gray-800 bg-gray-900">
+                <button
+                  onClick={() => setActiveTab("inbox")}
+                  className="flex items-center gap-2 px-5 py-3 text-sm font-medium text-white transition-colors border-b-2 border-indigo-500"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-3 3-1-1z" />
+                  </svg>
+                  Inbox
+                  {totalUnread > 0 && (
+                    <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">
+                      {totalUnread}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setActiveTab("simulator")}
+                  className="flex items-center gap-2 px-5 py-3 text-sm font-medium text-gray-400 hover:text-white transition-colors border-b-2 border-transparent"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.63 48.63 0 0112 20.904a48.63 48.63 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5" />
+                  </svg>
+                  Simulador
+                </button>
+              </div>
+              <ConversationSidebar
+                conversations={conversations}
+                selectedId={selectedConv?.id ?? null}
+                onSelect={handleSelectConversation}
+                unreadMap={unreadMap}
+              />
+            </div>
+
+            <main className="flex-1 flex flex-col overflow-hidden">
+              {selectedConv ? (
+                <>
+                  <ChatHeader
+                    conversation={selectedConv}
+                    onToggleMode={handleToggleMode}
+                    isTogglingMode={isTogglingMode}
+                  />
+                  <ChatPanel
+                    conversation={selectedConv}
+                    messages={messages}
+                    onSendMessage={handleSendMessage}
+                    isSending={isSending}
+                  />
+                </>
+              ) : (
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="text-5xl mb-4">💬</div>
+                    <h2 className="text-gray-400 text-xl font-medium">
+                      {totalUnread > 0
+                        ? `${totalUnread} mensagem${totalUnread > 1 ? "s" : ""} nova${totalUnread > 1 ? "s" : ""} aguardando`
+                        : "Selecione uma conversa"}
+                    </h2>
+                    <p className="text-gray-600 text-sm mt-2">
+                      Responda pelo dashboard — o cliente recebe pelo Instagram e o agente aprende
+                    </p>
+                  </div>
+                </div>
+              )}
+            </main>
+          </>
+        )}
       </div>
     </div>
   );

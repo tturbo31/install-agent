@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendInstagramMessage } from "@/lib/instagram";
+import { sendFacebookMessage } from "@/lib/facebook";
+import { sendWhatsAppMessage } from "@/lib/whatsapp";
 
 export async function POST(
   req: NextRequest,
@@ -23,10 +25,20 @@ export async function POST(
     return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
   }
 
-  // Send via Instagram API
-  const igResult = await sendInstagramMessage(conversation.igsid, body.text);
-  if (igResult.error) {
-    return NextResponse.json({ error: igResult.error.message }, { status: 500 });
+  const { igsid } = conversation;
+
+  // Route to the correct platform based on igsid prefix
+  if (igsid.startsWith("wa_")) {
+    const waId = igsid.slice(3);
+    await sendWhatsAppMessage(waId, body.text);
+  } else if (igsid.startsWith("fb_")) {
+    const psid = igsid.slice(3);
+    await sendFacebookMessage(psid, body.text);
+  } else {
+    const igResult = await sendInstagramMessage(igsid, body.text);
+    if (igResult.error) {
+      return NextResponse.json({ error: igResult.error.message }, { status: 500 });
+    }
   }
 
   // Store in DB
@@ -44,7 +56,6 @@ export async function POST(
     return NextResponse.json({ error: msgError.message }, { status: 500 });
   }
 
-  // Update conversation updated_at
   await supabaseAdmin
     .from("instagram_conversations")
     .update({ updated_at: new Date().toISOString() })

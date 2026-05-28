@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
-import { notifyOwners } from "@/lib/whatsapp";
+import { sendWhatsAppMessage, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer } from "@/lib/ai";
 import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
@@ -15,22 +14,8 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
 export const maxDuration = 60;
 
-const FB_PAGE_ID = process.env.FACEBOOK_PAGE_ID ?? "";
-
-// ─── Webhook verification ─────────────────────────────────────────────────
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
-  const challenge = searchParams.get("hub.challenge");
-  if (mode === "subscribe" && token === process.env.INSTAGRAM_VERIFY_TOKEN) {
-    return new NextResponse(challenge, { status: 200 });
-  }
-  return new NextResponse("Forbidden", { status: 403 });
-}
-
 // ─── [BOOK:...] processor ─────────────────────────────────────────────────
-async function processBookingCommand(aiResponse: string, conversationId: string, psid: string): Promise<string> {
+async function processBookingCommand(aiResponse: string, conversationId: string, waId: string): Promise<string> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
@@ -51,14 +36,14 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
     }
 
     const result = await createBooking({
-      clientName: bookingData.name ?? "Facebook Client",
-      clientPhone: bookingData.phone ?? "",
+      clientName: bookingData.name ?? "WhatsApp Client",
+      clientPhone: bookingData.phone ?? waId,
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
-      notes: (bookingData.notes ?? "") + " | Facebook Messenger",
-      creative: "Facebook Messenger",
-      igsid: `fb_${psid}`,
+      notes: (bookingData.notes ?? "") + " | WhatsApp",
+      creative: "WhatsApp",
+      igsid: `wa_${waId}`,
     });
 
     const clean = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -66,7 +51,7 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
       ? `${clean}\n\nAppointment confirmed! I'll reach out 40 minutes before arriving. My name is ${result.sellerName} and I look forward to meeting you!`
       : `${clean}\n\nThat slot just got taken. Can you pick another time?`;
   } catch (err) {
-    console.error("FB booking error:", err);
+    console.error("WA booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
   }
 }
@@ -88,112 +73,101 @@ async function processNotifyOwner(
       .order("created_at", { ascending: false })
       .limit(8);
     await notifyOwners({
-      platform: "Messenger",
+      platform: "WhatsApp",
       clientName,
       clientId,
       recentMessages: (recentMsgs ?? []).reverse(),
     });
   } catch (err) {
-    console.error("FB processNotifyOwner error:", err);
+    console.error("WA processNotifyOwner error:", err);
   }
   return clean;
 }
 
 // ─── [CANCEL_BOOKING] processor ──────────────────────────────────────────
-async function processCancelCommand(aiResponse: string, psid: string): Promise<string> {
+async function processCancelCommand(aiResponse: string, waId: string): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
   const clean = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
   try {
-    const result = await cancelClientBooking(`fb_${psid}`);
-    if (result.success) console.log(`FB: Cancelled ${result.cancelled} booking(s) for ${psid}`);
+    const result = await cancelClientBooking(`wa_${waId}`);
+    if (result.success) console.log(`WA: Cancelled ${result.cancelled} booking(s) for ${waId}`);
   } catch (err) {
-    console.error("FB cancel error:", err);
+    console.error("WA cancel error:", err);
   }
   return clean;
 }
 
 // ─── Main message handler ─────────────────────────────────────────────────
-async function handleFbMessage(body: Record<string, unknown>) {
+async function handleWaMessage(body: Record<string, unknown>) {
   try {
-    const entry = (body.entry as Record<string, unknown>[])?.[0];
-    const messaging = (entry?.messaging as Record<string, unknown>[])?.[0];
-    if (!messaging) return;
+    // Z-API only sends ReceivedCallback for incoming messages
+    if (body.type !== "ReceivedCallback") return;
+    if (body.fromMe === true) return;
 
-    // Skip echoes (messages sent by the page itself)
-    if ((messaging.message as Record<string, unknown>)?.is_echo) {
-      if (process.env.AGENT_PAUSED === "1") {
-        const echoText = (messaging.message as Record<string, unknown>)?.text as string;
-        const recipientId = (messaging.recipient as Record<string, unknown>)?.id as string;
-        if (echoText && recipientId === FB_PAGE_ID) {
-          const psid = (messaging.sender as Record<string, unknown>)?.id as string;
-          const { data: conv } = await supabaseAdmin
-            .from("instagram_conversations")
-            .select("id")
-            .eq("igsid", `fb_${psid}`)
-            .maybeSingle();
-          if (conv?.id) {
-            void supabaseAdmin.from("instagram_messages").insert({
-              conversation_id: conv.id,
-              role: "assistant",
-              content: `[Treino FB] ${echoText}`,
-            });
-          }
-        }
-      }
-      return;
-    }
+    const phone = body.phone as string;
+    if (!phone) return;
 
-    const psid = (messaging.sender as Record<string, unknown>)?.id as string;
-    if (!psid || psid === FB_PAGE_ID) return;
-
-    const msg = messaging.message as Record<string, unknown>;
-    const msgId = msg?.mid as string;
-    if (!msgId) return;
+    const messageId = body.messageId as string;
+    if (!messageId) return;
 
     // Deduplicate
     const { data: already } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
-      .eq("instagram_msg_id", msgId)
+      .eq("instagram_msg_id", messageId)
       .maybeSingle();
     if (already) return;
 
-    // Find or create conversation (igsid = "fb_{psid}" to distinguish from Instagram)
-    const fbIgsid = `fb_${psid}`;
+    // Find or create conversation (igsid = "wa_{phone}")
+    const waIgsid = `wa_${phone}`;
     let { data: conv } = await supabaseAdmin
       .from("instagram_conversations")
       .select("*")
-      .eq("igsid", fbIgsid)
+      .eq("igsid", waIgsid)
       .single();
 
     if (!conv) {
       const defaultMode = process.env.AGENT_PAUSED === "1" ? "human" : "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
-        .insert({ igsid: fbIgsid, mode: defaultMode })
+        .insert({ igsid: waIgsid, mode: defaultMode })
         .select()
         .single();
       conv = newConv;
     }
     if (!conv) return;
 
-    // Extract text and attachments
-    const attachments = (msg?.attachments as Record<string, unknown>[]) ?? [];
-    const imageAtt = attachments.find((a) => a.type === "image");
-    const audioAtt = attachments.find((a) => a.type === "audio");
+    // Extract message content by type
+    const textObj = body.text as Record<string, unknown> | undefined;
+    const imageObj = body.image as Record<string, unknown> | undefined;
+    const audioObj = body.audio as Record<string, unknown> | undefined;
+    const videoObj = body.video as Record<string, unknown> | undefined;
+    const documentObj = body.document as Record<string, unknown> | undefined;
 
-    let rawText = (msg?.text as string) ?? "";
-    const imageUrl = (imageAtt?.payload as Record<string, unknown>)?.url as string ?? null;
-    const audioUrl = (audioAtt?.payload as Record<string, unknown>)?.url as string ?? null;
+    let rawText = "";
+    let imageUrl: string | null = null;
+    let audioUrl: string | null = null;
 
-    if (imageUrl && !rawText) rawText = "[floor plan or photo]";
-    if (audioUrl && !rawText) rawText = "[voice message]";
+    if (textObj?.message) {
+      rawText = textObj.message as string;
+    } else if (imageObj?.imageUrl) {
+      imageUrl = imageObj.imageUrl as string;
+      rawText = "[floor plan or photo]";
+    } else if (audioObj?.audioUrl) {
+      audioUrl = audioObj.audioUrl as string;
+      rawText = "[voice message]";
+    } else if (videoObj) {
+      rawText = "[video]";
+    } else if (documentObj) {
+      rawText = "[document]";
+    }
+
     if (!rawText) return;
 
     // Pre-fetch image
     let preFetchedImageBase64: string | null = null;
     if (imageUrl) {
-      preFetchedImageBase64 = await downloadFacebookAttachment(imageUrl).catch(() => null);
+      preFetchedImageBase64 = await downloadZApiImage(imageUrl).catch(() => null);
     }
 
     // Store message immediately
@@ -203,7 +177,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
         conversation_id: conv.id,
         role: "user",
         content: rawText,
-        instagram_msg_id: msgId,
+        instagram_msg_id: messageId,
       })
       .select("id, created_at")
       .single();
@@ -218,7 +192,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     if (conv.mode === "human") return;
 
-    // Debounce
+    // Debounce 3s
     await new Promise((r) => setTimeout(r, 3000));
     const { data: latestMsg } = await supabaseAdmin
       .from("instagram_messages")
@@ -230,7 +204,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // Rate limit check
+    // Rate limit
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -256,45 +230,42 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     if (audioUrl) {
       try {
-        const res = await fetch(audioUrl);
-        if (res.ok) {
-          const ct = res.headers.get("content-type") ?? "audio/mp4";
-          const buf = await res.arrayBuffer();
-          if (buf.byteLength > 1000) {
-            const transcript = await transcribeAudioFromBuffer(buf, ct);
-            if (transcript && !transcript.includes("please type")) {
-              enrichedText = transcript;
-              mediaProcessed = true;
-            }
+        const audioData = await downloadZApiAudio(audioUrl);
+        if (audioData && audioData.buffer.byteLength > 1000) {
+          const transcript = await transcribeAudioFromBuffer(audioData.buffer, audioData.contentType);
+          if (transcript && !transcript.includes("please type") && !transcript.includes("no speech")) {
+            enrichedText = transcript;
+            mediaProcessed = true;
           }
         }
       } catch { /* ignore */ }
     }
 
-    const clientSentPlainText = !!rawText && !audioUrl && !imageUrl;
-    const hasRealContent = clientSentPlainText || mediaProcessed;
+    const isPlainText = !!textObj?.message;
+    const hasRealContent = isPlainText || mediaProcessed;
 
     if (!hasRealContent) {
-      const fallback = imageUrl ? "Got your image! Please type the approximate square footage and I'll calculate a quote right here." : "Got your message! Could you type your question?";
-      await sendFacebookMessage(psid, fallback);
+      const fallback = imageUrl
+        ? "Got your floor plan! I wasn't able to read the details — just type the total area (sqft or sqm) and I'll calculate right here."
+        : "Got your message! Could you type your question?";
+      await sendWhatsAppMessage(phone, fallback);
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
       return;
     }
 
     // Update stored message with enriched content
-    await supabaseAdmin.from("instagram_messages").update({ content: enrichedText }).eq("instagram_msg_id", msgId);
+    await supabaseAdmin.from("instagram_messages").update({ content: enrichedText }).eq("instagram_msg_id", messageId);
 
-    // Fetch Facebook profile
-    try {
-      const profile = await fetchFacebookProfile(psid);
-      if (profile.name || profile.profile_pic) {
-        await supabaseAdmin.from("instagram_conversations").update({
-          username: profile.name,
-          profile_pic: profile.profile_pic,
-          updated_at: new Date().toISOString(),
-        }).eq("id", conv.id);
-      }
-    } catch { /* ignore */ }
+    // Save contact name if available
+    const senderName = body.senderName as string | undefined;
+    const chatName = body.chatName as string | undefined;
+    const contactName = senderName || chatName;
+    if (contactName && !conv.username) {
+      await supabaseAdmin.from("instagram_conversations").update({
+        username: contactName,
+        updated_at: new Date().toISOString(),
+      }).eq("id", conv.id);
+    }
 
     // Load memories in parallel with timeout
     const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
@@ -304,7 +275,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
     let newMemoryStoreId = memoryStoreId;
     if (!newMemoryStoreId && process.env.ANTHROPIC_API_KEY) {
       try {
-        newMemoryStoreId = await createClientMemoryStore(fbIgsid, conv.username);
+        newMemoryStoreId = await createClientMemoryStore(waIgsid, conv.username ?? contactName);
         await supabaseAdmin.from("instagram_conversations").update({ memory_store_id: newMemoryStoreId }).eq("id", conv.id);
       } catch { /* ignore */ }
     }
@@ -351,11 +322,11 @@ async function handleFbMessage(body: Record<string, unknown>) {
     }
 
     const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const afterBooking = await processBookingCommand(rawAiResponse, conv.id, psid);
-    const afterCancel = await processCancelCommand(afterBooking, psid);
-    const finalResponse = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
+    const afterBooking = await processBookingCommand(rawAiResponse, conv.id, phone);
+    const afterCancel = await processCancelCommand(afterBooking, phone);
+    const finalResponse = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
 
-    await sendFacebookMessage(psid, finalResponse);
+    await sendWhatsAppMessage(phone, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
 
     // Update memory in background
@@ -363,21 +334,25 @@ async function handleFbMessage(body: Record<string, unknown>) {
       const allMessages = [...messagesForAI, { role: "assistant" as const, content: finalResponse }];
       const memUpdate = extractMemoryUpdate(finalResponse, allMessages, {});
       if (memUpdate) {
-        updateClientMemory(newMemoryStoreId, { ...memUpdate, client_name: conv.username || undefined })
-          .catch((e) => console.error("FB memory update error:", e));
+        updateClientMemory(newMemoryStoreId, { ...memUpdate, client_name: conv.username || contactName || undefined })
+          .catch((e) => console.error("WA memory update error:", e));
       }
     }
   } catch (err) {
-    console.error("FB webhook error:", err);
+    console.error("WA webhook error:", err);
   }
 }
 
 // ─── POST handler ─────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
-  if (!body || body.object !== "page") {
-    return NextResponse.json({ status: "ignored" }, { status: 200 });
-  }
-  waitUntil(handleFbMessage(body));
+  if (!body) return NextResponse.json({ status: "ignored" }, { status: 200 });
+
+  waitUntil(handleWaMessage(body));
+  return NextResponse.json({ status: "ok" }, { status: 200 });
+}
+
+// ─── GET — Z-API webhook verification (not required but safe to have) ─────
+export async function GET() {
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

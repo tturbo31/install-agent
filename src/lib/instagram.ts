@@ -38,6 +38,37 @@ export async function sendInstagramMessage(recipientIgsid: string, text: string)
   return res.json();
 }
 
+export async function sendInstagramImage(recipientIgsid: string, imageUrl: string): Promise<boolean> {
+  try {
+    const url = new URL("https://graph.instagram.com/v24.0/me/messages");
+    url.searchParams.set("access_token", process.env.INSTAGRAM_ACCESS_TOKEN!);
+
+    const res = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: recipientIgsid },
+        message: {
+          attachment: {
+            type: "image",
+            payload: { url: imageUrl, is_reusable: true },
+          },
+        },
+      }),
+    });
+
+    const result = await res.json();
+    if (result.error) {
+      console.error("Instagram image send error:", result.error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("sendInstagramImage error:", err);
+    return false;
+  }
+}
+
 export async function sendInstagramAudio(recipientIgsid: string, audioBuffer: Buffer): Promise<boolean> {
   try {
     // Upload audio to Supabase storage

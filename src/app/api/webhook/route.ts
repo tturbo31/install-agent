@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
-import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
+import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio, sendInstagramImage } from "@/lib/instagram";
+import { getProductImages } from "@/lib/product-images";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -18,6 +19,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
+import { notifyOwners } from "@/lib/whatsapp";
 
 export const maxDuration = 60;
 
@@ -94,6 +96,58 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
     console.error("Booking parse error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
   }
+}
+
+// ─── [NOTIFY_OWNER] processor ─────────────────────────────────────────────
+async function processNotifyOwner(
+  aiResponse: string,
+  conversationId: string,
+  clientName: string | null,
+  clientId: string
+): Promise<string> {
+  if (!/\[NOTIFY_OWNER\]/i.test(aiResponse)) return aiResponse;
+  const clean = aiResponse.replace(/\[NOTIFY_OWNER\]/gi, "").trim();
+  try {
+    const { data: recentMsgs } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("role, content")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(8);
+    await notifyOwners({
+      platform: "Instagram",
+      clientName,
+      clientId,
+      recentMessages: (recentMsgs ?? []).reverse(),
+    });
+  } catch (err) {
+    console.error("IG processNotifyOwner error:", err);
+  }
+  return clean;
+}
+
+// ─── [SEND_IMAGES: color1, color2] — send product photos ─────────────────
+async function processProductImages(
+  aiResponse: string,
+  recipientIgsid: string
+): Promise<string> {
+  const match = aiResponse.match(/\[SEND_IMAGES:\s*([^\]]+)\]/i);
+  if (!match) return aiResponse;
+
+  const clean = aiResponse.replace(/\[SEND_IMAGES:[^\]]+\]/gi, "").trim();
+  const imageUrls = getProductImages(match[1]);
+
+  for (const url of imageUrls) {
+    try {
+      await sendInstagramImage(recipientIgsid, url);
+      // Small delay between images to avoid rate limits
+      await new Promise((r) => setTimeout(r, 400));
+    } catch (err) {
+      console.error("Product image send error:", url, err);
+    }
+  }
+
+  return clean;
 }
 
 // ─── Cancel booking when AI generates [CANCEL_BOOKING] ────────────────────
@@ -504,6 +558,9 @@ async function handleWebhook(body: WebhookPayload) {
     ];
     const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k));
 
+    const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
+    const isPartnershipRequest = partnershipKeywords.some((k) => lastUserMsg.includes(k));
+
     // Always build current date context so the agent never confuses days
     const now = new Date();
     const dayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -524,11 +581,16 @@ async function handleWebhook(body: WebhookPayload) {
     // Always inject date context; add full availability when scheduling topic detected
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      let systemNote = `[SYSTEM: ${dateContext}]`;
+      const systemParts: string[] = [dateContext];
       if (needsScheduling) {
         const availability = await getRealAvailabilityContext();
-        systemNote = `[SYSTEM: ${dateContext}\n\n${availability}]`;
+        systemParts.push(availability);
       }
+      const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
+      if (isPartnershipRequest && followerCount != null) {
+        systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
+      }
+      const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
       messagesForAI[lastIdx] = {
         ...messagesForAI[lastIdx],
         content: `${messagesForAI[lastIdx].content}\n\n${systemNote}`,
@@ -538,7 +600,9 @@ async function handleWebhook(body: WebhookPayload) {
     // ── Generate AI response ─────────────────────────────────────────────
     const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
     const afterBooking = await processBookingCommand(rawAiResponse, conversation.id, senderIgsid);
-    const finalResponse = await processCancelCommand(afterBooking, senderIgsid);
+    const afterCancel = await processCancelCommand(afterBooking, senderIgsid);
+    const afterImages = await processProductImages(afterCancel, senderIgsid);
+    const finalResponse = await processNotifyOwner(afterImages, conversation.id, conversation.username ?? null, senderIgsid);
 
     // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);
