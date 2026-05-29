@@ -521,10 +521,13 @@ async function handleWebhook(body: WebhookPayload) {
       // Large-lead confirmations — AI will immediately propose real slots in its response
       "entire house", "whole house", "all rooms", "all the rooms", "every room",
       "multiple rooms", "full apartment", "entire home", "the whole",
+      // Price/deal closing — often leads to visit scheduling
+      "sign today", "sign now", "best price", "best deal", "close today",
+      "if i sign", "ready to sign", "commit", "lock in", "move forward",
     ];
     // Also load availability if the last AI message was already in scheduling mode
     const lastAiMsg = history.filter((m) => m.role === "assistant").slice(-1)[0]?.content?.toLowerCase() ?? "";
-    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you/i.test(lastAiMsg);
+    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you|come by|free visit|bring samples|schedule a visit|in.person/i.test(lastAiMsg);
     const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k)) || aiWasScheduling;
 
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
