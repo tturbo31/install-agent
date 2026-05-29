@@ -114,15 +114,21 @@ export async function POST(req: NextRequest) {
     // Call the AI
     const rawAiResponse = await getAIResponse(messagesForAI, null, systemMemory, ownerCorrections);
 
-    // Strip any dash characters before sending to client (belt-and-suspenders)
+    // Strip dashes and any leftover [SEND_IMAGES] tags
     const emDash = String.fromCharCode(0x2014);
     const enDash = String.fromCharCode(0x2013);
-    const aiResponse = rawAiResponse
+    let aiResponse = rawAiResponse
       .split(emDash).join(",")
       .split(enDash).join(",")
       .replace(/ - /g, ", ")
       .replace(/,\s*,/g, ",")
       .replace(/,\s*\./g, ".");
+    if (/\[SEND_IMAGES[^\]]*\]/i.test(aiResponse)) {
+      aiResponse = aiResponse.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
+      if (!aiResponse.includes("ozzifloors.com")) {
+        aiResponse += "\n\nVeja todas as nossas opções em ozzifloors.com e no Instagram @ozzi.floors.";
+      }
+    }
 
     // Persist the AI response
     const { data: aiMsg, error: aiMsgError } = await supabaseAdmin

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags } from "@/lib/ai";
 import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -15,24 +15,16 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 export const maxDuration = 60;
 
 // ─── [BOOK:...] processor ─────────────────────────────────────────────────
-async function processBookingCommand(aiResponse: string, conversationId: string, waId: string): Promise<string> {
+async function processBookingCommand(aiResponse: string, waId: string): Promise<string> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
-    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { data: recentMsgs } = await supabaseAdmin
-      .from("instagram_messages")
-      .select("content")
-      .eq("conversation_id", conversationId)
-      .eq("role", "user")
-      .gte("created_at", fifteenMinAgo);
 
-    const recentText = (recentMsgs ?? []).map((m) => m.content).join(" ");
-    const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)\s?\d{3}[-.\s]?\d{4}/;
-    const addressPattern = /\d+\s+\w+(?:\s+\w+){1,}/;
-    if (!phonePattern.test(recentText) || !addressPattern.test(recentText)) {
-      return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
+    // Trust the AI extraction: require phone and address fields to be non-empty
+    if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
+      console.warn("WA booking blocked — phone or address missing from booking JSON");
+      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
     }
 
     const result = await createBooking({
@@ -204,13 +196,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // Rate limit
+    // Rate limit: 5s window prevents genuine duplicates without blocking fast client replies
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conv.id)
       .eq("role", "assistant")
-      .gte("created_at", new Date(Date.now() - 20000).toISOString())
+      .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
 
@@ -308,8 +300,18 @@ async function handleWaMessage(body: Record<string, unknown>) {
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
     const lastUserMsg = enrichedText.toLowerCase();
-    const schedulingKeywords = ["schedule","appointment","what day","what time","monday","tuesday","wednesday","thursday","friday","saturday","sunday","tomorrow","next week","book","slot","cancel","reschedule","visit"];
-    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k));
+    const schedulingKeywords = [
+      "schedule", "appointment", "what day", "what time",
+      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+      "tomorrow", "next week", "book", "slot", "cancel", "reschedule", "visit",
+      // Large-lead confirmations — AI will immediately propose real slots in its response
+      "entire house", "whole house", "all rooms", "all the rooms", "every room",
+      "multiple rooms", "full apartment", "entire home", "the whole",
+    ];
+    // Also load availability if the last AI message was already in scheduling mode
+    const lastAiMsg = history.filter((m) => m.role === "assistant").slice(-1)[0]?.content?.toLowerCase() ?? "";
+    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you/i.test(lastAiMsg);
+    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k)) || aiWasScheduling;
 
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
@@ -322,9 +324,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const afterBooking = await processBookingCommand(rawAiResponse, conv.id, phone);
+    const afterBooking = await processBookingCommand(rawAiResponse, phone);
     const afterCancel = await processCancelCommand(afterBooking, phone);
-    const finalResponse = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
+    const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
+    const finalResponse = stripForbiddenTags(afterNotify);
 
     await sendWhatsAppMessage(phone, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });

@@ -39,6 +39,62 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
     ],
     response: "Hi! The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?",
   },
+  {
+    // Portuguese: client asking to see photos / samples / catalog
+    patterns: [
+      /[nm]e\s+(envi[ae]|mand[ae]|mostr[ae])\s+.{0,25}(foto|imagem|amostra|cat[aá]logo|op[cç][aã]o)/i,
+      /conseg[ue]{1,2}\s+.{0,10}(enviar?|mandar?|mostrar?)\s+.{0,20}(foto|imagem|amostra)/i,
+      /enviar?\s+.{0,10}(fotos?|imagens?|amostra)/i,
+      /tem\s+(alguma\s+)?(foto|imagem|amostra|cat[aá]logo)/i,
+      /(foto|imagem|amostra)s?\s+(dos?\s+|de\s+)?(piso|ch[aã]o|vinyl|lvp|op[cç][aã]o)/i,
+      /quer\s+ver\s+.{0,25}(foto|imagem|amostra|op[cç][aã]o)/i,
+      /ver\s+.{0,15}(foto|imagem|amostra|op[cç][aã]o)s?/i,
+      /qual\s+(é\s+o\s+)?visual\s+(dos?\s+)?(piso|ch[aã]o|vinyl)/i,
+      /(foto|imagem|amostra|cat[aá]logo)\s+dos?\s+(pisos?|chão|ch[aã]o|op[cç])/i,
+    ],
+    response: "Você pode ver todas as nossas opções no site ozzifloors.com e no Instagram @ozzi.floors. Me conta mais sobre o seu espaço e o estilo que você prefere, assim te indico as melhores opções para o seu projeto!",
+  },
+  {
+    // English: client asking to see photos / samples / catalog
+    patterns: [
+      /send\s+.{0,40}(photos?|images?|pics?|samples?|catalogs?)/i,
+      /would\s+like\s+(you\s+to\s+)?send\s+.{0,40}(photos?|images?|samples?)/i,
+      /like\s+to\s+(see|view|receive|get)\s+.{0,40}(photos?|images?|samples?)/i,
+      /can\s+you\s+(send|show|share)\s+.{0,40}(photos?|images?|pics?|samples?|catalogs?)/i,
+      /do\s+you\s+have\s+(any\s+)?(photos?|images?|pics?|samples?|catalogs?)/i,
+      /show\s+me\s+(your\s+)?(floor|option|color|sample|catalog)/i,
+      /photos?\s+of\s+(the\s+)?(floor|tile|vinyl|option|samples?|available)/i,
+      /samples?\s+(you\s+have\s+)?available/i,
+      /what\s+do\s+(the\s+)?floors?\s+look\s+like/i,
+      /colors?\s+(do\s+you\s+have|options?|available)/i,
+    ],
+    response: "Here are some of our most popular options! All 100% waterproof with a 20 year warranty. Browse even more colors here:\n\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\n\nDo you have a style in mind? Warm wood tones, grey and modern, or light and neutral? I can narrow it down to the best options for your space.",
+  },
+  {
+    // Client who already had an in-person visit wants to negotiate the quoted price
+    patterns: [
+      // Portuguese patterns
+      /negoci[ao]/i,
+      /quero\s+(discutir|falar|conversar)\s+(sobre\s+)?(os?\s+)?(valor|pre[cç]o|or[cç]amento)/i,
+      /or[cç]amento\s+(que|da\s+visit|j[aá]\s+foi|feito|que\s+voc)/i,
+      /valor(es)?\s+(do|da|que|j[aá])/i,
+      /j[aá]\s+(fiz|fizemos|fizeram|foi\s+feito)\s+(o\s+)?or[cç]amento/i,
+      /j[aá]\s+tiv(e|emos)\s+(a\s+)?visit/i,
+      /depois\s+da\s+visit/i,
+      /sobre\s+o\s+or[cç]amento/i,
+      /o\s+pre[cç]o\s+(que|do)/i,
+      // English patterns
+      /negotiate\s+(the\s+)?(price|quote|cost|value|estimate)/i,
+      /(discuss|talk\s+about|go\s+over)\s+(the\s+)?(price|quote|estimate|value|cost)/i,
+      /the\s+(quote|estimate|price)\s+(from|you\s+gave|we\s+discussed|after)/i,
+      /after\s+the\s+(visit|in.?person)/i,
+      /from\s+the\s+(visit|in.?person|quote)/i,
+      /you\s+(visited|came\s+to)\s+my/i,
+      /already\s+(got|have|received)\s+a\s+(quote|estimate|price)/i,
+      /want\s+to\s+negotiate/i,
+    ],
+    response: "I'll make sure our team reaches out to you directly to go over all the details from your visit. You'll hear from us very shortly![NOTIFY_OWNER]",
+  },
 ];
 
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
@@ -51,6 +107,18 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     }
   }
   return null;
+}
+
+// Final safety net: strip [SEND_IMAGES] tags even if the AI generates them
+// Called both inside getAIResponse AND at webhook level as a double guard
+export function stripForbiddenTags(text: string): string {
+  if (!/\[SEND_IMAGES/i.test(text)) return text;
+  let cleaned = text.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
+  if (!cleaned.includes("ozzifloors.com")) {
+    cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
+  }
+  console.log("[AI] [SEND_IMAGES] tag stripped at safety layer");
+  return cleaned;
 }
 
 function removeDashes(text: string): string {
@@ -99,8 +167,8 @@ export async function getAIResponse(
     systemContent += `\n\n---\n\n## MANDATORY OWNER CORRECTIONS — THESE OVERRIDE EVERYTHING\nThe owner has already corrected these responses. When the client's question matches or is similar to a PERGUNTA below, you MUST use the exact RESPOSTA CORRETA. No exceptions.\n\n${ownerCorrections}`;
   }
 
-  // FINAL CRITICAL OVERRIDES — these come last and cannot be overridden by anything above
-  systemContent += `\n\n---\n\nFINAL RULES THAT OVERRIDE EVERYTHING ABOVE:\n1. ZERO DASHES ANYWHERE. This means no hyphen (-), no en dash (–), no em dash (—). The em dash is the most common violation. Sentences like "400 sqft [em dash] that comes out to" or "thinking [em dash] and I'll" are FAILURES. Replace every dash with a comma or split into two sentences. Scan your entire message before sending. One dash anywhere = automatic failure.\n2. NEVER say "let me have our specialist send you the catalog" or "I'll have someone send you photos." You send photos yourself right now.\n3. When a client asks for colors, options, or photos: ALWAYS use [SEND_IMAGES: color1, color2, color3] AND include both links in the same message:\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\nNo exceptions. Missing [SEND_IMAGES] or missing the links is an automatic failure.\n4. When a client asks what is included in the package, what the package covers, or what comes with it: your reply MUST be EXACTLY this (word for word): "The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?" — ZERO variation allowed. Do NOT add "$5", "$5/sqft", "$5 per sqft", "no hidden fees", "no surprises", "Luxury Vinyl promo", or any other phrase. Any deviation from this exact reply = automatic failure.`;
+  // FINAL REMINDERS — come last to reinforce the most critical rules
+  systemContent += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. "What is included / package / labor included?" → reply EXACTLY: "Hi! The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?" No price, no variation.\n3. Colors: plain text only, no tags or brackets of any kind.`;
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
@@ -114,8 +182,19 @@ export async function getAIResponse(
 
   const block = response.content[0];
   if (block.type === "text") {
-    const cleaned = removeDashes(block.text);
+    let cleaned = removeDashes(block.text);
     const hadDash = block.text !== cleaned;
+
+    // Strip any [SEND_IMAGES: ...] tags the AI may still generate
+    if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {
+      cleaned = cleaned.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
+      // Ensure the links are present if not already
+      if (!cleaned.includes("ozzifloors.com")) {
+        cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
+      }
+      console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
+    }
+
     console.log(`[AI v4] dash removed: ${hadDash} | preview: ${cleaned.slice(0, 60)}`);
     return cleaned;
   }

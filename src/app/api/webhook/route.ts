@@ -1,20 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
-import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio, sendInstagramImage } from "@/lib/instagram";
-import { getProductImages } from "@/lib/product-images";
+import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import {
   getAIResponse,
   analyzeImageFromBase64,
   transcribeAudioFromBuffer,
   generateSpeech,
+  stripForbiddenTags,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
-  ClientMemory,
   extractMemoryUpdate,
   updateClientMemory,
 } from "@/lib/anthropic-memory";
@@ -41,22 +40,11 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // Require phone + address explicitly confirmed in last 15 min
-    const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { data: recentUserMsgs } = await supabaseAdmin
-      .from("instagram_messages")
-      .select("content")
-      .eq("conversation_id", conversationId)
-      .eq("role", "user")
-      .gte("created_at", fifteenMinAgo);
-
-    const recentText = (recentUserMsgs ?? []).map((m) => m.content).join(" ");
-    const phonePattern = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|\(\d{3}\)\s?\d{3}[-.\s]?\d{4}/;
-    const addressPattern = /\d+\s+\w+(?:\s+\w+){1,}/;
-
-    if (!phonePattern.test(recentText) || !addressPattern.test(recentText)) {
-      console.warn("Booking blocked — missing phone or address in recent messages");
-      return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
+    // Trust the AI extraction: require phone and address fields to be non-empty
+    // Regex-on-raw-text validation was blocking bookings with non-US phone formats
+    if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
+      console.warn("Booking blocked — phone or address missing from booking JSON");
+      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
     }
 
     const { data: convData } = await supabaseAdmin
@@ -123,30 +111,6 @@ async function processNotifyOwner(
   } catch (err) {
     console.error("IG processNotifyOwner error:", err);
   }
-  return clean;
-}
-
-// ─── [SEND_IMAGES: color1, color2] — send product photos ─────────────────
-async function processProductImages(
-  aiResponse: string,
-  recipientIgsid: string
-): Promise<string> {
-  const match = aiResponse.match(/\[SEND_IMAGES:\s*([^\]]+)\]/i);
-  if (!match) return aiResponse;
-
-  const clean = aiResponse.replace(/\[SEND_IMAGES:[^\]]+\]/gi, "").trim();
-  const imageUrls = getProductImages(match[1]);
-
-  for (const url of imageUrls) {
-    try {
-      await sendInstagramImage(recipientIgsid, url);
-      // Small delay between images to avoid rate limits
-      await new Promise((r) => setTimeout(r, 400));
-    } catch (err) {
-      console.error("Product image send error:", url, err);
-    }
-  }
-
   return clean;
 }
 
@@ -372,14 +336,13 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // Rate limit: skip if we already replied in the last 20s
-    const twentySecsAgo = new Date(Date.now() - 20000).toISOString();
+    // Rate limit: 5s window prevents genuine duplicates without blocking fast client replies
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("conversation_id", conversation.id)
       .eq("role", "assistant")
-      .gte("created_at", twentySecsAgo)
+      .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
 
@@ -555,8 +518,14 @@ async function handleWebhook(body: WebhookPayload) {
       "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
       "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm", "book", "slot",
       "cancel", "reschedule", "visit",
+      // Large-lead confirmations — AI will immediately propose real slots in its response
+      "entire house", "whole house", "all rooms", "all the rooms", "every room",
+      "multiple rooms", "full apartment", "entire home", "the whole",
     ];
-    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k));
+    // Also load availability if the last AI message was already in scheduling mode
+    const lastAiMsg = history.filter((m) => m.role === "assistant").slice(-1)[0]?.content?.toLowerCase() ?? "";
+    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you/i.test(lastAiMsg);
+    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k)) || aiWasScheduling;
 
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
     const isPartnershipRequest = partnershipKeywords.some((k) => lastUserMsg.includes(k));
@@ -601,8 +570,8 @@ async function handleWebhook(body: WebhookPayload) {
     const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
     const afterBooking = await processBookingCommand(rawAiResponse, conversation.id, senderIgsid);
     const afterCancel = await processCancelCommand(afterBooking, senderIgsid);
-    const afterImages = await processProductImages(afterCancel, senderIgsid);
-    const finalResponse = await processNotifyOwner(afterImages, conversation.id, conversation.username ?? null, senderIgsid);
+    const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
+    const finalResponse = stripForbiddenTags(afterNotify);
 
     // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);
