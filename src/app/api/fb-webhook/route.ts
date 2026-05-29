@@ -329,30 +329,12 @@ async function handleFbMessage(body: Record<string, unknown>) {
     type AiMsg = { role: "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    const lastUserMsg = enrichedText.toLowerCase();
-    const schedulingKeywords = [
-      "schedule", "appointment", "what day", "what time",
-      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-      "tomorrow", "next week", "book", "slot", "cancel", "reschedule", "visit",
-      // Large-lead confirmations — AI will immediately propose real slots in its response
-      "entire house", "whole house", "all rooms", "all the rooms", "every room",
-      "multiple rooms", "full apartment", "entire home", "the whole",
-      // Price/deal closing — often leads to visit scheduling
-      "sign today", "sign now", "best price", "best deal", "close today",
-      "if i sign", "ready to sign", "commit", "lock in", "move forward",
-    ];
-    // Also load availability if the last AI message was already in scheduling mode
-    const lastAiMsg = history.filter((m) => m.role === "assistant").slice(-1)[0]?.content?.toLowerCase() ?? "";
-    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you|come by|free visit|bring samples|schedule a visit|in.person/i.test(lastAiMsg);
-    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k)) || aiWasScheduling;
+    // Always load real-time availability so the AI never invents time slots
+    const availability = await getRealAvailabilityContext();
 
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      let systemNote = `[SYSTEM: ${dateContext}]`;
-      if (needsScheduling) {
-        const availability = await getRealAvailabilityContext();
-        systemNote = `[SYSTEM: ${dateContext}\n\n${availability}]`;
-      }
+      const systemNote = `[SYSTEM: ${dateContext}\n\n${availability}]`;
       messagesForAI[lastIdx] = { ...messagesForAI[lastIdx], content: `${messagesForAI[lastIdx].content}\n\n${systemNote}` };
     }
 

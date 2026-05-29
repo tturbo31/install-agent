@@ -511,25 +511,7 @@ async function handleWebhook(body: WebhookPayload) {
 
     const history = (historyRaw ?? []).reverse();
 
-    // ── Detect if scheduling context is needed ───────────────────────────
     const lastUserMsg = enrichedText.toLowerCase();
-    const schedulingKeywords = [
-      "schedule", "appointment", "what day", "what time", "which day",
-      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-      "tomorrow", "next week", "9am", "11am", "1pm", "3pm", "5pm", "7pm", "book", "slot",
-      "cancel", "reschedule", "visit",
-      // Large-lead confirmations — AI will immediately propose real slots in its response
-      "entire house", "whole house", "all rooms", "all the rooms", "every room",
-      "multiple rooms", "full apartment", "entire home", "the whole",
-      // Price/deal closing — often leads to visit scheduling
-      "sign today", "sign now", "best price", "best deal", "close today",
-      "if i sign", "ready to sign", "commit", "lock in", "move forward",
-    ];
-    // Also load availability if the last AI message was already in scheduling mode
-    const lastAiMsg = history.filter((m) => m.role === "assistant").slice(-1)[0]?.content?.toLowerCase() ?? "";
-    const aiWasScheduling = /when would work|which works better|available|availability|what day|what time|works for you|come by|free visit|bring samples|schedule a visit|in.person/i.test(lastAiMsg);
-    const needsScheduling = schedulingKeywords.some((k) => lastUserMsg.includes(k)) || aiWasScheduling;
-
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
     const isPartnershipRequest = partnershipKeywords.some((k) => lastUserMsg.includes(k));
 
@@ -550,14 +532,11 @@ async function handleWebhook(body: WebhookPayload) {
       content: m.content,
     }));
 
-    // Always inject date context; add full availability when scheduling topic detected
+    // Always load real-time availability so the AI never invents time slots
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      const systemParts: string[] = [dateContext];
-      if (needsScheduling) {
-        const availability = await getRealAvailabilityContext();
-        systemParts.push(availability);
-      }
+      const availability = await getRealAvailabilityContext();
+      const systemParts: string[] = [dateContext, availability];
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {
         systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
