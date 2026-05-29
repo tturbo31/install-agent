@@ -57,16 +57,18 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
   {
     // English: client asking to see photos / samples / catalog
     patterns: [
-      /send\s+.{0,40}(photos?|images?|pics?|samples?|catalogs?)/i,
-      /would\s+like\s+(you\s+to\s+)?send\s+.{0,40}(photos?|images?|samples?)/i,
-      /like\s+to\s+(see|view|receive|get)\s+.{0,40}(photos?|images?|samples?)/i,
-      /can\s+you\s+(send|show|share)\s+.{0,40}(photos?|images?|pics?|samples?|catalogs?)/i,
-      /do\s+you\s+have\s+(any\s+)?(photos?|images?|pics?|samples?|catalogs?)/i,
-      /show\s+me\s+(your\s+)?(floor|option|color|sample|catalog)/i,
-      /photos?\s+of\s+(the\s+)?(floor|tile|vinyl|option|samples?|available)/i,
-      /samples?\s+(you\s+have\s+)?available/i,
-      /what\s+do\s+(the\s+)?floors?\s+look\s+like/i,
-      /colors?\s+(do\s+you\s+have|options?|available)/i,
+      // Only intercept when client asks AGENT to send photos — NOT "send me a quote" or "I'll send you a photo"
+      /send\s+me\s+(?!.{0,30}(?:quote|estimate|price|cost|approx|message|info))(photos?|images?|pics?|samples?|catalogs?)/i,
+      /(?:can|could|would|please)\s+(?:you\s+)?send\s+(?!.{0,30}(?:quote|estimate|price|cost)).{0,60}(photos?|images?|pics?|samples?|catalogs?)/i,
+      /would\s+like\s+(?:you\s+to\s+)?send\s+me\s+(?!.{0,20}(?:quote|estimate|price|cost|approx))(photos?|images?|samples?)/i,
+      /like\s+to\s+(?:see|view|receive|get)\s+.{0,40}(photos?|images?|samples?)/i,
+      /can\s+you\s+(?:send|show|share)\s+.{0,40}(photos?|images?|pics?|samples?|catalogs?)/i,
+      /do\s+you\s+have\s+(?:any\s+)?(photos?|images?|pics?|samples?|catalogs?)/i,
+      /show\s+me\s+(?:your\s+)?(floor|option|color|sample|catalog)/i,
+      /photos?\s+of\s+(?:the\s+)?(floor|tile|vinyl|option|samples?)\s+(?:you\s+have\s+)?available/i,
+      /samples?\s+(?:you\s+have\s+)?available/i,
+      /what\s+do\s+(?:the\s+)?floors?\s+look\s+like/i,
+      /colors?\s+(?:do\s+you\s+have|options?|available)/i,
     ],
     response: "Here are some of our most popular options! All 100% waterproof with a 20 year warranty. Browse even more colors here:\n\nWebsite: https://www.ozzifloors.com/\nInstagram: https://www.instagram.com/ozzi.floors/\n\nDo you have a style in mind? Warm wood tones, grey and modern, or light and neutral? I can narrow it down to the best options for your space.",
   },
