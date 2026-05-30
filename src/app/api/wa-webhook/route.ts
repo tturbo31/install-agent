@@ -119,7 +119,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
 
     if (!conv) {
-      const defaultMode = process.env.AGENT_PAUSED === "1" ? "human" : "agent";
+      const defaultMode = "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
         .insert({ igsid: waIgsid, mode: defaultMode })

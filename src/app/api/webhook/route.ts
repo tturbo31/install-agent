@@ -194,7 +194,7 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
 
     if (!conversation) {
-      const defaultMode = process.env.AGENT_PAUSED === "1" ? "human" : "agent";
+      const defaultMode = "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
         .insert({ igsid: senderIgsid, mode: defaultMode })
