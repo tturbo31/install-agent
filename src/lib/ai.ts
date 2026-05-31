@@ -150,6 +150,23 @@ function removeDashes(text: string): string {
 
 export type AIResponse = { text: string; inputTokens: number; outputTokens: number };
 
+// Detects if client's message mentions >= 500 sqft (or equivalent sqm).
+// Returns the sqft value, or null if not a large lead.
+export function detectLargeLeadSqft(text: string): number | null {
+  const sqftMatch = text.match(/\b(?:around|about|approximately|roughly)?\s*(\d[\d,]*)\s*(?:sqft|sq\.?\s*ft\.?|square\s+feet?)/i);
+  if (sqftMatch) {
+    const n = parseInt(sqftMatch[1].replace(/,/g, ""), 10);
+    if (n >= 500) return n;
+  }
+  const sqmMatch = text.match(/\b(?:around|about|approximately|roughly)?\s*(\d[\d,]*)\s*(?:sqm|sq\.?\s*m\.?|square\s+met(?:er|re)s?|m[²2])/i);
+  if (sqmMatch) {
+    const sqm = parseInt(sqmMatch[1].replace(/,/g, ""), 10);
+    const sqft = Math.round(sqm * 10.76);
+    if (sqft >= 500) return sqft;
+  }
+  return null;
+}
+
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
 export async function getAIResponse(
   messages: ChatMessage[],
