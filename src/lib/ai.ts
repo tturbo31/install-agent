@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE } from "@/lib/system-prompt";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -37,7 +37,7 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
       /does\s+(it|the\s+package)\s+include\s+(labor|installation)/i,
       /what\s+does?\s+(it|that)\s+include/i,
     ],
-    response: "Hi! The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?",
+    response: WHAT_IS_INCLUDED_RESPONSE,
   },
   {
     // Portuguese: client asking to see photos / samples / catalog
@@ -123,6 +123,16 @@ export function stripForbiddenTags(text: string): string {
   return cleaned;
 }
 
+function removeEmojis(text: string): string {
+  // Strip emoji unicode ranges as a safety net
+  const cleaned = text.replace(
+    /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{1F200}-\u{1F2FF}\u{1F900}-\u{1F9FF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}\u{1F004}\u{1F0CF}]/gu,
+    ""
+  ).replace(/\s{2,}/g, " ").trim();
+  if (cleaned !== text) console.log("[AI] emoji stripped from response");
+  return cleaned;
+}
+
 function removeDashes(text: string): string {
   const emDash = String.fromCharCode(0x2014);
   const enDash = String.fromCharCode(0x2013);
@@ -138,18 +148,20 @@ function removeDashes(text: string): string {
     .replace(/,\s*\./g, ".");
 }
 
+export type AIResponse = { text: string; inputTokens: number; outputTokens: number };
+
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
 export async function getAIResponse(
   messages: ChatMessage[],
   memoryContext?: string | null,
   systemMemory?: string | null,
   ownerCorrections?: string | null
-): Promise<string> {
+): Promise<AIResponse> {
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns
   const hardcoded = checkHardcodedResponse(messages);
   if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
-    return hardcoded;
+    return { text: hardcoded, inputTokens: 0, outputTokens: 0 };
   }
 
   const anthropic = getAnthropic();
@@ -170,11 +182,13 @@ export async function getAIResponse(
   }
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
-  systemContent += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. "What is included / package / labor included?" → reply EXACTLY: "Hi! The package already includes the flooring and installation labor. I provide a free quote. Are you planning to do just one area or the entire house?" No price, no variation.\n3. Colors: plain text only, no tags or brackets of any kind.`;
+  systemContent += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. Never start with a standalone "Hello!" or "Hi!" — merge any greeting into your first sentence.\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the appointment is set. NEVER generate [BOOK:...]. Just answer the client's question.
+6. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE brief sentence and wait. Never push for address/phone when the slot is not confirmed.
+7. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n6. ONLY when the client asks "what is included", "what does the package include", "is labor included", or "does it include installation" → reply EXACTLY: "${WHAT_IS_INCLUDED_RESPONSE}" For any other package question (explaining, pricing, details), answer naturally.\n7. Colors: plain text only, no tags or brackets of any kind.\n8. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number.\n9. For projects 500 sqft or more: NEVER give a price by DM. Always push for the free in-person visit.`;
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 1024,
+    max_tokens: 300,
     system: systemContent,
     messages: messages.map((m) => ({
       role: m.role,
@@ -184,7 +198,7 @@ export async function getAIResponse(
 
   const block = response.content[0];
   if (block.type === "text") {
-    let cleaned = removeDashes(block.text);
+    let cleaned = removeEmojis(removeDashes(block.text));
     const hadDash = block.text !== cleaned;
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
@@ -198,9 +212,9 @@ export async function getAIResponse(
     }
 
     console.log(`[AI v4] dash removed: ${hadDash} | preview: ${cleaned.slice(0, 60)}`);
-    return cleaned;
+    return { text: cleaned, inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens };
   }
-  return "Sorry, I couldn't generate a response.";
+  return { text: "Sorry, I couldn't generate a response.", inputTokens: 0, outputTokens: 0 };
 }
 
 // ─── Image analysis via Claude claude-haiku-4-5 (vision) ──────────────────────────

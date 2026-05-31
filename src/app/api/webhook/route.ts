@@ -10,6 +10,7 @@ import {
   stripForbiddenTags,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
+import { verifyMetaSignature } from "@/lib/verify-meta";
 import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -22,6 +23,8 @@ import { notifyOwners } from "@/lib/whatsapp";
 
 export const maxDuration = 60;
 
+const RESPONSE_DELAY_MS = 10000;
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -33,10 +36,31 @@ export async function GET(req: NextRequest) {
   return new NextResponse("Forbidden", { status: 403 });
 }
 
+// ─── Track token usage and conversion in Supabase ─────────────────────────
+async function trackConversationMetrics(
+  conversationId: string,
+  platform: string,
+  inputTokens: number,
+  outputTokens: number,
+  converted: boolean
+): Promise<void> {
+  try {
+    await supabaseAdmin.rpc("increment_conversation_metrics", {
+      p_conversation_id: conversationId,
+      p_platform: platform,
+      p_input_tokens: inputTokens,
+      p_output_tokens: outputTokens,
+      p_converted: converted,
+    });
+  } catch (err) {
+    console.error("Metrics tracking error:", err);
+  }
+}
+
 // ─── Parse and strip [BOOK:...] from AI response ──────────────────────────
-async function processBookingCommand(aiResponse: string, conversationId: string, senderIgsid: string): Promise<string> {
+async function processBookingCommand(aiResponse: string, conversationId: string, senderIgsid: string): Promise<{ response: string; booked: boolean }> {
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
-  if (!bookingMatch) return aiResponse;
+  if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
@@ -44,7 +68,7 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
     // Regex-on-raw-text validation was blocking bookings with non-US phone formats
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("Booking blocked — phone or address missing from booking JSON");
-      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
+      return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
     }
 
     const { data: convData } = await supabaseAdmin
@@ -74,15 +98,14 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
       igsid: senderIgsid,
     });
 
-    const cleanResponse = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
     if (result.success) {
-      return `${cleanResponse}\n\nAppointment confirmed! I'll reach out 40 minutes before arriving. My name is ${result.sellerName} and I look forward to meeting you!`;
+      return { response: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.", booked: true };
     } else {
-      return `${cleanResponse}\n\nThat slot just got taken. Can you pick another time?`;
+      return { response: "That slot was just taken. Can you suggest another day and time?", booked: false };
     }
   } catch (err) {
     console.error("Booking parse error:", err);
-    return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
+    return { response: aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim(), booked: false };
   }
 }
 
@@ -140,6 +163,13 @@ async function processCancelCommand(
 // ─── Core webhook handler ──────────────────────────────────────────────────
 async function handleWebhook(body: WebhookPayload) {
   try {
+    const { data: igSetting } = await supabaseAdmin
+      .from("platform_settings")
+      .select("paused")
+      .eq("platform", "instagram")
+      .single();
+    if (igSetting?.paused) return;
+
     if (body.object !== "instagram") return;
     const messaging = body.entry?.[0]?.messaging?.[0];
     if (!messaging) return;
@@ -207,11 +237,19 @@ async function handleWebhook(body: WebhookPayload) {
     // ── Detect attachments ───────────────────────────────────────────────
     const attachments = messaging.message?.attachments ?? [];
     const imageAttachment = attachments.find((a) => a.type === "image");
+
+    // Ignore Instagram stickers (thumbs up and emoji stickers arrive as image with sticker_id)
+    if ((imageAttachment?.payload as Record<string, unknown>)?.sticker_id) return;
+
     const shareAttachment = attachments.find((a) => a.type === "share");
     const audioAttachment = attachments.find((a) => a.type === "audio");
     const clientSentAudio = !!audioAttachment;
 
     let rawText = messaging.message?.text ?? "";
+
+    // Ignore emoji-only messages (end-of-conversation reactions like 👍 ❤️)
+    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
+
     const imageUrl = imageAttachment?.payload?.url ?? null;
     const shareUrl = shareAttachment?.payload?.url ?? null;
     const audioUrl = audioAttachment?.payload?.url ?? null;
@@ -322,7 +360,7 @@ async function handleWebhook(body: WebhookPayload) {
     if (conversation.mode === "human") return;
 
     // ── Debounce: wait 3s, then check if we're still the latest message ──
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
 
     const { data: latestMsg } = await supabaseAdmin
       .from("instagram_messages")
@@ -428,11 +466,11 @@ async function handleWebhook(body: WebhookPayload) {
       const hadImage = !!(imageUrl || shareUrl);
       let finalResponse: string;
       if (hadAudio && hadImage) {
-        finalResponse = "Got your floor plan and voice message! I wasn't able to read the details — just type the total area (sqft or sqm) and I'll calculate right here.";
+        finalResponse = "Got your photo and voice message! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need.";
       } else if (hadAudio) {
-        finalResponse = "Got your voice message but couldn't catch it — could you type what you need?";
+        finalResponse = "Got your voice message but could not catch it. Could you type what you need?";
       } else {
-        finalResponse = "Got your floor plan! I wasn't able to read the details — just type the total area (sqft or sqm) and I'll calculate right here.";
+        finalResponse = "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need.";
       }
       await sendInstagramMessage(senderIgsid, finalResponse);
       await supabaseAdmin.from("instagram_messages").insert({
@@ -541,6 +579,20 @@ async function handleWebhook(body: WebhookPayload) {
       if (isPartnershipRequest && followerCount != null) {
         systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
       }
+      // Booking already confirmed in THIS conversation — client is asking a follow-up question
+      const isBookingConfirmed = history.some(m =>
+        m.role === "assistant" && m.content?.includes("Appointment confirmed")
+      );
+      // Truly returning client (owner previously handled them via training corrections)
+      const isOwnerHandled = !isBookingConfirmed && history.some(m =>
+        m.role === "assistant" && m.content?.startsWith("[Treino]")
+      );
+      if (isBookingConfirmed) {
+        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+      }
+      if (isOwnerHandled) {
+        systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
       const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
       messagesForAI[lastIdx] = {
         ...messagesForAI[lastIdx],
@@ -549,11 +601,20 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Generate AI response ─────────────────────────────────────────────
-    const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const afterBooking = await processBookingCommand(rawAiResponse, conversation.id, senderIgsid);
-    const afterCancel = await processCancelCommand(afterBooking, senderIgsid);
+    const { text: rawAiText, inputTokens, outputTokens } = await getAIResponse(messagesForAI, memoryContext, systemMemory);
+    // Safety net: if booking already confirmed, strip any [BOOK:...] before processing
+    const isAlreadyBooked = history.some(m =>
+      m.role === "assistant" && m.content?.includes("Appointment confirmed")
+    );
+    const safeAiText = isAlreadyBooked
+      ? rawAiText.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
+      : rawAiText;
+    const { response: afterBookingText, booked } = await processBookingCommand(safeAiText, conversation.id, senderIgsid);
+    const afterCancel = await processCancelCommand(afterBookingText, senderIgsid);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
     const finalResponse = stripForbiddenTags(afterNotify);
+
+    void trackConversationMetrics(conversation.id, "instagram", inputTokens, outputTokens, booked);
 
     // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);
@@ -589,7 +650,12 @@ async function handleWebhook(body: WebhookPayload) {
 }
 
 export async function POST(req: NextRequest) {
-  const body: WebhookPayload = await req.json().catch(() => null);
+  const rawBody = await req.text();
+  if (!verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  const body: WebhookPayload = JSON.parse(rawBody);
   if (!body || body.object !== "instagram") {
     return NextResponse.json({ status: "ignored" }, { status: 200 });
   }
@@ -599,7 +665,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "skipped" }, { status: 200 });
   }
 
-  // Return 200 immediately — process in background
   waitUntil(handleWebhook(body));
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

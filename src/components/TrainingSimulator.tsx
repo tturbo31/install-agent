@@ -264,7 +264,10 @@ export default function TrainingSimulator() {
     try {
       const res = await fetch("/api/training/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka",
+        },
         body: JSON.stringify({
           messages: toApiMessages(nextMessages),
           ...(capturedImage ? { imageBase64: capturedImage } : {}),
@@ -345,7 +348,10 @@ export default function TrainingSimulator() {
 
     await fetch("/api/training/chat", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-admin-secret": process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka",
+      },
       body: JSON.stringify({
         sandboxId,
         aiMsgId: msg.aiMsgId,

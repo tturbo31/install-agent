@@ -30,6 +30,14 @@ function playNotification() {
   } catch { /* ignore audio errors */ }
 }
 
+type PlatformKey = "instagram" | "facebook" | "whatsapp";
+
+const PLATFORM_LABELS: Record<PlatformKey, string> = {
+  instagram: "Instagram",
+  facebook: "Facebook",
+  whatsapp: "WhatsApp",
+};
+
 export default function Dashboard() {
   const [conversations, setConversations] = useState<ConversationWithLastMessage[]>([]);
   const [selectedConv, setSelectedConv] = useState<ConversationWithLastMessage | null>(null);
@@ -41,12 +49,43 @@ export default function Dashboard() {
   const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
   const [activeTab, setActiveTab] = useState<"inbox" | "simulator">("inbox");
   const selectedConvRef = useRef<string | null>(null);
+  const [platformPaused, setPlatformPaused] = useState<Record<PlatformKey, boolean>>({
+    instagram: false,
+    facebook: false,
+    whatsapp: false,
+  });
+  const [togglingPlatform, setTogglingPlatform] = useState<PlatformKey | null>(null);
 
   const loadConversations = useCallback(async () => {
     const res = await fetch("/api/conversations");
     const data = await res.json();
     setConversations(data);
   }, []);
+
+  const loadPlatformSettings = useCallback(async () => {
+    const res = await fetch("/api/platform-settings");
+    if (!res.ok) return;
+    const data: { platform: string; paused: boolean }[] = await res.json();
+    const map: Record<PlatformKey, boolean> = { instagram: false, facebook: false, whatsapp: false };
+    for (const row of data) {
+      if (row.platform in map) map[row.platform as PlatformKey] = row.paused;
+    }
+    setPlatformPaused(map);
+  }, []);
+
+  async function handleTogglePlatform(platform: PlatformKey) {
+    setTogglingPlatform(platform);
+    const newPaused = !platformPaused[platform];
+    const res = await fetch("/api/platform-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platform, paused: newPaused }),
+    });
+    if (res.ok) {
+      setPlatformPaused(prev => ({ ...prev, [platform]: newPaused }));
+    }
+    setTogglingPlatform(null);
+  }
 
   const loadMessages = useCallback(async (convId: string) => {
     const res = await fetch(`/api/conversations/${convId}/messages`);
@@ -56,7 +95,8 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadConversations();
-  }, [loadConversations]);
+    loadPlatformSettings();
+  }, [loadConversations, loadPlatformSettings]);
 
   useEffect(() => {
     if (selectedConv) {
@@ -135,7 +175,7 @@ export default function Dashboard() {
   async function handleResumeAgent() {
     if (!confirm("Reativar o agente em TODAS as conversas? Ele voltará a responder automaticamente.")) return;
     setIsResuming(true);
-    const res = await fetch("/api/resume?secret=Pepeka", { method: "POST" });
+    const res = await fetch(`/api/resume?secret=${process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka"}`, { method: "POST" });
     const data = await res.json();
     setResumeMsg(`Agente reativado em ${data.resumed} conversas.`);
     await loadConversations();
@@ -158,22 +198,53 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen bg-gray-950 text-white overflow-hidden">
-      {/* Training Mode Banner */}
-      <div className="fixed top-0 left-0 right-0 z-50 bg-yellow-500 text-black text-center py-2 px-4 text-sm font-medium flex items-center justify-center gap-4">
-        <span>MODO TREINAMENTO — Você atende, o agente aprende.</span>
-        {totalUnread > 0 && (
-          <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">
-            {totalUnread} nova{totalUnread > 1 ? "s" : ""}
-          </span>
-        )}
-        <button
-          onClick={handleResumeAgent}
-          disabled={isResuming}
-          className="bg-black text-yellow-400 px-3 py-1 rounded text-xs font-bold hover:bg-gray-900 disabled:opacity-50"
-        >
-          {isResuming ? "Reativando..." : "REATIVAR AGENTE"}
-        </button>
-        {resumeMsg && <span className="text-green-800 font-bold">{resumeMsg}</span>}
+      {/* Top Banner */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-gray-900 border-b border-gray-800 py-2 px-4 flex items-center justify-between gap-4">
+        {/* Platform toggles */}
+        <div className="flex items-center gap-2">
+          {(Object.keys(PLATFORM_LABELS) as PlatformKey[]).map((platform) => {
+            const paused = platformPaused[platform];
+            const isLoading = togglingPlatform === platform;
+            return (
+              <button
+                key={platform}
+                onClick={() => handleTogglePlatform(platform)}
+                disabled={isLoading}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-bold transition-colors disabled:opacity-50 ${
+                  paused
+                    ? "bg-red-900 text-red-300 hover:bg-red-800"
+                    : "bg-green-900 text-green-300 hover:bg-green-800"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${paused ? "bg-red-400" : "bg-green-400"}`} />
+                {PLATFORM_LABELS[platform]}
+                <span className="opacity-70">{isLoading ? "..." : paused ? "PAUSADO" : "ATIVO"}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Center label + unread */}
+        <div className="flex items-center gap-2 text-xs text-gray-400">
+          <span>Dashboard OzziFloors</span>
+          {totalUnread > 0 && (
+            <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">
+              {totalUnread} nova{totalUnread > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+
+        {/* Resume all button */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleResumeAgent}
+            disabled={isResuming}
+            className="bg-yellow-500 text-black px-3 py-1 rounded text-xs font-bold hover:bg-yellow-400 disabled:opacity-50"
+          >
+            {isResuming ? "Reativando..." : "REATIVAR CONVERSAS"}
+          </button>
+          {resumeMsg && <span className="text-green-400 text-xs font-bold">{resumeMsg}</span>}
+        </div>
       </div>
 
       <div className="flex h-screen w-full pt-10">

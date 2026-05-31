@@ -4,6 +4,14 @@ import { getAIResponse, analyzeImageFromBase64 } from "@/lib/ai";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
 const SANDBOX_IGSID = "training_sandbox";
+const RESPONSE_DELAY_MS = 8000;
+const ADMIN_SECRET = process.env.ADMIN_SECRET ?? "Pepeka";
+
+function checkAdminAuth(req: NextRequest): boolean {
+  const header = req.headers.get("x-admin-secret");
+  const query = req.nextUrl.searchParams.get("secret");
+  return header === ADMIN_SECRET || query === ADMIN_SECRET;
+}
 
 // Load all owner corrections saved via [Treino] prefix
 async function loadOwnerCorrections(sandboxId: string): Promise<string | null> {
@@ -51,6 +59,9 @@ async function getOrCreateSandboxConversation(): Promise<string> {
 
 // POST — send a training message and get an AI response
 export async function POST(req: NextRequest) {
+  if (!checkAdminAuth(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const body = await req.json();
 
@@ -111,8 +122,11 @@ export async function POST(req: NextRequest) {
     // Load owner corrections — passed separately so they get injected with higher priority
     const ownerCorrections = await loadOwnerCorrections(sandboxId);
 
+    // Simulate human typing delay (matches Instagram/Facebook/WhatsApp webhooks)
+    await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
+
     // Call the AI
-    const rawAiResponse = await getAIResponse(messagesForAI, null, systemMemory, ownerCorrections);
+    const { text: rawAiResponse } = await getAIResponse(messagesForAI, null, systemMemory, ownerCorrections);
 
     // Strip dashes and any leftover [SEND_IMAGES] tags
     const emDash = String.fromCharCode(0x2014);
@@ -168,6 +182,9 @@ export async function POST(req: NextRequest) {
 
 // PATCH — save a correction for an AI message
 export async function PATCH(req: NextRequest) {
+  if (!checkAdminAuth(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const body = await req.json();
     const { sandboxId, aiMsgId, correction, originalQuestion } = body as {

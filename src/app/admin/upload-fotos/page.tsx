@@ -51,7 +51,7 @@ export default function UploadFotos() {
       form.append("file", file);
       form.append("path", path);
 
-      const res = await fetch("/api/admin/upload-product-image?secret=Pepeka", {
+      const res = await fetch(`/api/admin/upload-product-image?secret=${process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka"}`, {
         method: "POST",
         body: form,
       });

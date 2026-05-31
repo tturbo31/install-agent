@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 
-// POST /api/admin/upload-product-image?secret=Pepeka
+// POST /api/admin/upload-product-image?secret=<ADMIN_SECRET>
 // Body: multipart/form-data with field "file" and "path"
 // path example: "blue-armor/forged-brown/1.jpg"
 export async function POST(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  if (searchParams.get("secret") !== "Pepeka") {
+  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
+  if (searchParams.get("secret") !== adminSecret) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

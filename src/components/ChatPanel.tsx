@@ -163,7 +163,7 @@ function TrainingPanel({ conversation, messages }: { conversation: ConversationW
     if (!ownerResponse.trim() || !lastClientMsg) return;
     setSaving(true);
     try {
-      await fetch("/api/train?secret=Pepeka", {
+      await fetch(`/api/train?secret=${process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags } from "@/lib/ai";
+import { verifyMetaSignature } from "@/lib/verify-meta";
 import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -14,6 +15,8 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
 export const maxDuration = 60;
+
+const RESPONSE_DELAY_MS = 10000;
 
 const FB_PAGE_ID = process.env.FACEBOOK_PAGE_ID ?? "";
 
@@ -53,10 +56,9 @@ async function processBookingCommand(aiResponse: string, psid: string): Promise<
       igsid: `fb_${psid}`,
     });
 
-    const clean = aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
     return result.success
-      ? `${clean}\n\nAppointment confirmed! I'll reach out 40 minutes before arriving. My name is ${result.sellerName} and I look forward to meeting you!`
-      : `${clean}\n\nThat slot just got taken. Can you pick another time?`;
+      ? "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi."
+      : "That slot was just taken. Can you suggest another day and time?";
   } catch (err) {
     console.error("FB booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -107,6 +109,13 @@ async function processCancelCommand(aiResponse: string, psid: string): Promise<s
 // ─── Main message handler ─────────────────────────────────────────────────
 async function handleFbMessage(body: Record<string, unknown>) {
   try {
+    const { data: fbSetting } = await supabaseAdmin
+      .from("platform_settings")
+      .select("paused")
+      .eq("platform", "facebook")
+      .single();
+    if (fbSetting?.paused) return;
+
     const entry = (body.entry as Record<string, unknown>[])?.[0];
     const messaging = (entry?.messaging as Record<string, unknown>[])?.[0];
     if (!messaging) return;
@@ -173,9 +182,17 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // Extract text and attachments
     const attachments = (msg?.attachments as Record<string, unknown>[]) ?? [];
     const imageAtt = attachments.find((a) => a.type === "image");
+
+    // Ignore Facebook stickers (thumbs up button and emoji stickers arrive as image with sticker_id)
+    if ((imageAtt?.payload as Record<string, unknown>)?.sticker_id) return;
+
     const audioAtt = attachments.find((a) => a.type === "audio");
 
     let rawText = (msg?.text as string) ?? "";
+
+    // Ignore emoji-only messages (end-of-conversation reactions like 👍)
+    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
+
     const imageUrl = (imageAtt?.payload as Record<string, unknown>)?.url as string ?? null;
     const audioUrl = (audioAtt?.payload as Record<string, unknown>)?.url as string ?? null;
 
@@ -212,7 +229,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
     if (conv.mode === "human") return;
 
     // Debounce
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
     const { data: latestMsg } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -268,7 +285,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const hasRealContent = clientSentPlainText || mediaProcessed;
 
     if (!hasRealContent) {
-      const fallback = imageUrl ? "Got your image! Please type the approximate square footage and I'll calculate a quote right here." : "Got your message! Could you type your question?";
+      const fallback = imageUrl ? "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need." : "Got your message! Could you type your question?";
       await sendFacebookMessage(psid, fallback);
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
       return;
@@ -334,12 +351,31 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      const systemNote = `[SYSTEM: ${dateContext}\n\n${availability}]`;
+      const systemParts: string[] = [dateContext, availability];
+      const isBookingConfirmed = history.some((m: { role: string; content: string }) =>
+        m.role === "assistant" && m.content?.includes("Appointment confirmed")
+      );
+      const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
+        m.role === "assistant" && m.content?.startsWith("[Treino]")
+      );
+      if (isBookingConfirmed) {
+        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+      }
+      if (isOwnerHandled) {
+        systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
+      const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
       messagesForAI[lastIdx] = { ...messagesForAI[lastIdx], content: `${messagesForAI[lastIdx].content}\n\n${systemNote}` };
     }
 
-    const rawAiResponse = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const afterBooking = await processBookingCommand(rawAiResponse, psid);
+    const { text: rawAiResponse } = await getAIResponse(messagesForAI, memoryContext, systemMemory);
+    const fbAlreadyBooked = history.some((m: { role: string; content: string }) =>
+      m.role === "assistant" && m.content?.includes("Appointment confirmed")
+    );
+    const safeFbResponse = fbAlreadyBooked
+      ? rawAiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
+      : rawAiResponse;
+    const afterBooking = await processBookingCommand(safeFbResponse, psid);
     const afterCancel = await processCancelCommand(afterBooking, psid);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);
@@ -363,7 +399,12 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
 // ─── POST handler ─────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
+  const rawBody = await req.text();
+  if (!verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  const body = JSON.parse(rawBody);
   if (!body || body.object !== "page") {
     return NextResponse.json({ status: "ignored" }, { status: 200 });
   }
