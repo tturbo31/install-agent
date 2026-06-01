@@ -16,14 +16,40 @@ export const maxDuration = 60;
 
 const RESPONSE_DELAY_MS = 10000;
 
+// ─── Safety net: strip slot-conflict sentences and hard-fallback ──────────
+function stripSlotConflictLanguage(text: string): string {
+  let cleaned = text
+    .replace(/[^.!?\n]*\b(?:slot|time\s*slot|appointment|visit|horário|hora)\b[^.!?\n]*\b(?:taken|unavailable|booked|not\s+available|no\s+longer\s+available|just\s+got\s+taken|already\s+(?:taken|booked)|foi\s+ocupad|ocupad)\b[^.!?\n]*[.!?]/gi, "")
+    .replace(/[^.!?\n]*\b(?:can|could|would)\b[^.!?\n]*\b(?:pick|choose|select|suggest|prefer)\b[^.!?\n]*\b(?:another|different|other)\b[^.!?\n]*\b(?:time|day|slot|date|hora|dia)\b[^.!?\n]*[.!?]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (
+    /\b(?:slot|appointment|horário|hora)\b[^.!?\n]{0,60}\b(?:taken|unavailable|booked|not\s+available|no\s+longer)\b/i.test(cleaned) ||
+    /\b(?:taken|unavailable|booked)\b[^.!?\n]{0,60}\b(?:slot|appointment|horário)\b/i.test(cleaned) ||
+    /\bcan you (?:pick|choose|suggest|select) (?:another|a different)\b/i.test(cleaned)
+  ) {
+    cleaned = "You're welcome, see you then!";
+  }
+
+  return cleaned || "You're welcome, see you then!";
+}
+
 // ─── [BOOK:...] processor ─────────────────────────────────────────────────
-async function processBookingCommand(aiResponse: string, waId: string): Promise<string> {
+async function processBookingCommand(
+  aiResponse: string,
+  waId: string,
+  conversationId: string,
+  isAlreadyBooked: boolean
+): Promise<string> {
+  if (isAlreadyBooked) {
+    return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+  }
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // Trust the AI extraction: require phone and address fields to be non-empty
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("WA booking blocked — phone or address missing from booking JSON");
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
@@ -40,9 +66,21 @@ async function processBookingCommand(aiResponse: string, waId: string): Promise<
       igsid: `wa_${waId}`,
     });
 
-    return result.success
-      ? "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi."
-      : "That slot was just taken. Can you suggest another day and time?";
+    if (result.success) {
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+    } else if (result.error === "already_booked") {
+      console.warn("[WA] Duplicate booking blocked by scheduler guard");
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+    }
+    return "That slot was just taken. Can you suggest another day and time?";
   } catch (err) {
     console.error("WA booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -78,12 +116,22 @@ async function processNotifyOwner(
 }
 
 // ─── [CANCEL_BOOKING] processor ──────────────────────────────────────────
-async function processCancelCommand(aiResponse: string, waId: string): Promise<string> {
+async function processCancelCommand(
+  aiResponse: string,
+  waId: string,
+  conversationId: string
+): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
   const clean = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
   try {
     const result = await cancelClientBooking(`wa_${waId}`);
-    if (result.success) console.log(`WA: Cancelled ${result.cancelled} booking(s) for ${waId}`);
+    if (result.success) {
+      console.log(`WA: Cancelled ${result.cancelled} booking(s) for ${waId}`);
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: false })
+        .eq("id", conversationId);
+    }
   } catch (err) {
     console.error("WA cancel error:", err);
   }
@@ -100,7 +148,6 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
     if (waSetting?.paused) return;
 
-    // Z-API only sends ReceivedCallback for incoming messages
     if (body.type !== "ReceivedCallback") return;
     if (body.fromMe === true) return;
 
@@ -127,10 +174,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
 
     if (!conv) {
-      const defaultMode = "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
-        .insert({ igsid: waIgsid, mode: defaultMode })
+        .insert({ igsid: waIgsid, mode: "agent" })
         .select()
         .single();
       conv = newConv;
@@ -150,7 +196,6 @@ async function handleWaMessage(body: Record<string, unknown>) {
 
     if (textObj?.message) {
       rawText = textObj.message as string;
-      // Ignore emoji-only messages (end-of-conversation reactions like 👍 ❤️)
       if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
     } else if (imageObj?.imageUrl) {
       imageUrl = imageObj.imageUrl as string;
@@ -206,7 +251,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // Rate limit: 5s window prevents genuine duplicates without blocking fast client replies
+    // Rate limit: 5s window
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -215,6 +260,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
+
+    // Re-fetch conversation after debounce (catch booking_confirmed set by concurrent handler)
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conv.id)
+      .single();
+    if (freshConv) conv = freshConv;
 
     // Process media
     let enrichedText = rawText;
@@ -298,6 +351,46 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .limit(15);
     const history = (historyRaw ?? []).reverse();
 
+    // Determine booking status (DB flag is authoritative; history is fallback)
+    const isBookingConfirmed =
+      !!(conv as Record<string, unknown>).booking_confirmed ||
+      history.some((m: { role: string; content: string }) =>
+        m.role === "assistant" && m.content?.includes("Appointment confirmed")
+      );
+
+    // ── Post-booking: skip AI entirely for every follow-up message ──────────
+    if (isBookingConfirmed) {
+      const trimmed = enrichedText.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
+      const isSimpleAck =
+        /^(ok(\s+thank\s*(you)?|\s+thanks?)?|thank\s*(you)?|thanks?|de\s+nada|obrigad\w*|got\s+it|great|perfect|sounds?\s+good|alright|cool|see\s+you|bye|cya|understood|entendido|perfeito|tudo\s+(bem|certo|ok)|ótimo|otimo)$/.test(
+          trimmed
+        );
+      const postBookingMsg = isSimpleAck
+        ? "You're welcome, see you then!"
+        : "I'll have Ozzi reach out to you directly if you need anything else!";
+      await sendWhatsAppMessage(phone, postBookingMsg);
+      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: postBookingMsg });
+      if (!isSimpleAck) {
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "WhatsApp",
+            clientName: conv.username ?? null,
+            clientId: phone,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (err) {
+          console.error("WA post-booking notify error:", err);
+        }
+      }
+      return;
+    }
+
     // Date context
     const now = new Date();
     const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -309,20 +402,16 @@ async function handleWaMessage(body: Record<string, unknown>) {
     type AiMsg = { role: "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    // Always load real-time availability so the AI never invents time slots
-    const availability = await getRealAvailabilityContext();
-
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      const systemParts: string[] = [dateContext, availability];
-      const isBookingConfirmed = history.some((m: { role: string; content: string }) =>
-        m.role === "assistant" && m.content?.includes("Appointment confirmed")
-      );
+      // Only load availability when booking not yet confirmed
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.startsWith("[Treino]")
       );
       if (isBookingConfirmed) {
-        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT say any slot is taken or unavailable. Do NOT add [NOTIFY_OWNER].]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
@@ -341,15 +430,24 @@ async function handleWaMessage(body: Record<string, unknown>) {
       messagesForAI[lastIdx] = { ...messagesForAI[lastIdx], content: `${messagesForAI[lastIdx].content}\n\n${systemNote}` };
     }
 
-    const { text: rawAiResponse } = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const waAlreadyBooked = history.some((m: { role: string; content: string }) =>
-      m.role === "assistant" && m.content?.includes("Appointment confirmed")
+    const { text: rawAiResponse } = await getAIResponse(
+      messagesForAI,
+      memoryContext,
+      systemMemory,
+      undefined,
+      isBookingConfirmed
     );
-    const safeWaResponse = waAlreadyBooked
+
+    let safeResponse = isBookingConfirmed
       ? rawAiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
       : rawAiResponse;
-    const afterBooking = await processBookingCommand(safeWaResponse, phone);
-    const afterCancel = await processCancelCommand(afterBooking, phone);
+
+    if (isBookingConfirmed) {
+      safeResponse = stripSlotConflictLanguage(safeResponse);
+    }
+
+    const afterBooking = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed);
+    const afterCancel = await processCancelCommand(afterBooking, phone, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
     const finalResponse = stripForbiddenTags(afterNotify);
 
@@ -387,7 +485,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }
 
-// ─── GET — Z-API webhook verification (not required but safe to have) ─────
+// ─── GET — Z-API webhook verification ─────────────────────────────────────
 export async function GET() {
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

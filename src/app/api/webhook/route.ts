@@ -58,15 +58,45 @@ async function trackConversationMetrics(
   }
 }
 
+// ─── Safety net: strip slot-conflict sentences and hard-fallback ──────────
+function stripSlotConflictLanguage(text: string): string {
+  let cleaned = text
+    // "That slot just got taken.", "that time is unavailable", etc.
+    .replace(/[^.!?\n]*\b(?:slot|time\s*slot|appointment|visit|horário|hora)\b[^.!?\n]*\b(?:taken|unavailable|booked|not\s+available|no\s+longer\s+available|just\s+got\s+taken|already\s+(?:taken|booked)|foi\s+ocupad|ocupad)\b[^.!?\n]*[.!?]/gi, "")
+    // "Can you pick/choose/suggest another time/day/slot?"
+    .replace(/[^.!?\n]*\b(?:can|could|would)\b[^.!?\n]*\b(?:pick|choose|select|suggest|prefer)\b[^.!?\n]*\b(?:another|different|other)\b[^.!?\n]*\b(?:time|day|slot|date|hora|dia)\b[^.!?\n]*[.!?]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Hard fallback: any remaining booking-conflict language → replace entire response
+  if (
+    /\b(?:slot|appointment|horário|hora)\b[^.!?\n]{0,60}\b(?:taken|unavailable|booked|not\s+available|no\s+longer)\b/i.test(cleaned) ||
+    /\b(?:taken|unavailable|booked)\b[^.!?\n]{0,60}\b(?:slot|appointment|horário)\b/i.test(cleaned) ||
+    /\bcan you (?:pick|choose|suggest|select) (?:another|a different)\b/i.test(cleaned)
+  ) {
+    cleaned = "You're welcome, see you then!";
+  }
+
+  return cleaned || "You're welcome, see you then!";
+}
+
 // ─── Parse and strip [BOOK:...] from AI response ──────────────────────────
-async function processBookingCommand(aiResponse: string, conversationId: string, senderIgsid: string): Promise<{ response: string; booked: boolean }> {
+async function processBookingCommand(
+  aiResponse: string,
+  conversationId: string,
+  senderIgsid: string,
+  isAlreadyBooked: boolean
+): Promise<{ response: string; booked: boolean }> {
+  // Never attempt a second booking for an already-confirmed appointment
+  if (isAlreadyBooked) {
+    return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
+  }
+
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // Trust the AI extraction: require phone and address fields to be non-empty
-    // Regex-on-raw-text validation was blocking bookings with non-US phone formats
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("Booking blocked — phone or address missing from booking JSON");
       return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
@@ -100,7 +130,23 @@ async function processBookingCommand(aiResponse: string, conversationId: string,
     });
 
     if (result.success) {
-      return { response: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.", booked: true };
+      // Persist flag immediately so follow-up messages detect it even before history is stored
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return {
+        response: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.",
+        booked: true,
+      };
+    } else if (result.error === "already_booked") {
+      // Duplicate blocked at scheduler level — ensure DB flag is set and swallow silently
+      console.warn("[IG] Duplicate booking blocked by scheduler guard");
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
     } else {
       return { response: "That slot was just taken. Can you suggest another day and time?", booked: false };
     }
@@ -141,7 +187,8 @@ async function processNotifyOwner(
 // ─── Cancel booking when AI generates [CANCEL_BOOKING] ────────────────────
 async function processCancelCommand(
   aiResponse: string,
-  senderIgsid: string
+  senderIgsid: string,
+  conversationId: string
 ): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
 
@@ -151,6 +198,11 @@ async function processCancelCommand(
     const result = await cancelClientBooking(senderIgsid);
     if (result.success) {
       console.log(`Cancelled ${result.cancelled} booking(s) for igsid ${senderIgsid}`);
+      // Reset the DB flag so the conversation flows normally after cancellation
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: false })
+        .eq("id", conversationId);
     } else {
       console.warn(`Cancel for igsid ${senderIgsid}: ${result.error}`);
     }
@@ -184,7 +236,6 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (isBusinessSending) {
       const ownerText = messaging.message?.text;
-      // The customer is the recipient when business is sending
       const customerIgsid = isEcho ? recipientIgsidRaw : recipientIgsidRaw;
       console.log("Owner message detected:", isEcho ? "echo" : "agent_message", "| customer:", customerIgsid, "| text:", ownerText?.slice(0, 50));
 
@@ -360,7 +411,7 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (conversation.mode === "human") return;
 
-    // ── Debounce: wait 3s, then check if we're still the latest message ──
+    // ── Debounce: wait 10s, then check if we're still the latest message ──
     await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
 
     const { data: latestMsg } = await supabaseAdmin
@@ -384,6 +435,15 @@ async function handleWebhook(body: WebhookPayload) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
+
+    // ── Re-fetch conversation after debounce ─────────────────────────────
+    // Another concurrent handler may have set booking_confirmed while we were waiting
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conversation.id)
+      .single();
+    if (freshConv) conversation = freshConv;
 
     // ── Process media ────────────────────────────────────────────────────
     let enrichedText = rawText;
@@ -456,8 +516,6 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // Fallback for media that failed to process
-    // Text always wins: phone-number popup and Reply-to-message both arrive as
-    // share attachments alongside real text. If text is present, treat as plain text.
     const clientSentPlainText = !!messaging.message?.text && !audioUrl && !imageUrl;
     const clientActuallySentMedia = !!(audioUrl || imageUrl) || (!!shareUrl && !messaging.message?.text);
     const hasRealContent = clientSentPlainText || (mediaProcessed && enrichedText.trim().length > 0);
@@ -506,7 +564,7 @@ async function handleWebhook(body: WebhookPayload) {
       console.warn("Profile fetch failed:", err);
     }
 
-    // ── Ensure memory store exists for this client (Phase 2) ─────────────
+    // ── Ensure memory store exists for this client ────────────────────────
     let memoryStoreId: string | null = conversation.memory_store_id ?? null;
     if (!memoryStoreId && process.env.ANTHROPIC_API_KEY) {
       try {
@@ -521,9 +579,7 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
-    // ── Load client memory for context ───────────────────────────────────
-    // Load client memory + system memory in parallel, max 3s each
-    // If either times out or fails, we proceed without it — never block the response
+    // ── Load client memory + system memory (parallel, max 3s each) ───────
     const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
       Promise.race([p, new Promise<null>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]).catch(() => null);
 
@@ -539,8 +595,7 @@ async function handleWebhook(body: WebhookPayload) {
         : Promise.resolve(null),
     ]);
 
-    // ── Load conversation history (last 15 messages, always) ─────────────
-    // Fixed: use DESC + limit to get the LAST 15, then reverse for chronological order
+    // ── Load conversation history (last 15 messages) ──────────────────────
     const { data: historyRaw } = await supabaseAdmin
       .from("instagram_messages")
       .select("role, content")
@@ -549,6 +604,51 @@ async function handleWebhook(body: WebhookPayload) {
       .limit(15);
 
     const history = (historyRaw ?? []).reverse();
+
+    // ── Determine booking status (DB flag is authoritative; history is fallback) ──
+    const isBookingConfirmed =
+      !!(conversation as Record<string, unknown>).booking_confirmed ||
+      history.some(
+        (m) => m.role === "assistant" && m.content?.includes("Appointment confirmed")
+      );
+
+    // ── Post-booking: skip AI entirely for every follow-up message ──────────
+    // Simple ack → warm one-liner. Any other message → redirect to Ozzi + notify owner.
+    if (isBookingConfirmed) {
+      const trimmed = enrichedText.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
+      const isSimpleAck =
+        /^(ok(\s+thank\s*(you)?|\s+thanks?)?|thank\s*(you)?|thanks?|de\s+nada|obrigad\w*|got\s+it|great|perfect|sounds?\s+good|alright|cool|see\s+you|bye|cya|understood|entendido|perfeito|tudo\s+(bem|certo|ok)|ótimo|otimo)$/.test(
+          trimmed
+        );
+      const postBookingMsg = isSimpleAck
+        ? "You're welcome, see you then!"
+        : "I'll have Ozzi reach out to you directly if you need anything else!";
+      await sendInstagramMessage(senderIgsid, postBookingMsg);
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: postBookingMsg,
+      });
+      if (!isSimpleAck) {
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conversation.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Instagram",
+            clientName: conversation.username ?? null,
+            clientId: senderIgsid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (err) {
+          console.error("Post-booking notify error:", err);
+        }
+      }
+      return;
+    }
 
     const lastUserMsg = enrichedText.toLowerCase();
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
@@ -571,25 +671,22 @@ async function handleWebhook(body: WebhookPayload) {
       content: m.content,
     }));
 
-    // Always load real-time availability so the AI never invents time slots
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      const availability = await getRealAvailabilityContext();
-      const systemParts: string[] = [dateContext, availability];
+      // Only fetch availability when no booking is confirmed yet.
+      // After booking, showing availability causes the AI to see the booked slot as
+      // "taken" and generate "that slot just got taken" on follow-up messages.
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {
         systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
       }
-      // Booking already confirmed in THIS conversation — client is asking a follow-up question
-      const isBookingConfirmed = history.some(m =>
-        m.role === "assistant" && m.content?.includes("Appointment confirmed")
-      );
-      // Truly returning client (owner previously handled them via training corrections)
       const isOwnerHandled = !isBookingConfirmed && history.some(m =>
         m.role === "assistant" && m.content?.startsWith("[Treino]")
       );
       if (isBookingConfirmed) {
-        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. Do NOT check, consult, or mention availability. Do NOT say any slot is taken or unavailable. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
@@ -613,16 +710,32 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Generate AI response ─────────────────────────────────────────────
-    const { text: rawAiText, inputTokens, outputTokens } = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    // Safety net: if booking already confirmed, strip any [BOOK:...] before processing
-    const isAlreadyBooked = history.some(m =>
-      m.role === "assistant" && m.content?.includes("Appointment confirmed")
+    // Pass isBookingConfirmed so the system prompt gets the CRITICAL block injected
+    const { text: rawAiText, inputTokens, outputTokens } = await getAIResponse(
+      messagesForAI,
+      memoryContext,
+      systemMemory,
+      undefined,
+      isBookingConfirmed
     );
-    const safeAiText = isAlreadyBooked
+
+    // Strip any [BOOK:...] if booking already confirmed
+    let safeAiText = isBookingConfirmed
       ? rawAiText.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
       : rawAiText;
-    const { response: afterBookingText, booked } = await processBookingCommand(safeAiText, conversation.id, senderIgsid);
-    const afterCancel = await processCancelCommand(afterBookingText, senderIgsid);
+
+    // Safety net: remove any slot-conflict language the AI may still generate after booking
+    if (isBookingConfirmed) {
+      safeAiText = stripSlotConflictLanguage(safeAiText);
+    }
+
+    const { response: afterBookingText, booked } = await processBookingCommand(
+      safeAiText,
+      conversation.id,
+      senderIgsid,
+      isBookingConfirmed
+    );
+    const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
     const finalResponse = stripForbiddenTags(afterNotify);
 

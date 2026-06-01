@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDreaming, getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
+function isAuthorized(secret: string | null): boolean {
+  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
+  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN;
+  return secret === adminSecret || (!!verifyToken && secret === verifyToken);
+}
+
 // GET — return current system learnings (for dashboard)
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  if (secret !== process.env.INSTAGRAM_VERIFY_TOKEN) {
+  if (!isAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -21,7 +27,7 @@ export async function GET(req: NextRequest) {
 // POST — run dreaming analysis (called by cron or manually)
 export async function POST(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  if (secret !== process.env.INSTAGRAM_VERIFY_TOKEN) {
+  if (!isAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

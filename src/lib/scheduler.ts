@@ -85,6 +85,21 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     const db = await getAuthenticatedClient();
 
     const today = new Date().toISOString().slice(0, 10);
+
+    // Guard: if this client already has an upcoming booking, block the duplicate
+    if (req.igsid) {
+      const { data: existing } = await db
+        .from("bookings")
+        .select("id")
+        .like("email", `ia-${req.igsid}@%`)
+        .gte("booking_date", today)
+        .limit(1);
+      if (existing && existing.length > 0) {
+        console.warn(`[createBooking] Duplicate blocked — ${req.igsid} already has an upcoming booking`);
+        return { success: false, error: "already_booked" };
+      }
+    }
+
     const future = new Date();
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);

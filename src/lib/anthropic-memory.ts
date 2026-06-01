@@ -138,8 +138,12 @@ export function extractMemoryUpdate(
     changed = true;
   }
 
-  // Detect booking confirmation
-  if (/\[BOOK:/i.test(aiResponse) && !update.visit_scheduled) {
+  // Detect booking confirmation — check both the raw [BOOK: tag and the
+  // post-processed confirmation text (tag is stripped before this function runs)
+  if (
+    (/\[BOOK:/i.test(aiResponse) || /appointment confirmed/i.test(aiResponse)) &&
+    !update.visit_scheduled
+  ) {
     update.visit_scheduled = true;
     update.status = "scheduled";
     changed = true;

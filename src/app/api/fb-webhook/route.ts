@@ -32,14 +32,40 @@ export async function GET(req: NextRequest) {
   return new NextResponse("Forbidden", { status: 403 });
 }
 
+// ─── Safety net: strip slot-conflict sentences and hard-fallback ──────────
+function stripSlotConflictLanguage(text: string): string {
+  let cleaned = text
+    .replace(/[^.!?\n]*\b(?:slot|time\s*slot|appointment|visit|horário|hora)\b[^.!?\n]*\b(?:taken|unavailable|booked|not\s+available|no\s+longer\s+available|just\s+got\s+taken|already\s+(?:taken|booked)|foi\s+ocupad|ocupad)\b[^.!?\n]*[.!?]/gi, "")
+    .replace(/[^.!?\n]*\b(?:can|could|would)\b[^.!?\n]*\b(?:pick|choose|select|suggest|prefer)\b[^.!?\n]*\b(?:another|different|other)\b[^.!?\n]*\b(?:time|day|slot|date|hora|dia)\b[^.!?\n]*[.!?]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (
+    /\b(?:slot|appointment|horário|hora)\b[^.!?\n]{0,60}\b(?:taken|unavailable|booked|not\s+available|no\s+longer)\b/i.test(cleaned) ||
+    /\b(?:taken|unavailable|booked)\b[^.!?\n]{0,60}\b(?:slot|appointment|horário)\b/i.test(cleaned) ||
+    /\bcan you (?:pick|choose|suggest|select) (?:another|a different)\b/i.test(cleaned)
+  ) {
+    cleaned = "You're welcome, see you then!";
+  }
+
+  return cleaned || "You're welcome, see you then!";
+}
+
 // ─── [BOOK:...] processor ─────────────────────────────────────────────────
-async function processBookingCommand(aiResponse: string, psid: string): Promise<string> {
+async function processBookingCommand(
+  aiResponse: string,
+  psid: string,
+  conversationId: string,
+  isAlreadyBooked: boolean
+): Promise<string> {
+  if (isAlreadyBooked) {
+    return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+  }
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    // Trust the AI extraction: require phone and address fields to be non-empty
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("FB booking blocked — phone or address missing from booking JSON");
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
@@ -56,9 +82,21 @@ async function processBookingCommand(aiResponse: string, psid: string): Promise<
       igsid: `fb_${psid}`,
     });
 
-    return result.success
-      ? "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi."
-      : "That slot was just taken. Can you suggest another day and time?";
+    if (result.success) {
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+    } else if (result.error === "already_booked") {
+      console.warn("[FB] Duplicate booking blocked by scheduler guard");
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: true })
+        .eq("id", conversationId);
+      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+    }
+    return "That slot was just taken. Can you suggest another day and time?";
   } catch (err) {
     console.error("FB booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -94,12 +132,22 @@ async function processNotifyOwner(
 }
 
 // ─── [CANCEL_BOOKING] processor ──────────────────────────────────────────
-async function processCancelCommand(aiResponse: string, psid: string): Promise<string> {
+async function processCancelCommand(
+  aiResponse: string,
+  psid: string,
+  conversationId: string
+): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
   const clean = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
   try {
     const result = await cancelClientBooking(`fb_${psid}`);
-    if (result.success) console.log(`FB: Cancelled ${result.cancelled} booking(s) for ${psid}`);
+    if (result.success) {
+      console.log(`FB: Cancelled ${result.cancelled} booking(s) for ${psid}`);
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ booking_confirmed: false })
+        .eq("id", conversationId);
+    }
   } catch (err) {
     console.error("FB cancel error:", err);
   }
@@ -120,11 +168,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const messaging = (entry?.messaging as Record<string, unknown>[])?.[0];
     if (!messaging) return;
 
-    // Skip echoes (messages sent by the page itself) — but save as training examples
+    // Skip echoes — save as training examples
     if ((messaging.message as Record<string, unknown>)?.is_echo) {
       const echoText = (messaging.message as Record<string, unknown>)?.text as string;
       const echoSenderId = (messaging.sender as Record<string, unknown>)?.id as string;
-      // In echo events: sender = PAGE, recipient = client PSID
       if (echoText && echoSenderId === FB_PAGE_ID) {
         const clientPsid = (messaging.recipient as Record<string, unknown>)?.id as string;
         if (clientPsid) {
@@ -160,7 +207,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .maybeSingle();
     if (already) return;
 
-    // Find or create conversation (igsid = "fb_{psid}" to distinguish from Instagram)
+    // Find or create conversation (igsid = "fb_{psid}")
     const fbIgsid = `fb_${psid}`;
     let { data: conv } = await supabaseAdmin
       .from("instagram_conversations")
@@ -169,10 +216,9 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
 
     if (!conv) {
-      const defaultMode = "agent";
       const { data: newConv } = await supabaseAdmin
         .from("instagram_conversations")
-        .insert({ igsid: fbIgsid, mode: defaultMode })
+        .insert({ igsid: fbIgsid, mode: "agent" })
         .select()
         .single();
       conv = newConv;
@@ -183,14 +229,12 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const attachments = (msg?.attachments as Record<string, unknown>[]) ?? [];
     const imageAtt = attachments.find((a) => a.type === "image");
 
-    // Ignore Facebook stickers (thumbs up button and emoji stickers arrive as image with sticker_id)
     if ((imageAtt?.payload as Record<string, unknown>)?.sticker_id) return;
 
     const audioAtt = attachments.find((a) => a.type === "audio");
 
     let rawText = (msg?.text as string) ?? "";
 
-    // Ignore emoji-only messages (end-of-conversation reactions like 👍)
     if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
 
     const imageUrl = (imageAtt?.payload as Record<string, unknown>)?.url as string ?? null;
@@ -240,7 +284,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
-    // Rate limit: 5s window prevents genuine duplicates without blocking fast client replies
+    // Rate limit: 5s window
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -249,6 +293,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
+
+    // Re-fetch conversation after debounce (catch booking_confirmed set by concurrent handler)
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conv.id)
+      .single();
+    if (freshConv) conv = freshConv;
 
     // Process media
     let enrichedText = rawText;
@@ -285,7 +337,9 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const hasRealContent = clientSentPlainText || mediaProcessed;
 
     if (!hasRealContent) {
-      const fallback = imageUrl ? "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need." : "Got your message! Could you type your question?";
+      const fallback = imageUrl
+        ? "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need."
+        : "Got your message! Could you type your question?";
       await sendFacebookMessage(psid, fallback);
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
       return;
@@ -335,6 +389,46 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .limit(15);
     const history = (historyRaw ?? []).reverse();
 
+    // Determine booking status (DB flag is authoritative; history is fallback)
+    const isBookingConfirmed =
+      !!(conv as Record<string, unknown>).booking_confirmed ||
+      history.some((m: { role: string; content: string }) =>
+        m.role === "assistant" && m.content?.includes("Appointment confirmed")
+      );
+
+    // ── Post-booking: skip AI entirely for every follow-up message ──────────
+    if (isBookingConfirmed) {
+      const trimmed = enrichedText.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
+      const isSimpleAck =
+        /^(ok(\s+thank\s*(you)?|\s+thanks?)?|thank\s*(you)?|thanks?|de\s+nada|obrigad\w*|got\s+it|great|perfect|sounds?\s+good|alright|cool|see\s+you|bye|cya|understood|entendido|perfeito|tudo\s+(bem|certo|ok)|ótimo|otimo)$/.test(
+          trimmed
+        );
+      const postBookingMsg = isSimpleAck
+        ? "You're welcome, see you then!"
+        : "I'll have Ozzi reach out to you directly if you need anything else!";
+      await sendFacebookMessage(psid, postBookingMsg);
+      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: postBookingMsg });
+      if (!isSimpleAck) {
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Messenger",
+            clientName: (conv as Record<string, unknown>).username as string ?? null,
+            clientId: psid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (err) {
+          console.error("FB post-booking notify error:", err);
+        }
+      }
+      return;
+    }
+
     // Date context
     const now = new Date();
     const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -346,20 +440,16 @@ async function handleFbMessage(body: Record<string, unknown>) {
     type AiMsg = { role: "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-    // Always load real-time availability so the AI never invents time slots
-    const availability = await getRealAvailabilityContext();
-
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
-      const systemParts: string[] = [dateContext, availability];
-      const isBookingConfirmed = history.some((m: { role: string; content: string }) =>
-        m.role === "assistant" && m.content?.includes("Appointment confirmed")
-      );
+      // Only load availability when booking not yet confirmed
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.startsWith("[Treino]")
       );
       if (isBookingConfirmed) {
-        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. NEVER generate [BOOK:...] again under any circumstance. Do NOT say any slot is taken or unavailable. Do NOT add [NOTIFY_OWNER].]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
@@ -378,15 +468,24 @@ async function handleFbMessage(body: Record<string, unknown>) {
       messagesForAI[lastIdx] = { ...messagesForAI[lastIdx], content: `${messagesForAI[lastIdx].content}\n\n${systemNote}` };
     }
 
-    const { text: rawAiResponse } = await getAIResponse(messagesForAI, memoryContext, systemMemory);
-    const fbAlreadyBooked = history.some((m: { role: string; content: string }) =>
-      m.role === "assistant" && m.content?.includes("Appointment confirmed")
+    const { text: rawAiResponse } = await getAIResponse(
+      messagesForAI,
+      memoryContext,
+      systemMemory,
+      undefined,
+      isBookingConfirmed
     );
-    const safeFbResponse = fbAlreadyBooked
+
+    let safeResponse = isBookingConfirmed
       ? rawAiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
       : rawAiResponse;
-    const afterBooking = await processBookingCommand(safeFbResponse, psid);
-    const afterCancel = await processCancelCommand(afterBooking, psid);
+
+    if (isBookingConfirmed) {
+      safeResponse = stripSlotConflictLanguage(safeResponse);
+    }
+
+    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed);
+    const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);
 

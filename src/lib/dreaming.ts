@@ -124,13 +124,24 @@ async function fetchRecentConversations(): Promise<string> {
 
     if (!msgs || msgs.length < 3) continue;
 
+    const converted = msgs.some(
+      (m) =>
+        m.role === "assistant" &&
+        (m.content?.includes("Appointment confirmed") ||
+          /\[BOOK:/i.test(m.content ?? ""))
+    );
+
     const lines = msgs.map((m) => {
       const role = m.role === "user" ? "Client" : "Agent";
       const content = (m.content ?? "").replace(/\[BOOK:\{[\s\S]*?\}\]/g, "[BOOKING CREATED]").slice(0, 300);
       return `${role}: ${content}`;
     });
 
-    transcripts.push(`--- Conversation (${conv.username || conv.id}) ---\n${lines.join("\n")}`);
+    const label = converted
+      ? `--- Conversation [CONVERTED ✓] (${conv.username || conv.id}) ---`
+      : `--- Conversation (${conv.username || conv.id}) ---`;
+
+    transcripts.push(`${label}\n${lines.join("\n")}`);
   }
 
   return transcripts.length > 0
@@ -200,40 +211,43 @@ export async function runDreaming(): Promise<DreamResult> {
     : "";
 
   // 3. Claude analyzes patterns
+  const convertedCount = (transcripts.match(/\[CONVERTED ✓\]/g) || []).length;
+
   const analysisResponse = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 2000,
     system: `You are analyzing sales conversations for OzziFloors, a premium flooring company in Miami, FL.
 The agent classifies leads as SMALL (<500 sqft, close by DM) or LARGE (>500 sqft, schedule free in-person visit).
-Pricing: Luxury Vinyl $5/sqft (floor+labor). Visit = free quote, agent brings samples, measures, negotiates.
+Pricing: Luxury Vinyl $5/sqft (floor+labor). Tile labor only: $4.50/sqft. Visit = free quote, agent brings samples, measures, negotiates.
 
-Your job: find patterns and generate specific, actionable improvements for the agent.
+Conversations marked [CONVERTED ✓] ended with a scheduled appointment — these are your most valuable signal.
+Your job: find patterns that CAUSED conversions and generate specific, actionable improvements for the agent.
 IMPORTANT: Owner manual corrections are the highest priority signal. They show exactly where the agent failed and what the correct response is. Always incorporate them into the improvements.`,
     messages: [
       {
         role: "user",
-        content: `Here are the recent conversations from the last 7 days:\n\n${transcripts}${correctionsSection}\n\n---\n\nAnalyze these conversations and produce an updated learnings file in this EXACT markdown format:
+        content: `Here are the recent conversations from the last 7 days (${convertedCount} converted out of ${convCount} total):\n\n${transcripts}${correctionsSection}\n\n---\n\nAnalyze these conversations and produce an updated learnings file in this EXACT markdown format:
 
 # OzziFloors Agent — System Learnings
 Updated: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-Conversations analyzed: ${convCount}
+Conversations analyzed: ${convCount} (${convertedCount} converted)
+
+## What closed bookings (from CONVERTED conversations only)
+(List 3-5 specific phrases or moments in [CONVERTED ✓] conversations that directly led to the booking)
 
 ## Common client questions
 (List the 3-5 most frequently asked questions with ideal short answers)
 
-## What closes bookings faster
-(List 3-5 specific phrases or approaches that led to successful bookings or visit confirmations)
-
 ## Common objections and how to handle them
-(List top 3 objections and the best response for each)
+(List top 3 objections and the best response for each — prioritize objections from converted conversations)
 
 ## Where conversations stall
-(List 2-3 patterns where leads go cold or conversations stop progressing)
+(List 2-3 patterns where leads go cold, based on non-converted conversations)
 
 ## Agent improvements for next week
-(List 2-4 SPECIFIC improvements — e.g. "When client says X, respond with Y instead of Z")
+(List 2-4 SPECIFIC improvements — e.g. "When client says X, respond with Y instead of Z". Focus on gaps between converted and non-converted conversations.)
 
-Be specific and concise. Base everything strictly on the conversations above.`,
+Be specific and concise. Base everything strictly on the conversations above. Prioritize [CONVERTED ✓] conversations.`,
       },
     ],
   });
