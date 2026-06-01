@@ -612,40 +612,23 @@ async function handleWebhook(body: WebhookPayload) {
         (m) => m.role === "assistant" && m.content?.includes("Appointment confirmed")
       );
 
-    // ── Post-booking: skip AI entirely for every follow-up message ──────────
-    // Simple ack → warm one-liner. Any other message → redirect to Ozzi + notify owner.
+    // ── Post-booking: send nothing to client, silently notify owner ──────────
     if (isBookingConfirmed) {
-      const trimmed = enrichedText.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
-      const isSimpleAck =
-        /^(ok(\s+thank\s*(you)?|\s+thanks?)?|thank\s*(you)?|thanks?|de\s+nada|obrigad\w*|got\s+it|great|perfect|sounds?\s+good|alright|cool|see\s+you|bye|cya|understood|entendido|perfeito|tudo\s+(bem|certo|ok)|ótimo|otimo)$/.test(
-          trimmed
-        );
-      const postBookingMsg = isSimpleAck
-        ? "You're welcome, see you then!"
-        : "I'll have Ozzi reach out to you directly if you need anything else!";
-      await sendInstagramMessage(senderIgsid, postBookingMsg);
-      await supabaseAdmin.from("instagram_messages").insert({
-        conversation_id: conversation.id,
-        role: "assistant",
-        content: postBookingMsg,
-      });
-      if (!isSimpleAck) {
-        try {
-          const { data: recentMsgs } = await supabaseAdmin
-            .from("instagram_messages")
-            .select("role, content")
-            .eq("conversation_id", conversation.id)
-            .order("created_at", { ascending: false })
-            .limit(8);
-          await notifyOwners({
-            platform: "Instagram",
-            clientName: conversation.username ?? null,
-            clientId: senderIgsid,
-            recentMessages: (recentMsgs ?? []).reverse(),
-          });
-        } catch (err) {
-          console.error("Post-booking notify error:", err);
-        }
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Instagram",
+          clientName: conversation.username ?? null,
+          clientId: senderIgsid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("Post-booking notify error:", err);
       }
       return;
     }
@@ -686,7 +669,7 @@ async function handleWebhook(body: WebhookPayload) {
         m.role === "assistant" && m.content?.startsWith("[Treino]")
       );
       if (isBookingConfirmed) {
-        systemParts.push("[BOOKING ALREADY CONFIRMED: This client already has an appointment scheduled. Answer their follow-up question naturally. Do NOT check, consult, or mention availability. Do NOT say any slot is taken or unavailable. NEVER generate [BOOK:...] again under any circumstance. Do NOT add [NOTIFY_OWNER].]");
+        systemParts.push("[BOOKING ALREADY CONFIRMED: The appointment is set. Do NOT answer any question or continue the conversation. For ANY message the client sends — thank-you, question, or anything else — respond with EXACTLY ONE short sentence redirecting them to Ozzi, then add [NOTIFY_OWNER]. Example: 'I\\'ll connect you with Ozzi for anything else you need![NOTIFY_OWNER]' NEVER generate [BOOK:...]. NEVER say any slot is taken or unavailable. NEVER answer questions directly.]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");

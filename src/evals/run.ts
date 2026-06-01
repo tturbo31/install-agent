@@ -16,10 +16,10 @@ function stripSlotConflictLanguage(text: string): string {
     /\b(?:taken|unavailable|booked)\b[^.!?\n]{0,60}\b(?:slot|appointment|horário)\b/i.test(cleaned) ||
     /\bcan you (?:pick|choose|suggest|select) (?:another|a different)\b/i.test(cleaned)
   ) {
-    cleaned = "You're welcome, see you then!";
+    cleaned = "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]";
   }
 
-  return cleaned || "You're welcome, see you then!";
+  return cleaned || "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]";
 }
 import { WHAT_IS_INCLUDED_RESPONSE } from "../lib/system-prompt";
 
@@ -106,6 +106,14 @@ const GRADERS = {
       const sentences = (stripped.match(/[.!?](?:\s|$)/g) ?? []).length;
       return sentences <= 1 && stripped.length < 120;
     },
+  },
+  hasNotifyOwner: {
+    label: 'Redirects to owner with [NOTIFY_OWNER] (post-booking)',
+    check: (t: string) => /\[NOTIFY_OWNER\]/i.test(t),
+  },
+  isSilent: {
+    label: 'No message sent to client (empty response after stripping tags)',
+    check: (t: string) => t.replace(/\[[^\]]*\]/g, "").trim() === "",
   },
   noEmojis: {
     label: 'No emojis in response',
@@ -277,41 +285,40 @@ const SCENARIOS: Scenario[] = [
   // "That slot just got taken. Can you pick another time?" — the bug we fixed.
 
   {
-    name: '[BUG FIX] Post-booking "ok thank you" → no slot conflict, one warm sentence',
+    name: '[POST-BOOKING] "ok thank you" → silêncio total, nada enviado ao cliente',
     messages: [
       { role: "assistant", content: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi." },
       { role: "user", content: "Ok thank you" },
     ],
     bookingConfirmed: true,
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noSlotConflict", "noBookTag", "isWarmOneliner"],
+    graders: ["noBookTag", "isSilent"],
   },
   {
-    name: '[BUG FIX] Post-booking "obrigado" (Portuguese) → no slot conflict, warm ack',
+    name: '[POST-BOOKING] "Obrigado" → silêncio total, nada enviado ao cliente',
     messages: [
       { role: "assistant", content: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi." },
       { role: "user", content: "Obrigado!" },
     ],
     bookingConfirmed: true,
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noSlotConflict", "noBookTag", "isWarmOneliner"],
+    graders: ["noBookTag", "isSilent"],
   },
   {
-    // After booking confirmed, questions → AI must not generate slot conflict or [BOOK:...] (safety net layer)
-    name: '[BUG FIX] Post-booking question → no slot conflict, no [BOOK:...] re-generated',
+    name: '[POST-BOOKING] Pergunta após booking → silêncio total, nada enviado ao cliente',
     messages: [
       { role: "assistant", content: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi." },
       { role: "user", content: "What time will you arrive exactly?" },
     ],
     bookingConfirmed: true,
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noSlotConflict", "noBookTag"],
+    graders: ["noBookTag", "isSilent"],
   },
   {
-    name: '[BUG FIX] Post-booking "thanks, see you then" → one sentence, no [BOOK:...], no slot conflict',
+    name: '[POST-BOOKING] "thanks, see you then" → silêncio total, nada enviado ao cliente',
     messages: [
       { role: "assistant", content: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi." },
       { role: "user", content: "Thanks, see you then!" },
     ],
     bookingConfirmed: true,
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noSlotConflict", "noBookTag", "isWarmOneliner"],
+    graders: ["noBookTag", "isSilent"],
   },
 ];
 
@@ -337,7 +344,6 @@ async function main() {
     try {
       const result = await getAIResponse(scenario.messages, null, null, null, scenario.bookingConfirmed);
       response = result.text;
-      if (scenario.bookingConfirmed) response = stripSlotConflictLanguage(response);
       inputTokens = result.inputTokens;
       outputTokens = result.outputTokens;
     } catch (e) {
