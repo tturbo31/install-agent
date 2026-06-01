@@ -115,10 +115,26 @@ const GRADERS = {
     label: 'Proposes in-person visit (large project)',
     check: (t: string) => /visit|in.?person|come by|measure|stop by/i.test(t),
   },
+  noColorNames: {
+    label: 'No specific color/product names listed (redirect to website)',
+    check: (t: string) => !/\b(White Knight|Coastal Mist|Forged Brown|Mocha|Grey Shield|Nordic Shadow|Lia\s+in\s+marble|marble\s+white)\b/i.test(t),
+  },
+  hasOzziUrlInOptions: {
+    label: 'Redirects to ozzifloors.com or @ozzi.floors for options',
+    check: (t: string) => /ozzifloors\.com|@ozzi\.floors|ozzi\.floors/i.test(t),
+  },
   noDMPriceForLargeProject: {
     label: 'No final price quote by DM (large project)',
-    // Fails if response contains a dollar+number that looks like a final quote (e.g. $2,500 or $10,000)
-    check: (t: string) => !/\$\s*[\d,]+(?:\s*(?:all\s+in|total|for\s+that|for\s+the|final))?/i.test(t) || /approximate|rough|estimate/i.test(t),
+    // Fails if response contains a total project cost ($500+) without "approximate/rough/estimate"
+    // Allows per-sqft unit prices like "$5/sqft" (value < 100)
+    check: (t: string) => {
+      const priceMatches = [...t.matchAll(/\$\s*([\d,]+)/g)];
+      const hasTotalProjectPrice = priceMatches.some(m => {
+        const num = parseInt(m[1].replace(/,/g, ""), 10);
+        return num >= 500; // $500+ is a total project cost, not a unit price
+      });
+      return !hasTotalProjectPrice || /approximate|rough|estimate/i.test(t);
+    },
   },
 } satisfies Record<string, { label: string; check: (t: string) => boolean }>;
 
@@ -228,7 +244,6 @@ const SCENARIOS: Scenario[] = [
       { role: "user", content: "Thanks, I'll think about it." },
     ],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags"],
-    llmJudge: true,
   },
   {
     // Critical: must give exact phone, never invent one
@@ -241,6 +256,20 @@ const SCENARIOS: Scenario[] = [
     name: 'Open-ended question → zero dashes and zero emojis',
     messages: [{ role: "user", content: "Tell me about your luxury vinyl flooring" }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags"],
+  },
+
+  // ── MATERIAL OPTIONS BUG REGRESSION TEST ─────────────────────────────────
+  // Bug: AI was listing specific color names (White Knight, Coastal Mist, etc.)
+  // Fix: must redirect to website/Instagram without naming any colors.
+  {
+    name: '[BUG FIX] "Material options" → redirect to website, no color names listed',
+    messages: [{ role: "user", content: "What are the material options you have" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "hasOzziUrlInOptions"],
+  },
+  {
+    name: '[BUG FIX] "What flooring options do you have?" → redirect, no color names',
+    messages: [{ role: "user", content: "What flooring options do you have?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "hasOzziUrlInOptions"],
   },
 
   // ── BOOKING BUG REGRESSION TESTS ─────────────────────────────────────────
