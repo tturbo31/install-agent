@@ -410,12 +410,9 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .limit(15);
     const history = (historyRaw ?? []).reverse();
 
-    // Determine booking status (DB flag is authoritative; history is fallback)
-    const isBookingConfirmed =
-      !!(conv as Record<string, unknown>).booking_confirmed ||
-      history.some((m: { role: string; content: string }) =>
-        m.role === "assistant" && m.content?.includes("Appointment confirmed")
-      );
+    // DB flag only — history fallback removed: it kept firing after cancellations
+    // because "Appointment confirmed" stays in history even after booking_confirmed=false
+    const isBookingConfirmed = !!(conv as Record<string, unknown>).booking_confirmed;
 
     // Date context
     const now = new Date();

@@ -626,12 +626,10 @@ async function handleWebhook(body: WebhookPayload) {
 
     const history = (historyRaw ?? []).reverse();
 
-    // ── Determine booking status (DB flag is authoritative; history is fallback) ──
-    const isBookingConfirmed =
-      !!(conversation as Record<string, unknown>).booking_confirmed ||
-      history.some(
-        (m) => m.role === "assistant" && m.content?.includes("Appointment confirmed")
-      );
+    // ── Determine booking status — DB flag only (history fallback removed:
+    //    it kept triggering after cancellations because "Appointment confirmed"
+    //    remains in history even after booking_confirmed is reset to false) ──
+    const isBookingConfirmed = !!(conversation as Record<string, unknown>).booking_confirmed;
 
     const lastUserMsg = enrichedText.toLowerCase();
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
