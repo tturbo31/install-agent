@@ -426,6 +426,36 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
+    // ── Re-fetch conversation BEFORE rate limit ───────────────────────────
+    // A concurrent handler may have set booking_confirmed while we were waiting
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conversation.id)
+      .single();
+    if (freshConv) conversation = freshConv;
+
+    // ── If already booked → notify owner silently, no message to client ──
+    if ((conversation as Record<string, unknown>).booking_confirmed) {
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Instagram",
+          clientName: conversation.username ?? null,
+          clientId: senderIgsid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("Post-booking notify error:", err);
+      }
+      return;
+    }
+
     // Rate limit: 5s window prevents genuine duplicates without blocking fast client replies
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
@@ -435,15 +465,6 @@ async function handleWebhook(body: WebhookPayload) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
-
-    // ── Re-fetch conversation after debounce ─────────────────────────────
-    // Another concurrent handler may have set booking_confirmed while we were waiting
-    const { data: freshConv } = await supabaseAdmin
-      .from("instagram_conversations")
-      .select("*")
-      .eq("id", conversation.id)
-      .single();
-    if (freshConv) conversation = freshConv;
 
     // ── Process media ────────────────────────────────────────────────────
     let enrichedText = rawText;
@@ -612,27 +633,6 @@ async function handleWebhook(body: WebhookPayload) {
         (m) => m.role === "assistant" && m.content?.includes("Appointment confirmed")
       );
 
-    // ── Post-booking: send nothing to client, silently notify owner ──────────
-    if (isBookingConfirmed) {
-      try {
-        const { data: recentMsgs } = await supabaseAdmin
-          .from("instagram_messages")
-          .select("role, content")
-          .eq("conversation_id", conversation.id)
-          .order("created_at", { ascending: false })
-          .limit(8);
-        await notifyOwners({
-          platform: "Instagram",
-          clientName: conversation.username ?? null,
-          clientId: senderIgsid,
-          recentMessages: (recentMsgs ?? []).reverse(),
-        });
-      } catch (err) {
-        console.error("Post-booking notify error:", err);
-      }
-      return;
-    }
-
     const lastUserMsg = enrichedText.toLowerCase();
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
     const isPartnershipRequest = partnershipKeywords.some((k) => lastUserMsg.includes(k));
@@ -759,12 +759,17 @@ async function handleWebhook(body: WebhookPayload) {
 
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
-  if (!verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))) {
+  const sig = req.headers.get("x-hub-signature-256");
+  console.log("[IG webhook] POST received | size:", rawBody.length, "| sig present:", !!sig);
+
+  if (!verifyMetaSignature(rawBody, sig)) {
+    console.warn("[IG webhook] Signature verification FAILED — returning 403");
     return new NextResponse("Forbidden", { status: 403 });
   }
 
   const body: WebhookPayload = JSON.parse(rawBody);
   if (!body || body.object !== "instagram") {
+    console.log("[IG webhook] Ignored — object:", body?.object);
     return NextResponse.json({ status: "ignored" }, { status: 200 });
   }
 
@@ -773,6 +778,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "skipped" }, { status: 200 });
   }
 
+  console.log("[IG webhook] Processing message from:", messaging.sender?.id);
   waitUntil(handleWebhook(body));
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

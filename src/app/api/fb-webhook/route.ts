@@ -284,6 +284,35 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
+    // Re-fetch conversation BEFORE rate limit (catches booking_confirmed set by concurrent handler)
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conv.id)
+      .single();
+    if (freshConv) conv = freshConv;
+
+    // If already booked → notify owner silently, no message to client
+    if ((conv as Record<string, unknown>).booking_confirmed) {
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Messenger",
+          clientName: (conv as Record<string, unknown>).username as string ?? null,
+          clientId: psid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("FB post-booking notify error:", err);
+      }
+      return;
+    }
+
     // Rate limit: 5s window
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
@@ -293,14 +322,6 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
-
-    // Re-fetch conversation after debounce (catch booking_confirmed set by concurrent handler)
-    const { data: freshConv } = await supabaseAdmin
-      .from("instagram_conversations")
-      .select("*")
-      .eq("id", conv.id)
-      .single();
-    if (freshConv) conv = freshConv;
 
     // Process media
     let enrichedText = rawText;
@@ -396,27 +417,6 @@ async function handleFbMessage(body: Record<string, unknown>) {
         m.role === "assistant" && m.content?.includes("Appointment confirmed")
       );
 
-    // ── Post-booking: send nothing to client, silently notify owner ──────────
-    if (isBookingConfirmed) {
-      try {
-        const { data: recentMsgs } = await supabaseAdmin
-          .from("instagram_messages")
-          .select("role, content")
-          .eq("conversation_id", conv.id)
-          .order("created_at", { ascending: false })
-          .limit(8);
-        await notifyOwners({
-          platform: "Messenger",
-          clientName: (conv as Record<string, unknown>).username as string ?? null,
-          clientId: psid,
-          recentMessages: (recentMsgs ?? []).reverse(),
-        });
-      } catch (err) {
-        console.error("FB post-booking notify error:", err);
-      }
-      return;
-    }
-
     // Date context
     const now = new Date();
     const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -497,14 +497,23 @@ async function handleFbMessage(body: Record<string, unknown>) {
 // ─── POST handler ─────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
-  if (!verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))) {
+  const sig = req.headers.get("x-hub-signature-256");
+  console.log("[FB webhook] POST received | size:", rawBody.length, "| sig present:", !!sig);
+
+  if (!verifyMetaSignature(rawBody, sig)) {
+    console.warn("[FB webhook] Signature verification FAILED — returning 403");
     return new NextResponse("Forbidden", { status: 403 });
   }
 
   const body = JSON.parse(rawBody);
   if (!body || body.object !== "page") {
+    console.log("[FB webhook] Ignored — object:", body?.object);
     return NextResponse.json({ status: "ignored" }, { status: 200 });
   }
+
+  const messaging = (body.entry as Record<string, unknown>[])?.[0];
+  const sender = ((messaging?.messaging as Record<string, unknown>[])?.[0]?.sender as Record<string, unknown>)?.id;
+  console.log("[FB webhook] Processing message from:", sender);
   waitUntil(handleFbMessage(body));
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

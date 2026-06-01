@@ -251,6 +251,35 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
 
+    // Re-fetch conversation BEFORE rate limit (catches booking_confirmed set by concurrent handler)
+    const { data: freshConv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("*")
+      .eq("id", conv.id)
+      .single();
+    if (freshConv) conv = freshConv;
+
+    // If already booked → notify owner silently, no message to client
+    if ((conv as Record<string, unknown>).booking_confirmed) {
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "WhatsApp",
+          clientName: conv.username ?? null,
+          clientId: phone,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("WA post-booking notify error:", err);
+      }
+      return;
+    }
+
     // Rate limit: 5s window
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
@@ -260,14 +289,6 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
     if (recentReply && recentReply.length > 0) return;
-
-    // Re-fetch conversation after debounce (catch booking_confirmed set by concurrent handler)
-    const { data: freshConv } = await supabaseAdmin
-      .from("instagram_conversations")
-      .select("*")
-      .eq("id", conv.id)
-      .single();
-    if (freshConv) conv = freshConv;
 
     // Process media
     let enrichedText = rawText;
@@ -357,27 +378,6 @@ async function handleWaMessage(body: Record<string, unknown>) {
       history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.includes("Appointment confirmed")
       );
-
-    // ── Post-booking: send nothing to client, silently notify owner ──────────
-    if (isBookingConfirmed) {
-      try {
-        const { data: recentMsgs } = await supabaseAdmin
-          .from("instagram_messages")
-          .select("role, content")
-          .eq("conversation_id", conv.id)
-          .order("created_at", { ascending: false })
-          .limit(8);
-        await notifyOwners({
-          platform: "WhatsApp",
-          clientName: conv.username ?? null,
-          clientId: phone,
-          recentMessages: (recentMsgs ?? []).reverse(),
-        });
-      } catch (err) {
-        console.error("WA post-booking notify error:", err);
-      }
-      return;
-    }
 
     // Date context
     const now = new Date();
