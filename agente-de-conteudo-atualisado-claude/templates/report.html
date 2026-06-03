@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Code Daily Intelligence Report</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #1a1a2e;
+      background: #ffffff;
+    }
+
+    /* ---- HEADER ---- */
+    .header {
+      background: linear-gradient(135deg, #16213e 0%, #0f3460 50%, #533483 100%);
+      color: #ffffff;
+      padding: 40px 48px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .header-left .logo {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: #a78bfa;
+      margin-bottom: 8px;
+    }
+
+    .header-left h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #ffffff;
+    }
+
+    .header-left .subtitle {
+      margin-top: 6px;
+      font-size: 13px;
+      color: #c4b5fd;
+    }
+
+    .header-right {
+      text-align: right;
+    }
+
+    .header-right .date-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #a78bfa;
+    }
+
+    .header-right .date-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: #ffffff;
+      margin-top: 4px;
+    }
+
+    .stats-bar {
+      background: #0f3460;
+      padding: 14px 48px;
+      display: flex;
+      gap: 40px;
+      border-bottom: 2px solid #533483;
+    }
+
+    .stat {
+      color: #c4b5fd;
+      font-size: 12px;
+    }
+
+    .stat strong {
+      color: #ffffff;
+      font-size: 18px;
+      display: block;
+    }
+
+    /* ---- CONTENT ---- */
+    .content {
+      padding: 40px 48px;
+    }
+
+    /* ---- EXECUTIVE SUMMARY ---- */
+    .executive-summary {
+      background: linear-gradient(135deg, #f0f4ff 0%, #faf5ff 100%);
+      border-left: 4px solid #7c3aed;
+      border-radius: 0 8px 8px 0;
+      padding: 24px 28px;
+      margin-bottom: 36px;
+    }
+
+    .executive-summary h2 {
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #7c3aed;
+      margin-bottom: 10px;
+    }
+
+    .executive-summary p {
+      color: #374151;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    /* ---- PRIORITY ACTIONS ---- */
+    .priority-actions {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 10px;
+      padding: 24px 28px;
+      margin-bottom: 36px;
+    }
+
+    .priority-actions h2 {
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #ea580c;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .priority-actions h2::before {
+      content: "";
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: #ea580c;
+      border-radius: 50%;
+    }
+
+    .priority-list {
+      list-style: none;
+      counter-reset: priority-counter;
+    }
+
+    .priority-list li {
+      counter-increment: priority-counter;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid #fed7aa;
+      color: #374151;
+    }
+
+    .priority-list li:last-child {
+      border-bottom: none;
+    }
+
+    .priority-list li::before {
+      content: counter(priority-counter);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 24px;
+      height: 24px;
+      background: #ea580c;
+      color: white;
+      border-radius: 50%;
+      font-size: 11px;
+      font-weight: 700;
+      margin-top: 1px;
+    }
+
+    /* ---- SECTION HEADERS ---- */
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #e5e7eb;
+    }
+
+    .section-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .section-icon.youtube { background: #fee2e2; }
+    .section-icon.github { background: #f3f4f6; }
+    .section-icon.guide { background: #ecfdf5; }
+
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #111827;
+    }
+
+    .section-count {
+      margin-left: auto;
+      background: #e5e7eb;
+      color: #6b7280;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    /* ---- VIDEO CARDS ---- */
+    .section { margin-bottom: 48px; }
+
+    .video-card {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    .video-card-header {
+      background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);
+      padding: 16px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .video-card-header h3 {
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      flex: 1;
+      margin-right: 12px;
+    }
+
+    .video-url {
+      color: #fca5a5;
+      font-size: 11px;
+      text-decoration: none;
+    }
+
+    .video-card-body {
+      padding: 20px;
+    }
+
+    .video-summary {
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 16px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    .video-subsection {
+      margin-bottom: 14px;
+    }
+
+    .video-subsection h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+
+    .tag-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .tag {
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .tag.feature { background: #ede9fe; color: #6d28d9; }
+    .tag.visual { background: #ecfdf5; color: #065f46; }
+    .tag.tip { background: #fff7ed; color: #92400e; }
+
+    .visual-observations {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 14px 16px;
+      color: #166534;
+      font-size: 12px;
+      line-height: 1.7;
+      margin-top: 12px;
+    }
+
+    .visual-observations-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #15803d;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    /* ---- GITHUB CARDS ---- */
+    .github-card {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    .github-card-header {
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    .github-card-header.priority-high { border-left: 4px solid #10b981; }
+    .github-card-header.priority-medium { border-left: 4px solid #f59e0b; }
+    .github-card-header.priority-low { border-left: 4px solid #6b7280; }
+
+    .repo-name {
+      font-weight: 700;
+      font-size: 14px;
+      color: #111827;
+      flex: 1;
+    }
+
+    .stars-badge {
+      background: #fef3c7;
+      color: #92400e;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .priority-badge {
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .priority-badge.high { background: #d1fae5; color: #065f46; }
+    .priority-badge.medium { background: #fef3c7; color: #92400e; }
+    .priority-badge.low { background: #f3f4f6; color: #6b7280; }
+
+    .github-card-body {
+      padding: 16px 20px;
+    }
+
+    .repo-description {
+      color: #6b7280;
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+
+    .repo-what {
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.6;
+      margin-bottom: 14px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .mini-list h4 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+
+    .mini-list ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .mini-list ul li {
+      padding: 3px 0;
+      color: #374151;
+      font-size: 12px;
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+    }
+
+    .mini-list ul li::before {
+      content: "›";
+      color: #7c3aed;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .repo-meta {
+      display: flex;
+      gap: 12px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #f3f4f6;
+    }
+
+    .meta-item {
+      font-size: 11px;
+      color: #9ca3af;
+      background: #f9fafb;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    /* ---- IMPLEMENTATION GUIDE ---- */
+    .guide-content {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 28px 32px;
+    }
+
+    .guide-content p {
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.8;
+      margin-bottom: 12px;
+    }
+
+    .guide-content h3 {
+      color: #111827;
+      font-size: 15px;
+      font-weight: 700;
+      margin: 20px 0 10px;
+    }
+
+    .guide-content code {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, monospace;
+      font-size: 12px;
+    }
+
+    .guide-content pre {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 16px 20px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      margin: 12px 0;
+    }
+
+    .guide-content ul, .guide-content ol {
+      padding-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    .guide-content li {
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 4px;
+    }
+
+    /* ---- EMPTY STATES ---- */
+    .empty-state {
+      text-align: center;
+      padding: 40px;
+      color: #9ca3af;
+      background: #f9fafb;
+      border: 2px dashed #e5e7eb;
+      border-radius: 12px;
+    }
+
+    .empty-state-icon {
+      font-size: 36px;
+      margin-bottom: 12px;
+    }
+
+    /* ---- FOOTER ---- */
+    .footer {
+      background: #1a1a2e;
+      color: #6b7280;
+      padding: 20px 48px;
+      text-align: center;
+      font-size: 11px;
+      margin-top: 48px;
+    }
+
+    .footer strong {
+      color: #a78bfa;
+    }
+
+    /* ---- PAGE BREAKS ---- */
+    .page-break {
+      page-break-before: always;
+    }
+
+    @media print {
+      .github-card, .video-card {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">Intelligence Report</div>
+      <h1>Claude Code Daily Brief</h1>
+      <div class="subtitle">Anthropic Ecosystem Monitoring &amp; Analysis</div>
+    </div>
+    <div class="header-right">
+      <div class="date-label">Report Date</div>
+      <div class="date-value">{{DATE}}</div>
+    </div>
+  </div>
+
+  <!-- STATS BAR -->
+  <div class="stats-bar">
+    <div class="stat">
+      <strong>{{VIDEO_COUNT}}</strong>
+      YouTube Videos
+    </div>
+    <div class="stat">
+      <strong>{{GITHUB_COUNT}}</strong>
+      GitHub Projects
+    </div>
+    <div class="stat">
+      <strong>{{ACTION_COUNT}}</strong>
+      Priority Actions
+    </div>
+    <div class="stat">
+      <strong>{{GENERATED_AT}}</strong>
+      Generated At
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- EXECUTIVE SUMMARY -->
+    <div class="executive-summary">
+      <h2>Executive Summary</h2>
+      <p>{{EXECUTIVE_SUMMARY}}</p>
+    </div>
+
+    <!-- PRIORITY ACTIONS -->
+    <div class="priority-actions">
+      <h2>Priority Actions for Today</h2>
+      <ol class="priority-list">
+        {{PRIORITY_ACTIONS}}
+      </ol>
+    </div>
+
+    <!-- YOUTUBE SECTION -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-icon youtube">&#x1F3A5;</div>
+        <div class="section-title">YouTube Intelligence</div>
+        <div class="section-count">{{VIDEO_COUNT}} videos</div>
+      </div>
+
+      {{YOUTUBE_SECTION}}
+    </div>
+
+    <!-- GITHUB SECTION -->
+    <div class="section page-break">
+      <div class="section-header">
+        <div class="section-icon github">&#x26AB;</div>
+        <div class="section-title">GitHub Project Discovery</div>
+        <div class="section-count">{{GITHUB_COUNT}} projects</div>
+      </div>
+
+      {{GITHUB_SECTION}}
+    </div>
+
+    <!-- IMPLEMENTATION GUIDE -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-icon guide">&#x1F4DA;</div>
+        <div class="section-title">Implementation Guide</div>
+      </div>
+
+      <div class="guide-content">
+        {{IMPLEMENTATION_GUIDE}}
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    Generated by <strong>Claude Code Daily Intelligence Agent</strong> &bull;
+    Powered by <strong>Anthropic Claude</strong> &bull;
+    {{FULL_DATE}}
+  </div>
+
+</body>
+</html>

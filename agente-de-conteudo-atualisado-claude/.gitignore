@@ -1,0 +1,24 @@
+# Segredos — NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# Dependências e builds
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Next.js (dashboard)
+dashboard/.next/
+dashboard/out/
+dashboard/node_modules/
+dashboard/.vercel/
+
+# Artefatos gerados
+reports/*.pdf
+*.log
+*.tmp
+
+# SO
+.DS_Store
+Thumbs.db

@@ -1,0 +1,32 @@
+{
+  "name": "agente-de-conteudo-claude",
+  "version": "1.0.0",
+  "description": "Automated daily intelligence agent for Claude Code ecosystem monitoring",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "@googleapis/youtube": "^9.0.0",
+    "@octokit/rest": "^20.1.1",
+    "@supabase/supabase-js": "^2.46.2",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "puppeteer": "^23.11.1",
+    "resend": "^4.0.1",
+    "sharp": "^0.33.5",
+    "youtube-transcript": "^1.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
