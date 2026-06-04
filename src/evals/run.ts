@@ -127,6 +127,16 @@ const GRADERS = {
     label: 'No specific color/product names listed (redirect to website)',
     check: (t: string) => !/\b(White Knight|Coastal Mist|Forged Brown|Mocha|Grey Shield|Nordic Shadow|Lia\s+in\s+marble|marble\s+white)\b/i.test(t),
   },
+  noConflictingSlot: {
+    label: 'No daytime WEEKDAY slot offered when client said "only after 6pm or weekends"',
+    // Fails only if a weekday (Mon–Fri) is paired with a time before 6pm or "morning".
+    // Saturday/Sunday are always allowed (client said "weekends" are OK).
+    check: (t: string) => {
+      const weekdayThenDaytime = /\b(monday|tuesday|wednesday|thursday|friday)\b[^.!?\n]*\b(\d{1,2}(?::\d{2})?\s*am|(?:12|1|2|3|4|5)(?::\d{2})?\s*pm|morning|noon|afternoon)\b/i;
+      const daytimeThenWeekday = /\b(\d{1,2}(?::\d{2})?\s*am|(?:12|1|2|3|4|5)(?::\d{2})?\s*pm|morning|noon|afternoon)\b[^.!?\n]*\b(monday|tuesday|wednesday|thursday|friday)\b/i;
+      return !weekdayThenDaytime.test(t) && !daytimeThenWeekday.test(t);
+    },
+  },
   hasOzziUrlInOptions: {
     label: 'Redirects to ozzifloors.com or @ozzi.floors for options',
     check: (t: string) => /ozzifloors\.com|@ozzi\.floors|ozzi\.floors/i.test(t),
@@ -264,6 +274,19 @@ const SCENARIOS: Scenario[] = [
     name: 'Open-ended question → zero dashes and zero emojis',
     messages: [{ role: "user", content: "Tell me about your luxury vinyl flooring" }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags"],
+  },
+
+  // ── CLIENT AVAILABILITY CONSTRAINT BUG REGRESSION TEST ───────────────────
+  // Bug: client said "only after 6pm or weekends" but bot still offered
+  // "Tuesday at 3pm or Wednesday morning" — ignored the stated constraint.
+  {
+    name: '[BUG FIX] Client says "only after 6pm or weekends" → must NOT offer daytime/morning slots',
+    messages: [
+      { role: "user", content: "My condo 1000 sq ft maybe 990 I need it done but have tile now is that an issue. I'm in Stuart." },
+      { role: "assistant", content: "Not an issue at all, in most cases we can install directly over existing tile as long as it's flat and in good condition. For 1,000 sqft I'd love to come out to Stuart, measure everything, and bring samples so you can pick the style on the spot, all free. I have Tuesday at 3pm or Wednesday at 9am, which works better for you?" },
+      { role: "user", content: "Not flat. I'm only home after 6pm or weekends" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noConflictingSlot"],
   },
 
   // ── MATERIAL OPTIONS BUG REGRESSION TEST ─────────────────────────────────

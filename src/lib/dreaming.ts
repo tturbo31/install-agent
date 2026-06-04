@@ -112,37 +112,42 @@ async function fetchRecentConversations(): Promise<string> {
 
   if (!convs || convs.length === 0) return "No conversations found in the last 7 days.";
 
-  const transcripts: string[] = [];
+  // Fetch every conversation's messages in parallel — sequential awaits across
+  // dozens of conversations was the main risk of the nightly cron timing out.
+  const built = await Promise.all(
+    convs.map(async (conv) => {
+      const { data: msgs } = await db
+        .from("instagram_messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: true })
+        .limit(12);
 
-  for (const conv of convs) {
-    const { data: msgs } = await db
-      .from("instagram_messages")
-      .select("role, content, created_at")
-      .eq("conversation_id", conv.id)
-      .order("created_at", { ascending: true })
-      .limit(12);
+      if (!msgs || msgs.length < 3) return null;
 
-    if (!msgs || msgs.length < 3) continue;
+      const converted = msgs.some(
+        (m) =>
+          m.role === "assistant" &&
+          (m.content?.includes("Appointment confirmed") ||
+            m.content?.includes("Cita confirmada") ||
+            /\[BOOK:/i.test(m.content ?? ""))
+      );
 
-    const converted = msgs.some(
-      (m) =>
-        m.role === "assistant" &&
-        (m.content?.includes("Appointment confirmed") ||
-          /\[BOOK:/i.test(m.content ?? ""))
-    );
+      const lines = msgs.map((m) => {
+        const role = m.role === "user" ? "Client" : "Agent";
+        const content = (m.content ?? "").replace(/\[BOOK:\{[\s\S]*?\}\]/g, "[BOOKING CREATED]").slice(0, 300);
+        return `${role}: ${content}`;
+      });
 
-    const lines = msgs.map((m) => {
-      const role = m.role === "user" ? "Client" : "Agent";
-      const content = (m.content ?? "").replace(/\[BOOK:\{[\s\S]*?\}\]/g, "[BOOKING CREATED]").slice(0, 300);
-      return `${role}: ${content}`;
-    });
+      const label = converted
+        ? `--- Conversation [CONVERTED ✓] (${conv.username || conv.id}) ---`
+        : `--- Conversation (${conv.username || conv.id}) ---`;
 
-    const label = converted
-      ? `--- Conversation [CONVERTED ✓] (${conv.username || conv.id}) ---`
-      : `--- Conversation (${conv.username || conv.id}) ---`;
+      return `${label}\n${lines.join("\n")}`;
+    })
+  );
 
-    transcripts.push(`${label}\n${lines.join("\n")}`);
-  }
+  const transcripts = built.filter((t): t is string => t !== null);
 
   return transcripts.length > 0
     ? transcripts.join("\n\n")
@@ -253,7 +258,19 @@ Be specific and concise. Base everything strictly on the conversations above. Pr
   });
 
   const block = analysisResponse.content[0];
-  const newLearnings = block.type === "text" ? block.text : "";
+  let newLearnings = block.type === "text" ? block.text : "";
+
+  // The model is unreliable at writing the current date (it tends to emit a
+  // past year). Stamp the real server date programmatically so freshness is
+  // always verifiable.
+  if (newLearnings) {
+    const stamp = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    if (/^Updated:.*$/m.test(newLearnings)) {
+      newLearnings = newLearnings.replace(/^Updated:.*$/m, `Updated: ${stamp}`);
+    } else {
+      newLearnings = newLearnings.replace(/^(#[^\n]*\n)/, `$1Updated: ${stamp}\n`);
+    }
+  }
 
   // 4. Save to system memory store
   if (newLearnings) {

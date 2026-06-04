@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDreaming, getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 
+// Nightly analysis fans out across dozens of conversations plus two Claude
+// calls — give it room so the cron never silently times out mid-run.
+export const maxDuration = 300;
+
 function isAuthorized(secret: string | null): boolean {
   const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
   const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN;

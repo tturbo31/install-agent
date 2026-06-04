@@ -246,6 +246,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
     const bookings = (bookedData ?? []) as BookingRow[];
 
     const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
 
     let hasAnySlot = false;
@@ -254,8 +255,8 @@ export async function getRealAvailabilityContext(): Promise<string> {
       const date = new Date(dateStr + "T12:00:00");
       const weekday = date.getDay();
       const dayName = dayNames[weekday];
-      const [y, m, d] = dateStr.split("-");
-      const displayDate = `${dayName} ${m}/${d}/${y}`;
+      const [y, , d] = dateStr.split("-");
+      const displayDate = `${dayName}, ${monthNames[date.getMonth()]} ${parseInt(d)}, ${y} [${dateStr}]`;
 
       const slotSet = new Set<string>();
       sellers.forEach((s) => {
@@ -301,13 +302,50 @@ export async function getRealAvailabilityContext(): Promise<string> {
       lines.push("No availability in the next 10 days.");
     }
 
-    lines.push("\nIMPORTANT: ONLY offer times listed above as available. Never mention a time that shows as 'fully booked'.");
+    lines.push(
+      "\nIMPORTANT — read carefully before offering any time:" +
+        "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
+        "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
+        "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
+        "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
+    );
 
     return lines.join("\n");
   } catch (err) {
     console.error("Failed to fetch availability:", err);
     return "AVAILABILITY: Could not fetch real-time schedule. Ask the client for their preferred day and check manually.";
   }
+}
+
+// ─── Language detection + localized booking messages ──────────────────────
+// Lightweight heuristic: decide whether the conversation is in Spanish or
+// English so confirmation/recovery messages match the client's language.
+export function detectLang(text: string): "es" | "en" {
+  const t = (text || "").toLowerCase();
+  if (!t.trim()) return "en";
+  let es = (t.match(/[áéíóúñ¿¡]/g) || []).length;
+  let en = 0;
+  const esWords = ["hola", "gracias", "cuánto", "cuanto", "precio", "piso", "casa", "área", "area", "necesito", "quiero", "buenas", "cita", "dirección", "direccion", "cocina", "cuarto", "metros", "usted", "mañana", "tengo", "viernes", "sábado", "sabado", "domingo", "lunes", "martes", "miércoles", "miercoles", "jueves", "para", "está", "esta", "pisos"];
+  const enWords = ["hello", "thanks", "thank", "price", "floor", "house", "need", "want", "quote", "address", "kitchen", "room", "tomorrow", "morning", "would", "please", "available", "looking"];
+  for (const w of esWords) if (new RegExp(`\\b${w}\\b`).test(t)) es++;
+  for (const w of enWords) if (new RegExp(`\\b${w}\\b`).test(t)) en++;
+  return es > en ? "es" : "en";
+}
+
+// Sent to the client after a booking is successfully created.
+export function bookingSuccessMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Cita confirmada. Te aviso aproximadamente 40 minutos antes de llegar a tu casa. Mi nombre es Ozzi."
+    : "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+}
+
+// Sent to the client when the booking could NOT be created (slot genuinely
+// unavailable, scheduler error, etc.). Honest, never claims the slot was
+// "just taken", and hands the lead to Ozzi so it is never lost.
+export function bookingFailureHandoffMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Disculpa, no pude confirmar ese horario en el sistema. Le aviso a Ozzi para que confirme tu cita directamente, en breve te contacta."
+    : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
 }
 
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {

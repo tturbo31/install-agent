@@ -3,9 +3,9 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
-import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, getRealAvailabilityContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -56,7 +56,8 @@ async function processBookingCommand(
   aiResponse: string,
   psid: string,
   conversationId: string,
-  isAlreadyBooked: boolean
+  isAlreadyBooked: boolean,
+  lang: "es" | "en"
 ): Promise<string> {
   if (isAlreadyBooked) {
     return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
@@ -87,7 +88,7 @@ async function processBookingCommand(
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
-      return "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+      return bookingSuccessMessage(lang);
     } else if (result.error === "already_booked") {
       console.warn("[FB] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin
@@ -96,7 +97,15 @@ async function processBookingCommand(
         .eq("id", conversationId);
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
     }
-    return "That slot was just taken. Can you suggest another day and time?";
+
+    // Booking genuinely failed — never claim a false "slot just taken". Hand the
+    // hot lead to Ozzi and pause the bot so a human closes it.
+    console.warn(`[FB] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
+    await supabaseAdmin
+      .from("instagram_conversations")
+      .update({ mode: "human" })
+      .eq("id", conversationId);
+    return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
   } catch (err) {
     console.error("FB booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -422,6 +431,8 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth()+1).padStart(2,"0")}-${String(tomorrow.getDate()).padStart(2,"0")}`;
     const dateContext = `TODAY: ${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${days[tomorrow.getDay()]} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
 
+    const lang = detectLang(history.map((m) => m.content).join(" "));
+
     type AiMsg = { role: "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
@@ -461,15 +472,24 @@ async function handleFbMessage(body: Record<string, unknown>) {
       isBookingConfirmed
     );
 
-    let safeResponse = isBookingConfirmed
+    // Pure closing / thanks with no new question → stay silent instead of
+    // sending another text (Messenger has no Page-side reaction API). Never
+    // overrides the post-booking flow.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosing(enrichedText))) {
+      console.log("[FB] React-only (closing/thanks) — no text sent");
+      return;
+    }
+
+    let safeResponse = (isBookingConfirmed
       ? rawAiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
-      : rawAiResponse;
+      : rawAiResponse
+    ).replace(/\[REACT_ONLY\]/gi, "").trim();
 
     if (isBookingConfirmed) {
       safeResponse = stripSlotConflictLanguage(safeResponse);
     }
 
-    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed);
+    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang);
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);

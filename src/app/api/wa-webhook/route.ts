@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsAppMessage, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft } from "@/lib/ai";
-import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
+import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing } from "@/lib/ai";
+import { createBooking, cancelClientBooking, getRealAvailabilityContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -40,7 +40,8 @@ async function processBookingCommand(
   aiResponse: string,
   waId: string,
   conversationId: string,
-  isAlreadyBooked: boolean
+  isAlreadyBooked: boolean,
+  lang: "es" | "en"
 ): Promise<string> {
   if (isAlreadyBooked) {
     return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
@@ -50,14 +51,17 @@ async function processBookingCommand(
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
-    if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
-      console.warn("WA booking blocked — phone or address missing from booking JSON");
+    // On WhatsApp the client's phone number is ALWAYS known (it is the chat id),
+    // so we only require the address. Default the phone to the WhatsApp number.
+    const clientPhone = (bookingData.phone?.trim() || waId).slice(0, 30);
+    if (!bookingData.address?.trim()) {
+      console.warn("WA booking blocked — address missing from booking JSON");
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
     }
 
     const result = await createBooking({
       clientName: bookingData.name ?? "WhatsApp Client",
-      clientPhone: bookingData.phone ?? waId,
+      clientPhone,
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
@@ -71,7 +75,7 @@ async function processBookingCommand(
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
-      return "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+      return bookingSuccessMessage(lang);
     } else if (result.error === "already_booked") {
       console.warn("[WA] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin
@@ -80,7 +84,17 @@ async function processBookingCommand(
         .eq("id", conversationId);
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
     }
-    return "That slot was just taken. Can you suggest another day and time?";
+
+    // Booking genuinely failed (slot unavailable on that date, scheduler error,
+    // etc.). NEVER tell the client a false "slot just taken" — the date the model
+    // picked may simply not have been available. Hand the hot lead to Ozzi and
+    // pause the bot so a human closes it instead of looping.
+    console.warn(`[WA] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
+    await supabaseAdmin
+      .from("instagram_conversations")
+      .update({ mode: "human" })
+      .eq("id", conversationId);
+    return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
   } catch (err) {
     console.error("WA booking error:", err);
     return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
@@ -384,6 +398,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth()+1).padStart(2,"0")}-${String(tomorrow.getDate()).padStart(2,"0")}`;
     const dateContext = `TODAY: ${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${days[tomorrow.getDay()]} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
 
+    // Detect conversation language so confirmation/recovery messages match it
+    const lang = detectLang(history.map((m) => m.content).join(" "));
+
     type AiMsg = { role: "user" | "assistant"; content: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
@@ -402,6 +419,8 @@ async function handleWaMessage(body: Record<string, unknown>) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
       }
       if (!isBookingConfirmed) {
+        // WhatsApp: the client's phone number is already known from the chat.
+        systemParts.push(`[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${phone}). To confirm a visit, ask ONLY for the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time and the address, generate [BOOK:...] using "${phone}" as the phone.]`);
         const recentUserTexts = history
           .filter((m: { role: string; content: string }) => m.role === "user")
           .slice(-3)
@@ -423,15 +442,24 @@ async function handleWaMessage(body: Record<string, unknown>) {
       isBookingConfirmed
     );
 
-    let safeResponse = isBookingConfirmed
+    // Pure closing / thanks with no new question → react to the message instead
+    // of sending another text. Never overrides the post-booking flow.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosing(enrichedText))) {
+      await sendWhatsAppReaction(phone, messageId, "👍");
+      console.log("[WA] React-only (closing/thanks) — reacted, no text sent");
+      return;
+    }
+
+    let safeResponse = (isBookingConfirmed
       ? rawAiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
-      : rawAiResponse;
+      : rawAiResponse
+    ).replace(/\[REACT_ONLY\]/gi, "").trim();
 
     if (isBookingConfirmed) {
       safeResponse = stripSlotConflictLanguage(safeResponse);
     }
 
-    const afterBooking = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed);
+    const afterBooking = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang);
     const afterCancel = await processCancelCommand(afterBooking, phone, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
     const finalResponse = stripForbiddenTags(afterNotify);

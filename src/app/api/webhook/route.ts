@@ -9,10 +9,11 @@ import {
   generateSpeech,
   stripForbiddenTags,
   detectLargeLeadSqft,
+  isPureClosing,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
-import { createBooking, cancelClientBooking, getRealAvailabilityContext } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, getRealAvailabilityContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -85,7 +86,8 @@ async function processBookingCommand(
   aiResponse: string,
   conversationId: string,
   senderIgsid: string,
-  isAlreadyBooked: boolean
+  isAlreadyBooked: boolean,
+  lang: "es" | "en"
 ): Promise<{ response: string; booked: boolean }> {
   // Never attempt a second booking for an already-confirmed appointment
   if (isAlreadyBooked) {
@@ -136,7 +138,7 @@ async function processBookingCommand(
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
       return {
-        response: "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.",
+        response: bookingSuccessMessage(lang),
         booked: true,
       };
     } else if (result.error === "already_booked") {
@@ -148,7 +150,14 @@ async function processBookingCommand(
         .eq("id", conversationId);
       return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
     } else {
-      return { response: "That slot was just taken. Can you suggest another day and time?", booked: false };
+      // Booking genuinely failed — never claim a false "slot just taken". Hand the
+      // hot lead to Ozzi and pause the bot so a human closes it.
+      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
+      await supabaseAdmin
+        .from("instagram_conversations")
+        .update({ mode: "human" })
+        .eq("id", conversationId);
+      return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
   } catch (err) {
     console.error("Booking parse error:", err);
@@ -645,6 +654,8 @@ async function handleWebhook(body: WebhookPayload) {
     const tomorrowStr = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth()+1).padStart(2,"0")}-${String(tomorrowDate.getDate()).padStart(2,"0")}`;
     const dateContext = `TODAY: ${todayName}, ${monthNames[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${tomorrowName} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
 
+    const lang = detectLang(history.map((m) => m.content).join(" "));
+
     type AiMsg = { role: "user" | "assistant"; content: string };
 
     let messagesForAI: AiMsg[] = history.map((m) => ({
@@ -700,10 +711,18 @@ async function handleWebhook(body: WebhookPayload) {
       isBookingConfirmed
     );
 
+    // Pure closing / thanks with no new question → stay silent instead of
+    // sending another text. Never overrides the post-booking flow.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiText) || isPureClosing(enrichedText))) {
+      console.log("[IG] React-only (closing/thanks) — no text sent");
+      return;
+    }
+
     // Strip any [BOOK:...] if booking already confirmed
-    let safeAiText = isBookingConfirmed
+    let safeAiText = (isBookingConfirmed
       ? rawAiText.replace(/\[BOOK:[\s\S]*?\]/g, "").trim()
-      : rawAiText;
+      : rawAiText
+    ).replace(/\[REACT_ONLY\]/gi, "").trim();
 
     // Safety net: remove any slot-conflict language the AI may still generate after booking
     if (isBookingConfirmed) {
@@ -714,7 +733,8 @@ async function handleWebhook(body: WebhookPayload) {
       safeAiText,
       conversation.id,
       senderIgsid,
-      isBookingConfirmed
+      isBookingConfirmed,
+      lang
     );
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);

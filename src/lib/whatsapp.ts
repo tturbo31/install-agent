@@ -30,6 +30,33 @@ export async function sendWhatsAppMessage(phone: string, text: string): Promise<
   }
 }
 
+// React to a client's message with an emoji (e.g. a thumbs up) instead of
+// sending another text — used when the client just closes / thanks.
+export async function sendWhatsAppReaction(
+  phone: string,
+  messageId: string,
+  reaction = "👍"
+): Promise<void> {
+  if (!messageId) return;
+  const url = `${ZAPI_BASE}/instances/${getInstanceId()}/token/${getToken()}/send-reaction`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Client-Token": getClientToken(),
+      },
+      body: JSON.stringify({ phone, messageId, reaction }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error("sendWhatsAppReaction error:", JSON.stringify(err));
+    }
+  } catch (err) {
+    console.error("sendWhatsAppReaction exception:", err);
+  }
+}
+
 export async function downloadZApiImage(imageUrl: string): Promise<string | null> {
   try {
     const res = await fetch(imageUrl, { redirect: "follow" });
