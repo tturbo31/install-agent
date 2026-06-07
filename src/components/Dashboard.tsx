@@ -197,11 +197,20 @@ export default function Dashboard() {
   const totalUnread = Object.values(unreadMap).reduce((a, b) => a + b, 0);
 
   return (
-    <div className="flex h-screen bg-gray-950 text-white overflow-hidden">
-      {/* Top Banner */}
-      <div className="fixed top-0 left-0 right-0 z-50 bg-gray-900 border-b border-gray-800 py-2 px-4 flex items-center justify-between gap-4">
-        {/* Platform toggles */}
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col h-screen bg-gray-950 text-white overflow-hidden">
+      {/* Top bar — normal flow, never overlaps the conversation header below */}
+      <header className="flex-shrink-0 h-16 z-30 bg-gray-900 border-b border-gray-800 px-5 flex items-center justify-between gap-4">
+        {/* Brand */}
+        <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-600 flex items-center justify-center font-black text-base shadow-lg shadow-violet-900/30">O</div>
+          <div className="leading-tight hidden sm:block">
+            <div className="font-bold text-sm tracking-tight">OzziFloors</div>
+            <div className="text-[10px] text-gray-500 -mt-0.5">Painel de Vendas IA</div>
+          </div>
+        </div>
+
+        {/* Platform status toggles (each pauses/reactivates the whole channel) */}
+        <div className="flex items-center gap-2 min-w-0 overflow-x-auto no-scrollbar">
           {(Object.keys(PLATFORM_LABELS) as PlatformKey[]).map((platform) => {
             const paused = platformPaused[platform];
             const isLoading = togglingPlatform === platform;
@@ -210,44 +219,42 @@ export default function Dashboard() {
                 key={platform}
                 onClick={() => handleTogglePlatform(platform)}
                 disabled={isLoading}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-bold transition-colors disabled:opacity-50 ${
+                title={paused ? `Ativar a IA no ${PLATFORM_LABELS[platform]}` : `Pausar a IA no ${PLATFORM_LABELS[platform]}`}
+                className={`flex items-center gap-2 pl-2.5 pr-3 py-1.5 rounded-full text-xs font-semibold border transition-colors disabled:opacity-50 whitespace-nowrap ${
                   paused
-                    ? "bg-red-900 text-red-300 hover:bg-red-800"
-                    : "bg-green-900 text-green-300 hover:bg-green-800"
+                    ? "bg-red-500/10 border-red-500/30 text-red-300 hover:bg-red-500/20"
+                    : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20"
                 }`}
               >
-                <span className={`w-2 h-2 rounded-full ${paused ? "bg-red-400" : "bg-green-400"}`} />
+                <span className={`w-2 h-2 rounded-full ${paused ? "bg-red-400" : "bg-emerald-400 animate-pulse"}`} />
                 {PLATFORM_LABELS[platform]}
-                <span className="opacity-70">{isLoading ? "..." : paused ? "PAUSADO" : "ATIVO"}</span>
+                <span className="text-[10px] opacity-70 font-bold">{isLoading ? "..." : paused ? "PAUSADO" : "ATIVO"}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Center label + unread */}
-        <div className="flex items-center gap-2 text-xs text-gray-400">
-          <span>Dashboard OzziFloors</span>
+        {/* Right: unread + resume all */}
+        <div className="flex items-center gap-3 flex-shrink-0">
           {totalUnread > 0 && (
             <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">
               {totalUnread} nova{totalUnread > 1 ? "s" : ""}
             </span>
           )}
-        </div>
-
-        {/* Resume all button */}
-        <div className="flex items-center gap-2">
+          {resumeMsg && <span className="text-emerald-400 text-xs font-semibold hidden md:inline">{resumeMsg}</span>}
           <button
             onClick={handleResumeAgent}
             disabled={isResuming}
-            className="bg-yellow-500 text-black px-3 py-1 rounded text-xs font-bold hover:bg-yellow-400 disabled:opacity-50"
+            title="Reativar a IA em TODAS as conversas de uma vez"
+            className="flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-100 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50 whitespace-nowrap"
           >
-            {isResuming ? "Reativando..." : "REATIVAR CONVERSAS"}
+            <span className="text-sm">↻</span>
+            {isResuming ? "Reativando..." : "Reativar todas"}
           </button>
-          {resumeMsg && <span className="text-green-400 text-xs font-bold">{resumeMsg}</span>}
         </div>
-      </div>
+      </header>
 
-      <div className="flex h-screen w-full pt-10">
+      <div className="flex flex-1 w-full overflow-hidden">
         {activeTab === "simulator" ? (
           /* Simulator tab: full-width, no sidebar */
           <div className="flex-1 flex flex-col overflow-hidden">
@@ -282,9 +289,9 @@ export default function Dashboard() {
         ) : (
           /* Inbox tab: sidebar + chat panel */
           <>
-            <div className="flex flex-col w-80 flex-shrink-0">
+            <div className="flex flex-col w-80 flex-shrink-0 border-r border-gray-800 min-h-0">
               {/* Tab bar above the sidebar */}
-              <div className="flex border-b border-gray-800 bg-gray-900">
+              <div className="flex border-b border-gray-800 bg-gray-900 flex-shrink-0">
                 <button
                   onClick={() => setActiveTab("inbox")}
                   className="flex items-center gap-2 px-5 py-3 text-sm font-medium text-white transition-colors border-b-2 border-indigo-500"

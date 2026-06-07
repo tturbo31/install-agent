@@ -23,68 +23,53 @@ export default function ChatHeader({ conversation, onToggleMode, isTogglingMode 
   const isAgent = conversation.mode === "agent";
 
   return (
-    <div className="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        {/* Avatar */}
+    <header className="flex-shrink-0 h-16 bg-gray-900 border-b border-gray-800 px-5 flex items-center justify-between gap-3">
+      {/* Left: avatar + identity (can shrink/truncate) */}
+      <div className="flex items-center gap-3 min-w-0">
         {conversation.profile_pic ? (
           <Image
             src={conversation.profile_pic}
             alt={conversation.name ?? "User"}
-            width={48}
-            height={48}
-            className="rounded-full object-cover"
+            width={40}
+            height={40}
+            className="rounded-full object-cover flex-shrink-0"
             unoptimized
           />
         ) : (
-          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold">
+          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
             {getInitials(conversation.name, conversation.username)}
           </div>
         )}
 
-        {/* Name + badges */}
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-white font-semibold text-base">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="text-white font-semibold text-sm truncate">
               {conversation.name ?? conversation.username ?? conversation.igsid}
             </h2>
             {conversation.is_user_follow_business && (
-              <span className="text-xs bg-purple-900 text-purple-300 px-2 py-0.5 rounded-full">
-                Follows you
-              </span>
-            )}
-            {conversation.is_business_follow_user && (
-              <span className="text-xs bg-pink-900 text-pink-300 px-2 py-0.5 rounded-full">
-                You follow
+              <span className="flex-shrink-0 text-[10px] bg-violet-500/15 text-violet-300 px-1.5 py-0.5 rounded-full">
+                te segue
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 mt-0.5">
-            {conversation.username && (
-              <span className="text-gray-400 text-sm">@{conversation.username}</span>
-            )}
-            {conversation.follower_count != null && (
-              <span className="text-gray-500 text-xs">
-                · {conversation.follower_count.toLocaleString()} followers
-              </span>
-            )}
+          <div className="text-xs text-gray-500 truncate">
+            {conversation.username ? `@${conversation.username}` : conversation.igsid}
+            {conversation.follower_count != null && ` · ${conversation.follower_count.toLocaleString()} seguidores`}
           </div>
         </div>
       </div>
 
-      {/* Mode toggle */}
-      {/* Per-conversation AI pause / reactivate */}
-      <div className="flex items-center gap-3">
-        {/* Current status of THIS conversation */}
+      {/* Right: per-conversation AI control (never overlaps — fixed width, no shrink) */}
+      <div className="flex items-center gap-2.5 flex-shrink-0">
         <span
-          className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full ${
-            isAgent ? "bg-green-900 text-green-300" : "bg-amber-900 text-amber-300"
+          className={`hidden md:flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${
+            isAgent ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"
           }`}
         >
-          <span className={`w-2 h-2 rounded-full ${isAgent ? "bg-green-400" : "bg-amber-400"}`} />
-          {isAgent ? "IA ATIVA" : "IA PAUSADA"}
+          <span className={`w-1.5 h-1.5 rounded-full ${isAgent ? "bg-emerald-400" : "bg-amber-400"}`} />
+          {isAgent ? "IA ativa" : "IA pausada"}
         </span>
 
-        {/* Action button — the label is the action that happens on click */}
         <button
           onClick={onToggleMode}
           disabled={isTogglingMode}
@@ -93,27 +78,15 @@ export default function ChatHeader({ conversation, onToggleMode, isTogglingMode 
               ? "Pausar a IA apenas nesta conversa. Você passa a responder manualmente."
               : "Reativar a IA nesta conversa, ela volta a responder automaticamente."
           }
-          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-60 ${
+          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-60 whitespace-nowrap ${
             isAgent
-              ? "bg-amber-600 hover:bg-amber-700 text-white"
-              : "bg-green-600 hover:bg-green-700 text-white"
+              ? "bg-amber-500/90 hover:bg-amber-500 text-gray-950"
+              : "bg-emerald-500/90 hover:bg-emerald-500 text-gray-950"
           }`}
         >
-          {isTogglingMode ? (
-            "..."
-          ) : isAgent ? (
-            <>
-              <span className="text-base">⏸️</span>
-              Pausar IA
-            </>
-          ) : (
-            <>
-              <span className="text-base">▶️</span>
-              Reativar IA
-            </>
-          )}
+          {isTogglingMode ? "..." : isAgent ? "Pausar IA" : "Reativar IA"}
         </button>
       </div>
-    </div>
+    </header>
   );
 }

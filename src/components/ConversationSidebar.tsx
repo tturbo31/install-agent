@@ -51,13 +51,7 @@ export default function ConversationSidebar({ conversations, selectedId, onSelec
   const waCount = conversations.filter((c) => getChannel(c.igsid) === "whatsapp").length;
 
   return (
-    <aside className="w-80 bg-gray-900 border-r border-gray-800 flex flex-col h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-gray-800">
-        <h1 className="text-white font-bold text-lg">OzziFloors Agent</h1>
-        <p className="text-gray-400 text-xs mt-0.5">AI Sales Dashboard</p>
-      </div>
-
+    <aside className="w-full bg-gray-900 flex flex-col h-full min-h-0">
       {/* Platform tabs */}
       <div className="flex border-b border-gray-800">
         <button
