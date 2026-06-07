@@ -103,14 +103,31 @@ async function fetchRecentConversations(): Promise<string> {
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const { data: convs } = await db
-    .from("instagram_conversations")
-    .select("id, username")
-    .gte("updated_at", sevenDaysAgo)
-    .order("updated_at", { ascending: false })
-    .limit(40);
+  // Pull the most recent conversations AND, separately, every conversation that
+  // actually booked in the window. On busy days the recent-40 list is all fresh
+  // non-converted chats, which pushed the booked ones (our best signal — "what
+  // worked on the good day") out of the analysis entirely. Always include them.
+  const [{ data: recentConvs }, { data: bookedConvs }] = await Promise.all([
+    db
+      .from("instagram_conversations")
+      .select("id, username, booking_confirmed")
+      .gte("updated_at", sevenDaysAgo)
+      .order("updated_at", { ascending: false })
+      .limit(40),
+    db
+      .from("instagram_conversations")
+      .select("id, username, booking_confirmed")
+      .eq("booking_confirmed", true)
+      .gte("updated_at", sevenDaysAgo)
+      .order("updated_at", { ascending: false })
+      .limit(40),
+  ]);
 
-  if (!convs || convs.length === 0) return "No conversations found in the last 7 days.";
+  const byId = new Map<string, { id: string; username: string | null; booking_confirmed: boolean }>();
+  for (const c of [...(bookedConvs ?? []), ...(recentConvs ?? [])]) byId.set(c.id, c);
+  const convs = [...byId.values()];
+
+  if (convs.length === 0) return "No conversations found in the last 7 days.";
 
   // Fetch every conversation's messages in parallel — sequential awaits across
   // dozens of conversations was the main risk of the nightly cron timing out.
@@ -125,13 +142,15 @@ async function fetchRecentConversations(): Promise<string> {
 
       if (!msgs || msgs.length < 3) return null;
 
-      const converted = msgs.some(
-        (m) =>
-          m.role === "assistant" &&
-          (m.content?.includes("Appointment confirmed") ||
-            m.content?.includes("Cita confirmada") ||
-            /\[BOOK:/i.test(m.content ?? ""))
-      );
+      const converted =
+        conv.booking_confirmed ||
+        msgs.some(
+          (m) =>
+            m.role === "assistant" &&
+            (m.content?.includes("Appointment confirmed") ||
+              m.content?.includes("Cita confirmada") ||
+              /\[BOOK:/i.test(m.content ?? ""))
+        );
 
       const lines = msgs.map((m) => {
         const role = m.role === "user" ? "Client" : "Agent";

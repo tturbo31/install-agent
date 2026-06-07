@@ -10,10 +10,13 @@ import {
   stripForbiddenTags,
   detectLargeLeadSqft,
   isPureClosing,
+  isRescheduleRequest,
+  containsSchedulingOffer,
+  isJobSeeker,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
-import { createBooking, cancelClientBooking, getRealAvailabilityContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -21,6 +24,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
+import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
 
 export const maxDuration = 60;
@@ -87,10 +91,12 @@ async function processBookingCommand(
   conversationId: string,
   senderIgsid: string,
   isAlreadyBooked: boolean,
-  lang: "es" | "en"
+  lang: "es" | "en",
+  isReschedule: boolean = false
 ): Promise<{ response: string; booked: boolean }> {
   // Never attempt a second booking for an already-confirmed appointment
-  if (isAlreadyBooked) {
+  // (unless this is an explicit reschedule of that same appointment).
+  if (isAlreadyBooked && !isReschedule) {
     return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
   }
 
@@ -98,6 +104,31 @@ async function processBookingCommand(
   if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // ── Reschedule: move the existing visit to the new date/time. Address and
+    //    phone are copied from the saved booking, so only date/time are required.
+    if (isReschedule) {
+      if (!bookingData.date || !bookingData.time) {
+        return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
+      }
+      const r = await rescheduleClientBooking(senderIgsid, bookingData.date, bookingData.time, {
+        name: bookingData.name,
+        phone: bookingData.phone,
+        address: bookingData.address,
+        notes: bookingData.notes,
+      });
+      if (r.success) {
+        await supabaseAdmin
+          .from("instagram_conversations")
+          .update({ booking_confirmed: true })
+          .eq("id", conversationId);
+        return { response: rescheduleSuccessMessage(lang), booked: true };
+      }
+      // Could not move it — old booking is left intact, hand the change to Ozzi.
+      console.warn(`[IG] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off`);
+      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
+    }
 
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("Booking blocked — phone or address missing from booking JSON");
@@ -267,7 +298,11 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     const senderIgsid = messaging.sender.id;
-    const messageMid = messaging.message.mid;
+    // Ad-click / referral events can arrive without a normal message.mid. Never let
+    // a missing mid throw (the outer try/catch would silently drop the whole message,
+    // which is why ad replies often went unanswered). Synthesize a unique id so dedup,
+    // storage, and the later enrichment update still target the right row.
+    const messageMid = messaging.message?.mid ?? `syn_${senderIgsid}_${Date.now()}`;
 
     // Skip duplicates
     const { data: alreadyProcessed } = await supabaseAdmin
@@ -284,14 +319,29 @@ async function handleWebhook(body: WebhookPayload) {
       .eq("igsid", senderIgsid)
       .single();
 
+    const wasNewConv = !conversation;
+
     if (!conversation) {
       const defaultMode = "agent";
-      const { data: newConv } = await supabaseAdmin
+      const { data: newConv, error: convErr } = await supabaseAdmin
         .from("instagram_conversations")
         .insert({ igsid: senderIgsid, mode: defaultMode })
         .select()
         .single();
-      conversation = newConv;
+      if (convErr) {
+        // Ad clicks fire two webhook events almost simultaneously (ad referral +
+        // the text message). They race to create the conversation; the loser hits
+        // the unique igsid constraint. Recover the row instead of dropping the
+        // message — otherwise the client's question is silently lost.
+        const { data: existing } = await supabaseAdmin
+          .from("instagram_conversations")
+          .select("*")
+          .eq("igsid", senderIgsid)
+          .single();
+        conversation = existing ?? null;
+      } else {
+        conversation = newConv;
+      }
     }
     if (!conversation) return;
 
@@ -315,9 +365,23 @@ async function handleWebhook(body: WebhookPayload) {
     const shareUrl = shareAttachment?.payload?.url ?? null;
     const audioUrl = audioAttachment?.payload?.url ?? null;
 
+    // Ad reply context: the client clicked/replied to one of our ads. Meta delivers
+    // these as a referral and/or a reel attachment whose type we don't recognize
+    // (video / ig_reel / story), often with NO text in this event. That used to fall
+    // through to `if (!rawText) return` below — creating an empty conversation with no
+    // reply (exactly the "No messages yet" + raw IGSID we saw). Treat it as a hot lead.
+    const isAdReferral = !!messaging.referral;
+    const hasAnyAttachment = attachments.length > 0;
+
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
     if (audioUrl && !rawText) rawText = "[voice message]";
+    // Never drop an ad reply or an attachment-bearing event just because this event
+    // carried no readable text — store it and engage instead of going silent.
+    if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
+
+    console.log(`[IG] msg from ${senderIgsid} | text:${!!messaging.message?.text} | attachments:[${attachments.map((a) => a.type).join(",")}] | adReferral:${isAdReferral}`);
+
     if (!rawText) return;
 
     // ── Pre-fetch media BEFORE debounce (URLs expire fast) ───────────────
@@ -444,8 +508,38 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
     if (freshConv) conversation = freshConv;
 
-    // ── If already booked → notify owner silently, no message to client ──
-    if ((conversation as Record<string, unknown>).booking_confirmed) {
+    // Returning client who already booked or was already served (visit done),
+    // even if booked outside the bot — hand to the team, never re-engage.
+    if (!wasNewConv && !(conversation as Record<string, unknown>).booking_confirmed) {
+      const served = await hasExistingBooking(senderIgsid).catch(() => false);
+      if (served) {
+        await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversation.id);
+        (conversation as Record<string, unknown>).booking_confirmed = true;
+      }
+    }
+
+    // ── Reschedule intent: a booked client asking to MOVE their visit is the one
+    //    case where we engage after a booking, instead of the silent owner-notify.
+    //    The intent appears in the FIRST reschedule message ("can we move it?");
+    //    the follow-up that just names the new day ("Friday at 3pm") won't match,
+    //    so we also keep engaging while a reschedule is already in progress (the
+    //    last assistant message offered slots). ──
+    const isBooked = !!(conversation as Record<string, unknown>).booking_confirmed;
+    let engageReschedule = isBooked && isRescheduleRequest(rawText);
+    if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
+      const { data: lastAsst } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── If already booked (and NOT rescheduling) → notify owner silently, no message ──
+    if (isBooked && !engageReschedule) {
       try {
         const { data: recentMsgs } = await supabaseAdmin
           .from("instagram_messages")
@@ -481,13 +575,17 @@ async function handleWebhook(body: WebhookPayload) {
 
     if (shareAttachment) {
       const shareTitle = shareAttachment.payload?.title ?? null;
-      if (shareTitle) {
-        const isFloorPlan = /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle);
-        enrichedText = isFloorPlan
-          ? `[Client shared a floor plan: "${shareTitle}"]`
-          : `[Client shared: "${shareTitle}"]`;
-        mediaProcessed = true;
-      }
+      const isFloorPlan = shareTitle ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle) : false;
+      const shareNote = isFloorPlan
+        ? `[Client shared a floor plan${shareTitle ? `: "${shareTitle}"` : ""}]`
+        : `[Client shared a post/reel from our ad${shareTitle ? `: "${shareTitle}"` : ""}]`;
+      // CRITICAL: when the client replies to an ad, the reel arrives as a share
+      // attachment AND the pre-filled question arrives as text. NEVER overwrite the
+      // real text with the share note — keep the question and append the context, so
+      // the AI actually answers ("What is included in the materials package?").
+      const realText = (messaging.message?.text ?? "").trim();
+      enrichedText = realText ? `${realText}\n${shareNote}` : shareNote;
+      mediaProcessed = true;
     }
 
     if (imageUrl || shareUrl) {
@@ -545,10 +643,13 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
-    // Fallback for media that failed to process
-    const clientSentPlainText = !!messaging.message?.text && !audioUrl && !imageUrl;
-    const clientActuallySentMedia = !!(audioUrl || imageUrl) || (!!shareUrl && !messaging.message?.text);
-    const hasRealContent = clientSentPlainText || (mediaProcessed && enrichedText.trim().length > 0);
+    // Fallback for media that failed to process. If the client typed real text
+    // (e.g. an ad reply with the pre-filled question), ALWAYS answer it — even when
+    // an attached reel/photo could not be analyzed. The "Got your photo" fallback is
+    // only for messages that are media-only with no usable text.
+    const clientHasText = !!messaging.message?.text?.trim();
+    const clientActuallySentMedia = !!(audioUrl || imageUrl) || (!!shareUrl && !clientHasText);
+    const hasRealContent = clientHasText || (mediaProcessed && enrichedText.trim().length > 0);
 
     if (!hasRealContent && clientActuallySentMedia) {
       const hadAudio = !!audioUrl;
@@ -571,6 +672,15 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     if (!enrichedText.trim()) return;
+
+    // ── Job seeker / service provider → do not respond at all ────────────
+    // Someone looking for work or offering their labor (installer, painter, etc.)
+    // is not a customer. Stay completely silent (message is still stored for the
+    // owner to see). Never silences a real client asking about our service.
+    if (isJobSeeker(enrichedText)) {
+      console.log("[IG] Job seeker / service offer — staying silent");
+      return;
+    }
 
     // ── Update stored message with enriched content ──────────────────────
     await supabaseAdmin
@@ -638,21 +748,18 @@ async function handleWebhook(body: WebhookPayload) {
     // ── Determine booking status — DB flag only (history fallback removed:
     //    it kept triggering after cancellations because "Appointment confirmed"
     //    remains in history even after booking_confirmed is reset to false) ──
-    const isBookingConfirmed = !!(conversation as Record<string, unknown>).booking_confirmed;
+    // When a booked client is rescheduling, treat as NOT confirmed for this turn so
+    // the bot engages (offers new slots) instead of staying silent.
+    const isRescheduling = isBooked && engageReschedule;
+    const isBookingConfirmed = isBooked && !isRescheduling;
 
     const lastUserMsg = enrichedText.toLowerCase();
     const partnershipKeywords = ["partnership", "parceria", "exchange", "troca", "barter", "collab", "collaboration", "influencer", "promote", "shoutout", "stories", "reels", "post exchange"];
     const isPartnershipRequest = partnershipKeywords.some((k) => lastUserMsg.includes(k));
 
-    // Always build current date context so the agent never confuses days
-    const now = new Date();
-    const dayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-    const todayName = dayNames[now.getDay()];
-    const tomorrowDate = new Date(now); tomorrowDate.setDate(now.getDate() + 1);
-    const tomorrowName = dayNames[tomorrowDate.getDay()];
-    const tomorrowStr = `${tomorrowDate.getFullYear()}-${String(tomorrowDate.getMonth()+1).padStart(2,"0")}-${String(tomorrowDate.getDate()).padStart(2,"0")}`;
-    const dateContext = `TODAY: ${todayName}, ${monthNames[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${tomorrowName} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
+    // Always build current date context so the agent never confuses days.
+    // Always Eastern (server runs UTC; see scheduler helpers).
+    const dateContext = getEasternDateContext();
 
     const lang = detectLang(history.map((m) => m.content).join(" "));
 
@@ -675,13 +782,19 @@ async function handleWebhook(body: WebhookPayload) {
         systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
       }
       const isOwnerHandled = !isBookingConfirmed && history.some(m =>
-        m.role === "assistant" && m.content?.startsWith("[Treino]")
+        m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)
       );
       if (isBookingConfirmed) {
         systemParts.push("[BOOKING ALREADY CONFIRMED: The appointment is set. Do NOT answer any question or continue the conversation. For ANY message the client sends — thank-you, question, or anything else — respond with EXACTLY ONE short sentence redirecting them to Ozzi, then add [NOTIFY_OWNER]. Example: 'I\\'ll connect you with Ozzi for anything else you need![NOTIFY_OWNER]' NEVER generate [BOOK:...]. NEVER say any slot is taken or unavailable. NEVER answer questions directly.]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
+      if (isRescheduling) {
+        systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
+      }
+      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
+        systemParts.push("[AD REPLY: This client just replied to one of our flooring ads (the ad shows a luxury vinyl installation). They are a fresh lead. If their message contains a specific question, answer it directly; otherwise greet them and send the opener. NEVER stay silent on an ad reply.]");
       }
       // Scan last 3 user messages for a large-lead sqft mention
       if (!isBookingConfirmed) {
@@ -702,14 +815,64 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Generate AI response ─────────────────────────────────────────────
+    // Owner corrections are loaded live so a dashboard fix applies instantly,
+    // without waiting for the nightly Dreaming pass.
+    const ownerCorrections = isBookingConfirmed ? null : await loadGlobalCorrections();
     // Pass isBookingConfirmed so the system prompt gets the CRITICAL block injected
-    const { text: rawAiText, inputTokens, outputTokens } = await getAIResponse(
-      messagesForAI,
-      memoryContext,
-      systemMemory,
-      undefined,
-      isBookingConfirmed
-    );
+    let rawAiText: string;
+    let inputTokens: number;
+    let outputTokens: number;
+    try {
+      const aiResult = await getAIResponse(
+        messagesForAI,
+        memoryContext,
+        systemMemory,
+        ownerCorrections,
+        isBookingConfirmed
+      );
+      rawAiText = aiResult.text;
+      inputTokens = aiResult.inputTokens;
+      outputTokens = aiResult.outputTokens;
+    } catch (aiErr) {
+      // AI is down (credits exhausted, rate limit, timeout, network). Never leave
+      // the client in silence: send a graceful holding reply, hand the lead to a
+      // human, and notify the owner so the conversation is never lost.
+      console.error("[IG] AI generation failed — handing off to owner:", aiErr);
+      if (!isBookingConfirmed) {
+        const fallback = aiOutageHandoffMessage(lang);
+        try {
+          await sendInstagramMessage(senderIgsid, fallback);
+          await supabaseAdmin.from("instagram_messages").insert({
+            conversation_id: conversation.id,
+            role: "assistant",
+            content: fallback,
+          });
+        } catch (sendErr) {
+          console.error("[IG] Fallback send failed:", sendErr);
+        }
+        await supabaseAdmin
+          .from("instagram_conversations")
+          .update({ mode: "human" })
+          .eq("id", conversation.id);
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conversation.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Instagram",
+            clientName: conversation.username ?? null,
+            clientId: senderIgsid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (notifyErr) {
+          console.error("[IG] AI-outage notify failed:", notifyErr);
+        }
+      }
+      return;
+    }
 
     // Pure closing / thanks with no new question → stay silent instead of
     // sending another text. Never overrides the post-booking flow.
@@ -724,8 +887,11 @@ async function handleWebhook(body: WebhookPayload) {
       : rawAiText
     ).replace(/\[REACT_ONLY\]/gi, "").trim();
 
-    // Safety net: remove any slot-conflict language the AI may still generate after booking
-    if (isBookingConfirmed) {
+    // Safety net: the bot must NEVER tell a client a slot "just got taken" or to
+    // "pick another time" — in ANY state (this hallucination appeared on a post-
+    // confirmation follow-up). Strip it universally; skip only when a [BOOK] tag is
+    // present so a real booking is never clobbered.
+    if (!/\[BOOK:/i.test(safeAiText)) {
       safeAiText = stripSlotConflictLanguage(safeAiText);
     }
 
@@ -734,7 +900,8 @@ async function handleWebhook(body: WebhookPayload) {
       conversation.id,
       senderIgsid,
       isBookingConfirmed,
-      lang
+      lang,
+      isRescheduling
     );
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);

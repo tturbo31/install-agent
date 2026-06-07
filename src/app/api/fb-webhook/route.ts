@@ -3,9 +3,10 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
-import { createBooking, cancelClientBooking, getRealAvailabilityContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage } from "@/lib/scheduler";
+import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -57,15 +58,37 @@ async function processBookingCommand(
   psid: string,
   conversationId: string,
   isAlreadyBooked: boolean,
-  lang: "es" | "en"
+  lang: "es" | "en",
+  isReschedule: boolean = false
 ): Promise<string> {
-  if (isAlreadyBooked) {
+  if (isAlreadyBooked && !isReschedule) {
     return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
   }
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return aiResponse;
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // ── Reschedule: move the existing visit to the new date/time. Address/phone
+    //    are copied from the saved booking, so only the new date/time are needed. ──
+    if (isReschedule) {
+      if (!bookingData.date || !bookingData.time) {
+        return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
+      }
+      const r = await rescheduleClientBooking(`fb_${psid}`, bookingData.date, bookingData.time, {
+        name: bookingData.name,
+        phone: bookingData.phone,
+        address: bookingData.address,
+        notes: bookingData.notes,
+      });
+      if (r.success) {
+        await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
+        return rescheduleSuccessMessage(lang);
+      }
+      console.warn(`[FB] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off`);
+      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
+    }
 
     if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
       console.warn("FB booking blocked — phone or address missing from booking JSON");
@@ -224,13 +247,27 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .eq("igsid", fbIgsid)
       .single();
 
+    const wasNewConv = !conv;
+
     if (!conv) {
-      const { data: newConv } = await supabaseAdmin
+      const { data: newConv, error: convErr } = await supabaseAdmin
         .from("instagram_conversations")
         .insert({ igsid: fbIgsid, mode: "agent" })
         .select()
         .single();
-      conv = newConv;
+      if (convErr) {
+        // Ad clicks fire two webhook events almost simultaneously (ad referral +
+        // text). They race to create the conversation; the loser hits the unique
+        // igsid constraint. Recover the row instead of dropping the message.
+        const { data: existing } = await supabaseAdmin
+          .from("instagram_conversations")
+          .select("*")
+          .eq("igsid", fbIgsid)
+          .single();
+        conv = existing ?? null;
+      } else {
+        conv = newConv;
+      }
     }
     if (!conv) return;
 
@@ -249,8 +286,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const imageUrl = (imageAtt?.payload as Record<string, unknown>)?.url as string ?? null;
     const audioUrl = (audioAtt?.payload as Record<string, unknown>)?.url as string ?? null;
 
+    // Ad reply context: client replied to one of our ads. Meta delivers reels as a
+    // video/share attachment we don't recognize, often with no text — never drop it.
+    const isAdReferral = !!messaging.referral;
+    const hasAnyAttachment = attachments.length > 0;
+
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (audioUrl && !rawText) rawText = "[voice message]";
+    if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
     if (!rawText) return;
 
     // Pre-fetch image
@@ -301,8 +344,36 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
     if (freshConv) conv = freshConv;
 
-    // If already booked → notify owner silently, no message to client
-    if ((conv as Record<string, unknown>).booking_confirmed) {
+    // Returning client who already booked or was already served (visit done),
+    // even if booked outside the bot — hand to the team, never re-engage.
+    if (!wasNewConv && !(conv as Record<string, unknown>).booking_confirmed) {
+      const served = await hasExistingBooking(fbIgsid).catch(() => false);
+      if (served) {
+        await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conv.id);
+        (conv as Record<string, unknown>).booking_confirmed = true;
+      }
+    }
+
+    // ── Reschedule intent: a booked client moving their visit is the one case we
+    //    engage after a booking. Keep engaging while a reschedule is in progress
+    //    (last assistant message offered slots), so the follow-up that just names
+    //    the new day is still routed through the reschedule flow. ──
+    const isBooked = !!(conv as Record<string, unknown>).booking_confirmed;
+    let engageReschedule = isBooked && isRescheduleRequest(rawText);
+    if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
+      const { data: lastAsst } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // If already booked (and NOT rescheduling) → notify owner silently, no message
+    if (isBooked && !engageReschedule) {
       try {
         const { data: recentMsgs } = await supabaseAdmin
           .from("instagram_messages")
@@ -363,8 +434,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
       } catch { /* ignore */ }
     }
 
-    const clientSentPlainText = !!rawText && !audioUrl && !imageUrl;
-    const hasRealContent = clientSentPlainText || mediaProcessed;
+    // If the client typed real text (e.g. an ad reply with the pre-filled question),
+    // always answer it even when an attached photo could not be analyzed.
+    const clientHasText = !!(msg?.text as string)?.trim();
+    const hasRealContent = clientHasText || mediaProcessed;
 
     if (!hasRealContent) {
       const fallback = imageUrl
@@ -372,6 +445,12 @@ async function handleFbMessage(body: Record<string, unknown>) {
         : "Got your message! Could you type your question?";
       await sendFacebookMessage(psid, fallback);
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+      return;
+    }
+
+    // Job seeker / service provider → do not respond at all (message still stored).
+    if (isJobSeeker(enrichedText)) {
+      console.log("[FB] Job seeker / service offer — staying silent");
       return;
     }
 
@@ -420,16 +499,15 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const history = (historyRaw ?? []).reverse();
 
     // DB flag only — history fallback removed: it kept firing after cancellations
-    // because "Appointment confirmed" stays in history even after booking_confirmed=false
-    const isBookingConfirmed = !!(conv as Record<string, unknown>).booking_confirmed;
+    // because "Appointment confirmed" stays in history even after booking_confirmed=false.
+    // When a booked client is rescheduling, treat as NOT confirmed this turn so the
+    // bot engages (offers new slots) instead of staying silent.
+    const isRescheduling = isBooked && engageReschedule;
+    const isBookingConfirmed = isBooked && !isRescheduling;
 
     // Date context
-    const now = new Date();
-    const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-    const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-    const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
-    const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth()+1).padStart(2,"0")}-${String(tomorrow.getDate()).padStart(2,"0")}`;
-    const dateContext = `TODAY: ${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}. TOMORROW: ${days[tomorrow.getDay()]} ${tomorrowStr}. Current time: ${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")} Eastern.`;
+    // Date context — always Eastern (server runs UTC; see scheduler helpers)
+    const dateContext = getEasternDateContext();
 
     const lang = detectLang(history.map((m) => m.content).join(" "));
 
@@ -442,13 +520,19 @@ async function handleFbMessage(body: Record<string, unknown>) {
       const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
-        m.role === "assistant" && m.content?.startsWith("[Treino]")
+        m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)
       );
       if (isBookingConfirmed) {
         systemParts.push("[BOOKING ALREADY CONFIRMED: The appointment is set. Do NOT answer any question or continue the conversation. For ANY message the client sends — thank-you, question, or anything else — respond with EXACTLY ONE short sentence redirecting them to Ozzi, then add [NOTIFY_OWNER]. Example: 'I\\'ll connect you with Ozzi for anything else you need![NOTIFY_OWNER]' NEVER generate [BOOK:...]. NEVER say any slot is taken or unavailable. NEVER answer questions directly.]");
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
+      if (isRescheduling) {
+        systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
+      }
+      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
+        systemParts.push("[AD REPLY: This client just replied to one of our flooring ads. They are a fresh lead. If their message contains a specific question, answer it directly; otherwise greet them and send the opener. NEVER stay silent on an ad reply.]");
       }
       if (!isBookingConfirmed) {
         const recentUserTexts = history
@@ -464,13 +548,49 @@ async function handleFbMessage(body: Record<string, unknown>) {
       messagesForAI[lastIdx] = { ...messagesForAI[lastIdx], content: `${messagesForAI[lastIdx].content}\n\n${systemNote}` };
     }
 
-    const { text: rawAiResponse } = await getAIResponse(
-      messagesForAI,
-      memoryContext,
-      systemMemory,
-      undefined,
-      isBookingConfirmed
-    );
+    const ownerCorrections = isBookingConfirmed ? null : await loadGlobalCorrections();
+    let rawAiResponse: string;
+    try {
+      const aiResult = await getAIResponse(
+        messagesForAI,
+        memoryContext,
+        systemMemory,
+        ownerCorrections,
+        isBookingConfirmed
+      );
+      rawAiResponse = aiResult.text;
+    } catch (aiErr) {
+      // AI down (credits exhausted, rate limit, timeout, network). Never leave the
+      // client in silence: send a graceful holding reply, hand to a human, notify owner.
+      console.error("[FB] AI generation failed — handing off to owner:", aiErr);
+      if (!isBookingConfirmed) {
+        const fallback = aiOutageHandoffMessage(lang);
+        try {
+          await sendFacebookMessage(psid, fallback);
+          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+        } catch (sendErr) {
+          console.error("[FB] Fallback send failed:", sendErr);
+        }
+        await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conv.id);
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Facebook",
+            clientName: (conv as Record<string, unknown>).username as string ?? null,
+            clientId: psid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (notifyErr) {
+          console.error("[FB] AI-outage notify failed:", notifyErr);
+        }
+      }
+      return;
+    }
 
     // Pure closing / thanks with no new question → stay silent instead of
     // sending another text (Messenger has no Page-side reaction API). Never
@@ -485,11 +605,13 @@ async function handleFbMessage(body: Record<string, unknown>) {
       : rawAiResponse
     ).replace(/\[REACT_ONLY\]/gi, "").trim();
 
-    if (isBookingConfirmed) {
+    // Universal safety net: never tell a client a slot "just got taken" / "pick
+    // another time" in any state. Skip only when a [BOOK] tag is present.
+    if (!/\[BOOK:/i.test(safeResponse)) {
       safeResponse = stripSlotConflictLanguage(safeResponse);
     }
 
-    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang);
+    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling);
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);

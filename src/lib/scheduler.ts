@@ -84,7 +84,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
   try {
     const db = await getAuthenticatedClient();
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = easternTodayStr();
 
     // Guard: if this client already has an upcoming booking, block the duplicate
     if (req.igsid) {
@@ -218,20 +218,165 @@ export async function cancelClientBooking(igsid: string): Promise<{ success: boo
   }
 }
 
+// Move a client's existing upcoming visit to a new date/time. SAFE ORDER: it
+// creates the NEW booking first (copying the original client details so nothing
+// is lost even if the address/phone are no longer in recent chat history), and
+// ONLY deletes the old booking after the new one succeeds. If the new slot is
+// unavailable, the old booking is left untouched so the client is never left
+// without an appointment.
+export async function rescheduleClientBooking(
+  igsid: string,
+  newDate: string,
+  newTime: string,
+  fallback?: { name?: string; phone?: string; address?: string; notes?: string }
+): Promise<BookingResult & { rescheduled?: boolean }> {
+  try {
+    const db = await getAuthenticatedClient();
+    const today = easternTodayStr();
+
+    // 1. Find the existing upcoming booking(s) to move.
+    const { data: olds, error: fetchErr } = await db
+      .from("bookings")
+      .select("id, name, phone, address, notes, source, creative_url, referral_source, booking_date, booking_time")
+      .like("email", `ia-${igsid}@%`)
+      .gte("booking_date", today)
+      .order("booking_date", { ascending: true })
+      .order("booking_time", { ascending: true });
+
+    if (fetchErr) return { success: false, error: fetchErr.message };
+    if (!olds || olds.length === 0) return { success: false, error: "no_booking_found" };
+    const old = olds[0];
+
+    // 2. Pick a seller for the new slot.
+    const future = new Date();
+    future.setMonth(future.getMonth() + 6);
+    const futureStr = future.toISOString().slice(0, 10);
+    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+      db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
+    ]);
+    const sellers = (sellersData ?? []) as Seller[];
+    const bookings = (bookedData ?? []) as BookingRow[];
+    const seller = pickSellerForSlot(sellers, bookings, newDate, newTime);
+    if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
+
+    // 3. Create the NEW booking (copy original details, fall back to provided values).
+    const { data: created, error: insErr } = await db
+      .from("bookings")
+      .insert({
+        name: (old.name ?? fallback?.name ?? "Instagram Client").toString().trim().slice(0, 100),
+        email: `ia-${igsid}@instagram.ozzifloors.com`,
+        phone: (old.phone ?? fallback?.phone ?? "").toString().trim().slice(0, 30) || null,
+        address: (old.address ?? fallback?.address ?? "").toString().trim().slice(0, 300),
+        referral_source: old.referral_source ?? "Instagram DM",
+        source: old.source ?? "Instagram DM",
+        creative_url: old.creative_url ?? null,
+        creative_urls: [],
+        scheduled_by: SCHEDULER_ID,
+        notes: ((fallback?.notes ?? old.notes ?? "").toString() + " | Rescheduled").trim().slice(0, 1000) || null,
+        booking_date: newDate,
+        booking_time: newTime,
+        seller_id: seller.id,
+      })
+      .select("id")
+      .single();
+
+    if (insErr || !created) {
+      console.error("Reschedule insert error:", insErr);
+      return { success: false, error: insErr?.message ?? "insert_failed" };
+    }
+
+    // 4. New booking is in place — now remove the old one(s).
+    let removed = 0;
+    for (const b of olds) {
+      if (b.id === created.id) continue;
+      const { error: delErr } = await db.from("bookings").delete().eq("id", b.id);
+      if (!delErr) removed++;
+    }
+    console.log(`[reschedule] ${igsid}: new ${newDate} ${newTime} (seller ${seller.name}), removed ${removed} old booking(s)`);
+
+    return { success: true, rescheduled: true, bookingId: created.id, sellerName: seller.name, date: newDate, time: newTime };
+  } catch (err) {
+    console.error("rescheduleClientBooking exception:", err);
+    return { success: false, error: String(err) };
+  }
+}
+
+// ─── Eastern-time helpers ──────────────────────────────────────────────────
+// The business runs on Miami / Eastern time, but the server runs in UTC. In the
+// evening Eastern, UTC has already rolled to the next day, which made the bot
+// think "today" was tomorrow (e.g. Thursday 9pm ET = Friday 1am UTC). All date
+// and weekday math MUST be done in America/New_York.
+const ET_TZ = "America/New_York";
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// Today's calendar date in Eastern, as YYYY-MM-DD.
+export function easternTodayStr(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: ET_TZ }).format(new Date());
+}
+
+// Current wall-clock hour/minute in Eastern.
+function easternNowHM(): { hour: number; minute: number } {
+  const p = new Intl.DateTimeFormat("en-US", { timeZone: ET_TZ, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date());
+  const hour = parseInt(p.find((x) => x.type === "hour")?.value ?? "0", 10) % 24;
+  const minute = parseInt(p.find((x) => x.type === "minute")?.value ?? "0", 10);
+  return { hour, minute };
+}
+
+// Calendar fields for a YYYY-MM-DD string (anchored at UTC noon = deterministic).
+function ymd(dateStr: string): { weekday: number; month: number; day: number; year: number } {
+  const d = new Date(dateStr + "T12:00:00Z");
+  return { weekday: d.getUTCDay(), month: d.getUTCMonth(), day: d.getUTCDate(), year: d.getUTCFullYear() };
+}
+
+// Add N days to a YYYY-MM-DD string, returning a YYYY-MM-DD string.
+function addDaysStr(dateStr: string, n: number): string {
+  const d = new Date(dateStr + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Date context injected into the AI prompt — always Eastern, never UTC.
+export function getEasternDateContext(): string {
+  const todayStr = easternTodayStr();
+  const tmrStr = addDaysStr(todayStr, 1);
+  const t = ymd(todayStr);
+  const tm = ymd(tmrStr);
+  const { hour, minute } = easternNowHM();
+  return `TODAY: ${DAY_NAMES[t.weekday]}, ${MONTH_NAMES[t.month]} ${t.day}, ${t.year} [${todayStr}]. TOMORROW: ${DAY_NAMES[tm.weekday]}, ${MONTH_NAMES[tm.month]} ${tm.day} [${tmrStr}]. Current time: ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} Eastern.`;
+}
+
+// True if this client (by igsid) already has ANY booking in the scheduler — past
+// or future. Used to detect clients we already booked or already served (visit
+// done) so the bot hands them to the team instead of re-engaging, even when the
+// booking was made outside the bot (in person, manually) and the app flag is unset.
+export async function hasExistingBooking(igsid: string): Promise<boolean> {
+  try {
+    const db = await getAuthenticatedClient();
+    const { data } = await db
+      .from("bookings")
+      .select("id")
+      .like("email", `ia-${igsid}@%`)
+      .limit(1);
+    return !!(data && data.length > 0);
+  } catch (err) {
+    console.error("hasExistingBooking error:", err);
+    return false;
+  }
+}
+
 export async function getRealAvailabilityContext(): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
 
-    const today = new Date();
-    const next10Days: string[] = [];
-    for (let i = 0; i < 10; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
-      next10Days.push(d.toISOString().slice(0, 10));
-    }
+    const todayStr = easternTodayStr();
+    // Show 21 days so the bot can book NEXT WEEK and beyond, not just this week.
+    // It must never tell a client it "can't see" a future date that is bookable.
+    const windowDays: string[] = Array.from({ length: 21 }, (_, i) => addDaysStr(todayStr, i));
 
-    const fromStr = next10Days[0];
-    const toStr = next10Days[next10Days.length - 1];
+    const fromStr = windowDays[0];
+    const toStr = windowDays[windowDays.length - 1];
 
     const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
       db
@@ -245,18 +390,16 @@ export async function getRealAvailabilityContext(): Promise<string> {
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
 
-    const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
+
+    const nowET = easternNowHM();
+    const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + 30;
 
     let hasAnySlot = false;
 
-    for (const dateStr of next10Days) {
-      const date = new Date(dateStr + "T12:00:00");
-      const weekday = date.getDay();
-      const dayName = dayNames[weekday];
-      const [y, , d] = dateStr.split("-");
-      const displayDate = `${dayName}, ${monthNames[date.getMonth()]} ${parseInt(d)}, ${y} [${dateStr}]`;
+    for (const dateStr of windowDays) {
+      const { weekday, month, day, year } = ymd(dateStr);
+      const displayDate = `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${dateStr}]`;
 
       const slotSet = new Set<string>();
       sellers.forEach((s) => {
@@ -272,15 +415,12 @@ export async function getRealAvailabilityContext(): Promise<string> {
         });
       });
 
-      // For today: filter out slots that are already past (add 30-min buffer)
-      const nowPlus30 = new Date(Date.now() + 30 * 60 * 1000);
-      const isToday = dateStr === new Date().toISOString().slice(0, 10);
+      // For today only: drop slots already past in Eastern time (30-min buffer)
+      const isToday = dateStr === windowDays[0];
       const futureSlots = Array.from(slotSet).filter((slot) => {
         if (!isToday) return true;
         const [h, m] = slot.split(":").map(Number);
-        const slotTime = new Date();
-        slotTime.setHours(h, m, 0, 0);
-        return slotTime >= nowPlus30;
+        return h * 60 + m >= nowMinutesPlus30;
       });
 
       const slots = futureSlots.sort();
@@ -299,14 +439,17 @@ export async function getRealAvailabilityContext(): Promise<string> {
     }
 
     if (!hasAnySlot) {
-      lines.push("No availability in the next 10 days.");
+      lines.push("No availability in the next 21 days.");
     }
 
     lines.push(
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
+        "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
+        "\n- If the same weekday appears on more than one line (e.g. two Tuesdays), use the SOONEST one, UNLESS the client says 'next week' or names a specific date, then use that line instead." +
         "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
+        "\n- NEVER tell a client a time was 'just taken', is 'no longer available', or ask them to 'pick another time'. If a time is not listed, simply offer a different time that IS listed, naturally." +
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
 
@@ -346,6 +489,26 @@ export function bookingFailureHandoffMessage(lang: "es" | "en"): string {
   return lang === "es"
     ? "Disculpa, no pude confirmar ese horario en el sistema. Le aviso a Ozzi para que confirme tu cita directamente, en breve te contacta."
     : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
+}
+
+// Sent to the client after their visit is successfully moved to a new slot.
+// The webhook already includes the new day/time around it via the AI, so this
+// stays short and never repeats details that could drift from the real booking.
+export function rescheduleSuccessMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Listo, tu visita quedó reagendada. Te aviso aproximadamente 40 minutos antes de llegar. Mi nombre es Ozzi."
+    : "All set, your visit has been rescheduled. I will notify you approximately 40 minutes before arriving. My name is Ozzi.";
+}
+
+// Sent to the client when the AI itself is unavailable (API down, credits
+// exhausted, rate limited, timeout, network error). Without this, an AI outage
+// means the client gets TOTAL SILENCE and the lead is lost. This keeps the
+// client warm with an honest holding reply while the owner is notified and the
+// conversation is handed to a human.
+export function aiOutageHandoffMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Gracias por tu mensaje! Le aviso a nuestro equipo y alguien te contacta en seguida."
+    : "Thanks for your message! Let me get our team to reach out, someone will get right back to you.";
 }
 
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {

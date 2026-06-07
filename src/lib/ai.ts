@@ -26,7 +26,7 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 // These override the AI completely because the model cannot be reliably
 // instructed to omit pricing from "what's included" type questions.
 
-const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
+const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string; skipIfSubstantive?: boolean }> = [
   {
     patterns: [
       /what\s+is\s+included/i,
@@ -52,7 +52,8 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
       /qual\s+(é\s+o\s+)?visual\s+(dos?\s+)?(piso|ch[aã]o|vinyl)/i,
       /(foto|imagem|amostra|cat[aá]logo)\s+dos?\s+(pisos?|chão|ch[aã]o|op[cç])/i,
     ],
-    response: "Você pode ver todas as nossas opções no site ozzifloors.com e no Instagram @ozzi.floors. Me conta mais sobre o seu espaço e o estilo que você prefere, assim te indico as melhores opções para o seu projeto!",
+    response: "Para isso é melhor falar direto com a nossa equipe pelo WhatsApp no (561) 674-8334, que a gente te ajuda a encontrar o piso ideal![NOTIFY_OWNER]",
+    skipIfSubstantive: true,
   },
   {
     // English: client asking to see photos / samples / catalog / material options
@@ -76,8 +77,12 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
       /what\s+(?:kind|type)s?\s+of\s+(?:floor|flooring|material|vinyl|product)/i,
       /what\s+options?\s+(?:do\s+you\s+have|are\s+(?:available|there))/i,
       /(?:available|offer(?:ed)?)\s+(?:floor|flooring|material|color|style)\s+options?/i,
+      // "Do you have / carry / sell a specific floor / color / style?"
+      /do\s+you\s+(?:have|carry|sell|offer|got|stock)\s+(?!.{0,20}(?:warranty|guarantee|financ|appointment|time|slot))(?:any\s+|some\s+|a\s+|the\s+)?(?:\w+\s+){0,3}(floor|flooring|vinyl|lvp|colou?r|style|option|wood|marble|grey|gray|plank|laminate|hardwood|design|pattern|finish)/i,
+      /what\s+(?:do\s+you\s+(?:have|carry|sell|offer|got)|(?:kinds?|types?|colou?rs?|styles?|options?|designs?|finishes?)\s+(?:do\s+you|are\s+(?:available|there)))/i,
     ],
-    response: "You can browse all our floor options and see completed projects at ozzifloors.com and on our Instagram @ozzi.floors. What style are you going for so I can point you in the right direction?",
+    response: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor![NOTIFY_OWNER]",
+    skipIfSubstantive: true,
   },
   {
     // Client who already had an in-person visit wants to negotiate the quoted price
@@ -106,12 +111,44 @@ const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string }> = [
   },
 ];
 
+// A genuine product question (suitability, durability, climate, recommendation,
+// etc.) must be ANSWERED, never deflected to a canned "browse the website" reply.
+const SUBSTANTIVE_PRODUCT_Q = /\b(suitable|suit\b|water\s?proof|durab|humid|climate|moisture|weather|tropical|recommend|advise|hold(s)?\s+up|warranty|wear\s*layer|\bmil\b|\bpet|scratch|works?\s+(in|for|with|outside|outdoor)|used?\s+(in|for|outside|outdoor)|install\s+over|over\s+(tile|wood|concrete)|subfloor|good\s+(for|in)|ok\s+(for|in)|fine\s+(for|in)|right\s+for|can\s+(this|it|i)\s+(be\s+)?(use|install|put)|is\s+(this|it)\s+(good|ok|fine|safe|suitable)|how\s+(thick|durable|long)|bathroom|kitchen|basement|outdoor)\b/i;
+
+// "What IS the product / material?" questions. These must be ANSWERED with the
+// luxury-vinyl description (handled by the AI per the MATERIAL vs SEE rule), NOT
+// deflected to the "see our options" WhatsApp redirect. This is the screenshot
+// bug: "what kind of materials, what is the material allowance?" was redirected
+// to a link instead of getting the product description. Deliberately does NOT
+// match "colors", "photos", "samples", "show me" — those still redirect.
+const PRODUCT_TYPE_Q = new RegExp(
+  [
+    /what\s+(?:kind|type|sort)s?\s+of\s+(?:material|floor|flooring|product|vinyl|wood)/.source,
+    /what(?:'?s| is| are)?\s+(?:the\s+)?materials?\b/.source,
+    /material\s+allowance/.source,
+    /\b(?:material|floor|flooring)\s+options?\b/.source,
+    /what\s+options?\s+do\s+you\s+(?:have|offer|carry)/.source,
+    /\bis\s+(?:it|this|that)\s+(?:really\s+)?(?:a\s+)?(?:luxury\s+)?vinyl/.source,
+    /\bare\s+(?:these|they|the\s+floors?)\s+(?:really\s+)?(?:luxury\s+)?vinyl/.source,
+    /what\s+(?:flooring|floor|material)\s+do\s+you\s+(?:use|install|offer|have|carry|sell)/.source,
+    /luxury\s+vinyl/.source,
+    /marble\s+(?:finish|look|effect)/.source,
+  ].join("|"),
+  "i"
+);
+
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "user") return null;
   const text = last.content;
+  // Capability questions (waterproof, durable, climate...) get a real answer;
+  // "what is the material / is it vinyl" product-type questions get the luxury
+  // vinyl description; tile questions get the Floor & Decor answer. All three
+  // must bypass the "redirect to WhatsApp" options deflection.
+  const skipDeflection = SUBSTANTIVE_PRODUCT_Q.test(text) || PRODUCT_TYPE_Q.test(text) || /\b(tile|porcelain|ceramic)\b/i.test(text);
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
+      if (rule.skipIfSubstantive && skipDeflection) continue;
       return rule.response;
     }
   }
@@ -140,6 +177,31 @@ function removeEmojis(text: string): string {
   return cleaned;
 }
 
+// Strip quotation marks that wrap the WHOLE message. The model sometimes copies
+// the surrounding quotes from the prompt examples and sends `"Hello, ..."` to the
+// client, which looks wrong. Removes matching wrapping pairs (straight, curly,
+// single, guillemets) and a stray single wrapping double-quote at an edge. Never
+// touches quotes that are genuinely inside the sentence.
+export function stripWrappingQuotes(text: string): string {
+  let t = text.trim();
+  while (t.length >= 2) {
+    const f = t[0];
+    const l = t[t.length - 1];
+    if (
+      (f === '"' && l === '"') ||
+      (f === "“" && l === "”") ||
+      (f === "‘" && l === "’") ||
+      (f === "'" && l === "'") ||
+      (f === "«" && l === "»")
+    ) {
+      t = t.slice(1, -1).trim();
+    } else break;
+  }
+  // A single, unbalanced wrapping double-quote left at the start or end.
+  if ((t.match(/"/g) || []).length === 1) t = t.replace(/^"|"$/g, "").trim();
+  return t;
+}
+
 function removeDashes(text: string): string {
   const emDash = String.fromCharCode(0x2014);
   const enDash = String.fromCharCode(0x2013);
@@ -156,6 +218,55 @@ function removeDashes(text: string): string {
 }
 
 export type AIResponse = { text: string; inputTokens: number; outputTokens: number };
+
+// ─── Anti-pressure backstop ────────────────────────────────────────────────
+// A scheduling push is one of: the scheduling QUESTION ("what time works",
+// "which works for you"), a clock TIME ("1pm"), or a slot MENU re-offer
+// ("I have Sunday or Monday", "we've got Thursday open"). A bare weekday on its
+// own (e.g. "right after you close Thursday") is NOT a push, so it is allowed.
+const SCHEDULING_QUESTION = /(?:what|which)\s+(?:time|day)\b|works?\s+(?:best\s+)?for\s+you|get\s+started\s+right\s+away|which\s+works\b|what\s+works\b/i;
+const CLOCK_TIME = /\b\d{1,2}\s*(?:am|pm)\b/i;
+const SLOT_OFFER = /\b(?:i\s+have|i'?ve\s+got|i\s+can\s+(?:do|come|stop|swing)|we\s+have|we'?ve\s+got|open(?:ings)?|i'?m\s+available|availab|free\s+on)\b[^.!?]*\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\s*(?:am|pm)|morning|afternoon|evening)\b/i;
+function isSchedulingPush(s: string): boolean {
+  return SCHEDULING_QUESTION.test(s) || CLOCK_TIME.test(s) || SLOT_OFFER.test(s);
+}
+
+// True when an assistant message is offering/asking about a time slot. Used by
+// the webhooks to tell that a reschedule exchange is already in progress (the
+// bot already offered new slots), so the client's follow-up that just names a
+// day/time is still routed through the reschedule flow instead of going silent.
+export function containsSchedulingOffer(text: string): boolean {
+  return isSchedulingPush(text || "");
+}
+
+// Remove every scheduling push (in any position) so the bot never pushes the
+// appointment two messages in a row (the "stop pressuring the client" rule).
+// Sentences carrying a tag ([NOTIFY_OWNER], [BOOK:...], etc.) are always kept.
+function stripSchedulingPush(text: string): string {
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const kept: string[] = [];
+  for (const s of sentences) {
+    if (s.includes("[") || !isSchedulingPush(s)) {
+      kept.push(s);
+      continue;
+    }
+    // Sentence contains a push: salvage the non-push comma clauses (the info).
+    const clauses = s.split(/,\s*/).filter((cl) => cl.includes("[") || !isSchedulingPush(cl));
+    const rebuilt = clauses.join(", ").trim().replace(/[,\s]+$/, "");
+    if (rebuilt) kept.push(/[.!?]$/.test(rebuilt) ? rebuilt : rebuilt + ".");
+  }
+  const out = kept.join(" ").trim();
+  return out || "Happy to answer any other questions you have!";
+}
+
+// True when the client's own latest message engages scheduling (asks about a
+// time/day/availability, names a clock time, or accepts a slot). The injected
+// [SYSTEM: ...] note (which contains availability slots) is excluded so its
+// am/pm tokens never count as the client engaging scheduling.
+function clientEngagedScheduling(userText: string): boolean {
+  const clientText = userText.split(/\n\n?\[SYSTEM:/)[0];
+  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(clientText);
+}
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
 // Returns the sqft value, or null if not a large lead.
@@ -185,10 +296,78 @@ const CLOSING_PATTERNS: RegExp[] = [
 ];
 const QUESTION_SIGNALS = /\?|\b(how|what|when|where|why|which|who|do you|do u|does|did|can you|can u|could|would|will you|are you|is it|is there|are there|price|cost|how much|quote|estimate|available|availability|schedule|book|sqft|square feet|cu[aá]nto|c[oó]mo|qu[eé]|cu[aá]ndo|d[oó]nde|puede|podr[ií]a|quanto|quando)\b/i;
 
+// A message carrying booking payload (a phone number or a street address) is
+// NEVER a pure closing, even when it opens with "ok thank you". Without this
+// guard a reply like "Ok thank you. Randy Santos 11417 SW 251st St, Homestead
+// FL 33032 786-368-1800" (77 chars, no question word, contains "thank you")
+// was classified as a farewell, so the bot stayed silent AND never booked the
+// visit. Detect a phone number, a ZIP, or a "<number> <street>" address token.
+const BOOKING_INFO_SIGNALS = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b\d{5}(?:-\d{4})?\b|\b\d{1,6}\s+\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida)\b/i;
+
+export function containsBookingInfo(text: string): boolean {
+  return BOOKING_INFO_SIGNALS.test(text || "");
+}
+
+// Detects when an ALREADY-BOOKED client wants to move their appointment to a
+// different day/time. Only consulted when booking_confirmed is true, so mild
+// over-matching is low risk (worst case: the bot offers to reschedule). Covers
+// English, Spanish, and Portuguese. A bare day/time with no "change" intent is
+// NOT a reschedule (that is handled as booking info / normal flow).
+const RESCHEDULE_PATTERNS: RegExp[] = [
+  /\b(reschedul|re-?schedul|remarc|reagend|reprogram)/i,
+  /\b(move|change|switch|push|shift|bump|cambiar|mover|cambia|trocar|mudar|adiar)\b[^.!?\n]{0,32}\b(appointment|visit|time|day|date|booking|schedule|slot|cita|hora|d[ií]a|fecha|visita|agendamento|hor[áa]rio)\b/i,
+  /\b(appointment|visit|booking|cita|visita|agendamento|hor[áa]rio)\b[^.!?\n]{0,32}\b(another|different|a new|other|earlier|later|otro|otra|nuevo|outro|outra)\b[^.!?\n]{0,12}\b(day|time|date|d[ií]a|hora)\b/i,
+  /\b(another|different|a new|other|earlier|later|otro|otra|nuevo|outro|outra)\b[^.!?\n]{0,12}\b(day|time|date|d[ií]a|hora)\b[^.!?\n]{0,32}\b(work|instead|better|para|mejor|melhor)/i,
+  /\binstead of\b[^.!?\n]{0,20}\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}\s*(?:am|pm))\b/i,
+  /\bcan('?t| ?not| we)\b[^.!?\n]{0,40}\b(make|do|come)\b[^.!?\n]{0,20}\b(it|the visit|the appointment|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|that day|that time)\b[^.!?\n]{0,30}\b(another|different|instead|reschedul|move|change)\b/i,
+];
+
+export function isRescheduleRequest(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  return RESCHEDULE_PATTERNS.some((p) => p.test(t));
+}
+
+// Detects someone looking for a JOB or offering their labor (installer, painter,
+// helper, etc.) — NOT a customer. These get no reply at all. Tuned for PRECISION:
+// it must never silence a real customer (e.g. "do you have installers?", "I need
+// my floor installed"), so it only fires on clear work-seeking / service-offering
+// intent. Covers English, Spanish, Portuguese.
+const JOB_SEEKER_PATTERNS: RegExp[] = [
+  /\b(are|r)\s+(you|u|y'?all|you all|yall|guys)\b[^.!?\n]{0,20}\bhiring\b/i,
+  /\b(you|u)\s+(guys\s+)?hiring\b/i,
+  /\bare you hiring\b|\bhiring\?\s*$/i,
+  /\b(looking|searching)\s+for\s+(a\s+)?(job|work|employment|position|jobs)\b/i,
+  /\b(need|want)\s+(a\s+)?(job|work|employment)\b(?![^.!?\n]{0,15}\bdone\b)/i,
+  /\bi('?m| am)\s+(an?\s+)?(installer|painter|laborer|labourer|handyman|carpenter|contractor|flooring\s+(installer|guy|pro)|tile\s+(setter|installer)|worker)\b/i,
+  /\bi\s+(install|do|lay)\s+(floor|flooring|tile|vinyl|laminate|hardwood|painting|paint)\b[^.!?\n]{0,40}\b(looking|available|work|hire|need|jobs?|crew|for you)\b/i,
+  /\b(can|could)\s+i\s+work\s+(for|with)\s+(you|your|ozzi|the team)\b/i,
+  /\b(offer|offering)\s+(my|you|our)\s+(services|labor|labour|work|help)\s+(as|for|to)\b/i,
+  /\bdo\s+you\s+need\s+(any\s+)?(workers?|installers?|painters?|laborers?|crew|help|hands?|people)\b/i,
+  /\bdo\s+you\s+have\s+(any\s+)?(openings?|positions?|vacanc|job\s+openings?)\b/i,
+  /\bjoin\s+(your|the)\s+(team|crew|company)\b/i,
+  /\b(any\s+)?(job|work)\s+(openings?|opportunit|available|positions?)\b/i,
+  // Spanish
+  /\b(busco|buscando|necesito|quiero)\s+(trabajo|empleo|chamba|pega)\b/i,
+  /\bsoy\s+(instalador|pintor|albañil|trabajador|obrero)\b/i,
+  /\b(est[aá]n|estas?)\s+contratando\b|\bhay\s+(trabajo|vacante|empleo)\b/i,
+  // Portuguese
+  /\b(procuro|preciso de|busco|quero|t[ôo] procurando)\s+(emprego|trabalho|vaga|servi[çc]o)\b/i,
+  /\bsou\s+(instalador|pintor|pedreiro|trabalhador|ajudante)\b/i,
+  /\b(est[aã]o|t[aã]o)\s+contratando\b|\btem\s+vaga\b|\bvaga\s+de\s+emprego\b/i,
+];
+
+export function isJobSeeker(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return false;
+  return JOB_SEEKER_PATTERNS.some((p) => p.test(t));
+}
+
 export function isPureClosing(text: string): boolean {
   const t = (text || "").trim();
   if (!t || t.length > 80) return false;
   if (QUESTION_SIGNALS.test(t)) return false;
+  if (BOOKING_INFO_SIGNALS.test(t)) return false;
   return CLOSING_PATTERNS.some((p) => p.test(t));
 }
 
@@ -231,10 +410,18 @@ export async function getAIResponse(
   }
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
-  systemContent += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, at $5/sqft that's $1,000." not "Perfect! At $5/sqft that's $1,000."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n9. ONLY when the client asks "what is included", "what does the package include", "is labor included", or "does it include installation" → reply EXACTLY: "${WHAT_IS_INCLUDED_RESPONSE}" For any other package question (explaining, pricing, details), answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. OPTIONS/MATERIALS RULE: When the client asks about floor options, material options, colors available, or what products you carry — NEVER list specific color names or product names in your response. ALWAYS redirect to the website and Instagram: "You can browse all our floor options and see completed projects at ozzifloors.com and on our Instagram @ozzi.floors." Then ask one follow-up question about their style preference. This rule overrides any impulse to describe colors.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number.\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile demo/removal is $1.50/sqft extra. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
+  systemContent += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n9. ONLY when the client asks "what is included", "what does the package include", "is labor included", or "does it include installation" → reply EXACTLY: "${WHAT_IS_INCLUDED_RESPONSE}" For any other package question (explaining, pricing, details), answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client EXPLICITLY asks to SEE (photos, pictures, samples, catalog, "show me", which COLORS/styles you have, a SPECIFIC color/style, your website or Instagram) then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number.\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile demo/removal is $1.50/sqft extra. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
+18. SMALL-JOB PRICING RULE: UNDER 200 sqft we DO NOT take the job, under any circumstance — never quote a price, never propose a visit, just politely decline in one short sentence and invite them back for a bigger area (example: "We focus on larger installations, so we don't take projects under 200 square feet, but reach out anytime you have a bigger area!"). For a project you quote by DM that is 200 to 400 sqft, the total MUST be (sqft x $5) + $500, presented as ONE final number with the $500 already baked in. NEVER reveal, itemize, mention, or hint at the $500, and do NOT show any per-sqft breakdown for these small jobs (no "$5/sqft", no "$5 x N"). Example: 200 sqft -> say about $1,500 (not $1,000). Example: 300 sqft -> about $2,000. For 401 to 499 sqft use plain $5/sqft with no add-on. For 500 sqft or more NEVER give a DM price, propose the free visit. The pricing tiers are INTERNAL: never explain them, never mention any range/band/tier, never narrate your calculation or self-correct out loud (no "let me give the right answer", no "480 is between 401 and 499"). Reply with ONLY the final total in one clean sentence.
+23. JOB SEEKER RULE: If the message is from someone seeking a job or offering their own labor/services (installer, painter, laborer, helper, carpenter, "are you hiring", "looking for work", "I'm an installer", "busco trabajo", "soy instalador", "procuro emprego", "sou pintor"), this is NOT a customer. Output EXACTLY [REACT_ONLY] and nothing else, no greeting, no pitch. A real customer asking about our service ("do you have installers?", "I need my floor installed") is NOT a job seeker, answer them normally.
+19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. Do not reveal the small-job surcharge.
+21. ANSWER PRODUCT QUESTIONS RULE: When the client asks a real question about the product, ALWAYS answer it directly and helpfully FIRST — never deflect a genuine product question to "browse our website". Key facts you can state: our luxury vinyl is 100% waterproof, has a stone composite (SPC) core, a 20-year warranty, is highly scratch and water resistant, performs great in humid and tropical climates, and can usually be installed right over existing tile. If they ask you to recommend something, give a brief direction based on their style and then invite them to browse for the exact look. If the client is OUTSIDE South Florida (another state, the Caribbean, the West Indies, another country) and is asking about the PRODUCT, still answer their product question helpfully; only mention that our installation service covers South Florida if they specifically ask US to install or visit. NEVER dismiss an out-of-area client with "we can't help you" — answer what they asked.
+20. TILE MATERIAL RULE: We do NOT sell tile material. If the client asks whether you offer, sell, have, or carry tile, or tile/porcelain that looks like wood (wood-look tile), respond with EXACTLY this and nothing more: "We don't sell tile materials. We only do the installation. However, you can find wood-look tiles at stores like Floor & Decor." Do NOT append, add, or tack on a luxury vinyl / LVP suggestion or any upsell after it — give only those sentences and stop. NEVER respond to a TILE question by pitching luxury vinyl wood-look as if it were the same thing. (Wood-look luxury VINYL is only the right answer when the client asks about vinyl or wood-look floors generally, not tile.)
 17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), ignore the thanks and answer the question normally. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE.
 16. DATE INTEGRITY RULE: When you name a weekday to the client (Friday, viernes, etc.), the date MUST be the exact [YYYY-MM-DD] shown next to that same weekday in the REAL-TIME SCHEDULE. NEVER compute or guess a date yourself, and NEVER pair a weekday with a date from a different schedule line. Before writing [BOOK:...], re-read the schedule line for the weekday you promised and copy its [YYYY-MM-DD] and only a time listed on that line. Example: if the schedule shows "Friday ... [2026-06-05]: 9am, 1pm", then "Friday at 1pm" books date 2026-06-05 and time 13:00, NEVER 2026-06-06. Saturday is a different line with different times. If the time the client wants is not listed under the exact date you promised, tell them it is not open and offer a time that IS listed for that date.
-15. CLIENT AVAILABILITY RULE: If the client states when they are available (examples: "only after 6pm", "I'm only home after 6", "only on weekends", "evenings only", "I work until 5", "only Saturday", "only Sunday", "no mornings"), you MUST filter all slot options to ONLY those that match their constraint. NEVER propose a time that contradicts what the client said. Examples: if the client says "after 6pm", offer ONLY 6pm or later slots on weekdays. If they say "only weekends", offer ONLY Saturday or Sunday slots. If they say "after 6pm or weekends", that means weekdays ONLY after 6pm AND weekends at any time — do NOT offer a weekday slot before 6pm, but a Saturday or Sunday at any hour is fine. If no slots in the schedule match their constraint, acknowledge it directly and ask what flexibility they have. This rule overrides the general "offer 2 available slots" instruction — always honor the client's stated availability first.`;
+15. CLIENT AVAILABILITY RULE: If the client states when they are available (examples: "only after 6pm", "I'm only home after 6", "only on weekends", "evenings only", "I work until 5", "only Saturday", "only Sunday", "no mornings"), you MUST filter all slot options to ONLY those that match their constraint. NEVER propose a time that contradicts what the client said. Examples: if the client says "after 6pm", offer ONLY 6pm or later slots on weekdays. If they say "only weekends", offer ONLY Saturday or Sunday slots. If they say "after 6pm or weekends", that means weekdays ONLY after 6pm AND weekends at any time — do NOT offer a weekday slot before 6pm, but a Saturday or Sunday at any hour is fine. If no slots in the schedule match their constraint, acknowledge it directly and ask what flexibility they have. This rule overrides the general "offer 2 available slots" instruction — always honor the client's stated availability first.
+22. NO PRESSURE RULE: Propose the visit and offer time slots ONCE. After you have already proposed the visit, do NOT tack a scheduling push onto the end of every message ("what time works for you", "what day works", "so we can get started right away", or a list of slots). When the client asks an informational question (materials, specs, thickness, wear layer, lighting, timeline, etc.), ANSWER that question and stop, with no scheduling pressure appended. Re-offer specific slots or re-ask "what time works" ONLY when the client signals readiness to book or themselves asks about scheduling or availability. NEVER end two messages in a row with the same scheduling question, that is pressuring the client and is forbidden. When the client raises an obstacle ("I don't have access", "it's owner occupied", "I can't be there", "I'm just researching", "not this week"), acknowledge it and adapt, NEVER ignore it and keep offering the same slots; if a visit is genuinely blocked, hand to Ozzi with [NOTIFY_OWNER] instead of pushing.
+24. NEVER SAY A SLOT WAS TAKEN: You must NEVER tell a client that a time or slot "just got taken", "is no longer available", "is unavailable", or ask them to "pick another time". This is forbidden in EVERY situation, including follow-up or clarification messages after a booking. If a time the client wants is not in the schedule, just offer a different time that IS listed, in a normal friendly way. If you ever cannot complete a booking, hand it to Ozzi with [NOTIFY_OWNER], never blame the slot.
+25. CAN BOOK ANY LISTED DAY, INCLUDING FUTURE WEEKS: The REAL-TIME SCHEDULE covers about three weeks ahead. You CAN and SHOULD book next week or the week after when the client wants it. NEVER say you cannot see, access, or open the calendar for a future week, and never say you can only book this week. Any date shown in the schedule is bookable. If the same weekday appears more than once, use the soonest one unless the client says "next week" or names a specific date.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {
@@ -253,7 +440,7 @@ export async function getAIResponse(
 
   const block = response.content[0];
   if (block.type === "text") {
-    let cleaned = removeEmojis(removeDashes(block.text));
+    let cleaned = stripWrappingQuotes(removeEmojis(removeDashes(block.text)));
     const hadDash = block.text !== cleaned;
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
@@ -264,6 +451,29 @@ export async function getAIResponse(
         cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
       }
       console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
+    }
+
+    // Anti-pressure: if the previous assistant turn already pushed scheduling and
+    // the client did NOT engage scheduling (they asked an info question instead),
+    // drop the repeated trailing scheduling push so we never pressure two in a row.
+    if (!/\[BOOK:/i.test(cleaned)) {
+      // Look back over the last few assistant turns: once the visit/scheduling
+      // was already pushed, the client may ask several info questions in a row,
+      // and we must not re-push on any of them. The push is often not the most
+      // recent assistant message (that may be an info answer), so scan a window.
+      const recentAssistantPushed = [...messages]
+        .filter((m) => m.role === "assistant")
+        .slice(-3)
+        .some((m) => isSchedulingPush(m.content));
+      const lastMsg = messages[messages.length - 1];
+      if (
+        recentAssistantPushed &&
+        lastMsg?.role === "user" && !clientEngagedScheduling(lastMsg.content)
+      ) {
+        const before = cleaned;
+        cleaned = stripSchedulingPush(cleaned);
+        if (before !== cleaned) console.log("[AI] anti-pressure: stripped repeated scheduling push");
+      }
     }
 
     console.log(`[AI v4] dash removed: ${hadDash} | preview: ${cleaned.slice(0, 60)}`);

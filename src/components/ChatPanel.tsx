@@ -60,7 +60,7 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
           </div>
         )}
 
-        {messages.map((msg) => {
+        {messages.map((msg, i) => {
           const isUser = msg.role === "user";
           // Strip internal context injections before displaying
           const displayContent = msg.content
@@ -68,6 +68,22 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
             .replace(/\[SYSTEM:[\s\S]*?\]/g, "")
             .replace(/\[Voice:[\s\S]*?\]/g, "[voice message]")
             .trim() || (isUser ? "[media]" : "");
+
+          // The client message that immediately preceded this AI reply — used as
+          // the "PERGUNTA" when the owner corrects the response.
+          let precedingUserText = "";
+          if (!isUser) {
+            for (let j = i - 1; j >= 0; j--) {
+              if (messages[j].role === "user") {
+                precedingUserText = messages[j].content
+                  .replace(/\[[\s\S]*?\]/g, "")
+                  .trim()
+                  .slice(0, 300);
+                break;
+              }
+            }
+          }
+
           return (
             <div
               key={msg.id}
@@ -109,6 +125,15 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
                   )}
                   <span className="text-gray-500 text-xs">{formatTime(msg.created_at)}</span>
                 </div>
+
+                {/* Correction affordance — only on AI messages */}
+                {!isUser && (
+                  <CorrectionControl
+                    conversationId={conversation.id}
+                    originalText={displayContent}
+                    precedingUserText={precedingUserText}
+                  />
+                )}
               </div>
             </div>
           );
@@ -123,8 +148,8 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
       <div className="border-t border-gray-800 p-4 bg-gray-900">
         {conversation.mode === "human" && (
           <p className="text-amber-400 text-xs mb-2 flex items-center gap-1">
-            <span>👤</span>
-            Modo treinamento — responda pelo Instagram, depois salve o exemplo acima
+            <span>⏸️</span>
+            IA pausada nesta conversa, você responde manualmente. O que digitar aqui vai direto ao cliente.
           </p>
         )}
         <div className="flex items-end gap-3">
@@ -145,6 +170,102 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
             {isSending ? "..." : "Send"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Per-message correction ─────────────────────────────────────────────────
+// Lets the owner rewrite an AI reply directly in the conversation. The fix is
+// saved as a structured training rule that every webhook loads on the next
+// message — so it is active instantly. It does NOT send anything to the client.
+function CorrectionControl({
+  conversationId,
+  originalText,
+  precedingUserText,
+}: {
+  conversationId: string;
+  originalText: string;
+  precedingUserText: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState(originalText);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function handleOpen() {
+    setText(originalText);
+    setOpen(true);
+  }
+
+  async function handleSave() {
+    const correction = text.trim();
+    if (!correction || saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/correct`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka",
+        },
+        body: JSON.stringify({ correction, originalQuestion: precedingUserText }),
+      });
+      if (res.ok) {
+        setSaved(true);
+        setOpen(false);
+        setTimeout(() => setSaved(false), 4000);
+      }
+    } catch { /* ignore */ }
+    setSaving(false);
+  }
+
+  if (saved) {
+    return (
+      <p className="text-green-400 text-xs mt-1 px-1 font-medium">
+        ✓ Correção salva — a IA já aplica a partir da próxima mensagem
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={handleOpen}
+        className="self-end text-yellow-400/80 hover:text-yellow-300 text-xs mt-1 px-1 flex items-center gap-1"
+      >
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 11l6-6 3 3-6 6H9v-3z" />
+        </svg>
+        Corrigir
+      </button>
+    );
+  }
+
+  return (
+    <div className="w-full mt-2 space-y-2">
+      <p className="text-yellow-400 text-xs font-medium">Como a IA deveria ter respondido?</p>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={3}
+        autoFocus
+        className="w-full bg-gray-800 border border-yellow-700 focus:border-yellow-500 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-gray-500 focus:outline-none resize-none"
+      />
+      <div className="flex gap-2 justify-end">
+        <button
+          onClick={() => setOpen(false)}
+          className="text-xs font-medium text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 border border-gray-700 px-3 py-1.5 rounded-full"
+        >
+          Cancelar
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!text.trim() || saving}
+          className="text-xs font-medium text-black bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 rounded-full"
+        >
+          {saving ? "Salvando..." : "Corrigir e enviar"}
+        </button>
       </div>
     </div>
   );

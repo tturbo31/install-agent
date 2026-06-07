@@ -72,27 +72,48 @@ export default function ChatHeader({ conversation, onToggleMode, isTogglingMode 
       </div>
 
       {/* Mode toggle */}
-      <button
-        onClick={onToggleMode}
-        disabled={isTogglingMode}
-        className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-60 ${
-          isAgent
-            ? "bg-purple-600 hover:bg-purple-700 text-white"
-            : "bg-amber-600 hover:bg-amber-700 text-white"
-        }`}
-      >
-        {isAgent ? (
-          <>
-            <span className="text-base">🤖</span>
-            AI Mode
-          </>
-        ) : (
-          <>
-            <span className="text-base">👤</span>
-            Human Mode
-          </>
-        )}
-      </button>
+      {/* Per-conversation AI pause / reactivate */}
+      <div className="flex items-center gap-3">
+        {/* Current status of THIS conversation */}
+        <span
+          className={`flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full ${
+            isAgent ? "bg-green-900 text-green-300" : "bg-amber-900 text-amber-300"
+          }`}
+        >
+          <span className={`w-2 h-2 rounded-full ${isAgent ? "bg-green-400" : "bg-amber-400"}`} />
+          {isAgent ? "IA ATIVA" : "IA PAUSADA"}
+        </span>
+
+        {/* Action button — the label is the action that happens on click */}
+        <button
+          onClick={onToggleMode}
+          disabled={isTogglingMode}
+          title={
+            isAgent
+              ? "Pausar a IA apenas nesta conversa. Você passa a responder manualmente."
+              : "Reativar a IA nesta conversa, ela volta a responder automaticamente."
+          }
+          className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all disabled:opacity-60 ${
+            isAgent
+              ? "bg-amber-600 hover:bg-amber-700 text-white"
+              : "bg-green-600 hover:bg-green-700 text-white"
+          }`}
+        >
+          {isTogglingMode ? (
+            "..."
+          ) : isAgent ? (
+            <>
+              <span className="text-base">⏸️</span>
+              Pausar IA
+            </>
+          ) : (
+            <>
+              <span className="text-base">▶️</span>
+              Reativar IA
+            </>
+          )}
+        </button>
+      </div>
     </div>
   );
 }

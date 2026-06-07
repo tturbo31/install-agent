@@ -58,6 +58,22 @@ const GRADERS = {
     label: 'No em/en dash (— or –)',
     check: (t: string) => !/[—–‒―]/.test(t),
   },
+  noWrappingQuotes: {
+    label: 'Message is not wrapped in quotation marks',
+    check: (t: string) => {
+      const s = t.trim();
+      if (!s) return true;
+      const f = s[0];
+      const l = s[s.length - 1];
+      // Fails if the whole message is wrapped in a matching quote pair.
+      return !(
+        (f === '"' && l === '"') ||
+        (f === "“" && l === "”") ||
+        (f === "'" && l === "'") ||
+        (f === "«" && l === "»")
+      );
+    },
+  },
   noForbiddenTags: {
     label: 'No [SEND_IMAGES] tag',
     check: (t: string) => !/\[SEND_IMAGES/i.test(t),
@@ -65,10 +81,6 @@ const GRADERS = {
   hasPrice: {
     label: 'Contains $5 pricing',
     check: (t: string) => t.includes("$5"),
-  },
-  noPriceInIncluded: {
-    label: 'No price ($X) in "what is included" response',
-    check: (t: string) => !/\$\d/.test(t),
   },
   hasWhatIsIncluded: {
     label: 'Exact "what is included" response text',
@@ -111,6 +123,18 @@ const GRADERS = {
     label: 'Redirects to owner with [NOTIFY_OWNER] (post-booking)',
     check: (t: string) => /\[NOTIFY_OWNER\]/i.test(t),
   },
+  atMostThreeSentences: {
+    label: 'Opener is at most 3 short sentences',
+    check: (t: string) => {
+      const stripped = t.replace(/\[.*?\]/g, "").trim();
+      const sentences = (stripped.match(/[.!?](?:\s|$)/g) ?? []).length;
+      return sentences <= 3;
+    },
+  },
+  asksScope: {
+    label: 'Asks one area or whole house (classification)',
+    check: (t: string) => /one area|whole house|entire house|just one|the whole|single room/i.test(t),
+  },
   isSilent: {
     label: 'No message sent to client (empty response after stripping tags)',
     check: (t: string) => t.replace(/\[[^\]]*\]/g, "").trim() === "",
@@ -140,6 +164,65 @@ const GRADERS = {
   hasOzziUrlInOptions: {
     label: 'Redirects to ozzifloors.com or @ozzi.floors for options',
     check: (t: string) => /ozzifloors\.com|@ozzi\.floors|ozzi\.floors/i.test(t),
+  },
+  redirectsToWhatsApp: {
+    label: 'Redirects to team WhatsApp (561) 674-8334, no website',
+    check: (t: string) => /674[-\s]?8334/.test(t) && !/ozzifloors\.com|@ozzi\.floors/i.test(t),
+  },
+  noSchedulingPush: {
+    label: 'No scheduling pressure (no clock time, no "what time/which works", no slot-menu re-offer)',
+    check: (t: string) => {
+      const SCHEDULING_QUESTION = /(?:what|which)\s+(?:time|day)\b|works?\s+(?:best\s+)?for\s+you|get\s+started\s+right\s+away|which\s+works\b|what\s+works\b/i;
+      const CLOCK_TIME = /\b\d{1,2}\s*(?:am|pm)\b/i;
+      const SLOT_OFFER = /\b(?:i\s+have|i'?ve\s+got|i\s+can\s+(?:do|come|stop|swing)|we\s+have|we'?ve\s+got|open(?:ings)?|i'?m\s+available|availab|free\s+on)\b[^.!?]*\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\s*(?:am|pm)|morning|afternoon|evening)\b/i;
+      return !SCHEDULING_QUESTION.test(t) && !CLOCK_TIME.test(t) && !SLOT_OFFER.test(t);
+    },
+  },
+  acknowledgesObstacle: {
+    label: 'Acknowledges the obstacle and does NOT steamroll with a slot list',
+    check: (t: string) => {
+      const timeTokens = (t.match(/\b\d{1,2}\s*(?:am|pm)\b/gi) ?? []).length;
+      const acknowledges = /access|owner|occupied|coordinate|understand|no\s+(?:problem|worries)|connect you|ozzi|work (?:with|around)|reach out|once you|when you|whenever|after you|no rush/i.test(t);
+      return timeTokens < 2 && acknowledges;
+    },
+  },
+  describesVinyl: {
+    label: 'Describes the product as luxury vinyl (waterproof/resistant + warranty)',
+    check: (t: string) =>
+      /\bvinyl\b/i.test(t) &&
+      /water\s?proof|resist/i.test(t) &&
+      /warranty|20[\s-]?year|20\s*yr/i.test(t),
+  },
+  noLinkRedirect: {
+    label: 'Sends NO link (no website, Instagram, or WhatsApp) for a "what is it" question',
+    check: (t: string) => !/ozzifloors\.com|@?ozzi\.floors|674[-\s]?8334|instagram/i.test(t),
+  },
+  confirmsVinyl: {
+    label: 'Confirms it IS vinyl (no link, no deflection)',
+    check: (t: string) =>
+      /\bvinyl\b/i.test(t) &&
+      !/ozzifloors\.com|@?ozzi\.floors|674[-\s]?8334/i.test(t) &&
+      !/don'?t|do not|can'?t/i.test(t.split(/[.!?]/)[0] ?? ""),
+  },
+  confirmsPermits: {
+    label: 'Confirms WE handle permits (never "homeowner/contractor side", never "we don\'t")',
+    check: (t: string) =>
+      // must NOT deflect permit responsibility onto the client / contractor
+      !/\b(?:don'?t|do not|cannot|can'?t|won'?t)\b[^.!?\n]*\bpermit/i.test(t) &&
+      !/\bpermit[^.!?\n]*\b(?:homeowner|contractor|owner'?s|your)\b[^.!?\n]*\b(?:side|responsibility|job|on you)\b/i.test(t) &&
+      !/\b(?:that'?s|typically|usually)\b[^.!?\n]*\bon the\b[^.!?\n]*\b(?:homeowner|contractor)\b/i.test(t) &&
+      // must affirmatively say we take care of it
+      /\b(?:we|i)\b[^.!?\n]*\b(?:take care of|handle|cover|pull|manage|deal with|take(?:s)? care)\b[^.!?\n]*\bpermit/i.test(t),
+  },
+  declinesOutOfArea: {
+    label: 'Declines out-of-area city (uses "don\'t service that area"), no visit/price',
+    check: (t: string) =>
+      /don'?t service that area|do not service that area|don'?t service|not service that area/i.test(t) &&
+      !/\bvisit|come (?:by|out|measure)|stop by|in.?person\b/i.test(t),
+  },
+  noPermitPriceByDM: {
+    label: 'No permit price/fee quoted by DM',
+    check: (t: string) => !/permit[^.!?\n]{0,40}\$\s*\d/i.test(t) && !/\$\s*\d[^.!?\n]{0,40}permit/i.test(t),
   },
   noDMPriceForLargeProject: {
     label: 'No final price quote by DM (large project)',
@@ -212,23 +295,26 @@ interface Scenario {
 
 const SCENARIOS: Scenario[] = [
   {
-    // Regression: AI was adding price to this response
-    name: '"What is included?" → exact hardcoded text, no price',
+    // Owner requirement: this response MUST state the $5 package and $2 labor-only rates
+    name: '"What is included?" → exact hardcoded text WITH $5/$2 pricing',
     messages: [{ role: "user", content: "What is included in the package?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noPriceInIncluded", "hasWhatIsIncluded"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "hasPrice", "hasWhatIsIncluded"],
   },
   {
     // Regression: AI was generating [SEND_IMAGES] and sending image links
-    name: 'Photo request → redirect to website, no [SEND_IMAGES]',
+    name: 'Photo request → redirect to WhatsApp, no [SEND_IMAGES], no website',
     messages: [{ role: "user", content: "Can you send me photos of your floors?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "hasOzziUrl"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "redirectsToWhatsApp"],
   },
   {
     // Core behavior: correct pricing for small project (< 500 sqft)
-    name: 'Small project price question → $5/sqft by DM, short, no emojis',
+    // The opener now must carry $5/sqft + what's included + free quote + the
+    // classification question (owner requirement), so it can run up to 3 short
+    // sentences. Deterministic graders instead of the strict 2-sentence judge.
+    name: 'Per-sqft price question → $5/sqft opener with classification',
     messages: [{ role: "user", content: "How much does it cost per square foot?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "hasPrice"],
-    llmJudge: true,
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasPrice", "asksScope", "atMostThreeSentences"],
+    llmJudge: false,
   },
   {
     // KEY NEW TEST: 500 sqft explicitly stated → visit required, no final price by DM
@@ -241,7 +327,7 @@ const SCENARIOS: Scenario[] = [
     // KEY NEW TEST: large project → visit proposed, no price
     name: 'Large project (2000 sqft) → visit proposed, no final DM price',
     messages: [{ role: "user", content: "Hi! I need flooring for my whole house, around 2000 square feet." }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "proposesVisit", "noDMPriceForLargeProject"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "proposesVisit", "noDMPriceForLargeProject"],
   },
   {
     // KEY NEW TEST: client explicitly refuses visit for large project → approximate ok + still offer visit
@@ -282,25 +368,126 @@ const SCENARIOS: Scenario[] = [
   {
     name: '[BUG FIX] Client says "only after 6pm or weekends" → must NOT offer daytime/morning slots',
     messages: [
-      { role: "user", content: "My condo 1000 sq ft maybe 990 I need it done but have tile now is that an issue. I'm in Stuart." },
-      { role: "assistant", content: "Not an issue at all, in most cases we can install directly over existing tile as long as it's flat and in good condition. For 1,000 sqft I'd love to come out to Stuart, measure everything, and bring samples so you can pick the style on the spot, all free. I have Tuesday at 3pm or Wednesday at 9am, which works better for you?" },
+      { role: "user", content: "My condo 1000 sq ft maybe 990 I need it done but have tile now is that an issue. I'm in Boca Raton." },
+      { role: "assistant", content: "Not an issue at all, in most cases we can install directly over existing tile as long as it's flat and in good condition. For 1,000 sqft I'd love to come out to Boca Raton, measure everything, and bring samples so you can pick the style on the spot, all free. I have Tuesday at 3pm or Wednesday at 9am, which works better for you?" },
       { role: "user", content: "Not flat. I'm only home after 6pm or weekends" },
     ],
     graders: ["noEmDash", "noEmojis", "noConflictingSlot"],
   },
 
-  // ── MATERIAL OPTIONS BUG REGRESSION TEST ─────────────────────────────────
-  // Bug: AI was listing specific color names (White Knight, Coastal Mist, etc.)
-  // Fix: must redirect to website/Instagram without naming any colors.
+  // ── MATERIAL OPTIONS / SPECIFIC FLOOR → redirect to WhatsApp ──────────────
+  // Owner rule: questions about which floors/colors/options we have, or a
+  // specific floor, must redirect to our WhatsApp — no website, no photos, no
+  // color names, no answer. (Capability questions are answered; tile → F&D.)
+  // Owner correction (2026-06-06): "what is the material / what kind of materials
+  // / material allowance / what options" are PRODUCT-TYPE questions → describe the
+  // luxury vinyl, send NO link. Only explicit "show me / photos / colors" requests
+  // get the WhatsApp redirect. The screenshot bug was a material question that got
+  // a website/Instagram link instead of the product description.
   {
-    name: '[BUG FIX] "Material options" → redirect to website, no color names listed',
-    messages: [{ role: "user", content: "What are the material options you have" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "hasOzziUrlInOptions"],
+    name: '[BUG FIX] "what kind of materials, what is the material allowance?" → describe vinyl, NO link',
+    messages: [
+      { role: "assistant", content: "Hi Aj! Need help with flooring installation? Let's discuss your project!" },
+      { role: "user", content: "what kind of materials what is the material allowance?" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
   },
   {
-    name: '[BUG FIX] "What flooring options do you have?" → redirect, no color names',
+    name: '[BUG FIX] "What are the material options you have" → describe vinyl, NO link',
+    messages: [{ role: "user", content: "What are the material options you have" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
+  },
+  {
+    name: '[BUG FIX] "What flooring options do you have?" → describe vinyl, NO link',
     messages: [{ role: "user", content: "What flooring options do you have?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "hasOzziUrlInOptions"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
+  },
+  {
+    name: '[NEW] "Is this really vinyl? It looks like marble" → confirm vinyl, NO link',
+    messages: [
+      { role: "assistant", content: "This floor is our luxury vinyl, it's waterproof and highly resistant, and we give a 20-year warranty. I offer a free quote, are you planning to do just one area or the whole house?" },
+      { role: "user", content: "wait is this really vinyl? the marble one looks like real stone" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsVinyl"],
+  },
+  {
+    // The "see" case still redirects — explicit photo request → WhatsApp.
+    name: '[KEEP] "Can you send photos of your floors?" → redirect to WhatsApp (explicit see request)',
+    messages: [{ role: "user", content: "Can you send me photos of your floors?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "redirectsToWhatsApp"],
+  },
+  {
+    // Color/style request is a "see" request → still redirects.
+    name: '[KEEP] "What colors do you have?" → redirect to WhatsApp (color = see request)',
+    messages: [{ role: "user", content: "What colors do you have?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "redirectsToWhatsApp"],
+  },
+
+  // ── NO-PRESSURE REGRESSION TESTS ─────────────────────────────────────────
+  // Bug (2026-06-06): after proposing the visit, the bot pressured the client by
+  // ending EVERY message with "What time Thursday works for you after closing so we
+  // can get started right away?" and even ignored the client's obstacle ("I don't
+  // have access, it's owner occupied") to keep dumping the same slot list.
+  {
+    name: '[BUG FIX] Info question after visit already proposed → answer, NO scheduling push',
+    messages: [
+      { role: "user", content: "I need flooring for my whole house, about 1500 sqft." },
+      { role: "assistant", content: "For that size I do a free in-person visit, I measure everything and bring samples so you can pick on the spot. I have Sunday at 1pm or Monday at 3pm, what works for you?" },
+      { role: "user", content: "Okay I appreciate it. What material do you use? What are the specs?" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "describesVinyl", "noSchedulingPush"],
+  },
+  {
+    name: '[BUG FIX] Second info question in a row → still NO repeated scheduling push',
+    messages: [
+      { role: "user", content: "Whole house, around 1500 sqft." },
+      { role: "assistant", content: "For that size I do a free in-person visit, I measure everything and bring samples. I have Sunday at 1pm or Monday at 3pm, what works for you?" },
+      { role: "user", content: "What material do you use?" },
+      { role: "assistant", content: "We use a stone composite core luxury vinyl, 100% waterproof, highly resistant, with a 20-year warranty." },
+      { role: "user", content: "What is the thickness and wear layer?" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noSchedulingPush"],
+  },
+  {
+    name: '[BUG FIX] Client raises obstacle (owner occupied, no access) → acknowledge, do NOT steamroll slots',
+    messages: [
+      { role: "user", content: "Whole house about 1500 sqft, closing on it Thursday." },
+      { role: "assistant", content: "For that size I do a free in-person visit so I can measure and give you the final price on the spot. I have Thursday at 9am, 11am, 1pm, 3pm, 5pm or 7pm, which works best for you?" },
+      { role: "user", content: "I don't have access to the house since it is owner occupied" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "acknowledgesObstacle"],
+  },
+
+  // ── SERVICE AREA REGRESSION TESTS ────────────────────────────────────────
+  // Owner: we only serve Homestead/Miami up to Jupiter. Port St. Lucie (and the
+  // Treasure Coast north of Jupiter) is OUT of area, must decline.
+  {
+    name: '[BUG FIX] Port St. Lucie → decline, out of service area',
+    messages: [{ role: "user", content: "Do you guys come out to Port St. Lucie? Whole house about 1800 sqft." }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesOutOfArea"],
+  },
+  {
+    name: '[BUG FIX] Stuart (north of Jupiter) → decline, out of service area',
+    messages: [{ role: "user", content: "I'm in Stuart, can you do my floors?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesOutOfArea"],
+  },
+
+  // ── PERMITS BUG REGRESSION TESTS ─────────────────────────────────────────
+  // Bug: client in Miami Beach asked "What about permits" and the bot replied
+  // "We don't handle permits, that's typically on the homeowner or contractor
+  // side." Owner: WE DO handle permits and do all the work they require.
+  {
+    name: '[BUG FIX] "What about permits" → confirm WE handle it, no permit price by DM',
+    messages: [
+      { role: "assistant", content: "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. Are you planning to do just one area, or will it be the entire house?" },
+      { role: "user", content: "What about permits I'm in Miami Beach and getting rid of old flooring which is laminate. Also baseboards" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsPermits", "noPermitPriceByDM"],
+  },
+  {
+    name: '[BUG FIX] "Do you handle permits?" → confirm yes, never deflect to homeowner',
+    messages: [{ role: "user", content: "Do you handle permits or is that on me?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsPermits"],
   },
 
   // ── BOOKING BUG REGRESSION TESTS ─────────────────────────────────────────
