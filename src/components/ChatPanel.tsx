@@ -30,11 +30,35 @@ function getInitials(name: string | null, username: string | null): string {
 
 export default function ChatPanel({ conversation, messages, onSendMessage, isSending }: Props) {
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // Scroll the MESSAGES container directly — never scrollIntoView, which would
+  // also scroll ancestor elements (and the page), hiding the headers/buttons.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
 
+  function jumpToBottom(smooth = false) {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }
+
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setAtBottom(nearBottom);
+  }
+
+  // Switching conversations: jump straight to the latest message.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    jumpToBottom(false);
+    setAtBottom(true);
+  }, [conversation.id]);
+
+  // New messages: follow only if the owner is already reading the bottom,
+  // so scrolling up to read history is never yanked back down.
+  useEffect(() => {
+    if (atBottom) jumpToBottom(false);
+  }, [messages, atBottom]);
 
   async function handleSend() {
     const text = input.trim();
@@ -51,12 +75,17 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Messages — isolated scroll area; headers above stay fixed */}
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="absolute inset-0 overflow-y-auto p-6 space-y-4"
+        >
         {messages.length === 0 && (
           <div className="text-center text-gray-500 text-sm mt-8">
-            No messages yet
+            Nenhuma mensagem ainda
           </div>
         )}
 
@@ -138,7 +167,19 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
             </div>
           );
         })}
-        <div ref={bottomRef} />
+        </div>
+
+        {/* Jump to latest — appears only when scrolled up */}
+        {!atBottom && (
+          <button
+            onClick={() => jumpToBottom(true)}
+            className="absolute bottom-4 right-6 z-10 flex items-center gap-1.5 bg-gray-800/95 hover:bg-gray-700 border border-gray-700 text-gray-100 text-xs font-semibold px-3 py-2 rounded-full shadow-lg backdrop-blur transition-colors"
+            title="Ir para as mensagens mais recentes"
+          >
+            <span className="text-sm leading-none">↓</span>
+            Recentes
+          </button>
+        )}
       </div>
 
       {/* Training panel — shown when in human/training mode */}

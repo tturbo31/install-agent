@@ -324,7 +324,7 @@ export default function Dashboard() {
               />
             </div>
 
-            <main className="flex-1 flex flex-col overflow-hidden">
+            <main className="flex-1 flex flex-col overflow-hidden min-h-0">
               {selectedConv ? (
                 <>
                   <ChatHeader
