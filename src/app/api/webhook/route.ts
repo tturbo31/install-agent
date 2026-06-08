@@ -508,6 +508,16 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
     if (freshConv) conversation = freshConv;
 
+    // ── Pause guard (post-debounce) ───────────────────────────────────────
+    // The owner may have paused this conversation ("Pausar IA") during the 10s
+    // debounce. The freshConv re-fetch above already has the live mode, so honor
+    // it now — before spending an AI call. Without this the bot kept replying
+    // even after the owner paused.
+    if (conversation.mode === "human") {
+      console.log("[IG] Conversation paused during debounce — staying silent");
+      return;
+    }
+
     // Returning client who already booked or was already served (visit done),
     // even if booked outside the bot — hand to the team, never re-engage.
     if (!wasNewConv && !(conversation as Record<string, unknown>).booking_confirmed) {
@@ -893,6 +903,27 @@ async function handleWebhook(body: WebhookPayload) {
     // present so a real booking is never clobbered.
     if (!/\[BOOK:/i.test(safeAiText)) {
       safeAiText = stripSlotConflictLanguage(safeAiText);
+    }
+
+    // ── Final pause guard (pre-send) ──────────────────────────────────────
+    // Generating the reply takes 10-20s. The owner may have paused this
+    // conversation or the whole Instagram channel in that window. Re-check the
+    // LIVE state right before any outbound action (send, booking, notify) so a
+    // pause that lands mid-flight is respected. This is the fix for "I paused
+    // but the AI kept talking".
+    {
+      const [{ data: liveConv }, { data: livePlatform }] = await Promise.all([
+        supabaseAdmin.from("instagram_conversations").select("mode").eq("id", conversation.id).single(),
+        supabaseAdmin.from("platform_settings").select("paused").eq("platform", "instagram").single(),
+      ]);
+      if (liveConv?.mode === "human") {
+        console.log("[IG] Paused mid-flight — aborting before send");
+        return;
+      }
+      if (livePlatform?.paused) {
+        console.log("[IG] Instagram channel paused mid-flight — aborting before send");
+        return;
+      }
     }
 
     const { response: afterBookingText, booked } = await processBookingCommand(

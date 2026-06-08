@@ -310,6 +310,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .single();
     if (freshConv) conv = freshConv;
 
+    // ── Pause guard (post-debounce) ───────────────────────────────────────
+    // Owner may have paused this conversation during the 10s debounce. freshConv
+    // has the live mode — honor it before spending an AI call.
+    if (conv.mode === "human") {
+      console.log("[WA] Conversation paused during debounce — staying silent");
+      return;
+    }
+
     // Returning client who already booked or was already served (visit done) —
     // even if the booking was made outside the bot. Hand them to the team, never
     // re-engage. Only checked for existing conversations to avoid slowing new leads.
@@ -568,6 +576,25 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // another time" in any state. Skip only when a [BOOK] tag is present.
     if (!/\[BOOK:/i.test(safeResponse)) {
       safeResponse = stripSlotConflictLanguage(safeResponse);
+    }
+
+    // ── Final pause guard (pre-send) ──────────────────────────────────────
+    // Generating the reply takes 10-20s; the owner may have paused this
+    // conversation or the whole WhatsApp channel meanwhile. Re-check live state
+    // before any outbound action so a mid-flight pause is respected.
+    {
+      const [{ data: liveConv }, { data: livePlatform }] = await Promise.all([
+        supabaseAdmin.from("instagram_conversations").select("mode").eq("id", conv.id).single(),
+        supabaseAdmin.from("platform_settings").select("paused").eq("platform", "whatsapp").single(),
+      ]);
+      if (liveConv?.mode === "human") {
+        console.log("[WA] Paused mid-flight — aborting before send");
+        return;
+      }
+      if (livePlatform?.paused) {
+        console.log("[WA] WhatsApp channel paused mid-flight — aborting before send");
+        return;
+      }
     }
 
     const afterBooking = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling);
