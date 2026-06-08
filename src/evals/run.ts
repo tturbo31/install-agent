@@ -86,6 +86,10 @@ const GRADERS = {
     label: 'Exact "what is included" response text',
     check: (t: string) => t.includes(WHAT_IS_INCLUDED_RESPONSE),
   },
+  noOldVerboseIncluded: {
+    label: 'Does NOT send the old verbose $5/$2/over-1,000-sqft "what is included" message',
+    check: (t: string) => !/over\s+1,?000\s*sqft/i.test(t) && !/\$\s*2\s*per\s*sqft/i.test(t) && !/\$\s*5\s*per\s*sqft/i.test(t),
+  },
   hasOzziUrl: {
     label: 'Mentions ozzifloors.com or @ozzi.floors',
     check: (t: string) => /ozzifloors\.com|@ozzi\.floors/i.test(t),
@@ -296,9 +300,9 @@ interface Scenario {
 const SCENARIOS: Scenario[] = [
   {
     // Owner requirement: this response MUST state the $5 package and $2 labor-only rates
-    name: '"What is included?" → exact hardcoded text WITH $5/$2 pricing',
+    name: '"What is included?" → exact hardcoded text, NO prices (short version)',
     messages: [{ role: "user", content: "What is included in the package?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "hasPrice", "hasWhatIsIncluded"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasWhatIsIncluded", "noOldVerboseIncluded"],
   },
   {
     // Regression: AI was generating [SEND_IMAGES] and sending image links

@@ -1,4 +1,4 @@
-export const WHAT_IS_INCLUDED_RESPONSE = "Hello, the promotional package is $5 per sqft and that already includes the flooring, the installation labor, and the quarter round. The labor-only installation is $2 per sqft, this promotion is for jobs over 1,000 sqft, and I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
+export const WHAT_IS_INCLUDED_RESPONSE = "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
 
 export const SYSTEM_PROMPT = `NO EMOJIS: Never use any emoji or decorative symbol of any kind in any message. Zero exceptions.
 
@@ -10,7 +10,7 @@ NO QUOTES AROUND YOUR MESSAGE: Never wrap your reply in quotation marks. The exa
 
 WHAT IS INCLUDED (use this exact response ONLY when client asks specifically "what is included", "what does the package include", "is labor included", or "does it include installation" — NOT for general package explanations):
 "${WHAT_IS_INCLUDED_RESPONSE}"
-This response MUST state both rates: the $5 per sqft package (flooring, installation labor, and quarter round included) and the $2 per sqft labor-only rate, plus that this promotion is for jobs over 1,000 sqft and that you offer a free quote. Copy it word for word. Never add hidden fees or any other charge.
+Copy it word for word, with NO prices and NO surrounding quotes. Do NOT add $5, $2, the "over 1,000 sqft" line, hidden fees, or any other charge to this response. If the client then asks about price specifically, you may give the rates separately.
 
 ---
 

@@ -56,7 +56,8 @@ async function main() {
   const r1 = await ai([{ role: "user", content: adQuestion }]);
   console.log("   AI:", r1.replace(/\s+/g, " ").slice(0, 150));
   ck("answers (not silent)", r1.trim().length > 0, r1);
-  ck("gives the included-package answer ($5 package + $2 labor)", r1.includes("$5") && r1.includes("$2"), r1);
+  ck("states what's included (flooring + installation labor + quarter round + free quote)", /flooring/i.test(r1) && /installation labor/i.test(r1) && /quarter round/i.test(r1) && /free quote/i.test(r1), r1);
+  ck("short version: NO prices ($5/$2/over 1,000 sqft)", !/\$\s*5/i.test(r1) && !/\$\s*2/i.test(r1) && !/over\s+1,?000/i.test(r1), r1);
   ck("does not leak the share note back to the client", !/\[Client shared/i.test(r1), r1);
   ck("matches the exact WHAT_IS_INCLUDED response", r1.includes(WHAT_IS_INCLUDED_RESPONSE), r1);
 
