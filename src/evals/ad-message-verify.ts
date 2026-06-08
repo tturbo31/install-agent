@@ -8,7 +8,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, type ChatMessage } from "../lib/ai";
-import { WHAT_IS_INCLUDED_RESPONSE } from "../lib/system-prompt";
+import { WHAT_IS_INCLUDED_RESPONSE, AD_REPLY_NOTE } from "../lib/system-prompt";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -72,23 +72,43 @@ async function main() {
   // ── 5. Ad reply with NO readable text (the reported case) is NOT dropped ──
   console.log("\n[5] Ad reply with an unrecognized reel attachment and NO text is not dropped");
   ck("IG: ad referral / attachment with no text is stored, not dropped", /if \(!rawText && \(isAdReferral \|\| hasAnyAttachment\)\) rawText = "\[Client replied to our ad\]"/.test(ig), "no-drop guard missing in IG");
-  ck("IG: injects [AD REPLY] engagement note", /AD REPLY: This client just replied/.test(ig), "AD REPLY note missing in IG");
+  ck("IG: injects AD_REPLY_NOTE", /systemParts\.push\(AD_REPLY_NOTE\)/.test(ig), "AD_REPLY_NOTE not injected in IG");
   ck("IG: logs incoming attachment types for diagnosis", /msg from \$\{senderIgsid\}.*attachments:/.test(ig), "diagnostic log missing");
   ck("FB: ad referral / attachment with no text is stored, not dropped", /if \(!rawText && \(isAdReferral \|\| hasAnyAttachment\)\) rawText = "\[Client replied to our ad\]"/.test(fb), "no-drop guard missing in FB");
-  ck("FB: injects [AD REPLY] engagement note", /AD REPLY: This client just replied/.test(fb), "AD REPLY note missing in FB");
+  ck("FB: injects AD_REPLY_NOTE", /systemParts\.push\(AD_REPLY_NOTE\)/.test(fb), "AD_REPLY_NOTE not injected in FB");
+  ck("AD_REPLY_NOTE asks for the flooring type", /tile, vinyl, or hardwood/i.test(AD_REPLY_NOTE) && /\$4\.50/.test(AD_REPLY_NOTE) && /\$3\.20/.test(AD_REPLY_NOTE), "note missing type question or per-type prices");
 
-  // ── 6. AI engages an ad reply that has NO question text (sends the opener) ──
-  console.log("\n[6] AI engages a text-less ad reply with the opener (never silent)");
-  const adNote =
-    "\n\n[SYSTEM: TODAY: Sunday, June 7, 2026 [2026-06-07].\n\n" +
-    "REAL-TIME SCHEDULE AVAILABILITY:\n• Monday, June 8, 2026 [2026-06-08]: 9am, 1pm\n\n" +
-    "[AD REPLY: This client just replied to one of our flooring ads. They are a fresh lead. If their message contains a specific question, answer it directly; otherwise greet them and send the opener. NEVER stay silent on an ad reply.]]";
-  const r3 = await ai([{ role: "user", content: "[Client replied to our ad]" + adNote }]);
+  // ── 6. AI engages a text-less ad reply by ASKING the flooring type ──────────
+  console.log("\n[6] AI engages a text-less ad reply by asking tile/vinyl/hardwood");
+  const adCtx = "\n\n[SYSTEM: TODAY: Sunday, June 8, 2026 [2026-06-08].\n\n" + AD_REPLY_NOTE + "]";
+  const r3 = await ai([{ role: "user", content: "[Client replied to our ad]" + adCtx }]);
   console.log("   AI:", r3.replace(/\s+/g, " ").slice(0, 150));
   ck("engages (not silent)", r3.replace(/\[[^\]]*\]/g, "").trim().length > 0, r3);
-  ck("sends the opener (price-less: no $5/$2)", !/\$\s?5/.test(r3) && !/\$\s?2\b/.test(r3), r3);
-  ck("asks the scope question (one area / whole house)", /one area|whole house|entire house|just one|the whole/i.test(r3), r3);
+  ck("asks which flooring type (tile / vinyl / hardwood)", /tile/i.test(r3) && /vinyl/i.test(r3) && /hardwood/i.test(r3), r3);
+  ck("does NOT quote a price yet", !/\$\s?\d/.test(r3), r3);
   ck("does not leak the internal placeholder", !/\[Client replied to our ad\]/i.test(r3), r3);
+
+  // ── 7. After the client names the type, quote the RIGHT price for it ─────────
+  console.log("\n[7] Per-type pricing after the client picks a flooring type");
+  const askType = "What type of flooring are you looking for, tile, vinyl, or hardwood?";
+
+  const rTile = await ai([
+    { role: "user", content: "[Client replied to our ad]" + adCtx },
+    { role: "assistant", content: askType },
+    { role: "user", content: "Tile" },
+  ]);
+  console.log("   TILE:", rTile.replace(/\s+/g, " ").slice(0, 150));
+  ck("tile → $4.50/sqft labor only", /4\.50/.test(rTile), rTile);
+  ck("tile → does NOT quote the $5 package", !/\$\s?5\b/.test(rTile), rTile);
+
+  const rVinyl = await ai([
+    { role: "user", content: "[Client replied to our ad]" + adCtx },
+    { role: "assistant", content: askType },
+    { role: "user", content: "Vinyl" },
+  ]);
+  console.log("   VINYL:", rVinyl.replace(/\s+/g, " ").slice(0, 150));
+  ck("vinyl → $5/sqft package (includes flooring + labor)", /\$\s?5\b/.test(rVinyl) && /(includ|flooring)/i.test(rVinyl), rVinyl);
+  ck("vinyl → does NOT use the tile $4.50 rate", !/4\.50/.test(rVinyl), rVinyl);
 
   console.log(`\n============ AD-MESSAGE-VERIFY RESULT: ${pass} passed, ${fail} failed ============`);
   if (fail) console.log("FAILED:", fails.join(" | "));

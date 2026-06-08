@@ -5,6 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment }
 import { notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
+import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
@@ -322,6 +323,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conv.id);
 
+    // Persist ad origin so the per-type pricing flow stays active across the
+    // whole conversation, not just the first ad event.
+    if (isAdReferral) {
+      const refAdId = (messaging.referral as Record<string, unknown> | undefined)?.ad_id as string | undefined;
+      await supabaseAdmin.from("instagram_conversations").update({ ad_id: refAdId ?? "fb_ad" }).eq("id", conv.id);
+      (conv as Record<string, unknown>).ad_id = refAdId ?? "fb_ad";
+    }
+
     if (conv.mode === "human") return;
 
     // Debounce
@@ -539,8 +548,16 @@ async function handleFbMessage(body: Record<string, unknown>) {
       if (isRescheduling) {
         systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
       }
-      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
-        systemParts.push("[AD REPLY: This client just replied to one of our flooring ads. They are a fresh lead. If their message contains a specific question, answer it directly; otherwise greet them and send the opener. NEVER stay silent on an ad reply.]");
+      // Keep the ad-reply note active for the whole ad-originated conversation
+      // (via stored ad_id) until a per-type rate is quoted, so the follow-up that
+      // names the type ("vinyl") keeps the pricing context. See IG webhook note.
+      const adOriginated = isAdReferral
+        || enrichedText.includes("[Client replied to our ad]")
+        || !!(conv as Record<string, unknown>).ad_id;
+      const typeAlreadyQuoted = history.some((m: { role: string; content: string }) =>
+        m.role === "assistant" && /(\$\s?5\b|4\.50|3\.20)/.test(m.content));
+      if (!isBookingConfirmed && adOriginated && !typeAlreadyQuoted) {
+        systemParts.push(AD_REPLY_NOTE);
       }
       if (!isBookingConfirmed) {
         const recentUserTexts = history
