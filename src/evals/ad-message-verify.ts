@@ -86,7 +86,7 @@ async function main() {
   const r3 = await ai([{ role: "user", content: "[Client replied to our ad]" + adNote }]);
   console.log("   AI:", r3.replace(/\s+/g, " ").slice(0, 150));
   ck("engages (not silent)", r3.replace(/\[[^\]]*\]/g, "").trim().length > 0, r3);
-  ck("sends the opener (mentions $5/sqft)", r3.includes("$5"), r3);
+  ck("sends the opener (price-less: no $5/$2)", !/\$\s?5/.test(r3) && !/\$\s?2\b/.test(r3), r3);
   ck("asks the scope question (one area / whole house)", /one area|whole house|entire house|just one|the whole/i.test(r3), r3);
   ck("does not leak the internal placeholder", !/\[Client replied to our ad\]/i.test(r3), r3);
 

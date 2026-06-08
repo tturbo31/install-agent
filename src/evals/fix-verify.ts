@@ -139,17 +139,18 @@ async function main() {
   ck("books 7pm today (19:00, 2026-06-05)", !!bookTag && /"time"\s*:\s*"19:00"/.test(bookTag[1]) && /2026-06-05/.test(bookTag[1]), bookTag?.[1]||bookFlow);
   ck("not silenced as closing ([REACT_ONLY] absent)", !/\[REACT_ONLY\]/i.test(bookFlow), bookFlow);
 
-  // ═══ 5. OPENER with $5/sqft ═══
-  console.log("\n[5] OPENER $5/sqft");
+  // ═══ 5. OPENER (price-less) ═══
+  console.log("\n[5] OPENER (no prices)");
   const op = await ai([{role:"user",content:"Hi, interested in new floors"}]);
   console.log("   AI:", op.replace(/\s+/g," "));
-  ck("mentions $5/sqft", /\$\s?5\s?(?:per|\/)\s?(?:sq|square)/i.test(op), op);
-  ck("free quote + scope question", /free\s+(quote|estimate)/i.test(op) && /one area|whole house|just one|the whole/i.test(op), op);
+  ck("NO prices ($5/$2/over 1,000 sqft)", !/\$\s?5/i.test(op) && !/\$\s?2\b/i.test(op) && !/over\s+1,?000/i.test(op), op);
+  ck("mentions what's included (flooring + labor + quarter round)", /flooring/i.test(op) && /(installation|labor)/i.test(op) && /quarter round/i.test(op), op);
+  ck("free quote + scope question", /free\s+(quote|estimate)/i.test(op) && /one area|whole house|just one|the whole|entire house/i.test(op), op);
   ck("opener ≤3 sentences", (op.replace(/\[.*?\]/g,"").match(/[.!?](\s|$)/g)??[]).length<=3, op);
 
   // ═══ 6. SMALL-JOB PRICING ≤400 (+$500 hidden), 401-499 plain, ≥500 visit ═══
   console.log("\n[6] SMALL-JOB PRICING");
-  const opn = "The promotional package is $5 per sqft, which includes flooring, installation labor, quarter round, and a free quote. One area or the whole house?";
+  const opn = "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. One area or the whole house?";
   const quote = (s:string)=> ai([{role:"user",content:"hi"},{role:"assistant",content:opn},{role:"user",content:s}]);
   const noLeak = (t:string)=> !/401|499|between|x\s?5|let me|add-?on|\btier\b|plus \$?500|right answer/i.test(t);
   const q200 = await quote("just one room, 200 sqft"); console.log("   200→", q200.replace(/\s+/g," ").slice(0,90));
