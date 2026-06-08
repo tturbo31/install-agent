@@ -152,12 +152,12 @@ const CONVERSATIONS: Conversation[] = [
   },
 
   {
-    name: "Cliente pede fotos → redireciona para site, sem [SEND_IMAGES]",
+    name: "Cliente pede fotos → redireciona para WhatsApp, sem [SEND_IMAGES]",
     turns: [
       {
         client: "Can you show me some photos of your floors?",
         checks: [
-          { label: "Menciona ozzifloors.com ou @ozzi.floors", fn: r => /ozzifloors\.com|@ozzi\.floors/i.test(r) },
+          { label: "Redireciona para WhatsApp", fn: r => /whatsapp|561\D*674\D*8334/i.test(r) },
           { label: "Sem [SEND_IMAGES]",                       fn: r => !/\[SEND_IMAGES/i.test(r) },
           { label: "Zero emojis",                             fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
         ],
