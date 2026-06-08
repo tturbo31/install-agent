@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
@@ -592,6 +592,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
             clientName: (conv as Record<string, unknown>).username as string ?? null,
             clientId: psid,
             recentMessages: (recentMsgs ?? []).reverse(),
+            alert: isLowCreditError(aiErr) ? CREDIT_ALERT : null,
           });
         } catch (notifyErr) {
           console.error("[FB] AI-outage notify failed:", notifyErr);

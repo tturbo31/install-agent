@@ -76,14 +76,16 @@ export async function notifyOwners(params: {
   clientName: string | null;
   clientId: string;
   recentMessages: { role: string; content: string }[];
+  alert?: string | null;
 }): Promise<void> {
-  const { platform, clientName, clientId, recentMessages } = params;
+  const { platform, clientName, clientId, recentMessages, alert } = params;
   const lines = recentMessages.slice(-8).map((m) => {
     const who = m.role === "user" ? "Cliente" : "Agente";
     return `${who}: ${m.content.slice(0, 300)}`;
   });
   const msg = [
     `OzziFloors - Atencao necessaria!`,
+    ...(alert ? ["", alert] : []),
     ``,
     `Canal: ${platform}`,
     `Cliente: ${clientName || clientId}`,

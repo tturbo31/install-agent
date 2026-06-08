@@ -13,6 +13,8 @@ import {
   isRescheduleRequest,
   containsSchedulingOffer,
   isJobSeeker,
+  isLowCreditError,
+  CREDIT_ALERT,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -876,6 +878,7 @@ async function handleWebhook(body: WebhookPayload) {
             clientName: conversation.username ?? null,
             clientId: senderIgsid,
             recentMessages: (recentMsgs ?? []).reverse(),
+            alert: isLowCreditError(aiErr) ? CREDIT_ALERT : null,
           });
         } catch (notifyErr) {
           console.error("[IG] AI-outage notify failed:", notifyErr);

@@ -6,10 +6,32 @@ import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE } from "@/lib/system-prompt";
 let _anthropic: Anthropic | null = null;
 function getAnthropic(): Anthropic {
   if (!_anthropic) {
-    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+    _anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY!,
+      // Self-heal transient failures (overloaded 529, rate-limit 429, 5xx,
+      // network drops) automatically before the webhook falls back to the
+      // "team will reach out" handoff. The SDK retries with exponential backoff.
+      // Non-retryable errors (e.g. 400 "credit balance too low") fail fast.
+      maxRetries: 4,
+      timeout: 30_000,
+    });
   }
   return _anthropic;
 }
+
+// True when the API rejected us because the Anthropic account is out of credits.
+// This is NOT a code bug and NOT transient — the owner must top up billing.
+// Surfaced loudly so it is unmistakable in the logs and owner alerts.
+export function isLowCreditError(err: unknown): boolean {
+  const e = err as { status?: number; message?: string } | null;
+  const msg = (e?.message ?? "").toLowerCase();
+  return e?.status === 400 && (msg.includes("credit balance") || msg.includes("plans & billing"));
+}
+
+// Owner-facing WhatsApp alert when the bot is down because the Anthropic account
+// ran out of credits. Plain ASCII (Z-API friendly), no emoji/accents required.
+export const CREDIT_ALERT =
+  "A IA esta SEM CREDITOS na Anthropic e NAO responde nenhum cliente. Adicione creditos AGORA em console.anthropic.com (Plans & Billing). Depois clique em Reativar todas no painel.";
 
 // ─── OpenAI client (Whisper + TTS only) ───────────────────────────────────
 let _openai: OpenAI | null = null;
@@ -428,15 +450,25 @@ export async function getAIResponse(
     systemContent += `\n\n---\n\nCRITICAL — BOOKING ALREADY CONFIRMED:\nThe conversation is over. Do NOT answer any question or continue the conversation.\n- For ANY message — thank-you, question, or anything else — respond with ONE sentence redirecting to Ozzi, then add [NOTIFY_OWNER]\n- Required format: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]"\n- NEVER generate [BOOK:...] under any circumstance\n- NEVER answer questions about time, address, arrival, or any topic\n- NEVER say any slot is taken or unavailable\n- NEVER use any person's name other than Ozzi`;
   }
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 300,
-    system: systemContent,
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
-  });
+  let response;
+  try {
+    response = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 300,
+      system: systemContent,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    });
+  } catch (err) {
+    if (isLowCreditError(err)) {
+      // Loud, unmistakable marker for the owner/logs: the bot is silent for
+      // EVERYONE until credits are added at console.anthropic.com → Billing.
+      console.error("🚨🚨 ANTHROPIC OUT OF CREDITS — add credits at console.anthropic.com (Plans & Billing). The AI cannot reply to ANY client until then. 🚨🚨");
+    }
+    throw err;
+  }
 
   const block = response.content[0];
   if (block.type === "text") {
