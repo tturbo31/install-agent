@@ -139,14 +139,14 @@ async function main() {
   ck("books 7pm today (19:00, 2026-06-05)", !!bookTag && /"time"\s*:\s*"19:00"/.test(bookTag[1]) && /2026-06-05/.test(bookTag[1]), bookTag?.[1]||bookFlow);
   ck("not silenced as closing ([REACT_ONLY] absent)", !/\[REACT_ONLY\]/i.test(bookFlow), bookFlow);
 
-  // ═══ 5. OPENER (price-less) ═══
-  console.log("\n[5] OPENER (no prices)");
+  // ═══ 5. OPENER asks the flooring type (no vinyl assumption, no price) ═══
+  console.log("\n[5] OPENER asks tile/vinyl/hardwood");
   const op = await ai([{role:"user",content:"Hi, interested in new floors"}]);
   console.log("   AI:", op.replace(/\s+/g," "));
-  ck("NO prices ($5/$2/over 1,000 sqft)", !/\$\s?5/i.test(op) && !/\$\s?2\b/i.test(op) && !/over\s+1,?000/i.test(op), op);
-  ck("mentions what's included (flooring + labor + quarter round)", /flooring/i.test(op) && /(installation|labor)/i.test(op) && /quarter round/i.test(op), op);
-  ck("free quote + scope question", /free\s+(quote|estimate)/i.test(op) && /one area|whole house|just one|the whole|entire house/i.test(op), op);
-  ck("opener ≤3 sentences", (op.replace(/\[.*?\]/g,"").match(/[.!?](\s|$)/g)??[]).length<=3, op);
+  ck("asks which flooring type (tile/vinyl/hardwood)", /tile/i.test(op) && /vinyl/i.test(op) && /hardwood/i.test(op), op);
+  ck("NO price quoted", !/\$\s?\d/.test(op), op);
+  ck("does NOT assume the vinyl package (no quarter round)", !/quarter round/i.test(op), op);
+  ck("opener ≤2 sentences", (op.replace(/\[.*?\]/g,"").match(/[.!?](\s|$)/g)??[]).length<=2, op);
 
   // ═══ 6. SMALL-JOB PRICING ≤400 (+$500 hidden), 401-499 plain, ≥500 visit ═══
   console.log("\n[6] SMALL-JOB PRICING");

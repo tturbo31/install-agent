@@ -806,17 +806,11 @@ async function handleWebhook(body: WebhookPayload) {
       if (isRescheduling) {
         systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
       }
-      // Ad replies must pick the flooring type before any quote. Keep this note
-      // active for the WHOLE ad-originated conversation (detected via the stored
-      // ad_id) until the bot has actually quoted a per-type rate — otherwise the
-      // follow-up where the client names the type ("vinyl") loses the pricing
-      // context and falls back to the generic price-less opener.
-      const adOriginated = isAdReferral
-        || enrichedText.includes("[Client replied to our ad]")
-        || !!(conversation as Record<string, unknown>).ad_id;
-      const typeAlreadyQuoted = history.some((m: { role: string; content: string }) =>
-        m.role === "assistant" && /(\$\s?5\b|4\.50|3\.20)/.test(m.content));
-      if (!isBookingConfirmed && adOriginated && !typeAlreadyQuoted) {
+      // Reinforce engagement on a detected ad reply (never stay silent). The
+      // per-type pricing flow itself lives in the base opener, which already
+      // asks every new lead which flooring type they want, so it works for the
+      // whole conversation regardless of whether the ad referral was detected.
+      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
         systemParts.push(AD_REPLY_NOTE);
       }
       // Scan last 3 user messages for a large-lead sqft mention

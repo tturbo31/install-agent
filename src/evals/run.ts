@@ -139,6 +139,14 @@ const GRADERS = {
     label: 'Asks one area or whole house (classification)',
     check: (t: string) => /one area|whole house|entire house|just one|the whole|single room/i.test(t),
   },
+  asksFlooringType: {
+    label: 'Asks which flooring type (tile / vinyl / hardwood)',
+    check: (t: string) => /tile/i.test(t) && /vinyl/i.test(t) && /hardwood/i.test(t),
+  },
+  noPrice: {
+    label: 'Does NOT quote any dollar amount',
+    check: (t: string) => !/\$\s?\d/.test(t),
+  },
   isSilent: {
     label: 'No message sent to client (empty response after stripping tags)',
     check: (t: string) => t.replace(/\[[^\]]*\]/g, "").trim() === "",
@@ -311,13 +319,13 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "redirectsToWhatsApp"],
   },
   {
-    // Core behavior: correct pricing for small project (< 500 sqft)
-    // The opener now must carry $5/sqft + what's included + free quote + the
-    // classification question (owner requirement), so it can run up to 3 short
-    // sentences. Deterministic graders instead of the strict 2-sentence judge.
-    name: 'Per-sqft price question → $5/sqft opener with classification',
+    // New opener: we advertise tile/vinyl/hardwood at different rates and can't
+    // tell which ad a lead came from, so the bot must ask the flooring type
+    // FIRST and quote no price until it knows the type. "How much per sqft?"
+    // with the type unknown → ask the type, do not assume vinyl/$5.
+    name: 'Per-sqft price question (type unknown) → asks flooring type, no price',
     messages: [{ role: "user", content: "How much does it cost per square foot?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasPrice", "asksScope", "atMostThreeSentences"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "asksFlooringType", "noPrice", "atMostThreeSentences"],
     llmJudge: false,
   },
   {

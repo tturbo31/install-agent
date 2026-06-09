@@ -56,16 +56,16 @@ const CONVERSATIONS: Conversation[] = [
       {
         client: "Hi! I'm interested in flooring for one bedroom",
         checks: [
-          { label: "Menciona pacote ou $5/sqft", fn: r => /package|\$5|promo/i.test(r) },
-          { label: "Pergunta sobre área", fn: r => /area|house|room|sqft/i.test(r) },
+          { label: "Pergunta o tipo de piso (tile/vinyl/hardwood)", fn: r => /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r) },
+          { label: "Não cota preço ainda", fn: r => !/\$\s?\d/.test(r) },
           { label: "Zero emojis",          fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
           { label: "Zero dashes",          fn: r => !/[—–]/.test(r) },
         ],
       },
       {
-        client: "It's about 200 sqft",
+        client: "Vinyl, it's about 200 sqft",
         checks: [
-          { label: "Pede o sqft para calcular", fn: r => /sqft|square|quote|calculat|\$5/i.test(r) },
+          { label: "Dá um preço pelo DM (small lead vinil)", fn: r => /\$\s?\d|1[,.]?500/.test(r) },
           { label: "Zero emojis",               fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
         ],
       },
@@ -86,8 +86,7 @@ const CONVERSATIONS: Conversation[] = [
       {
         client: "Hello, I want to redo the flooring for my whole house",
         checks: [
-          { label: "Menciona pacote/inclui/labor", fn: r => /include|package|labor|promo/i.test(r) },
-          { label: "Pergunta área/escopo",         fn: r => /area|house|room|sqft|how\s+many/i.test(r) },
+          { label: "Pergunta o tipo OU propõe visita (large lead)", fn: r => (/tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r)) || /visit|in.?person|come|measure|stop\s+by|how\s+(big|many|large)|size|square\s*f|sqft/i.test(r) },
           { label: "Zero emojis",                  fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
           { label: "Zero dashes",                  fn: r => !/[—–]/.test(r) },
         ],
