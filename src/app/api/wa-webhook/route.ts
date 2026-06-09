@@ -530,6 +530,19 @@ async function handleWaMessage(body: Record<string, unknown>) {
       // AI down (credits exhausted, rate limit, timeout, network). Never leave the
       // client in silence: send a graceful holding reply, hand to a human, notify owner.
       console.error("[WA] AI generation failed — handing off to owner:", aiErr);
+      // Burst guard: don't stack the "team will reach out" handoff on top of a
+      // good reply that a parallel handler just sent for a rapid message burst.
+      const { data: justReplied } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .gte("created_at", new Date(Date.now() - 30000).toISOString())
+        .limit(1);
+      if (justReplied && justReplied.length > 0) {
+        console.log("[WA] AI failed but a reply was just sent — staying silent (no handoff)");
+        return;
+      }
       if (!isBookingConfirmed) {
         const fallback = aiOutageHandoffMessage(lang);
         try {

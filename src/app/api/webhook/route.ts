@@ -855,6 +855,21 @@ async function handleWebhook(body: WebhookPayload) {
       // the client in silence: send a graceful holding reply, hand the lead to a
       // human, and notify the owner so the conversation is never lost.
       console.error("[IG] AI generation failed — handing off to owner:", aiErr);
+      // Burst guard: rapid client messages spawn parallel handlers. If another
+      // one already answered this conversation in the last 30s, a transient
+      // failure here must NOT send the contradictory "team will reach out"
+      // handoff on top of a good reply. Stay silent instead.
+      const { data: justReplied } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .gte("created_at", new Date(Date.now() - 30000).toISOString())
+        .limit(1);
+      if (justReplied && justReplied.length > 0) {
+        console.log("[IG] AI failed but a reply was just sent — staying silent (no handoff)");
+        return;
+      }
       if (!isBookingConfirmed) {
         const fallback = aiOutageHandoffMessage(lang);
         try {
