@@ -5,7 +5,8 @@
       "Bash(curl -s -X POST \"https://instagram-dm-agent-chi.vercel.app/api/training/chat?secret=Pepeka\" -H \"Content-Type: application/json\" -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi, I saw your ad, I need flooring\"}]}' --max-time 50)",
       "Bash(echo \"tsc:$?\")",
       "Bash(grep -iB1 -iE \"FAIL|✗\")",
-      "Bash(grep -iB2 \"Proposes in-person visit\")"
+      "Bash(grep -iB2 \"Proposes in-person visit\")",
+      "Bash(grep -iB1 -E \"✗|FAILED\")"
     ]
   }
 }

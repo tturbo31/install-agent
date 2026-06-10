@@ -277,8 +277,7 @@ function stripSchedulingPush(text: string): string {
     const rebuilt = clauses.join(", ").trim().replace(/[,\s]+$/, "");
     if (rebuilt) kept.push(/[.!?]$/.test(rebuilt) ? rebuilt : rebuilt + ".");
   }
-  const out = kept.join(" ").trim();
-  return out || "Happy to answer any other questions you have!";
+  return kept.join(" ").trim();
 }
 
 // True when the client's own latest message engages scheduling (asks about a
@@ -287,7 +286,11 @@ function stripSchedulingPush(text: string): string {
 // am/pm tokens never count as the client engaging scheduling.
 function clientEngagedScheduling(userText: string): boolean {
   const clientText = userText.split(/\n\n?\[SYSTEM:/)[0];
-  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(clientText);
+  // Includes timing-adjustment phrases ("can you come earlier", "anything before
+  // 3", "what about after 5", "sooner") so a client negotiating the time is never
+  // mistaken for ignoring scheduling — which used to nuke the bot's reply into a
+  // generic non-answer.
+  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)/i.test(clientText);
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
@@ -503,9 +506,16 @@ export async function getAIResponse(
         recentAssistantPushed &&
         lastMsg?.role === "user" && !clientEngagedScheduling(lastMsg.content)
       ) {
-        const before = cleaned;
-        cleaned = stripSchedulingPush(cleaned);
-        if (before !== cleaned) console.log("[AI] anti-pressure: stripped repeated scheduling push");
+        const stripped = stripSchedulingPush(cleaned);
+        // Only apply the strip when something substantive remains. If the whole
+        // reply was a scheduling push, KEEP the original — sending a generic
+        // "Happy to answer any other questions" non-answer (the old fallback) was
+        // worse than just letting the scheduling answer through, and it repeated
+        // on short client replies the detector missed (e.g. "You cant before?").
+        if (stripped && stripped !== cleaned) {
+          cleaned = stripped;
+          console.log("[AI] anti-pressure: stripped repeated scheduling push");
+        }
       }
     }
 
