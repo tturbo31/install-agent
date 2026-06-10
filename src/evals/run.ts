@@ -227,9 +227,9 @@ const GRADERS = {
       /\b(?:we|i)\b[^.!?\n]*\b(?:take care of|handle|cover|pull|manage|deal with|take(?:s)? care)\b[^.!?\n]*\bpermit/i.test(t),
   },
   declinesOutOfArea: {
-    label: 'Declines out-of-area city (uses "don\'t service that area"), no visit/price',
+    label: 'Declines out-of-area city (says only serve Miami / don\'t cover), no visit/price',
     check: (t: string) =>
-      /don'?t service that area|do not service that area|don'?t service|not service that area/i.test(t) &&
+      /don'?t service|do not service|not service that area|only serve|don'?t cover|do not cover|outside our (?:area|service)|miami area|east coast/i.test(t) &&
       !/\bvisit|come (?:by|out|measure)|stop by|in.?person\b/i.test(t),
   },
   noPermitPriceByDM: {
@@ -336,9 +336,11 @@ const SCENARIOS: Scenario[] = [
     llmJudge: false,
   },
   {
-    // KEY NEW TEST: large project → visit proposed, no price
-    name: 'Large project (2000 sqft) → visit proposed, no final DM price',
-    messages: [{ role: "user", content: "Hi! I need flooring for my whole house, around 2000 square feet." }],
+    // KEY NEW TEST: large project (type already known) → visit proposed, no price.
+    // Type is stated ("vinyl") so this isolates the large-lead visit behavior;
+    // the type-first opener is covered by other tests.
+    name: 'Large project (2000 sqft, vinyl) → visit proposed, no final DM price',
+    messages: [{ role: "user", content: "Hi! I need vinyl flooring for my whole house, around 2000 square feet." }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "proposesVisit", "noDMPriceForLargeProject"],
   },
   {
