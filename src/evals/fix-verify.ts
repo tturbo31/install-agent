@@ -186,11 +186,15 @@ async function main() {
   // ═══ 9b. MATERIAL vs SEE: "what is it" → describe vinyl; "show me" → WhatsApp ═══
   console.log("\n[9b] MATERIAL → describe vinyl | SEE → WhatsApp redirect");
   const wa = (t: string) => /674[-\s]?8334/.test(t) && !/ozzifloors\.com|@ozzi\.floors/i.test(t);
-  // Owner correction (2026-06-06): "what flooring/material options" is a PRODUCT-TYPE
-  // question → describe the luxury vinyl, send NO link. Only explicit "see" requests redirect.
+  // "what flooring/material options" is a PRODUCT-TYPE question, send NO link.
+  // Owner correction (2026-06-06) wanted the luxury-vinyl description; since the
+  // multi-type direction (vinyl/tile/hardwood) the bot may instead list the types
+  // and ask which. Accept EITHER, but never a link or color names.
   const o1 = await ai([{role:"user",content:"What flooring options do you have?"}]);
   console.log("   options:", o1.replace(/\s+/g," ").slice(0,120));
-  ck("'what flooring options' → describes vinyl, NO link", /vinyl/i.test(o1) && /water\s?proof|resist|warranty|20.?year/i.test(o1) && !/674[-\s]?8334|ozzifloors\.com|@ozzi\.floors/i.test(o1) && !/White Knight|Coastal Mist|Grey Shield|Espresso/i.test(o1), o1);
+  const describesVinyl = /vinyl/i.test(o1) && /water\s?proof|resist|warranty|20.?year/i.test(o1);
+  const listsTypes = /vinyl/i.test(o1) && /tile/i.test(o1) && /hardwood/i.test(o1);
+  ck("'what flooring options' → describes vinyl OR lists types, NO link", (describesVinyl || listsTypes) && !/674[-\s]?8334|ozzifloors\.com|@ozzi\.floors/i.test(o1) && !/White Knight|Coastal Mist|Grey Shield|Espresso/i.test(o1), o1);
   const o2 = await ai([{role:"user",content:"Can you send me photos of your floors?"}]);
   ck("'send photos' → WhatsApp, no website", wa(o2), o2);
   const o3 = await ai([{role:"user",content:"do you have grey wood-look floors?"}]);

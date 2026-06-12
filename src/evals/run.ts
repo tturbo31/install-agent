@@ -209,6 +209,12 @@ const GRADERS = {
     label: 'Sends NO link (no website, Instagram, or WhatsApp) for a "what is it" question',
     check: (t: string) => !/ozzifloors\.com|@?ozzi\.floors|674[-\s]?8334|instagram/i.test(t),
   },
+  describesVinylOrListsTypes: {
+    label: 'Describes vinyl (waterproof+warranty) OR lists the types (vinyl/tile/hardwood)',
+    check: (t: string) =>
+      (/\bvinyl\b/i.test(t) && /water\s?proof|resist/i.test(t) && /warranty|20[\s-]?year|20\s*yr/i.test(t)) ||
+      (/vinyl/i.test(t) && /tile/i.test(t) && /hardwood/i.test(t)),
+  },
   confirmsVinyl: {
     label: 'Confirms it IS vinyl (no link, no deflection)',
     check: (t: string) =>
@@ -407,14 +413,14 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
   },
   {
-    name: '[BUG FIX] "What are the material options you have" → describe vinyl, NO link',
+    name: '[BUG FIX] "What are the material options you have" → vinyl or list types, NO link',
     messages: [{ role: "user", content: "What are the material options you have" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinylOrListsTypes", "noLinkRedirect"],
   },
   {
-    name: '[BUG FIX] "What flooring options do you have?" → describe vinyl, NO link',
+    name: '[BUG FIX] "What flooring options do you have?" → vinyl or list types, NO link',
     messages: [{ role: "user", content: "What flooring options do you have?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinylOrListsTypes", "noLinkRedirect"],
   },
   {
     name: '[NEW] "Is this really vinyl? It looks like marble" → confirm vinyl, NO link',
