@@ -261,6 +261,13 @@ export function containsSchedulingOffer(text: string): boolean {
   return isSchedulingPush(text || "");
 }
 
+// A lone surviving clause that opens with one of these connectors is a dangling
+// lead-in to the scheduling clause we just removed ("Since you get off at 5:30",
+// "So that we can get started", "And I have Monday open"), NOT a standalone
+// thought. Emitting it produces the broken fragment "...all in one price. Since
+// you get off at 5:30." Drop it instead.
+const LEADING_CONNECTOR = /^(?:since|because|so|as|when|if|while|after|before|once|and|but|or|plus|also|that\s+way|so\s+that|which\s+is\s+why|therefore|then)\b/i;
+
 // Remove every scheduling push (in any position) so the bot never pushes the
 // appointment two messages in a row (the "stop pressuring the client" rule).
 // Sentences carrying a tag ([NOTIFY_OWNER], [BOOK:...], etc.) are always kept.
@@ -274,6 +281,10 @@ function stripSchedulingPush(text: string): string {
     }
     // Sentence contains a push: salvage the non-push comma clauses (the info).
     const clauses = s.split(/,\s*/).filter((cl) => cl.includes("[") || !isSchedulingPush(cl));
+    // If the only thing left is a single leading-connector clause, it is a
+    // dangling lead-in to the removed scheduling clause, not a real sentence.
+    // Drop it so we never send a fragment like "Since you get off at 5:30."
+    if (clauses.length === 1 && LEADING_CONNECTOR.test(clauses[0].trim())) continue;
     const rebuilt = clauses.join(", ").trim().replace(/[,\s]+$/, "");
     if (rebuilt) kept.push(/[.!?]$/.test(rebuilt) ? rebuilt : rebuilt + ".");
   }
@@ -289,8 +300,11 @@ function clientEngagedScheduling(userText: string): boolean {
   // Includes timing-adjustment phrases ("can you come earlier", "anything before
   // 3", "what about after 5", "sooner") so a client negotiating the time is never
   // mistaken for ignoring scheduling — which used to nuke the bot's reply into a
-  // generic non-answer.
-  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\ba\s+las\s+\d/i.test(clientText);
+  // generic non-answer. Also catches a bare clock time ("5:30", no am/pm) and
+  // availability phrases ("I get off at 5:30", "after work", "off work") — these
+  // ARE the client engaging scheduling, so the anti-pressure guard must not fire
+  // and mangle the bot's slot reply into a dangling fragment.
+  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\ba\s+las\s+\d/i.test(clientText);
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).

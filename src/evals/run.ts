@@ -242,6 +242,18 @@ const GRADERS = {
     label: 'No permit price/fee quoted by DM',
     check: (t: string) => !/permit[^.!?\n]{0,40}\$\s*\d/i.test(t) && !/\$\s*\d[^.!?\n]{0,40}permit/i.test(t),
   },
+  noDanglingConnector: {
+    label: 'No dangling lead-in fragment ("Since you get off at 5:30.")',
+    // A sentence that is JUST a leading connector clause with no comma has no
+    // main clause — it is the anti-pressure stripper leaving a fragment. The
+    // legit version ("Since you get off at 5:30, I can come later that day.")
+    // has a comma + main clause and is fine.
+    check: (t: string) => {
+      const LEAD = /^(?:since|because|so|as|when|if|while|after|before|once|and|but|or|plus|also|that\s+way|so\s+that|which\s+is\s+why|therefore|then)\b/i;
+      const sentences = t.replace(/\[[^\]]*\]/g, "").split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+      return !sentences.some(s => LEAD.test(s) && !s.includes(","));
+    },
+  },
   noDMPriceForLargeProject: {
     label: 'No final price quote by DM (large project)',
     // Fails if response contains a total project cost ($500+) without "approximate/rough/estimate"
@@ -476,6 +488,23 @@ const SCENARIOS: Scenario[] = [
       { role: "user", content: "I don't have access to the house since it is owner occupied" },
     ],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "acknowledgesObstacle"],
+  },
+
+  // ── DANGLING SCHEDULING FRAGMENT REGRESSION TEST ─────────────────────────
+  // Bug (screenshot 2026-06-14): after the bot already proposed the visit with
+  // slots, the client asked about the promo AND said "I usually get off about
+  // 5:30". The anti-pressure stripper did not recognize "5:30" / "get off" as
+  // scheduling engagement, fired, deleted the slot clauses, and left the broken
+  // fragment "...all in one price. Since you get off at 5:30." The reply must
+  // state the $5 promo and contain NO dangling lead-in fragment.
+  {
+    name: '[BUG FIX] promo question + "I get off about 5:30" → no dangling "Since..." fragment',
+    messages: [
+      { role: "user", content: "I want to redo my whole house, about 1577 sqft." },
+      { role: "assistant", content: "For a house at 1,577 sqft, I need to come measure in person to give you the best price. I bring floor samples so you can pick right there, and the visit is completely free. I have Monday the 15th at 3pm or 5pm, which works better for you?" },
+      { role: "user", content: "What promotional package do you have right now? And I usually get off about 5:30" },
+    ],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasPrice", "noDanglingConnector"],
   },
 
   // ── SERVICE AREA REGRESSION TESTS ────────────────────────────────────────
