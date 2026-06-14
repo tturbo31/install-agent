@@ -224,6 +224,21 @@ export function stripWrappingQuotes(text: string): string {
   return t;
 }
 
+// The prompt rule is: never a standalone "Hi!"/"Hello!"/"Hey!" — "if you greet,
+// combine it with the first sentence". The model occasionally ships a standalone
+// greeting anyway, which both breaks the rule and inflates the message to 3
+// sentences. MERGE it into the next sentence with a comma ("Hi! Yes, ..." ->
+// "Hi, yes, ...") so we keep the warmth but obey the rule. Never touches an
+// already-merged "Hi, yes..." (comma) form.
+function mergeLeadingGreeting(text: string): string {
+  const cleaned = text.replace(
+    /^\s*(hi|hey|hello)(?:\s+there)?\s*[!.]+\s+([A-Za-z])/i,
+    (_m, g: string, c: string) => `${g.charAt(0).toUpperCase()}${g.slice(1).toLowerCase()}, ${c.toLowerCase()}`
+  );
+  if (cleaned !== text) console.log("[AI] standalone greeting merged into first sentence");
+  return cleaned;
+}
+
 function removeDashes(text: string): string {
   const emDash = String.fromCharCode(0x2014);
   const enDash = String.fromCharCode(0x2013);
@@ -491,7 +506,7 @@ export async function getAIResponse(
 
   const block = response.content[0];
   if (block.type === "text") {
-    let cleaned = stripWrappingQuotes(removeEmojis(removeDashes(block.text)));
+    let cleaned = mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(block.text))));
     const hadDash = block.text !== cleaned;
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate

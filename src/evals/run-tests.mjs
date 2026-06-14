@@ -4,7 +4,7 @@
  */
 
 const BASE = "http://localhost:3000/api/training/chat?secret=Pepeka";
-const TIMEOUT_MS = 35_000; // 10s debounce + AI call + margin
+const TIMEOUT_MS = 60_000; // 10s debounce + AI call + margin (dev API calls can be slow)
 
 let pass = 0, fail = 0;
 
@@ -20,6 +20,11 @@ async function ask(messages, extra = {}) {
     });
     const json = await res.json();
     return json.response ?? json.error ?? "(empty)";
+  } catch (e) {
+    // A single slow API call (AbortError) or network blip must NOT crash the
+    // whole suite — return a sentinel so this test fails in isolation and the
+    // remaining tests still run.
+    return `(request failed: ${e?.name ?? e})`;
   } finally {
     clearTimeout(timer);
   }
@@ -76,11 +81,13 @@ console.log(`══════════════════════�
 
 let r;
 
-// T01 — First message: 2 sentences, includes package/labor, free quote, one area or whole house
+// T01 — First message: opener MUST ask the flooring type first (tile/vinyl/hardwood),
+// with NO price. We advertise three types at different rates and can't tell which
+// ad a lead came from, so the bot asks the type before anything else.
 r = await ask([{ role: "user", content: "Hi, I'm interested in getting floors for my house" }]);
-check(1, "First message: format + content", r, {
-  contains: [/(package|labor|installation|floor)/, /(free\s+quote|orçamento)/, /(area|house|whole)/i],
-  notContains: [/^(hello|hi)[^,!]*/i, /^(hello!|hi!)\s/i, /emoji/, /[\u{1F300}-\u{1FAFF}]/u],
+check(1, "First message: asks flooring type, no price", r, {
+  contains: [/tile/i, /vinyl/i, /hardwood/i],
+  notContains: [/\$\s?\d/, /emoji/, /[\u{1F300}-\u{1FAFF}]/u],
   sentences: 2,
 });
 
@@ -106,9 +113,10 @@ check(4, "Max 2 sentences — small lead response", r, { sentences: 2 });
 
 // ── GROUP 2: TILE INSTALLATION (historically broken) ───────────────────────
 
-// T05 — Tile small job: $4.50/sqft, NOT $5/sqft LVP
+// T05 — Tile small job: $4.50/sqft, NOT $5/sqft LVP (>=200 sqft so it's quotable,
+// jobs under 200 sqft are declined per the small-job rule)
 r = await ask([
-  { role: "user", content: "I need tile installation for my bathroom, around 80 sqft" },
+  { role: "user", content: "I need tile installation for my bathroom, around 250 sqft" },
 ]);
 check(5, "Small tile job: $4.50/sqft", r, {
   contains: [/4\.50|4,50/],
@@ -117,7 +125,7 @@ check(5, "Small tile job: $4.50/sqft", r, {
 
 // T06 — Porcelain mention: tile pricing NOT LVP
 r = await ask([
-  { role: "user", content: "I have porcelain tile I already purchased. Need someone to install it. It's about 150 sqft." },
+  { role: "user", content: "I have porcelain tile I already purchased. Need someone to install it. It's about 300 sqft." },
 ]);
 check(6, "Porcelain: tile pricing $4.50", r, {
   contains: [/4\.50|4,50/],
@@ -126,7 +134,7 @@ check(6, "Porcelain: tile pricing $4.50", r, {
 
 // T07 — Ceramic mention: tile pricing NOT LVP
 r = await ask([
-  { role: "user", content: "Need ceramic floor installation, about 120 sqft in my kitchen" },
+  { role: "user", content: "Need ceramic floor installation, about 250 sqft in my kitchen" },
 ]);
 check(7, "Ceramic: tile pricing $4.50", r, {
   contains: [/4\.50|4,50/],
@@ -189,13 +197,14 @@ check(13, "Explicit refusal 'just give me a number' → approximate + still offe
 
 // ── GROUP 4: SMALL LEAD — QUOTE BY DM ─────────────────────────────────────
 
-// T14 — 200 sqft LVP: $1,000 quote by DM
+// T14 — 200 sqft LVP: $1,500 quote by DM (200 to 400 sqft = sqft x $5 + $500,
+// the $500 baked in silently). Old value $1,000 was the pre-surcharge math.
 r = await ask([
   { role: "user", content: "Just my living room, it's about 200 sqft" },
 ]);
-check(14, "200 sqft LVP: $1,000 quote", r, {
-  contains: [/\$1[,.]?000|\$1000|1,000/],
-  notContains: [/(visit|schedule|in person)/i],
+check(14, "200 sqft LVP: $1,500 quote", r, {
+  contains: [/\$1[,.]?500|\$1500|1,500/],
+  notContains: [/(in-person visit|free visit|schedule a visit)/i, /\$500/],
 });
 
 // T15 — One bedroom → small lead, give price
@@ -222,17 +231,17 @@ check(17, "'Is labor included': hardcoded response", r, {
   notContains: [/\$5|\$4\.50/i],
 });
 
-// T18 — "Can you send me photos?" → redirect to website, NO [SEND_IMAGES] tag
+// T18 — "Can you send me photos?" → redirect to team WhatsApp, NO [SEND_IMAGES] tag
 r = await ask([{ role: "user", content: "Can you send me photos of the floors?" }]);
-check(18, "'Send photos': redirect to website, no [SEND_IMAGES]", r, {
-  contains: [/ozzifloors\.com|instagram/i],
+check(18, "'Send photos': redirect to WhatsApp, no [SEND_IMAGES]", r, {
+  contains: [/674[-\s]?8334/],
   notContains: [/\[SEND_IMAGES/i],
 });
 
-// T19 — "Do you have any samples?" → redirect
+// T19 — "Do you have any samples?" → redirect to team WhatsApp
 r = await ask([{ role: "user", content: "Do you have any samples available?" }]);
-check(19, "'Samples available': redirect to website", r, {
-  contains: [/ozzifloors\.com|instagram/i],
+check(19, "'Samples available': redirect to WhatsApp", r, {
+  contains: [/674[-\s]?8334/],
   notContains: [/\[SEND_IMAGES/i],
 });
 
@@ -360,11 +369,12 @@ check(31, "Partnership: NOTIFY_OWNER", r, {
   contains: [/\[NOTIFY_OWNER\]/],
 });
 
-// T32 — Small lead closes → NOTIFY_OWNER
+// T32 — Small lead closes → NOTIFY_OWNER (>=200 sqft so it's a real quotable job,
+// jobs under 200 sqft are declined and never reach the close)
 r = await ask([
-  { role: "user", content: "I need flooring for one room, about 150 sqft" },
-  { role: "assistant", content: "That's a small project we can quote right here. Send me the approximate square footage and I'll calculate it for you." },
-  { role: "user", content: "150 sqft. The quote sounds great, I want to move forward!" },
+  { role: "user", content: "I need flooring for one room, about 300 sqft" },
+  { role: "assistant", content: "That's a small project we can quote right here. For 300 sqft you're looking at about $2,000 for the whole project." },
+  { role: "user", content: "The quote sounds great, I want to move forward!" },
 ]);
 check(32, "Small lead closes → NOTIFY_OWNER", r, {
   contains: [/\[NOTIFY_OWNER\]/],
