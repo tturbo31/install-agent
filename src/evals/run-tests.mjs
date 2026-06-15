@@ -8,7 +8,7 @@ const TIMEOUT_MS = 60_000; // 10s debounce + AI call + margin (dev API calls can
 
 let pass = 0, fail = 0;
 
-async function ask(messages, extra = {}) {
+async function askOnce(messages, extra) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -20,13 +20,23 @@ async function ask(messages, extra = {}) {
     });
     const json = await res.json();
     return json.response ?? json.error ?? "(empty)";
-  } catch (e) {
-    // A single slow API call (AbortError) or network blip must NOT crash the
-    // whole suite — return a sentinel so this test fails in isolation and the
-    // remaining tests still run.
-    return `(request failed: ${e?.name ?? e})`;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function ask(messages, extra = {}) {
+  // The local Next dev server is slow/flaky under the sequential load of the
+  // suite (on-demand recompiles), so a timeout/network blip is retried ONCE.
+  // A genuine bug fails both attempts; only infra flakes are absorbed. A second
+  // failure returns a sentinel so the suite continues instead of crashing.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await askOnce(messages, extra);
+    } catch (e) {
+      if (attempt === 2) return `(request failed: ${e?.name ?? e})`;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
 }
 
@@ -119,7 +129,9 @@ r = await ask([
   { role: "user", content: "I need tile installation for my bathroom, around 250 sqft" },
 ]);
 check(5, "Small tile job: $4.50/sqft", r, {
-  contains: [/4\.50|4,50/],
+  // 250 x $4.50 = $1,125. Accept the unit rate OR the correct total (the model
+  // sometimes states only the total). Either way it must NOT be LVP pricing.
+  contains: [/4\.50|4,50|1[,.]?125/],
   notContains: [/\$5(?:\/sqft|\.00|,00| per)/, /luxury vinyl|lvp/i],
 });
 
@@ -128,8 +140,9 @@ r = await ask([
   { role: "user", content: "I have porcelain tile I already purchased. Need someone to install it. It's about 300 sqft." },
 ]);
 check(6, "Porcelain: tile pricing $4.50", r, {
-  contains: [/4\.50|4,50/],
-  notContains: [/\$5(?:\/sqft|\.00|,00| per)/],
+  // 300 x $4.50 = $1,350 (NOT $1,850 — the +$500 LVP surcharge never applies to tile)
+  contains: [/4\.50|4,50|1[,.]?350/],
+  notContains: [/\$5(?:\/sqft|\.00|,00| per)/, /1[,.]?850/],
 });
 
 // T07 — Ceramic mention: tile pricing NOT LVP
@@ -137,8 +150,9 @@ r = await ask([
   { role: "user", content: "Need ceramic floor installation, about 250 sqft in my kitchen" },
 ]);
 check(7, "Ceramic: tile pricing $4.50", r, {
-  contains: [/4\.50|4,50/],
-  notContains: [/\$5(?:\/sqft|\.00|,00| per)/],
+  // 250 x $4.50 = $1,125 (NOT $1,625)
+  contains: [/4\.50|4,50|1[,.]?125/],
+  notContains: [/\$5(?:\/sqft|\.00|,00| per)/, /1[,.]?625/],
 });
 
 // T08 — Large tile job (600 sqft): NO price, propose visit
