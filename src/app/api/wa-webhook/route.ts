@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -84,8 +84,20 @@ async function processBookingCommand(
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
     }
 
+    // Always book under the real client name: prefer a name the client typed,
+    // then the saved WhatsApp contact name. Never just "Client".
+    const { data: convName } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("name, username")
+      .eq("id", conversationId)
+      .single();
+    const clientName = resolveClientName(
+      [bookingData.name, convName?.name, convName?.username],
+      "WhatsApp Client"
+    );
+
     const result = await createBooking({
-      clientName: bookingData.name ?? "WhatsApp Client",
+      clientName,
       clientPhone,
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,

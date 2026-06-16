@@ -7,7 +7,7 @@ import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, strip
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -103,8 +103,20 @@ async function processBookingCommand(
       return needPhoneMessage(lang);
     }
 
+    // Always book under the real client name: prefer a name the client typed,
+    // then the saved Messenger profile name, then the handle. Never just "Client".
+    const { data: convName } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("name, username")
+      .eq("id", conversationId)
+      .single();
+    const clientName = resolveClientName(
+      [bookingData.name, convName?.name, convName?.username],
+      "Facebook Client"
+    );
+
     const result = await createBooking({
-      clientName: bookingData.name ?? "Facebook Client",
+      clientName,
       clientPhone: bookingData.phone ?? "",
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,

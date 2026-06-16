@@ -577,6 +577,36 @@ export function bookingFailureHandoffMessage(lang: "es" | "en"): string {
     : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
 }
 
+// Placeholder names the AI drops into [BOOK] when it does not know the real one.
+// These must never be saved as the booking name when we have the actual profile
+// name on file.
+const GENERIC_NAMES = new Set([
+  "client", "instagram client", "facebook client", "whatsapp client", "customer",
+  "cliente", "there", "friend", "guest", "user", "unknown", "sem nome", "no name",
+]);
+
+// Strip emoji/pictographs/symbols (keeps letters of any alphabet, e.g. Cyrillic)
+// and collapse whitespace, so a profile name like "Линда ♎️" becomes "Линда".
+function cleanName(s: string): string {
+  return s
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{2460}-\u{24FF}\u{25A0}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{1F1E6}-\u{1F1FF}]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// Resolve the best real client name for a booking from a priority list of
+// candidates (e.g. the name the client typed → the saved profile name → the
+// handle). Skips generic placeholders ("Client", "Instagram Client", etc.) and
+// emoji-only strings, so a booking is never saved as just "Client" when we have
+// the profile name. Falls back to `fallback` only if nothing real is available.
+export function resolveClientName(candidates: Array<string | null | undefined>, fallback: string): string {
+  for (const c of candidates) {
+    const t = cleanName((c ?? "").toString());
+    if (t && !GENERIC_NAMES.has(t.toLowerCase())) return t.slice(0, 100);
+  }
+  return fallback;
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with

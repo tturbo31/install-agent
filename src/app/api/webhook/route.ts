@@ -19,7 +19,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -149,7 +149,7 @@ async function processBookingCommand(
 
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
-      .select("creative_url, ad_id, ad_title, username, igsid")
+      .select("creative_url, ad_id, ad_title, name, username, igsid")
       .eq("id", conversationId)
       .single();
 
@@ -162,8 +162,15 @@ async function processBookingCommand(
       creativeRef !== "Instagram DM" ? `Ad: ${creativeRef}` : "",
     ].filter(Boolean);
 
+    // Always book under the real client name: prefer a name the client typed,
+    // then the saved Instagram profile name, then the @handle. Never just "Client".
+    const clientName = resolveClientName(
+      [bookingData.name, convData?.name, convData?.username],
+      "Instagram Client"
+    );
+
     const result = await createBooking({
-      clientName: bookingData.name ?? "Instagram Client",
+      clientName,
       clientPhone: bookingData.phone ?? "",
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
