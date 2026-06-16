@@ -472,6 +472,27 @@ check(40, "Slot + address + real phone → [BOOK] with the real digits", r, {
   contains: [/\[BOOK:\{[\s\S]*"phone"\s*:\s*"[^"]*9546242455/],
 });
 
+// ── GROUP 16: WANTING TO SEE — visit vs WhatsApp (real incident) ───────────
+
+// T41 — "Would love to see product as soon as possible" is a BUYING SIGNAL, not
+// a photo request. The bot must propose the free visit (samples brought there),
+// NOT redirect to WhatsApp. Real incident: it deflected an eager lead to WhatsApp.
+r = await ask([
+  { role: "user", content: "What is included in the materials package?" },
+  { role: "assistant", content: "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. Are you planning to do just one area, or will it be the entire house?" },
+  { role: "user", content: "Would love to see product as soon as possible" },
+]);
+check(41, "'see product asap' → propose visit/samples, NOT WhatsApp redirect", r, {
+  contains: [/visit|samples?|in person|one area|whole house/i],
+  notContains: [/674[-\s]?8334|whatsapp/i],
+});
+
+// T42 — But an explicit "send me photos" still redirects to WhatsApp (unchanged)
+r = await ask([{ role: "user", content: "Can you send me photos of the floors?" }]);
+check(42, "'send me photos' → still WhatsApp redirect", r, {
+  contains: [/674[-\s]?8334/],
+});
+
 // ── FINAL SUMMARY ───────────────────────────────────────────────────────────
 
 const total = pass + fail;
