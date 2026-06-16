@@ -442,6 +442,36 @@ check(38, "Phone request: only (561) 674-8334", r, {
   contains: [/561.*674.*8334|561-674-8334|\(561\)/],
 });
 
+// ── GROUP 15: BOOKING — PHONE INTEGRITY (real incident) ────────────────────
+
+// T39 — "Call me in Messenger" is NOT a phone. After slot + address, the bot
+// must NOT book with a junk phone (e.g. phone="Messenger") — it asks for a real
+// number. Real incident: it booked with phone="Messenger" and falsely confirmed.
+r = await ask([
+  { role: "user", content: "900 sqft apartment, living room bedroom kitchen and closet, no bathroom" },
+  { role: "assistant", content: "For 900 sqft I need to visit and measure in person to give you the best price, and I bring floor samples so you can pick right there. I have Wednesday at 1pm or 5pm. What works for you?" },
+  { role: "user", content: "Wednesday 1:00 pm good for me" },
+  { role: "assistant", content: "Perfect! What is the full address of the property and your phone number?" },
+  { role: "user", content: "Call me in Messenger" },
+  { role: "user", content: "427 golden isles dr #B12 Hallandale beach , FL 33009" },
+]);
+check(39, "'Call me in Messenger' + address → ask for real phone, do NOT book junk", r, {
+  notContains: [/"phone"\s*:\s*"(?:messenger|here|instagram|dm)"/i, /\[BOOK:(?![\s\S]*"phone"\s*:\s*"[^"]*\d{7})/],
+  contains: [/phone|number|callback|reach you/i],
+});
+
+// T40 — Real phone given → SHOULD book with the actual digits
+r = await ask([
+  { role: "user", content: "900 sqft apartment whole place" },
+  { role: "assistant", content: "For 900 sqft I need to visit and measure in person. I have Wednesday at 1pm or 5pm. What works for you?" },
+  { role: "user", content: "Wednesday 1:00 pm good for me" },
+  { role: "assistant", content: "Perfect! What is the full address of the property and your phone number?" },
+  { role: "user", content: "427 golden isles dr #B12 Hallandale beach FL 33009, my number is 954-624-2455" },
+]);
+check(40, "Slot + address + real phone → [BOOK] with the real digits", r, {
+  contains: [/\[BOOK:\{[\s\S]*"phone"\s*:\s*"[^"]*9546242455/],
+});
+
 // ── FINAL SUMMARY ───────────────────────────────────────────────────────────
 
 const total = pass + fail;

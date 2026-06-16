@@ -7,7 +7,7 @@ import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, strip
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -91,9 +91,16 @@ async function processBookingCommand(
       return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
     }
 
-    if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
-      console.warn("FB booking blocked — phone or address missing from booking JSON");
+    if (!bookingData.address?.trim()) {
+      console.warn("FB booking blocked — address missing from booking JSON");
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
+    }
+    // Require a REAL phone number — never book with a non-number like "Messenger"
+    // (client said "Call me in Messenger"). Re-ask instead of confirming a visit
+    // the team cannot call; the client's next message (the number) then books.
+    if (!isRealPhoneNumber(bookingData.phone)) {
+      console.warn(`[FB] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
+      return needPhoneMessage(lang);
     }
 
     const result = await createBooking({

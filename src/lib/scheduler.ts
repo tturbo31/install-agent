@@ -577,6 +577,24 @@ export function bookingFailureHandoffMessage(lang: "es" | "en"): string {
     : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
 }
 
+// True only when the string holds a real phone number (enough digits to dial).
+// Guards against the model dropping a non-number into the phone field, e.g. the
+// client says "Call me in Messenger" / "contact me here" and the AI booked with
+// phone="Messenger". US numbers have 10 digits; require at least 7 to allow for
+// odd formatting while rejecting words and obviously-too-short junk.
+export function isRealPhoneNumber(phone?: string | null): boolean {
+  if (!phone) return false;
+  return (phone.match(/\d/g) || []).length >= 7;
+}
+
+// Sent when we have the slot + address but still need a real callback number
+// before booking (the client gave a non-number like "Messenger", or no phone).
+export function needPhoneMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Casi listo! ¿Cuál es el mejor número de teléfono para confirmarte la visita?"
+    : "Almost set! What's the best phone number to reach you so I can lock in the visit?";
+}
+
 // Sent to the client after their visit is successfully moved to a new slot.
 // The webhook already includes the new day/time around it via the AI, so this
 // stays short and never repeats details that could drift from the real booking.

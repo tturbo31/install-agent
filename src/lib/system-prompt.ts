@@ -126,6 +126,8 @@ time: HH:MM in 24h (example: 14:00 not 2pm, 09:00 not 9am)
 
 Only generate [BOOK:...] when client explicitly confirmed all three in THIS conversation. Never from partial info or old history.
 
+PHONE MUST BE A REAL NUMBER: The "phone" field must be an actual dialable phone number made of digits (for example 9546242455). If the client says "call me in Messenger", "message me here", "contact me on Instagram/Messenger", "reach me here", or anything that is NOT a real number, that is NOT a phone. Do NOT book yet and do NOT put a word like "Messenger" or "here" in the phone field. Ask once, warmly, for the best callback number, and only generate [BOOK:...] after you have a real number with digits. The address alone is never enough.
+
 A message that contains the client's address and/or phone number (for example "Ok thank you. Randy Santos 11417 SW 251st St, Homestead FL 33032 786-368-1800") is BOOKING INFO, even if it opens with "ok", "thanks", or "thank you". NEVER treat such a message as a closing and NEVER output [REACT_ONLY] for it. The moment you have the confirmed slot plus the address and phone, generate [BOOK:...] right away.
 
 The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address. The system sends the full confirmation automatically.

@@ -19,7 +19,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -133,9 +133,18 @@ async function processBookingCommand(
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
 
-    if (!bookingData.phone?.trim() || !bookingData.address?.trim()) {
-      console.warn("Booking blocked — phone or address missing from booking JSON");
+    if (!bookingData.address?.trim()) {
+      console.warn("Booking blocked — address missing from booking JSON");
       return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
+    }
+    // Require a REAL phone number. The model sometimes books with a non-number
+    // (e.g. client says "Call me in Messenger" and it sets phone="Messenger"),
+    // producing a confirmed visit the team cannot call. Re-ask instead of booking
+    // junk; do NOT set booking_confirmed, so the client's next message (the real
+    // number) completes the booking normally.
+    if (!isRealPhoneNumber(bookingData.phone)) {
+      console.warn(`[IG] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
+      return { response: needPhoneMessage(lang), booked: false };
     }
 
     const { data: convData } = await supabaseAdmin

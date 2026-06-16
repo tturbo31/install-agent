@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -61,7 +61,7 @@ async function processBookingCommand(
       }
       const r = await rescheduleClientBooking(`wa_${waId}`, bookingData.date, bookingData.time, {
         name: bookingData.name,
-        phone: (bookingData.phone?.trim() || waId),
+        phone: (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : waId),
         address: bookingData.address,
         notes: bookingData.notes,
       });
@@ -75,8 +75,10 @@ async function processBookingCommand(
     }
 
     // On WhatsApp the client's phone number is ALWAYS known (it is the chat id),
-    // so we only require the address. Default the phone to the WhatsApp number.
-    const clientPhone = (bookingData.phone?.trim() || waId).slice(0, 30);
+    // so we only require the address. Use the number the client typed ONLY if it
+    // is a real phone; otherwise fall back to the WhatsApp chat number so a stray
+    // non-number (e.g. "Messenger") never overwrites the real, dialable number.
+    const clientPhone = (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : waId).slice(0, 30);
     if (!bookingData.address?.trim()) {
       console.warn("WA booking blocked — address missing from booking JSON");
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
