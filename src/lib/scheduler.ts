@@ -460,6 +460,92 @@ export async function getRealAvailabilityContext(): Promise<string> {
   }
 }
 
+// Format a "HH:MM" 24h slot as a friendly 12h label (e.g. "13:30" -> "1:30pm").
+function fmt12(slot: string): string {
+  const [h, min] = slot.split(":").map(Number);
+  const period = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 || 12;
+  return `${h12}${min === 0 ? "" : `:${min}`}${period}`;
+}
+
+// The next days (within `maxDays`) that still have at least one open slot,
+// soonest first. Same availability logic as getRealAvailabilityContext, but
+// returns structured data so we can build a recovery offer. Today's already-past
+// slots are dropped (30-min buffer), and fully-booked days are omitted.
+export async function getNextOpenSlots(
+  maxDays = 21
+): Promise<Array<{ dateStr: string; weekday: number; times: string[] }>> {
+  const db = await getAuthenticatedClient();
+  const todayStr = easternTodayStr();
+  const windowDays: string[] = Array.from({ length: maxDays }, (_, i) => addDaysStr(todayStr, i));
+  const fromStr = windowDays[0];
+  const toStr = windowDays[windowDays.length - 1];
+
+  const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+    db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+    db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
+  ]);
+
+  const sellers = (sellersData ?? []) as Seller[];
+  const bookings = (bookedData ?? []) as BookingRow[];
+  const nowET = easternNowHM();
+  const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + 30;
+
+  const out: Array<{ dateStr: string; weekday: number; times: string[] }> = [];
+  for (const dateStr of windowDays) {
+    const { weekday } = ymd(dateStr);
+    const slotSet = new Set<string>();
+    sellers.forEach((s) => {
+      if (!s.active || !s.enabled_weekdays.includes(weekday)) return;
+      s.time_slots.forEach((slot) => {
+        const taken = bookings.some((b) => b.seller_id === s.id && b.booking_date === dateStr && b.booking_time === slot);
+        if (!taken) slotSet.add(slot);
+      });
+    });
+    const isToday = dateStr === windowDays[0];
+    const times = Array.from(slotSet)
+      .filter((slot) => {
+        if (!isToday) return true;
+        const [h, m] = slot.split(":").map(Number);
+        return h * 60 + m >= nowMinutesPlus30;
+      })
+      .sort();
+    if (times.length > 0) out.push({ dateStr, weekday, times });
+  }
+  return out;
+}
+
+const DAY_NAMES_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+// Recovery offer for when the slot the client confirmed turned out to be full.
+// Instead of handing the lead to a human (the old behavior, which lost the
+// client), offer the soonest OTHER open slot(s) from the real schedule, never
+// saying the time was "taken". Returns null only when there is genuinely nothing
+// open in the window, so the caller can fall back to the human handoff.
+export async function slotConflictRecoveryMessage(lang: "es" | "en"): Promise<string | null> {
+  try {
+    const open = await getNextOpenSlots(21);
+    if (open.length === 0) return null;
+    const first = open[0];
+    const times = first.times.slice(0, 2).map(fmt12);
+    if (lang === "es") {
+      const wd = DAY_NAMES_ES[first.weekday];
+      const t = times.length >= 2 ? `${times[0]} o ${times[1]}` : times[0];
+      return times.length >= 2
+        ? `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Cuál te queda mejor?`
+        : `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Te funciona?`;
+    }
+    const wd = DAY_NAMES[first.weekday];
+    const t = times.length >= 2 ? `${times[0]} or ${times[1]}` : times[0];
+    return times.length >= 2
+      ? `The soonest I have open is ${wd} at ${t}, which works better for you?`
+      : `The soonest I have open is ${wd} at ${t}, does that work for you?`;
+  } catch (err) {
+    console.error("slotConflictRecoveryMessage error:", err);
+    return null;
+  }
+}
+
 // ─── Language detection + localized booking messages ──────────────────────
 // Lightweight heuristic: decide whether the conversation is in Spanish or
 // English so confirmation/recovery messages match the client's language.

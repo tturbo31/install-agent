@@ -19,7 +19,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -183,6 +183,18 @@ async function processBookingCommand(
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
       return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
+    } else if (/^No availability/i.test(result.error ?? "")) {
+      // Slot the client picked is full but OTHER slots may be open: offer the
+      // soonest remaining one instead of handing off (never say it was "taken").
+      // Keep the AI active so the client's next pick books normally.
+      const recovery = await slotConflictRecoveryMessage(lang);
+      if (recovery) {
+        console.warn(`[IG] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
+        return { response: recovery, booked: false };
+      }
+      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time}, no open slots — handing off`);
+      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     } else {
       // Booking genuinely failed — never claim a false "slot just taken". Hand the
       // hot lead to Ozzi and pause the bot so a human closes it.
@@ -960,6 +972,15 @@ async function handleWebhook(body: WebhookPayload) {
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
     const finalResponse = stripForbiddenTags(afterNotify);
+
+    // Never send an empty message. When the model emits only a tag (a bare
+    // [NOTIFY_OWNER], or a [BOOK]/[REACT_ONLY] that strips to nothing), the text
+    // becomes "" and the Graph API send silently fails — the client sees no reply
+    // at all. The owner was already notified above if needed, so stay silent.
+    if (!finalResponse.trim()) {
+      console.warn("[IG] Empty response after tag stripping — staying silent (no empty send)");
+      return;
+    }
 
     void trackConversationMetrics(conversation.id, "instagram", inputTokens, outputTokens, booked);
 

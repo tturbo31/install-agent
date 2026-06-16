@@ -7,7 +7,7 @@ import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, strip
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -122,8 +122,20 @@ async function processBookingCommand(
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
     }
 
-    // Booking genuinely failed — never claim a false "slot just taken". Hand the
-    // hot lead to Ozzi and pause the bot so a human closes it.
+    // Slot the client picked is full but OTHER slots may be open: offer the
+    // soonest remaining one instead of handing off (never say it was "taken").
+    // Keep the AI active so the client's next pick books normally.
+    if (/^No availability/i.test(result.error ?? "")) {
+      const recovery = await slotConflictRecoveryMessage(lang);
+      if (recovery) {
+        console.warn(`[FB] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
+        return recovery;
+      }
+    }
+
+    // Booking genuinely failed (system error, or nothing open at all) — never
+    // claim a false "slot just taken". Hand the hot lead to Ozzi and pause the
+    // bot so a human closes it.
     console.warn(`[FB] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
     await supabaseAdmin
       .from("instagram_conversations")
@@ -661,6 +673,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);
+
+    // Never send an empty message: a tag-only reply (bare [NOTIFY_OWNER], etc.)
+    // strips to "" and the Graph API send silently fails, leaving the client with
+    // no reply. The owner was already notified above if needed, so stay silent.
+    if (!finalResponse.trim()) {
+      console.warn("[FB] Empty response after tag stripping — staying silent (no empty send)");
+      return;
+    }
 
     await sendFacebookMessage(psid, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });

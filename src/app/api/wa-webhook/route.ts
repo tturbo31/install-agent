@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -108,9 +108,19 @@ async function processBookingCommand(
       return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
     }
 
-    // Booking genuinely failed (slot unavailable on that date, scheduler error,
-    // etc.). NEVER tell the client a false "slot just taken" — the date the model
-    // picked may simply not have been available. Hand the hot lead to Ozzi and
+    // Slot the client picked is full but OTHER slots may be open: offer the
+    // soonest remaining one instead of handing off (never say it was "taken").
+    // Keep the AI active so the client's next pick books normally.
+    if (/^No availability/i.test(result.error ?? "")) {
+      const recovery = await slotConflictRecoveryMessage(lang);
+      if (recovery) {
+        console.warn(`[WA] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
+        return recovery;
+      }
+    }
+
+    // Booking genuinely failed (scheduler error, or nothing open at all). NEVER
+    // tell the client a false "slot just taken". Hand the hot lead to Ozzi and
     // pause the bot so a human closes it instead of looping.
     console.warn(`[WA] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
     await supabaseAdmin
@@ -615,6 +625,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const afterCancel = await processCancelCommand(afterBooking, phone, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
     const finalResponse = stripForbiddenTags(afterNotify);
+
+    // Never send an empty message: a tag-only reply (bare [NOTIFY_OWNER], etc.)
+    // strips to "" and the Z-API send silently fails, leaving the client with no
+    // reply. The owner was already notified above if needed, so stay silent.
+    if (!finalResponse.trim()) {
+      console.warn("[WA] Empty response after tag stripping — staying silent (no empty send)");
+      return;
+    }
 
     await sendWhatsAppMessage(phone, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });

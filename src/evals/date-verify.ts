@@ -5,6 +5,8 @@ import {
   getEasternDateContext,
   getRealAvailabilityContext,
   easternTodayStr,
+  getNextOpenSlots,
+  slotConflictRecoveryMessage,
 } from "../lib/scheduler";
 
 function loadEnv() {
@@ -157,6 +159,22 @@ async function main() {
   ]);
   console.log("   AI:", noSched.replace(/\s+/g, " ").slice(0, 160));
   ck("does not invent a specific weekday+time without schedule", !/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.{0,15}\b\d{1,2}\s?(am|pm)\b/i.test(noSched), noSched);
+
+  // ── 5. SLOT-FULL RECOVERY: when a chosen slot is full, offer the soonest OTHER
+  //    open day instead of handing off — and never say a slot was "taken". ──
+  console.log("\n[5] SLOT-FULL RECOVERY OFFER (offers a real open slot, not a handoff)");
+  const open = await getNextOpenSlots(21);
+  const recovery = await slotConflictRecoveryMessage("en");
+  if (open.length === 0) {
+    ck("no open slots → recovery returns null (caller hands off)", recovery === null, String(recovery));
+  } else {
+    ck("recovery offers a slot (not null) when days are open", typeof recovery === "string" && recovery.length > 0, String(recovery));
+    ck("recovery never says a slot was taken/unavailable", !!recovery && !/taken|unavailable|no longer|fully booked|pick another/i.test(recovery), String(recovery));
+    const soonestWeekday = DAYS[new Date(open[0].dateStr + "T12:00:00Z").getUTCDay()];
+    ck("recovery names the soonest OPEN weekday", !!recovery && recovery.includes(soonestWeekday), `expected ${soonestWeekday} in: ${recovery}`);
+    ck("recovery includes a clock time", !!recovery && /\b\d{1,2}(?::\d{2})?\s?(am|pm)\b/i.test(recovery), String(recovery));
+  }
+  console.log("   recovery EN:", recovery);
 
   console.log(`\n============ DATE-VERIFY RESULT: ${pass} passed, ${fail} failed ============`);
   if (fail) console.log("FAILED:", fails.join(" | "));

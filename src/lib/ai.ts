@@ -258,6 +258,24 @@ function removeDashes(text: string): string {
 
 export type AIResponse = { text: string; inputTokens: number; outputTokens: number };
 
+// Salvage a reply that the API cut off at the token limit. Sending the raw text
+// ships a half sentence to the client ("respondendo pela metade"), so we drop any
+// unterminated [BOOK:...] fragment (its JSON is incomplete and would never parse)
+// and trim back to the last complete sentence. If nothing complete remains, the
+// caller's empty-response guard keeps us from sending a broken fragment.
+function trimTruncatedResponse(text: string): string {
+  let t = text;
+  // An unclosed [BOOK:... was cut mid-JSON — remove it entirely.
+  const bookIdx = t.indexOf("[BOOK:");
+  if (bookIdx !== -1 && !/\[BOOK:[\s\S]*?\}\]/.test(t)) {
+    t = t.slice(0, bookIdx).trim();
+  }
+  // Keep everything up to the last sentence terminator so no half sentence ships.
+  const m = t.match(/^[\s\S]*[.!?](?=\s|$)/);
+  if (m && m[0].trim().length > 0) return m[0].trim();
+  return t.trim();
+}
+
 // ─── Anti-pressure backstop ────────────────────────────────────────────────
 // A scheduling push is one of: the scheduling QUESTION ("what time works",
 // "which works for you"), a clock TIME ("1pm"), or a slot MENU re-offer
@@ -490,7 +508,12 @@ export async function getAIResponse(
   try {
     response = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 300,
+      // 300 was tight: a slightly longer (often Spanish/Portuguese) reply hit the
+      // cap and was returned cut mid-sentence, which we then shipped as a half
+      // message. 600 leaves headroom for the rare long reply while normal 1-2
+      // sentence answers are unaffected; the stop_reason guard below salvages any
+      // reply that still hits the limit.
+      max_tokens: 600,
       system: systemContent,
       messages: messages.map((m) => ({
         role: m.role,
@@ -508,8 +531,16 @@ export async function getAIResponse(
 
   const block = response.content[0];
   if (block.type === "text") {
-    let cleaned = mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(block.text))));
-    const hadDash = block.text !== cleaned;
+    // If the model hit the token cap, salvage to the last complete sentence so we
+    // never send a half-finished message to the client.
+    const rawText = response.stop_reason === "max_tokens"
+      ? trimTruncatedResponse(block.text)
+      : block.text;
+    if (response.stop_reason === "max_tokens") {
+      console.warn("[AI] response hit max_tokens — trimmed to last complete sentence");
+    }
+    let cleaned = mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(rawText))));
+    const hadDash = rawText !== cleaned;
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {
