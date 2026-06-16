@@ -669,6 +669,28 @@ async function handleFbMessage(body: Record<string, unknown>) {
       }
     }
 
+    // ── Stale-context guard (pre-send) ────────────────────────────────────
+    // Rapid-fire client bubbles (slot, then phone, then address separately) can
+    // let an earlier bubble's 10s debounce elapse just before the next lands, so
+    // this reply was built on STALE context (asks for info already sent, or never
+    // books). If a newer user message arrived since we started, discard this stale
+    // reply and let the newest message's handler answer with the COMPLETE context.
+    {
+      const { data: newestUser } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", conv.id)
+        .eq("role", "user")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (newestUser && newestUser.id !== thisMessageId) {
+        console.log("[FB] Newer client message arrived during generation — discarding stale reply");
+        return;
+      }
+    }
+
     const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling);
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);

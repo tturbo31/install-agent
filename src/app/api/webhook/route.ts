@@ -961,6 +961,31 @@ async function handleWebhook(body: WebhookPayload) {
       }
     }
 
+    // ── Stale-context guard (pre-send) ────────────────────────────────────
+    // The client often sends rapid-fire bubbles (slot, then phone, then address
+    // in separate messages). The 10s debounce can elapse for an earlier bubble
+    // just before the next one lands, so this reply was built on STALE context
+    // (e.g. it asks for the address the client already sent in the next bubble,
+    // or it never books because the address was not yet in history). If a newer
+    // user message has arrived since we started, discard this stale reply and let
+    // the newest message's handler answer with the COMPLETE context. The last
+    // message's handler always passes this guard, so no reply is ever lost.
+    {
+      const { data: newestUser } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "user")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (newestUser && newestUser.id !== thisMessageId) {
+        console.log("[IG] Newer client message arrived during generation — discarding stale reply");
+        return;
+      }
+    }
+
     const { response: afterBookingText, booked } = await processBookingCommand(
       safeAiText,
       conversation.id,
