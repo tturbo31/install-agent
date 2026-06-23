@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/dream?secret=Pepeka",
+      "path": "/api/dream?secret=Pepeka&run=1",
       "schedule": "0 6 * * *"
     }
   ]

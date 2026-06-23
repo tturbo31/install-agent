@@ -11,11 +11,28 @@ function isAuthorized(secret: string | null): boolean {
   return secret === adminSecret || (!!verifyToken && secret === verifyToken);
 }
 
-// GET — return current system learnings (for dashboard)
+// GET — two modes:
+//   ?run=1  → RUN the nightly self-improvement analysis. Vercel Cron Jobs only
+//             ever send a GET request (never POST), so the daily cron MUST hit
+//             this path to actually run Dreaming. Without run=1 the cron would
+//             just read memory and the agent would never self-improve.
+//   (no run) → return the current system learnings (read-only, for the dashboard)
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   if (!isAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (req.nextUrl.searchParams.get("run") === "1") {
+    console.log("Dreaming started (cron GET) at", new Date().toISOString());
+    try {
+      const result = await runDreaming();
+      console.log(`Dreaming complete. Analyzed ${result.conversationsAnalyzed} conversations.`);
+      return NextResponse.json(result);
+    } catch (err) {
+      console.error("Dream GET run error:", err);
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
   }
 
   try {
