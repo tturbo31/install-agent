@@ -116,6 +116,20 @@ async function main() {
   const addrPhoneMsg = "Ok thank you. Randy Santos 11417 SW 251st ST Homestead, FL 33032 786-368-1800";
   ck("NOT closing: address+phone reply (was the silent-booking bug)", !isPureClosing(addrPhoneMsg), addrPhoneMsg);
   ck("NOT closing: short 'thanks <phone>'", !isPureClosing("thanks 786-368-1800"));
+  // Regression (screenshot 2026-06-23, Briana Vitale): the bot asked "tile, vinyl,
+  // or hardwood?" and the client answered "Thank you! Either vinyl or laminate".
+  // Because the message opened with "Thank you!", isPureClosing wrongly returned
+  // true and the webhook discarded the reply — the bot went silent on a hot lead
+  // (and it repeated for a second client). A thanks that ALSO carries a real answer
+  // (floor type, room/scope, "yes please") is NOT a closing and must be answered.
+  ck("NOT closing: 'Thank you! Either vinyl or laminate' (the silence bug)", !isPureClosing("Thank you! Either vinyl or laminate"));
+  ck("NOT closing: 'thanks, the whole house'", !isPureClosing("thanks, the whole house"));
+  ck("NOT closing: 'Thank you, kitchen and living room'", !isPureClosing("Thank you, kitchen and living room"));
+  ck("NOT closing: 'thanks, vinyl please'", !isPureClosing("thanks, vinyl please"));
+  // Genuine closings MUST still be detected (no over-correction).
+  ck("STILL closing: 'Thank you so much!'", isPureClosing("Thank you so much!"));
+  ck("STILL closing: 'ok thanks'", isPureClosing("ok thanks"));
+  ck("STILL closing: \"Thanks, I'll think about it.\"", isPureClosing("Thanks, I'll think about it."));
   ck("containsBookingInfo detects phone", containsBookingInfo("786-368-1800"));
   ck("containsBookingInfo detects street address", containsBookingInfo("11417 SW 251st St Homestead FL"));
   ck("containsBookingInfo: plain thanks → false", !containsBookingInfo("ok thank you so much"));
@@ -124,6 +138,18 @@ async function main() {
     {role:"user",content:"I will definitely call u tomorrow"},
   ]);
   ck("pure closing → [REACT_ONLY]", /\[REACT_ONLY\]/i.test(ro), ro);
+
+  // Live reproduction of the exact screenshot conversation: after the bot asks the
+  // flooring type, "Thank you! Either vinyl or laminate" is the client ANSWERING.
+  // The AI must respond (about vinyl / next step) and must NOT emit [REACT_ONLY].
+  const briana = await ai([
+    {role:"user",content:"Hi we are moving into our house today and wondering if you could give us a floor installation quote. We are located in west Boca"},
+    {role:"assistant",content:"Hi, welcome to your new home! Are you thinking of tile, vinyl, or hardwood flooring?"},
+    {role:"user",content:"Thank you! Either vinyl or laminate"},
+  ]);
+  console.log("   AI:", briana.replace(/\s+/g," ").slice(0,170));
+  ck("answers 'Thank you! Either vinyl or laminate' (not silenced)", briana.trim().length > 0 && !/\[REACT_ONLY\]/i.test(briana), briana);
+  ck("reply mentions vinyl / scope / quote (engages the answer)", /vinyl|area|whole house|quote|waterproof|warranty/i.test(briana), briana);
 
   // Live: client confirms a slot then sends "ok thanks <name> <address> <phone>"
   // → must generate [BOOK:...] (the confirmation + calendar entry path), NOT a
