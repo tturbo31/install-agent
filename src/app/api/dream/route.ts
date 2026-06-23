@@ -19,7 +19,14 @@ function isAuthorized(secret: string | null): boolean {
 //   (no run) → return the current system learnings (read-only, for the dashboard)
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  if (!isAuthorized(secret)) {
+  // A genuine Vercel Cron invocation carries the `x-vercel-cron` header. Vercel
+  // strips this header from any external/forged request, so its presence is
+  // trustworthy. Authorize cron unconditionally so the nightly self-improvement
+  // keeps running even if ADMIN_SECRET is later changed in the dashboard without
+  // updating the secret baked into the cron URL in vercel.json. The secret check
+  // is still required for manual/dashboard calls (header absent → falls through).
+  const isVercelCron = !!req.headers.get("x-vercel-cron");
+  if (!isVercelCron && !isAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

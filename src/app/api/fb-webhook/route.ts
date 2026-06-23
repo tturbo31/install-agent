@@ -7,6 +7,7 @@ import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, strip
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
+import { trackConversationMetrics } from "@/lib/metrics";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -61,12 +62,12 @@ async function processBookingCommand(
   isAlreadyBooked: boolean,
   lang: "es" | "en",
   isReschedule: boolean = false
-): Promise<string> {
+): Promise<{ response: string; booked: boolean }> {
   if (isAlreadyBooked && !isReschedule) {
-    return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+    return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
   }
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
-  if (!bookingMatch) return aiResponse;
+  if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
@@ -74,7 +75,7 @@ async function processBookingCommand(
     //    are copied from the saved booking, so only the new date/time are needed. ──
     if (isReschedule) {
       if (!bookingData.date || !bookingData.time) {
-        return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
+        return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
       }
       const r = await rescheduleClientBooking(`fb_${psid}`, bookingData.date, bookingData.time, {
         name: bookingData.name,
@@ -84,23 +85,23 @@ async function processBookingCommand(
       });
       if (r.success) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
-        return rescheduleSuccessMessage(lang);
+        return { response: rescheduleSuccessMessage(lang), booked: true };
       }
       console.warn(`[FB] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off`);
       await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
-      return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
+      return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
 
     if (!bookingData.address?.trim()) {
       console.warn("FB booking blocked — address missing from booking JSON");
-      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim();
+      return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/, "").trim(), booked: false };
     }
     // Require a REAL phone number — never book with a non-number like "Messenger"
     // (client said "Call me in Messenger"). Re-ask instead of confirming a visit
     // the team cannot call; the client's next message (the number) then books.
     if (!isRealPhoneNumber(bookingData.phone)) {
       console.warn(`[FB] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
-      return needPhoneMessage(lang);
+      return { response: needPhoneMessage(lang), booked: false };
     }
 
     // Always book under the real client name: prefer a name the client typed,
@@ -131,14 +132,14 @@ async function processBookingCommand(
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
-      return bookingSuccessMessage(lang);
+      return { response: bookingSuccessMessage(lang), booked: true };
     } else if (result.error === "already_booked") {
       console.warn("[FB] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
-      return aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim();
+      return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
     }
 
     // Slot the client picked is full but OTHER slots may be open: offer the
@@ -148,7 +149,7 @@ async function processBookingCommand(
       const recovery = await slotConflictRecoveryMessage(lang);
       if (recovery) {
         console.warn(`[FB] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
-        return recovery;
+        return { response: recovery, booked: false };
       }
     }
 
@@ -160,10 +161,10 @@ async function processBookingCommand(
       .from("instagram_conversations")
       .update({ mode: "human" })
       .eq("id", conversationId);
-    return `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`;
+    return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
   } catch (err) {
     console.error("FB booking error:", err);
-    return aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim();
+    return { response: aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim(), booked: false };
   }
 }
 
@@ -594,6 +595,8 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     const ownerCorrections = isBookingConfirmed ? null : await loadGlobalCorrections();
     let rawAiResponse: string;
+    let inputTokens = 0;
+    let outputTokens = 0;
     try {
       const aiResult = await getAIResponse(
         messagesForAI,
@@ -603,6 +606,8 @@ async function handleFbMessage(body: Record<string, unknown>) {
         isBookingConfirmed
       );
       rawAiResponse = aiResult.text;
+      inputTokens = aiResult.inputTokens;
+      outputTokens = aiResult.outputTokens;
     } catch (aiErr) {
       // AI down (credits exhausted, rate limit, timeout, network). Never leave the
       // client in silence: send a graceful holding reply, hand to a human, notify owner.
@@ -710,7 +715,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       }
     }
 
-    const afterBooking = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling);
+    const { response: afterBooking, booked } = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling);
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);
@@ -722,6 +727,8 @@ async function handleFbMessage(body: Record<string, unknown>) {
       console.warn("[FB] Empty response after tag stripping — staying silent (no empty send)");
       return;
     }
+
+    void trackConversationMetrics(conv.id, "facebook", inputTokens, outputTokens, booked);
 
     await sendFacebookMessage(psid, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });

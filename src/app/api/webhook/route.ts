@@ -29,6 +29,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
+import { trackConversationMetrics } from "@/lib/metrics";
 
 export const maxDuration = 60;
 
@@ -43,27 +44,6 @@ export async function GET(req: NextRequest) {
     return new NextResponse(challenge, { status: 200 });
   }
   return new NextResponse("Forbidden", { status: 403 });
-}
-
-// ─── Track token usage and conversion in Supabase ─────────────────────────
-async function trackConversationMetrics(
-  conversationId: string,
-  platform: string,
-  inputTokens: number,
-  outputTokens: number,
-  converted: boolean
-): Promise<void> {
-  try {
-    await supabaseAdmin.rpc("increment_conversation_metrics", {
-      p_conversation_id: conversationId,
-      p_platform: platform,
-      p_input_tokens: inputTokens,
-      p_output_tokens: outputTokens,
-      p_converted: converted,
-    });
-  } catch (err) {
-    console.error("Metrics tracking error:", err);
-  }
 }
 
 // ─── Safety net: strip slot-conflict sentences and hard-fallback ──────────
