@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "eval": "npx tsx src/evals/run.ts"
+    "eval": "npx tsx src/evals/run.ts",
+    "convo": "npx tsx src/evals/real-convo-test.ts",
+    "parity": "npx tsx src/evals/platform-parity.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.1",

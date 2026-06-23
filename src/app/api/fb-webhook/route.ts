@@ -365,6 +365,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .eq("conversation_id", conv.id)
       .eq("role", "user")
       .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
       .limit(1)
       .single();
     if (!latestMsg || latestMsg.id !== thisMessageId) return;
