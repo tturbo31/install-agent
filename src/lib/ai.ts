@@ -382,6 +382,22 @@ export function containsBookingInfo(text: string): boolean {
   return BOOKING_INFO_SIGNALS.test(text || "");
 }
 
+// True when OUR reply is still asking the client for the property address or a
+// phone number (i.e. the booking is not yet complete). Used by the webhooks to
+// give a short grace window before sending a redundant "what's the address?":
+// clients routinely confirm the slot and then send the address as a SECOND
+// message a few seconds later, just past the 10s debounce. Without this, the bot
+// fires the re-ask right as the address lands (the screenshot bug) and looks like
+// it ignored what the client just sent. Requires a question so a booking
+// confirmation ("see you then!") never matches.
+const ASKING_BOOKING_INFO = /\b(?:address|property\s+address|phone|phone\s+number|callback\s+number|best\s+(?:number|phone)|direcci[oó]n|tel[eé]fono|n[uú]mero(?:\s+de\s+(?:tel[eé]fono|contacto))?|endere[çc]o|telefone)\b/i;
+export function isAskingForBookingInfo(text: string): boolean {
+  const t = text || "";
+  if (!t.includes("?")) return false;
+  if (/\[BOOK:/i.test(t)) return false;
+  return ASKING_BOOKING_INFO.test(t);
+}
+
 // A courtesy "thanks" that ALSO carries a real answer — a flooring type, a
 // room/scope, or a "yes please" to proceed — is the client ANSWERING our
 // qualifying question, never a pure closing. Silencing it was the screenshot

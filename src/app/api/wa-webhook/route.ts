@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo } from "@/lib/ai";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -394,7 +394,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
       return;
     }
 
-    // Rate limit: 5s window
+    // Rate limit: 5s window prevents genuine duplicates without blocking fast
+    // client replies. EXCEPTION: a message carrying booking info (a street address
+    // or a phone number) may be the one that COMPLETES the booking, so it must
+    // never be silently dropped. A redundant "what's the address?" reply sent
+    // moments earlier (when the slot and address arrive as two separate turns)
+    // would otherwise rate-limit this turn and leave the visit unbooked — the
+    // exact screenshot bug.
+    const carriesBookingInfo = containsBookingInfo(rawText);
     const { data: recentReply } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
@@ -402,7 +409,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .eq("role", "assistant")
       .gte("created_at", new Date(Date.now() - 5000).toISOString())
       .limit(1);
-    if (recentReply && recentReply.length > 0) return;
+    if (recentReply && recentReply.length > 0 && !carriesBookingInfo) return;
 
     // Process media
     let enrichedText = rawText;
@@ -660,6 +667,33 @@ async function handleWaMessage(body: Record<string, unknown>) {
       if (newestUser && newestUser.id !== thisMessageId) {
         console.log("[WA] Newer client message arrived during generation — discarding stale reply");
         return;
+      }
+    }
+
+    // ── Grace window before a redundant booking-info re-ask ───────────────
+    // The slot is confirmed but the brain is still asking for the address (on
+    // WhatsApp the phone is already known). Clients routinely confirm the time
+    // and then send the address as a SECOND message a few seconds later, just
+    // past the 10s debounce — firing the re-ask the instant it lands is the
+    // screenshot bug. Give that follow-up a short window: if a newer client
+    // message arrives, discard this re-ask so the newest message's handler books
+    // with the COMPLETE context (it always has the slot + the address).
+    if (!isBookingConfirmed && isAskingForBookingInfo(safeResponse)) {
+      for (let i = 0; i < 2; i++) {
+        await new Promise((r) => setTimeout(r, 2500));
+        const { data: newer } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("id")
+          .eq("conversation_id", conv.id)
+          .eq("role", "user")
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (newer && newer.id !== thisMessageId) {
+          console.log("[WA] Booking-info follow-up arrived during grace window — discarding redundant re-ask");
+          return;
+        }
       }
     }
 

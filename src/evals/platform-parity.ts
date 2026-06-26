@@ -47,8 +47,10 @@ const SHARED: Check[] = [
   { label: "Re-fetch conversation before acting (freshConv)", test: (s) => s.includes("freshConv") },
   { label: "Pause guard right after debounce", test: (s) => s.includes("paused during debounce") },
   { label: "5s duplicate-reply rate limit", test: (s) => s.includes("Date.now() - 5000") },
+  { label: "Booking-info turn bypasses rate limit (never drop a booking)", test: (s) => s.includes("containsBookingInfo(rawText)") && /&& !carriesBookingInfo\) return;/.test(s) },
   { label: "Final pause guard before send (conv + channel)", test: (s) => s.includes("Paused mid-flight") && /livePlatform/.test(s) },
   { label: "Stale-context guard before send (newer msg arrived)", test: (s) => s.includes("discarding stale reply") },
+  { label: "Grace window before redundant booking-info re-ask", test: (s) => s.includes("isAskingForBookingInfo") && s.includes("discarding redundant re-ask") },
 
   // Returning client / booking state
   { label: "Returning-client served check (hasExistingBooking)", test: (s) => s.includes("hasExistingBooking") },
