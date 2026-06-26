@@ -267,6 +267,36 @@ const GRADERS = {
       return !hasTotalProjectPrice || /approximate|rough|estimate/i.test(t);
     },
   },
+  confirmsBathroomRemodel: {
+    label: 'Confirms YES we do bathroom remodels (affirms, does not decline)',
+    check: (t: string) => {
+      const affirms = /\b(yes|yeah|yep|absolutely|of course|sure|we do|we can|we handle|we offer|claro|s[ií]m?|com certeza|fazemos|podemos|oferecemos|hacemos)\b/i.test(t);
+      const declines = /\b(?:don'?t|do not|cannot|can'?t|won'?t)\s+(?:do|offer|handle)\b|only\s+(?:do|offer|handle)\s+(?:flooring|floors|installations?)|installations?\s+only|n[aã]o\s+fazemos|no\s+hacemos/i.test(t);
+      return affirms && !declines;
+    },
+  },
+  proposesVisitBilingual: {
+    label: 'Proposes the in-person visit to check the space (EN/PT/ES)',
+    check: (t: string) => /visit|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|measure|see\s+(?:the|your)\s+(?:space|bathroom)|take\s+a\s+look|visita|presencial|pessoalmente|medir|ver\s+(?:o|el)\s+(?:espa[çc]o|ba[ñn]o|local)/i.test(t),
+  },
+  declinesSmallJob: {
+    // Decline language + no price proves the sub-200 flooring job was NOT routed
+    // into a remodel visit (a remodel reply has no decline and proposes a visit).
+    // A friendly "reach out for a remodel" invite is fine, so do NOT fail on the
+    // mere word "remodel".
+    label: 'Declines a sub-200 sqft flooring job (no price)',
+    check: (t: string) =>
+      /don'?t take|do not take|under 200|focus on larger|too small|won'?t be able|not able to take|we only (?:do|work|focus|take)|larger (?:projects|installations|jobs)/i.test(t) &&
+      !/\$\s?\d/.test(t),
+  },
+  declinesRepair: {
+    // Mirrors run-tests.mjs T34: a repair stays "installations only". Mentioning
+    // a remodel as a future invite is acceptable, so we do NOT fail on the word
+    // "remodel" (that was a false positive that flagged correct, friendly copy).
+    label: 'Declines a repair (installations only)',
+    check: (t: string) =>
+      /installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:small\s+)?repair|do not do (?:small )?repair|only.*install/i.test(t),
+  },
 } satisfies Record<string, { label: string; check: (t: string) => boolean }>;
 
 type GraderKey = keyof typeof GRADERS;
@@ -578,6 +608,47 @@ const SCENARIOS: Scenario[] = [
     ],
     bookingConfirmed: true,
     graders: ["noBookTag", "isSilent"],
+  },
+
+  // ── BATHROOM REMODELING (new feature) ────────────────────────────────────
+  // Owner: we DO bathroom remodels. When asked, confirm YES, say we must check
+  // the space in person to quote, and propose the free visit (same flow as a
+  // large flooring lead). Never quote a remodel price by DM, any size.
+  {
+    name: '[BATHROOM REMODEL] "Do you do bathroom remodeling?" → yes + propose visit, no DM price',
+    messages: [{ role: "user", content: "Hi, do you do bathroom remodeling?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+  },
+  {
+    name: '[BATHROOM REMODEL] "Do you remodel bathrooms or just floors?" → yes + visit, no DM price',
+    messages: [{ role: "user", content: "Do you guys remodel bathrooms or do you only do floors?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+  },
+  {
+    name: '[BATHROOM REMODEL] "I want to gut and redo my master bathroom" → yes + visit, no DM price',
+    messages: [{ role: "user", content: "I want to gut and redo my master bathroom completely" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+  },
+  {
+    name: '[BATHROOM REMODEL] PT "Vocês fazem reforma de banheiro?" → sim + visita, sem preço no DM',
+    messages: [{ role: "user", content: "Oi, vocês fazem reforma de banheiro?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+  },
+
+  // ── REGRESSIONS — the remodel rule must NOT hijack these existing flows ───
+  {
+    // FLOORING in a bathroom under 200 sqft is STILL a declined small flooring
+    // job, NOT the new remodel visit path. (Mirrors policy-verify.ts.)
+    name: '[REGRESSION] "vinyl flooring for my bathroom, 150 sqft" → declines (not a remodel)',
+    messages: [{ role: "user", content: "I need vinyl flooring for my bathroom, it's about 150 square feet." }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesSmallJob"],
+  },
+  {
+    // A small repair stays "installations only" — the remodel rule must not flip
+    // a repair into a yes. (Mirrors run-tests.mjs T34.)
+    name: '[REGRESSION] "repair a few broken tiles in my bathroom" → installations only (not a remodel)',
+    messages: [{ role: "user", content: "Hi, can you repair a few broken tiles in my bathroom?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesRepair"],
   },
 ];
 
