@@ -115,8 +115,9 @@ async function processBookingCommand(
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
       // Could not move it — old booking is left intact, hand the change to Ozzi.
-      console.warn(`[IG] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off`);
-      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      // Do NOT pause the bot: an automatic failure must never permanently silence
+      // the lead (mode="human" is only for a deliberate owner takeover).
+      console.warn(`[IG] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off (staying active)`);
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
 
@@ -195,17 +196,14 @@ async function processBookingCommand(
         console.warn(`[IG] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
         return { response: recovery, booked: false };
       }
-      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time}, no open slots — handing off`);
-      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time}, no open slots — handing off (staying active)`);
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     } else {
       // Booking genuinely failed — never claim a false "slot just taken". Hand the
-      // hot lead to Ozzi and pause the bot so a human closes it.
-      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
-      await supabaseAdmin
-        .from("instagram_conversations")
-        .update({ mode: "human" })
-        .eq("id", conversationId);
+      // hot lead to Ozzi but do NOT pause the bot: an automatic failure must never
+      // permanently silence the lead (mode="human" is only for a deliberate owner
+      // takeover). The owner is notified and the AI stays active to re-engage.
+      console.warn(`[IG] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner (staying active)`);
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
   } catch (err) {
@@ -949,10 +947,10 @@ async function handleWebhook(body: WebhookPayload) {
         } catch (sendErr) {
           console.error("[IG] Fallback send failed:", sendErr);
         }
-        await supabaseAdmin
-          .from("instagram_conversations")
-          .update({ mode: "human" })
-          .eq("id", conversation.id);
+        // Do NOT pause: an AI outage is transient (overload, timeout, or credits
+        // being topped up). Leave the conversation in "agent" mode so the next
+        // message retries once the API recovers — permanently flipping to "human"
+        // here is what left leads silent forever.
         try {
           const { data: recentMsgs } = await supabaseAdmin
             .from("instagram_messages")

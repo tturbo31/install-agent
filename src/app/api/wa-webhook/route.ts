@@ -70,8 +70,9 @@ async function processBookingCommand(
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
-      console.warn(`[WA] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off`);
-      await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conversationId);
+      // Do NOT pause: an automatic failure must never permanently silence the lead
+      // (mode="human" is only for a deliberate owner takeover).
+      console.warn(`[WA] Reschedule failed (${r.error}) for ${bookingData.date} ${bookingData.time} — handing off (staying active)`);
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
 
@@ -135,13 +136,10 @@ async function processBookingCommand(
     }
 
     // Booking genuinely failed (scheduler error, or nothing open at all). NEVER
-    // tell the client a false "slot just taken". Hand the hot lead to Ozzi and
-    // pause the bot so a human closes it instead of looping.
-    console.warn(`[WA] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner`);
-    await supabaseAdmin
-      .from("instagram_conversations")
-      .update({ mode: "human" })
-      .eq("id", conversationId);
+    // tell the client a false "slot just taken". Hand the hot lead to Ozzi but do
+    // NOT pause the bot: an automatic failure must never permanently silence the
+    // lead (mode="human" is only for a deliberate owner takeover).
+    console.warn(`[WA] Booking failed (${result.error}) for ${bookingData.date} ${bookingData.time} — handing off to owner (staying active)`);
     return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
   } catch (err) {
     console.error("WA booking error:", err);
@@ -588,7 +586,8 @@ async function handleWaMessage(body: Record<string, unknown>) {
         } catch (sendErr) {
           console.error("[WA] Fallback send failed:", sendErr);
         }
-        await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conv.id);
+        // Do NOT pause: an AI outage is transient. Leave the conversation in
+        // "agent" mode so the next message retries once the API recovers.
         try {
           const { data: recentMsgs } = await supabaseAdmin
             .from("instagram_messages")
