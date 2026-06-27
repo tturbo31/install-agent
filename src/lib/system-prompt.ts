@@ -1,5 +1,15 @@
 export const WHAT_IS_INCLUDED_RESPONSE = "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
 
+// TILE ads run a DIFFERENT promotion: the price is for the installation LABOR
+// ONLY and the client buys their own tile material. NOTHING is included beyond
+// labor (no flooring material, no quarter round). Used instead of the vinyl
+// response above when we know the client came from a tile ad, so we never tell a
+// tile lead that "the package includes the flooring and the quarter round".
+export const WHAT_IS_INCLUDED_TILE_RESPONSE = "Hello, for tile our promotion covers the installation labor only, and you provide the tile material yourself. I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
+
+// HARDWOOD ads are also labor only (client supplies the wood material).
+export const WHAT_IS_INCLUDED_HARDWOOD_RESPONSE = "Hello, for hardwood our promotion covers the installation labor only, and you provide the wood material yourself. I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
+
 // Injected by the Instagram/Facebook webhooks ONLY when the client replied to an
 // ad. The ad advertises three flooring types at different per-sqft rates, so the
 // bot must FIRST ask which type before quoting. Kept here as the single source of

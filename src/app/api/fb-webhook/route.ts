@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -505,16 +505,21 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // Update stored message with enriched content
     await supabaseAdmin.from("instagram_messages").update({ content: enrichedText }).eq("instagram_msg_id", msgId);
 
-    // Fetch Facebook profile
+    // Fetch Facebook profile + capture the ad signals (ad_title / creative /
+    // ad_id) just like Instagram does, so a later "what's included" turn still
+    // knows which ad the lead came from (tile vs vinyl vs hardwood).
     try {
       const profile = await fetchFacebookProfile(psid);
+      const fbRef = messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined;
+      const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (profile.name || profile.profile_pic) {
-        await supabaseAdmin.from("instagram_conversations").update({
-          username: profile.name,
-          profile_pic: profile.profile_pic,
-          updated_at: new Date().toISOString(),
-        }).eq("id", conv.id);
+        update.username = profile.name;
+        update.profile_pic = profile.profile_pic;
       }
+      if (fbRef?.ads_context_data?.ad_title) update.ad_title = fbRef.ads_context_data.ad_title;
+      if (fbRef?.ads_context_data?.photo_url) update.creative_url = fbRef.ads_context_data.photo_url;
+      if (fbRef?.ad_id) update.ad_id = fbRef.ad_id;
+      await supabaseAdmin.from("instagram_conversations").update(update).eq("id", conv.id);
     } catch { /* ignore */ }
 
     // Load memories in parallel with timeout
@@ -579,12 +584,44 @@ async function handleFbMessage(body: Record<string, unknown>) {
       if (isRescheduling) {
         systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
       }
-      // Reinforce engagement on a detected ad reply (never stay silent). The
-      // per-type pricing flow lives in the base opener (asks every new lead the
-      // flooring type), so it covers the whole conversation regardless of ad
-      // detection.
-      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
-        systemParts.push(AD_REPLY_NOTE);
+      // Detect the ad's flooring type so we answer with the RIGHT inclusions: a
+      // TILE ad's promo is labor only (the client buys the tile), NOT the vinyl
+      // "flooring + labor + quarter round" package. Detect from the ad signals
+      // (ad_title / creative_url / ad_id — fresh or stored); if text is silent,
+      // look at the ad creative image. Only when inconclusive do we ask the type
+      // (the existing AD_REPLY_NOTE), so the working flows are never changed.
+      if (!isBookingConfirmed) {
+        const fbRef = messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined;
+        const convAny = conv as Record<string, unknown>;
+        const adSignals = [
+          fbRef?.ads_context_data?.ad_title, fbRef?.ad_id,
+          convAny.ad_title as string | undefined,
+          convAny.creative_url as string | undefined,
+          convAny.ad_id as string | undefined,
+        ];
+        const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean);
+        let adType = detectAdFlooringType(...adSignals);
+        if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
+          const creative = fbRef?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
+          if (creative) {
+            // Vision is conservative: only TRUST a 'tile' verdict (visually
+            // distinct, high value). A vinyl/hardwood/uncertain verdict is dropped
+            // so a stone or wood look VINYL creative is never mislabeled as
+            // labor-only. Persist a 'tile' verdict so a later "what's included"
+            // turn keeps the tile answer without re-running vision.
+            const visual = await withTimeout(classifyAdCreativeType(creative), 6000);
+            if (visual === "tile") {
+              adType = "tile";
+              const persisted = `[tile] ${(convAny.ad_title as string) ?? ""}`.trim();
+              await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+            }
+          }
+        }
+        if (adType) {
+          systemParts.push(adFlooringTypeNote(adType));
+        } else if (isAdReferral || enrichedText.includes("[Client replied to our ad]")) {
+          systemParts.push(AD_REPLY_NOTE);
+        }
       }
       if (!isBookingConfirmed) {
         const recentUserTexts = history

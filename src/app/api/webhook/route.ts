@@ -17,6 +17,9 @@ import {
   CREDIT_ALERT,
   containsBookingInfo,
   isAskingForBookingInfo,
+  detectAdFlooringType,
+  adFlooringTypeNote,
+  classifyAdCreativeType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -822,12 +825,47 @@ async function handleWebhook(body: WebhookPayload) {
       if (isRescheduling) {
         systemParts.push("[RESCHEDULE MODE: This client already has a confirmed visit and wants to MOVE it to a different day or time. Acknowledge warmly, offer new open slots from the schedule above (or check the day they named), and the moment they confirm a new day and time, generate [BOOK:...] with the NEW date and time. Do NOT ask for the address or phone again, you already have them. Follow all date-integrity and availability rules.]");
       }
-      // Reinforce engagement on a detected ad reply (never stay silent). The
-      // per-type pricing flow itself lives in the base opener, which already
-      // asks every new lead which flooring type they want, so it works for the
-      // whole conversation regardless of whether the ad referral was detected.
-      if (!isBookingConfirmed && (isAdReferral || enrichedText.includes("[Client replied to our ad]"))) {
-        systemParts.push(AD_REPLY_NOTE);
+      // Detect the ad's flooring type so we answer with the RIGHT inclusions: a
+      // TILE ad's promo is labor only (the client buys the tile), NOT the vinyl
+      // "flooring + labor + quarter round" package. Detect from the ad signals we
+      // already capture (ad_title / creative_url / ad_id — fresh from this event
+      // or stored on the conversation). If text is silent, look at the ad creative
+      // image (vision). Only if everything is inconclusive do we ask the client
+      // the type (the existing AD_REPLY_NOTE) — so the working vinyl flow and the
+      // unknown-ad flow are never changed; we ONLY add correctness when we know.
+      if (!isBookingConfirmed) {
+        const ref = messaging.referral;
+        const convAny = conversation as Record<string, unknown>;
+        const adSignals = [
+          ref?.ads_context_data?.ad_title, ref?.ad_id,
+          convAny.ad_title as string | undefined,
+          convAny.creative_url as string | undefined,
+          convAny.ad_id as string | undefined,
+        ];
+        const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean);
+        let adType = detectAdFlooringType(...adSignals);
+        if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
+          const creative = ref?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
+          if (creative) {
+            // Vision is conservative: only TRUST a 'tile' verdict (the visually
+            // distinct, high-value case). A vinyl/hardwood/uncertain verdict is
+            // dropped so a stone or wood look VINYL creative is never mislabeled
+            // as labor-only. Persist a 'tile' verdict so a later "what's included"
+            // turn keeps the tile answer without re-running vision (the original
+            // bug otherwise recurs one turn later for keyword-silent tile ads).
+            const visual = await withTimeout(classifyAdCreativeType(creative), 6000);
+            if (visual === "tile") {
+              adType = "tile";
+              const persisted = `[tile] ${(convAny.ad_title as string) ?? ""}`.trim();
+              await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conversation.id);
+            }
+          }
+        }
+        if (adType) {
+          systemParts.push(adFlooringTypeNote(adType));
+        } else if (isAdReferral || enrichedText.includes("[Client replied to our ad]")) {
+          systemParts.push(AD_REPLY_NOTE);
+        }
       }
       // Scan last 3 user messages for a large-lead sqft mention
       if (!isBookingConfirmed) {

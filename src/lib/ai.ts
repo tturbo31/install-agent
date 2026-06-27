@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE } from "@/lib/system-prompt";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -48,8 +48,9 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 // These override the AI completely because the model cannot be reliably
 // instructed to omit pricing from "what's included" type questions.
 
-const HARDCODED_RESPONSES: Array<{ patterns: RegExp[]; response: string; skipIfSubstantive?: boolean }> = [
+const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: string; skipIfSubstantive?: boolean }> = [
   {
+    id: "what_included",
     patterns: [
       /what\s+is\s+included/i,
       /what('s|\s+is)\s+in(cluded)?\s*(in)?\s*the\s+(materials?\s+)?package/i,
@@ -162,7 +163,16 @@ const PRODUCT_TYPE_Q = new RegExp(
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "user") return null;
-  const text = last.content;
+  // Pattern-match the CLIENT's text only, never the injected [SYSTEM: ...] note,
+  // so an availability/ad note can never accidentally trip an intercept. The ad
+  // flooring type is still read from the FULL content (the marker lives in the
+  // system note) so the "what's included" answer matches the ad the client came
+  // from: a tile ad is labor only, NOT the vinyl flooring+labor+quarter round.
+  const text = last.content.split(/\n\n?\[SYSTEM:/)[0];
+  // Prefer the ad-type marker the webhook injects; if it is absent, fall back to
+  // the client's OWN wording — a message that says "for tile, what's included?"
+  // must get the labor-only tile answer, never the vinyl package.
+  const adType = adFlooringTypeFromMarker(last.content) ?? detectAdFlooringType(text);
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
   // vinyl description; tile questions get the Floor & Decor answer. All three
@@ -171,10 +181,120 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
+      if (rule.id === "what_included") return whatIsIncludedResponseFor(adType);
       return rule.response;
     }
   }
   return null;
+}
+
+// ─── Ad flooring type: tile vs vinyl vs hardwood ───────────────────────────
+// Instagram/Facebook tell us which ad a lead came from via the ad title, the
+// creative image, and the ad id. We advertise THREE products at different terms
+// (vinyl = $5/sqft material INCLUDED; tile = $4.50/sqft LABOR ONLY, client buys
+// the tile; hardwood = $3.20/sqft LABOR ONLY). Knowing the type up front lets us
+// answer "what's included" correctly and skip asking a type we already know.
+export type AdFlooringType = "tile" | "vinyl" | "hardwood";
+
+// Explicit vinyl tokens (our main, established product). Checked FIRST so a
+// "tile-look vinyl", "real wood look LVP", or "stone-look laminate" ad always
+// resolves to vinyl, never to the labor-only tile/hardwood terms — telling a
+// vinyl lead to buy their own material is the costly direction that must never
+// regress.
+const AD_VINYL = /\b(vinyl|vinil|lvp|spc|laminate|laminad[oa])\b/i;
+// Genuine tile material, but NOT "tile-look" (an imitation finish = our vinyl).
+const AD_TILE = /\b(?:tiles?|porcelain|porcelanato|ceramic|cer[aâ]mic[ao]|azulejo)\b(?![\s-]?look)/i;
+// "X-look" / "look like X" marketing copy is a look-ALIKE product, which for this
+// advertiser is luxury vinyl, not real tile/stone/wood.
+const AD_LOOK = /\b(?:tile|stone|marble|wood|porcelain|ceramic|slate|travertine)[\s-]?look\b|\blook[\s-]?(?:like\s+)?(?:tile|stone|marble|wood|porcelain|ceramic|slate)\b/i;
+// Real hardwood only. Deliberately NOT bare "wood" or "real wood" — "wood look"
+// and "real wood look" are vinyl copy and would false-positive into labor-only
+// terms, breaking the working $5 vinyl (material-included) flow.
+const AD_HARDWOOD = /\b(hardwood|solid\s*hardwood|engineered\s*(?:wood|hardwood))\b/i;
+
+// Deterministic detection from the ad signals we already store (ad_title,
+// creative_url, ad_id) plus anything the client themselves typed. Order matters:
+// an explicit vinyl token wins outright (vinyl is the safe default and our main
+// product); then GENUINE tile (so "wood-look tile" still resolves to tile); then
+// any other "X-look" copy resolves to vinyl; then real hardwood. Returns null
+// when no signal names a product, so the caller safely falls back to asking.
+export function detectAdFlooringType(...signals: Array<string | null | undefined>): AdFlooringType | null {
+  const blob = signals.filter(Boolean).join(" ");
+  if (!blob.trim()) return null;
+  if (AD_VINYL.test(blob)) return "vinyl";
+  if (AD_TILE.test(blob)) return "tile";
+  if (AD_LOOK.test(blob)) return "vinyl";
+  if (AD_HARDWOOD.test(blob)) return "hardwood";
+  return null;
+}
+
+function adFlooringTypeFromMarker(text: string): AdFlooringType | null {
+  const m = text.match(/\[AD_FLOORING_TYPE:\s*(tile|vinyl|hardwood)\]/i);
+  return m ? (m[1].toLowerCase() as AdFlooringType) : null;
+}
+
+function whatIsIncludedResponseFor(type: AdFlooringType | null): string {
+  if (type === "tile") return WHAT_IS_INCLUDED_TILE_RESPONSE;
+  if (type === "hardwood") return WHAT_IS_INCLUDED_HARDWOOD_RESPONSE;
+  return WHAT_IS_INCLUDED_RESPONSE;
+}
+
+// The system note the webhooks inject once the ad's flooring type is known. The
+// [AD_FLOORING_TYPE: x] marker is read by the hardcoded "what's included"
+// intercept; the prose locks the AI to that product's terms and stops it asking
+// a type we already know. When the type is unknown the webhooks fall back to the
+// existing AD_REPLY_NOTE ("ask tile, vinyl, or hardwood first").
+export function adFlooringTypeNote(type: AdFlooringType): string {
+  if (type === "tile") {
+    return `[AD_FLOORING_TYPE: tile]\n[AD TYPE KNOWN — TILE: This client replied to one of our TILE ads, so you ALREADY know they want tile. Do NOT ask whether they want tile, vinyl, or hardwood. Our tile promotion is $4.50 per square foot for INSTALLATION LABOR ONLY; the client buys their own tile material and the promotion includes NOTHING else, no flooring material and no quarter round. NEVER tell them the package includes the flooring or the quarter round, that is the vinyl offer, not tile. Apply all TILE rules: tile labor is exactly the square footage times $4.50 with no add-on, and for 500 sqft or more give NO price by DM and propose the free in-person visit.]`;
+  }
+  if (type === "hardwood") {
+    return `[AD_FLOORING_TYPE: hardwood]\n[AD TYPE KNOWN — HARDWOOD: This client replied to one of our HARDWOOD ads, so you ALREADY know they want hardwood. Do NOT ask whether they want tile, vinyl, or hardwood. Our hardwood promotion is $3.20 per square foot for INSTALLATION LABOR ONLY; the client buys their own wood material and the promotion includes NOTHING else, no flooring material and no quarter round. NEVER tell them the package includes the flooring or the quarter round, that is the vinyl offer. For 500 sqft or more give NO price by DM and propose the free in-person visit.]`;
+  }
+  return `[AD_FLOORING_TYPE: vinyl]\n[AD TYPE KNOWN — VINYL: This client replied to one of our VINYL ads, so you ALREADY know they want vinyl. Do NOT ask whether they want tile, vinyl, or hardwood. Our vinyl promotion is $5 per square foot and that already includes the flooring, the installation labor, and the quarter round. Offer the free quote and ask one area or the whole house, unless the size is already 500 sqft or more, then propose the free in-person visit.]`;
+}
+
+// Best-effort vision fallback (the "check the ad creative" path): when no ad text
+// signal names a product, classify the ad's creative image as tile / hardwood /
+// vinyl. Conservative on purpose — returns null on any doubt or error, so the
+// caller falls back to simply asking the client the type (never a wrong guess
+// that breaks the working vinyl flow). Tile shows grout lines and square/rect
+// tiles; vinyl/laminate are planks (often wood or stone look); hardwood is real
+// wood planks.
+export async function classifyAdCreativeType(imageUrl: string): Promise<AdFlooringType | null> {
+  try {
+    if (!imageUrl || !/^https?:\/\//i.test(imageUrl) || !process.env.ANTHROPIC_API_KEY) return null;
+    const res = await fetch(imageUrl);
+    if (!res.ok) return null;
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    const mediaType = ct.includes("png") ? "image/png" : ct.includes("webp") ? "image/webp" : ct.includes("gif") ? "image/gif" : "image/jpeg";
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength < 500 || buf.byteLength > 5_000_000) return null;
+    const base64 = buf.toString("base64");
+    const anthropic = getAnthropic();
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 8,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } },
+            { type: "text", text: "This is a flooring advertisement for a company whose MAIN product is luxury vinyl plank that imitates wood, stone, and marble. Classify the floor shown. Answer EXACTLY one lowercase word:\n- 'vinyl' if it shows long rectangular PLANKS laid in rows (wood look, stone look, or marble look strips). This is the default look-alike product.\n- 'tile' ONLY if it clearly shows separate square or rectangular CERAMIC or PORCELAIN tiles in a grid with grout lines on all four sides, NOT long planks.\n- 'hardwood' only if it is unmistakably real wood planks.\n- 'unknown' if you cannot be confident.\nWhen in any doubt between vinyl planks and tile, answer 'vinyl'. One word only." },
+          ],
+        },
+      ],
+    });
+    const block = response.content[0];
+    const ans = (block.type === "text" ? block.text : "").toLowerCase();
+    if (/tile|porcelain|ceramic/.test(ans)) return "tile";
+    if (/hardwood/.test(ans)) return "hardwood";
+    if (/vinyl|laminate|lvp/.test(ans)) return "vinyl";
+    return null;
+  } catch (err) {
+    console.warn("classifyAdCreativeType failed:", err);
+    return null;
+  }
 }
 
 // Final safety net: strip [SEND_IMAGES] tags even if the AI generates them
