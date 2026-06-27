@@ -31,6 +31,8 @@ import {
   WHAT_IS_INCLUDED_RESPONSE,
   WHAT_IS_INCLUDED_TILE_RESPONSE,
   WHAT_IS_INCLUDED_HARDWOOD_RESPONSE,
+  WHAT_IS_INCLUDED_ASK_TYPE,
+  AD_REPLY_NOTE,
 } from "../lib/system-prompt";
 
 function loadEnv() {
@@ -113,11 +115,24 @@ async function main() {
   console.log("   VINYL →", qVinyl.replace(/\s+/g, " ").slice(0, 160));
   ck("vinyl: returns the VINYL included response (flooring + labor + quarter round)", qVinyl.includes(WHAT_IS_INCLUDED_RESPONSE), qVinyl);
 
-  // ── 4. REGRESSION: no ad type → unchanged vinyl answer ────────────────────
-  console.log("\n[4] REGRESSION: no ad type marker → unchanged vinyl answer");
-  const qNone = await ai([{ role: "user", content: "What is included in the materials package?\n[Client shared a post/reel from our ad]" }]);
-  console.log("   NONE  →", qNone.replace(/\s+/g, " ").slice(0, 160));
-  ck("no marker: still the exact vinyl WHAT_IS_INCLUDED response", qNone.includes(WHAT_IS_INCLUDED_RESPONSE), qNone);
+  // ── 4. REGRESSION: organic lead (no ad context) → unchanged vinyl answer ──
+  console.log("\n[4] organic lead, no ad context → unchanged vinyl answer");
+  const qNone = await ai([{ role: "user", content: "What is included in the package?" }]);
+  console.log("   ORG   →", qNone.replace(/\s+/g, " ").slice(0, 160));
+  ck("organic (no ad context): still the exact vinyl WHAT_IS_INCLUDED response", qNone.includes(WHAT_IS_INCLUDED_RESPONSE), qNone);
+
+  // ── 4c. SAFETY NET: ad lead, type UNKNOWN → ask the type, NEVER vinyl ──────
+  console.log("\n[4c] ad lead, type unknown → ask the type (never the $5 vinyl answer)");
+  const adUnknownNote = `\n\n[SYSTEM: TODAY: Monday, June 8, 2026 [2026-06-08].\n\n${AD_REPLY_NOTE}]`;
+  const qUnknown = await ai([{ role: "user", content: "What is included in the material package?" + adUnknownNote }]);
+  console.log("   →", qUnknown.replace(/\s+/g, " ").slice(0, 160));
+  ck("unknown ad type: returns the ASK_TYPE safety response", qUnknown.includes(WHAT_IS_INCLUDED_ASK_TYPE), qUnknown);
+  ck("unknown ad type: asks tile/vinyl/hardwood", /tile/i.test(qUnknown) && /vinyl/i.test(qUnknown) && /hardwood/i.test(qUnknown), qUnknown);
+  ck("unknown ad type: NEVER claims the vinyl quarter-round inclusions", !/quarter round/i.test(qUnknown), qUnknown);
+  ck("unknown ad type: no price", !/\$\s*\d/.test(qUnknown), qUnknown);
+  // The exact screenshot text with a share-reel ad context must also ask, not assume vinyl
+  const qShare = await ai([{ role: "user", content: "What is included in the materials package?\n[Client shared a post/reel from our ad]" }]);
+  ck("shared-reel ad lead: asks the type, does not assume vinyl", !/quarter round/i.test(qShare) && /tile/i.test(qShare) && /hardwood/i.test(qShare), qShare);
 
   // ── 4b. SECONDARY SIGNAL: no marker but the CLIENT names tile ─────────────
   console.log("\n[4b] no marker, client's own message names tile → tile answer");
@@ -138,9 +153,10 @@ async function main() {
   for (const [ch, f] of Object.entries({ IG: "src/app/api/webhook/route.ts", FB: "src/app/api/fb-webhook/route.ts" })) {
     const src = readFileSync(join(process.cwd(), f), "utf-8");
     ck(`${ch}: detectAdFlooringType + adFlooringTypeNote injected`, src.includes("detectAdFlooringType(") && src.includes("adFlooringTypeNote(adType)"));
-    ck(`${ch}: vision trusted only for 'tile' (conservative)`, src.includes("classifyAdCreativeType(") && /visual === "tile"/.test(src));
-    ck(`${ch}: vision 'tile' is persisted so follow-up turns keep it`, /\[tile\] \$\{\(convAny\.ad_title/.test(src));
-    ck(`${ch}: still falls back to AD_REPLY_NOTE when type unknown`, src.includes("systemParts.push(AD_REPLY_NOTE)"));
+    ck(`${ch}: fetches the ad creative from Meta by ad_id (sees the ad)`, src.includes("fetchAdCreative(adId)"));
+    ck(`${ch}: vision trusted only for 'tile' (conservative)`, src.includes("classifyAdCreativeType(") && /=== "tile" \? "tile" : null/.test(src));
+    ck(`${ch}: resolved type persisted so follow-up turns keep it`, /\[\$\{resolved\}\] \$\{\(convAny\.ad_title/.test(src) && src.includes("ad_title: persisted"));
+    ck(`${ch}: ad lead of unknown type → AD_REPLY_NOTE (ask the type)`, /else if \(isAdReply\)/.test(src) && src.includes("systemParts.push(AD_REPLY_NOTE)"));
   }
 
   console.log(`\n=========== AD-TYPE-VERIFY: ${pass} passed, ${fail} failed ===========`);

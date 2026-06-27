@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment } from "@/lib/facebook";
+import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -593,6 +593,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       if (!isBookingConfirmed) {
         const fbRef = messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined;
         const convAny = conv as Record<string, unknown>;
+        const adId = (fbRef?.ad_id ?? convAny.ad_id) as string | undefined;
         const adSignals = [
           fbRef?.ads_context_data?.ad_title, fbRef?.ad_id,
           convAny.ad_title as string | undefined,
@@ -601,25 +602,35 @@ async function handleFbMessage(body: Record<string, unknown>) {
         ];
         const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean);
         let adType = detectAdFlooringType(...adSignals);
+        // Still unknown? Actually SEE the ad: pull its creative (text + image)
+        // from Meta by ad_id, then fall back to the creative thumbnail. Bounded to
+        // the opening turn and persisted so the tile answer survives later turns.
+        // Vision is conservative (only a clear 'tile' verdict is trusted); ad TEXT
+        // is trusted for all three types.
         if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
-          const creative = fbRef?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
-          if (creative) {
-            // Vision is conservative: only TRUST a 'tile' verdict (visually
-            // distinct, high value). A vinyl/hardwood/uncertain verdict is dropped
-            // so a stone or wood look VINYL creative is never mislabeled as
-            // labor-only. Persist a 'tile' verdict so a later "what's included"
-            // turn keeps the tile answer without re-running vision.
-            const visual = await withTimeout(classifyAdCreativeType(creative), 6000);
-            if (visual === "tile") {
-              adType = "tile";
-              const persisted = `[tile] ${(convAny.ad_title as string) ?? ""}`.trim();
-              await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+          let resolved: AdFlooringType | null = null;
+          if (adId) {
+            const ad = await withTimeout(fetchAdCreative(adId), 6000);
+            if (ad?.text) resolved = detectAdFlooringType(ad.text);
+            if (!resolved && ad?.imageUrl) {
+              resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
             }
+          }
+          if (!resolved) {
+            const creative = fbRef?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
+            if (creative) resolved = (await withTimeout(classifyAdCreativeType(creative), 6000)) === "tile" ? "tile" : null;
+          }
+          if (resolved) {
+            adType = resolved;
+            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
+            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
           }
         }
         if (adType) {
           systemParts.push(adFlooringTypeNote(adType));
-        } else if (isAdReferral || enrichedText.includes("[Client replied to our ad]")) {
+        } else if (isAdReply) {
+          // Ad lead, type still unknown → ask the type. The hardcoded "what's
+          // included" intercept also reads this note and refuses to assume vinyl.
           systemParts.push(AD_REPLY_NOTE);
         }
       }

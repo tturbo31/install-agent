@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE } from "@/lib/system-prompt";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -181,12 +181,25 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
-      if (rule.id === "what_included") return whatIsIncludedResponseFor(adType);
+      if (rule.id === "what_included") {
+        // Known type → its exact inclusions. Unknown type but the lead came from
+        // an ad → NEVER assume vinyl (that is the tile bug); ask the type. Only a
+        // plain organic lead with no ad context keeps the vinyl default.
+        if (adType) return whatIsIncludedResponseFor(adType);
+        if (IS_AD_CONTEXT.test(last.content)) return WHAT_IS_INCLUDED_ASK_TYPE;
+        return WHAT_IS_INCLUDED_RESPONSE;
+      }
       return rule.response;
     }
   }
   return null;
 }
+
+// True when the conversation context shows the lead came from an ad (the webhook
+// injected the ad-reply note or an ad-type marker, or the client replied to /
+// shared our ad) but we have not pinned the exact flooring type. In that state
+// the "what's included" answer must ask the type, never assume the vinyl package.
+const IS_AD_CONTEXT = /\[AD REPLY:|\[AD_FLOORING_TYPE:|Client (?:replied to|shared a post\/reel from) our ad/i;
 
 // ─── Ad flooring type: tile vs vinyl vs hardwood ───────────────────────────
 // Instagram/Facebook tell us which ad a lead came from via the ad title, the

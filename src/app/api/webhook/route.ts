@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
+import { fetchAdCreative } from "@/lib/facebook";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -20,6 +21,7 @@ import {
   detectAdFlooringType,
   adFlooringTypeNote,
   classifyAdCreativeType,
+  type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -836,6 +838,7 @@ async function handleWebhook(body: WebhookPayload) {
       if (!isBookingConfirmed) {
         const ref = messaging.referral;
         const convAny = conversation as Record<string, unknown>;
+        const adId = (ref?.ad_id ?? convAny.ad_id) as string | undefined;
         const adSignals = [
           ref?.ads_context_data?.ad_title, ref?.ad_id,
           convAny.ad_title as string | undefined,
@@ -844,26 +847,36 @@ async function handleWebhook(body: WebhookPayload) {
         ];
         const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean);
         let adType = detectAdFlooringType(...adSignals);
+        // Still unknown? Actually SEE the ad: pull its creative (text + image)
+        // from Meta by ad_id, then fall back to the creative thumbnail we already
+        // have. Bounded to the opening turn and persisted so it never re-runs and
+        // the tile answer survives later turns. Vision is conservative (only a
+        // clear 'tile' verdict is trusted, since this advertiser's vinyl mimics
+        // wood/stone/marble); ad TEXT is trusted for all three types.
         if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
-          const creative = ref?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
-          if (creative) {
-            // Vision is conservative: only TRUST a 'tile' verdict (the visually
-            // distinct, high-value case). A vinyl/hardwood/uncertain verdict is
-            // dropped so a stone or wood look VINYL creative is never mislabeled
-            // as labor-only. Persist a 'tile' verdict so a later "what's included"
-            // turn keeps the tile answer without re-running vision (the original
-            // bug otherwise recurs one turn later for keyword-silent tile ads).
-            const visual = await withTimeout(classifyAdCreativeType(creative), 6000);
-            if (visual === "tile") {
-              adType = "tile";
-              const persisted = `[tile] ${(convAny.ad_title as string) ?? ""}`.trim();
-              await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conversation.id);
+          let resolved: AdFlooringType | null = null;
+          if (adId) {
+            const ad = await withTimeout(fetchAdCreative(adId), 6000);
+            if (ad?.text) resolved = detectAdFlooringType(ad.text);
+            if (!resolved && ad?.imageUrl) {
+              resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
             }
+          }
+          if (!resolved) {
+            const creative = ref?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
+            if (creative) resolved = (await withTimeout(classifyAdCreativeType(creative), 6000)) === "tile" ? "tile" : null;
+          }
+          if (resolved) {
+            adType = resolved;
+            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
+            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conversation.id);
           }
         }
         if (adType) {
           systemParts.push(adFlooringTypeNote(adType));
-        } else if (isAdReferral || enrichedText.includes("[Client replied to our ad]")) {
+        } else if (isAdReply) {
+          // Ad lead, type still unknown → ask the type. The hardcoded "what's
+          // included" intercept also reads this note and refuses to assume vinyl.
           systemParts.push(AD_REPLY_NOTE);
         }
       }

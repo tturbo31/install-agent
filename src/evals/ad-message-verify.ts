@@ -8,7 +8,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, type ChatMessage } from "../lib/ai";
-import { WHAT_IS_INCLUDED_RESPONSE, AD_REPLY_NOTE } from "../lib/system-prompt";
+import { AD_REPLY_NOTE } from "../lib/system-prompt";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -50,16 +50,18 @@ async function main() {
   const fb = readFileSync(join(process.cwd(), "src/app/api/fb-webhook/route.ts"), "utf-8");
   ck("FB answers text even if an attached photo fails to analyze", /const clientHasText = !!\(msg\?\.text as string\)\?\.trim\(\)/.test(fb) && /hasRealContent = clientHasText \|\| mediaProcessed/.test(fb), "FB fallback can still swallow text");
 
-  // ── 3. The AI answers the ad question WITH the share note appended ───────
-  console.log("\n[3] AI answers the ad reply (share note must not break the answer)");
+  // ── 3. The AI answers an ad reply of UNKNOWN type by ASKING the type ──────
+  // (It must NOT assume vinyl: the reel could be a tile ad, and tile is labor
+  //  only — assuming the vinyl "material included" package is the screenshot bug.)
+  console.log("\n[3] AI answers the ad reply by asking the type (never assumes vinyl)");
   const adQuestion = `What is included in the materials package?\n${SHARE_NOTE}`;
   const r1 = await ai([{ role: "user", content: adQuestion }]);
   console.log("   AI:", r1.replace(/\s+/g, " ").slice(0, 150));
   ck("answers (not silent)", r1.trim().length > 0, r1);
-  ck("states what's included (flooring + installation labor + quarter round + free quote)", /flooring/i.test(r1) && /installation labor/i.test(r1) && /quarter round/i.test(r1) && /free quote/i.test(r1), r1);
-  ck("short version: NO prices ($5/$2/over 1,000 sqft)", !/\$\s*5/i.test(r1) && !/\$\s*2/i.test(r1) && !/over\s+1,?000/i.test(r1), r1);
+  ck("asks the flooring type (tile / vinyl / hardwood), never assumes vinyl", /tile/i.test(r1) && /vinyl/i.test(r1) && /hardwood/i.test(r1), r1);
+  ck("does NOT assert the vinyl flooring/quarter-round inclusions", !/quarter round/i.test(r1) && !/includes the flooring/i.test(r1), r1);
+  ck("no prices ($5/$2/over 1,000 sqft)", !/\$\s*\d/.test(r1) && !/over\s+1,?000/i.test(r1), r1);
   ck("does not leak the share note back to the client", !/\[Client shared/i.test(r1), r1);
-  ck("matches the exact WHAT_IS_INCLUDED response", r1.includes(WHAT_IS_INCLUDED_RESPONSE), r1);
 
   // ── 4. A different ad question + share note is still answered ─────────────
   console.log("\n[4] A non-'included' ad question + share note is still answered");
