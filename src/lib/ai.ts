@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT } from "@/lib/system-prompt";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -531,6 +531,33 @@ export function isAskingForBookingInfo(text: string): boolean {
   return ASKING_BOOKING_INFO.test(t);
 }
 
+// A message that is ONLY a greeting (a bare "hi" / "hola" / "olá", optionally
+// "good morning" etc.) with no other substance. Such a first message used to get
+// a silent reaction or empty reply and leave the lead unanswered. We open with
+// the promotion instead. The injected [SYSTEM: ...] note is stripped first so it
+// never counts as substance. EN / ES / PT.
+const GREETING_ONLY = /^[\s!.,?¡¿]*(?:hi+|hey+|hello|hiya|yo|howdy|sup|hi\s+there|hello\s+there|good\s+(?:morning|afternoon|evening|day)|ol[aá]|oi+|al[oô]|bom\s+dia|boa\s+(?:tarde|noite)|hola+|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|saludos|qu[eé]\s+tal)[\s!.,?]*$/i;
+export function isBareGreeting(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t || t.length > 40) return false;
+  return GREETING_ONLY.test(t);
+}
+
+// Pick the first-contact opener in the language of the greeting itself (the
+// greeting word is the most reliable language signal), so a "Hola" gets Spanish
+// and an "Olá" gets Portuguese.
+export function openerMessage(text: string): string {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
+  // Accent-safe boundaries: JS \b does not work around accented letters, so a
+  // trailing \b after "olá" never matches. Anchor on start/space/punctuation and
+  // a "not-a-letter-next" lookahead instead.
+  // Accented "olá" / "oi" / "bom dia" are clearly Portuguese; bare "ola" (no H,
+  // no accent) is far more often a Spanish speaker dropping the H of "hola".
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t)) return OPENER_PT;
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t)) return OPENER_ES;
+  return OPENER_EN;
+}
+
 // A courtesy "thanks" that ALSO carries a real answer — a flooring type, a
 // room/scope, or a "yes please" to proceed — is the client ANSWERING our
 // qualifying question, never a pure closing. Silencing it was the screenshot
@@ -623,6 +650,17 @@ export async function getAIResponse(
   if (bookingConfirmed) {
     console.log("[AI] Booking confirmed — sending nothing to client");
     return { text: "", inputTokens: 0, outputTokens: 0 };
+  }
+
+  // First-contact bare greeting (no prior bot reply) → open with the promotion
+  // and ask the flooring type, deterministically. A plain "hi"/"hola"/"olá" used
+  // to get a silent reaction or empty reply, leaving the lead unanswered.
+  const lastMsg = messages[messages.length - 1];
+  const hasPriorAssistant = messages.some((m) => m.role === "assistant");
+  if (!hasPriorAssistant && lastMsg?.role === "user" && isBareGreeting(lastMsg.content)) {
+    const opener = openerMessage(lastMsg.content);
+    console.log("[AI] First-contact greeting — sending opener:", opener.slice(0, 50));
+    return { text: opener, inputTokens: 0, outputTokens: 0 };
   }
 
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns

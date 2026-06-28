@@ -10,6 +10,15 @@ export const WHAT_IS_INCLUDED_TILE_RESPONSE = "Hello, for tile our promotion cov
 // HARDWOOD ads are also labor only (client supplies the wood material).
 export const WHAT_IS_INCLUDED_HARDWOOD_RESPONSE = "Hello, for hardwood our promotion covers the installation labor only, and you provide the wood material yourself. I offer a free quote. Are you planning to do just one area, or will it be the entire house?";
 
+// FIRST-CONTACT OPENER — sent deterministically when a brand-new lead opens with
+// just a greeting (a bare "hi"/"hola"/"ola"), so it is NEVER left unanswered. It
+// greets, names the promotion, and asks which of the three flooring types they
+// want, so the client answers and the normal per-type flow continues. Language is
+// chosen from the greeting itself. No price, no dashes, no emoji.
+export const OPENER_EN = "Hi! We're running a promotion and we work with tile, vinyl, and hardwood flooring. Which one are you interested in, tile, vinyl, or hardwood?";
+export const OPENER_ES = "¡Hola! Tenemos una promoción y trabajamos con piso tile, vinílico y hardwood. ¿Cuál te interesa, tile, vinílico o hardwood?";
+export const OPENER_PT = "Olá! Estamos com uma promoção e trabalhamos com piso tile, vinílico e hardwood. Qual você prefere, tile, vinílico ou hardwood?";
+
 // SAFETY NET — used when the lead came from an ad but we have NOT confirmed which
 // flooring type the ad was for. The inclusions differ per product (vinyl includes
 // the material, tile and hardwood are labor only), so we must NEVER assume vinyl
@@ -47,7 +56,7 @@ Short messages: 1 sentence when it covers the whole thought. 2 sentences ONLY wh
 
 OPENER EXCEPTION — SKIP THE OPENER WHEN THE SIZE IS ALREADY 500+: If the client's first message already states a specific square footage of 500 or more, or clearly describes a whole-house, multi-room, or large job, do NOT send the promotional opener. Go straight to STEP 2B and propose the free in-person visit. The opener below is ONLY for when you do not yet know the size.
 
-OPENER — ALWAYS ASK THE FLOORING TYPE FIRST: We advertise THREE different flooring types at different per-sqft rates (tile, vinyl, hardwood), and Instagram/Facebook does NOT reliably tell us which ad or type the client came from. So you must NEVER assume vinyl and NEVER send a generic package opener. Your FIRST message to a new lead must be ONE short, friendly question asking which type of flooring they want: tile, vinyl, or hardwood. It must contain NO price. Example: "Hi! Are you looking for tile, vinyl, or hardwood flooring?"
+OPENER — ALWAYS ASK THE FLOORING TYPE FIRST: We advertise THREE different flooring types at different per-sqft rates (tile, vinyl, hardwood), and Instagram/Facebook does NOT reliably tell us which ad or type the client came from. So you must NEVER assume vinyl and NEVER send a generic package opener. Your FIRST message to a new lead must be ONE short, friendly question asking which type of flooring they want: tile, vinyl, or hardwood. It must contain NO price. Example: "Hi! We're running a promotion and we work with tile, vinyl, and hardwood flooring. Which one are you looking for?"
 EXCEPTION: if the client's first message already makes the type clear (they say tile, porcelain, vinyl, laminate, hardwood, wood, etc.), skip the question and go straight to that type's pricing below. If they ask something you cannot answer without knowing the type (like "how much per sqft" or "is labor extra"), acknowledge briefly and ask the type in the SAME short message.
 
 ONCE YOU KNOW THE FLOORING TYPE — state that type's promo OUT LOUD with the dollar rate (never a price-less answer):
