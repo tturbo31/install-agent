@@ -694,16 +694,22 @@ export async function getAIResponse(
   // used to get a silent reaction; a "how much?" used to get the $5 vinyl answer.
   const lastMsg = messages[messages.length - 1];
   const hasPriorAssistant = messages.some((m) => m.role === "assistant");
-  if (
-    !hasPriorAssistant &&
-    lastMsg?.role === "user" &&
-    !conversationFlooringType(messages) &&
-    !isJobSeeker(lastMsg.content) &&
-    (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content))
-  ) {
-    const opener = openerMessage(lastMsg.content);
-    console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
-    return { text: opener, inputTokens: 0, outputTokens: 0 };
+  if (!hasPriorAssistant && lastMsg?.role === "user" && !conversationFlooringType(messages) && !isJobSeeker(lastMsg.content)) {
+    const t = lastMsg.content.split(/\n\n?\[SYSTEM:/)[0];
+    // The lead came from an ad but we could NOT detect its type (no
+    // [AD_FLOORING_TYPE] marker, just the ad-reply note / placeholder). This is
+    // exactly the "clicked the tile ad → got the vinyl $5 pitch" case: ask the
+    // type deterministically instead of letting the model pitch the vinyl package.
+    // "what's included" is excluded so it routes to its own ask-type intercept.
+    const adContext = /\[AD REPLY:|\[Client replied to our ad\]|Client shared a post\/reel from our ad/i.test(lastMsg.content);
+    const excludedTopic =
+      SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
+      OTHER_TOPIC.test(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with/i.test(t);
+    if (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic)) {
+      const opener = openerMessage(lastMsg.content);
+      console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
+      return { text: opener, inputTokens: 0, outputTokens: 0 };
+    }
   }
 
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns

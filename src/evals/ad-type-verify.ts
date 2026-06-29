@@ -141,6 +141,19 @@ async function main() {
   const qShare = await ai([{ role: "user", content: "What is included in the materials package?\n[Client shared a post/reel from our ad]" }]);
   ck("shared-reel ad lead: asks the type, does not assume vinyl", !/quarter round/i.test(qShare) && /tile/i.test(qShare) && /hardwood/i.test(qShare), qShare);
 
+  // ── 4d. AD CLICK, type UNDETECTED, any opening message → ask the type ─────
+  // The exact "clicked the tile ad, got the vinyl $5 pitch" bug: an ad reply
+  // whose type we could not detect must deterministically ask tile/vinyl/hardwood
+  // and never quote the $5 vinyl package, no matter how the client opened.
+  console.log("\n[4d] ad reply, type undetected → ask the type, never the vinyl $5");
+  const adNote = `\n\n[SYSTEM: TODAY: Monday, June 8, 2026 [2026-06-08].\n\n${AD_REPLY_NOTE}]`;
+  for (const [label, msg] of [["placeholder", "[Client replied to our ad]"], ["greeting", "Hi"], ["how-much", "How much per sqft?"], ["interested", "interested in new floors"]] as const) {
+    const r = await ai([{ role: "user", content: msg + adNote }]);
+    console.log(`   ${label} →`, r.replace(/\s+/g, " ").slice(0, 120));
+    ck(`ad reply (${label}) asks tile/vinyl/hardwood`, /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r), r);
+    ck(`ad reply (${label}) never quotes the $5 vinyl package`, !/\$\s?5\b/.test(r) && !/quarter round/i.test(r), r);
+  }
+
   // ── 4b. SECONDARY SIGNAL: no marker but the CLIENT names tile ─────────────
   console.log("\n[4b] no marker, client's own message names tile → tile answer");
   const qClientTile = await ai([{ role: "user", content: "For tile, what is included in the package?" }]);
