@@ -81,15 +81,27 @@ async function main() {
   // ── 1b. FALSE-POSITIVE GUARDS — never mislabel a vinyl ad as labor-only ────
   // (review findings: 'real wood look LVP' → hardwood, 'tile-look vinyl' → tile)
   console.log("\n[1b] detector never breaks the working vinyl flow");
-  ck("'Real Wood Look LVP' → vinyl (not hardwood)", detectAdFlooringType("Real Wood Look LVP") === "vinyl");
-  ck("'Tile-Look Vinyl' → vinyl (not tile)", detectAdFlooringType("Tile-Look Vinyl") === "vinyl");
-  ck("'Stone-Look Luxury Vinyl' → vinyl", detectAdFlooringType("Stone-Look Luxury Vinyl") === "vinyl");
-  ck("'Tile-Look Flooring' (no vinyl word) → vinyl (look-alike)", detectAdFlooringType("Tile-Look Flooring") === "vinyl");
-  ck("'Marble Look Floors' → vinyl (look-alike)", detectAdFlooringType("Marble Look Floors") === "vinyl");
+  ck("'Real Wood Look LVP' → vinyl (explicit lvp)", detectAdFlooringType("Real Wood Look LVP") === "vinyl");
+  ck("'Tile-Look Vinyl' → vinyl (explicit vinyl, not tile)", detectAdFlooringType("Tile-Look Vinyl") === "vinyl");
+  ck("'Stone-Look Luxury Vinyl' → vinyl (explicit)", detectAdFlooringType("Stone-Look Luxury Vinyl") === "vinyl");
   ck("'Wood Look Tile' → tile (genuine tile material)", detectAdFlooringType("Wood Look Tile") === "tile");
   ck("'Real Wood Plank $5' → NOT hardwood", detectAdFlooringType("Real Wood Plank $5") !== "hardwood");
   ck("'Hardwood Flooring' still → hardwood", detectAdFlooringType("Hardwood Flooring") === "hardwood");
   ck("'Engineered Wood' still → hardwood", detectAdFlooringType("Engineered Wood") === "hardwood");
+  // X-look copy with NO explicit type → null (ask the type), never a vinyl guess —
+  // because a tile ad can use "stone-look"/"marble-look" copy too.
+  ck("'Tile-Look Flooring' (no explicit type) → null (ask the type)", detectAdFlooringType("Tile-Look Flooring") === null);
+  ck("'Marble Look Floors' → null (ask the type)", detectAdFlooringType("Marble Look Floors") === null);
+  ck("'Stone-Look Flooring Sale' → null (ask the type)", detectAdFlooringType("Stone-Look Flooring Sale") === null);
+  // Combined / ambiguous ad naming more than one type → null (ask the type).
+  ck("'New Vinyl & Tile Flooring Specials' (both) → null (ambiguous)", detectAdFlooringType("New Vinyl & Tile Flooring Specials") === null);
+  ck("'Porcelain Tile Sale, Vinyl also available' (both) → null", detectAdFlooringType("Porcelain Tile Sale, Vinyl also available") === null);
+  // A CLIENT saying "wood look"/"marble look" must NOT be pinned to vinyl (they may
+  // have clicked a wood-look-TILE ad) — it stays unknown so the bot asks the type.
+  ck("client 'I want wood look floors' → null (bare X-look = ask)", detectAdFlooringType("I want wood look floors") === null);
+  ck("client 'the marble look please' → null", detectAdFlooringType("the marble look please") === null);
+  ck("client 'I want tile' → tile (explicit)", detectAdFlooringType("I want tile") === "tile");
+  ck("client 'vinyl please' → vinyl (explicit)", detectAdFlooringType("vinyl please") === "vinyl");
 
   // ── 2. adFlooringTypeNote carries the marker + correct terms ───────────────
   console.log("\n[2] adFlooringTypeNote");
@@ -154,6 +166,26 @@ async function main() {
     ck(`ad reply (${label}) never quotes the $5 vinyl package`, !/\$\s?5\b/.test(r) && !/quarter round/i.test(r), r);
   }
 
+  // ── 4e. AUDIT FIXES: material / how-it-works / pricing, type unknown → ask ─
+  console.log("\n[4e] material / how-it-works / pricing with unknown type → ask the type");
+  const askType = (r: string) => /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r) && !/\$\s?\d/.test(r) && !/quarter round/i.test(r);
+  const mMat = await ai([{ role: "user", content: "what material do you use?" }]);
+  console.log("   material →", mMat.replace(/\s+/g, " ").slice(0, 120));
+  ck("'what material do you use?' (organic) → asks the type, no vinyl/$5", askType(mMat), mMat);
+  const mOpt = await ai([{ role: "user", content: "what are the material options?" }]);
+  ck("'what are the material options?' → asks the type", askType(mOpt), mOpt);
+  // how-it-works on TURN 2 (after the opener) with no type named → still asks
+  const mHiw2 = await ai([
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "Hola, trabajamos con piso vinílico de luxo, tile e hardwood. Qual é a sua preferência?" },
+    { role: "user", content: "before I pick, how does your pricing work?" },
+  ]);
+  console.log("   how-it-works turn2 →", mHiw2.replace(/\s+/g, " ").slice(0, 120));
+  ck("how-it-works on turn 2, type unknown → asks the type, no $5/$2", askType(mHiw2), mHiw2);
+  // capability question is still ANSWERED, never converted to a type-ask
+  const mCap = await ai([{ role: "user", content: "is this can be used in the West Indies? looking for the best flooring options" }]);
+  ck("capability/suitability question → answered, not a type-ask", /waterproof|humid|tropical|climate|stone|resist|20.?year|yes/i.test(mCap) && !askType(mCap), mCap);
+
   // ── 4b. SECONDARY SIGNAL: no marker but the CLIENT names tile ─────────────
   console.log("\n[4b] no marker, client's own message names tile → tile answer");
   const qClientTile = await ai([{ role: "user", content: "For tile, what is included in the package?" }]);
@@ -177,6 +209,7 @@ async function main() {
     ck(`${ch}: vision trusted only for 'tile' (conservative)`, src.includes("classifyAdCreativeType(") && /=== "tile" \? "tile" : null/.test(src));
     ck(`${ch}: resolved type persisted so follow-up turns keep it`, /\[\$\{resolved\}\] \$\{\(convAny\.ad_title/.test(src) && src.includes("ad_title: persisted"));
     ck(`${ch}: ad lead of unknown type → AD_REPLY_NOTE (ask the type)`, /else if \(isAdReply\)/.test(src) && src.includes("systemParts.push(AD_REPLY_NOTE)"));
+    ck(`${ch}: isAdReply scans history (reshared ad note persists turn 2+)`, /isAdReply = [\s\S]{0,200}messagesForAI\.some\(\(m\) => m\.role === "user"/.test(src));
   }
 
   console.log(`\n=========== AD-TYPE-VERIFY: ${pass} passed, ${fail} failed ===========`);

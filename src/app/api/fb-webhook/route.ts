@@ -598,7 +598,11 @@ async function handleFbMessage(body: Record<string, unknown>) {
           convAny.creative_url as string | undefined,
           convAny.ad_id as string | undefined,
         ];
-        const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean);
+        // Also true if ANY message in the thread carries the ad-reply / shared-reel
+        // marker, so a reshared ad (no Meta referral, no stored ad columns) keeps
+        // its ad note and the type-first guard on later turns.
+        const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean) ||
+          messagesForAI.some((m) => m.role === "user" && /\[Client (?:replied to|shared a post\/reel from) our ad/i.test(m.content));
         let adType = detectAdFlooringType(...adSignals);
         // Still unknown? Actually SEE the ad: pull its creative (text + image)
         // from Meta by ad_id, then fall back to the creative thumbnail. Bounded to
