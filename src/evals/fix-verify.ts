@@ -186,11 +186,15 @@ async function main() {
   const q600 = await quote("whole house ~600 sqft");
   ck("600 sqft → visit, no DM total", /visit|measure|in person/i.test(q600), q600);
 
-  // ═══ 7. HOW IT WORKS ($5 incl floor+install, $2 install-only) ═══
-  console.log("\n[7] HOW IT WORKS");
+  // ═══ 7. HOW IT WORKS — TYPE FIRST (no vinyl promo before the type is known) ═══
+  console.log("\n[7] HOW IT WORKS (type first)");
   const hiw = await ai([{role:"user",content:"how does your promotion work?"}]);
   console.log("   AI:", hiw.replace(/\s+/g," ").slice(0,160));
-  ck("$5/sqft incl floor+install + $2 install-only", /\$\s?5/.test(hiw) && /install|labor/i.test(hiw) && /\$\s?2\b/.test(hiw), hiw);
+  ck("type unknown → asks tile/vinyl/hardwood, NO $5 vinyl pitch", /tile/i.test(hiw) && /vinyl/i.test(hiw) && /hardwood/i.test(hiw) && !/\$\s?\d/.test(hiw), hiw);
+  // Once the client has named vinyl, THEN it explains that type's pricing.
+  const hiwV = await ai([{role:"user",content:"I want vinyl, how does your promotion work?"}]);
+  console.log("   AI(vinyl):", hiwV.replace(/\s+/g," ").slice(0,160));
+  ck("vinyl named → $5 includes floor + install", /\$\s?5/.test(hiwV) && /(includ|floor|install|labor)/i.test(hiwV), hiwV);
 
   // ═══ 8. TILE MATERIAL (Floor & Decor, no vinyl pitch) ═══
   console.log("\n[8] TILE MATERIAL");

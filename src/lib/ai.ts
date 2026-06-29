@@ -169,10 +169,10 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   // system note) so the "what's included" answer matches the ad the client came
   // from: a tile ad is labor only, NOT the vinyl flooring+labor+quarter round.
   const text = last.content.split(/\n\n?\[SYSTEM:/)[0];
-  // Prefer the ad-type marker the webhook injects; if it is absent, fall back to
-  // the client's OWN wording — a message that says "for tile, what's included?"
-  // must get the labor-only tile answer, never the vinyl package.
-  const adType = adFlooringTypeFromMarker(last.content) ?? detectAdFlooringType(text);
+  // The flooring type known for this whole conversation (ad marker, or any type
+  // the client named). Used so "what's included" answers per type and never
+  // assumes the vinyl package when the type is still unknown.
+  const adType = conversationFlooringType(messages);
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
   // vinyl description; tile questions get the Floor & Decor answer. All three
@@ -182,24 +182,17 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
       if (rule.id === "what_included") {
-        // Known type → its exact inclusions. Unknown type but the lead came from
-        // an ad → NEVER assume vinyl (that is the tile bug); ask the type. Only a
-        // plain organic lead with no ad context keeps the vinyl default.
-        if (adType) return whatIsIncludedResponseFor(adType);
-        if (IS_AD_CONTEXT.test(last.content)) return WHAT_IS_INCLUDED_ASK_TYPE;
-        return WHAT_IS_INCLUDED_RESPONSE;
+        // Known type → its exact inclusions. Type still unknown → NEVER assume
+        // vinyl; ask which type first (tile is labor only, vinyl includes the
+        // material). Once the client names a type, conversationFlooringType picks
+        // it up and the right inclusions are given.
+        return adType ? whatIsIncludedResponseFor(adType) : WHAT_IS_INCLUDED_ASK_TYPE;
       }
       return rule.response;
     }
   }
   return null;
 }
-
-// True when the conversation context shows the lead came from an ad (the webhook
-// injected the ad-reply note or an ad-type marker, or the client replied to /
-// shared our ad) but we have not pinned the exact flooring type. In that state
-// the "what's included" answer must ask the type, never assume the vinyl package.
-const IS_AD_CONTEXT = /\[AD REPLY:|\[AD_FLOORING_TYPE:|Client (?:replied to|shared a post\/reel from) our ad/i;
 
 // ─── Ad flooring type: tile vs vinyl vs hardwood ───────────────────────────
 // Instagram/Facebook tell us which ad a lead came from via the ad title, the
@@ -552,10 +545,51 @@ export function openerMessage(text: string): string {
   // trailing \b after "olá" never matches. Anchor on start/space/punctuation and
   // a "not-a-letter-next" lookahead instead.
   // Accented "olá" / "oi" / "bom dia" are clearly Portuguese; bare "ola" (no H,
-  // no accent) is far more often a Spanish speaker dropping the H of "hola".
-  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t)) return OPENER_PT;
-  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t)) return OPENER_ES;
+  // no accent) is far more often a Spanish speaker dropping the H of "hola". A few
+  // non-greeting words also pin the language for a no-greeting inquiry.
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria)\b/.test(t)) return OPENER_PT;
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|quiero|busco|interesad|promoci[oó]n|presupuesto)\b/.test(t)) return OPENER_ES;
   return OPENER_EN;
+}
+
+// The flooring type already established for this conversation — from the ad-type
+// marker the webhook injects, OR from any type the CLIENT has named anywhere in
+// the chat. Used so we ask the type ONLY when it is genuinely unknown (never
+// re-asking once the client has told us tile / vinyl / hardwood).
+function conversationFlooringType(messages: ChatMessage[]): AdFlooringType | null {
+  const last = messages[messages.length - 1];
+  const marked = last ? adFlooringTypeFromMarker(last.content) : null;
+  if (marked) return marked;
+  const userText = messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+    .join(" ");
+  return detectAdFlooringType(userText);
+}
+
+// A generic flooring/pricing/promotion inquiry that does NOT name a type — the
+// cases where we must ask "tile, vinyl, or hardwood?" instead of pitching the
+// vinyl promo. Deliberately EXCLUDES: a message that already names a type, a
+// product CAPABILITY question (waterproof/durable — answer it), a photos/colors
+// request (redirect), and other topics (bathroom remodel, permits, repairs,
+// jobs) that have their own handling.
+const FLOORING_CTX = /\b(floors?|flooring|pisos?)\b/i;
+const INQUIRY_INTENT = /\b(interested|interesad[oa]|interessad[oa]|need|want|looking|quiero|necesito|busco|preciso|quero|gostaria|option|options|opci[oó]n|op[çc][õo]es|install|redo|new|do you (?:do|have|offer|install))\b/i;
+const PROMO_PRICE = /\b(promotion|promo|promo[çc][aã]o|promoci[oó]n|deal|special|oferta|price|pricing|cost|quote|estimate|cu[aá]nto|precio|cuesta|or[çc]amento|presupuesto)\b/i;
+const HOW_WORK = /how\s+(?:much|does\s+(?:it|this|that|your|the)\s+\w*\s*work|do\s+you\s+(?:charge|price|work))/i;
+const SPECIFIC_TYPE = /\b(tiles?|vinyl|vinil|laminate|laminad[oa]|hardwood|porcelain|porcelanato|ceramic|cer[aâ]mic[ao]|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejo|lvp|spc)\b/i;
+const SEE_OR_COLOR = /\b(photo|picture|image|catalog|colou?r|grey|gray|style|sample|show me|wood.?look|stone.?look|tile.?look|marble.?look|website|instagram)\b/i;
+const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego)\b/i;
+
+export function isFlooringInquiry(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t || t.length > 200) return false;
+  if (SPECIFIC_TYPE.test(t)) return false;
+  if (SUBSTANTIVE_PRODUCT_Q.test(t)) return false;
+  if (SEE_OR_COLOR.test(t)) return false;
+  if (OTHER_TOPIC.test(t)) return false;
+  if (PROMO_PRICE.test(t) || HOW_WORK.test(t)) return true;
+  return FLOORING_CTX.test(t) && INQUIRY_INTENT.test(t);
 }
 
 // A courtesy "thanks" that ALSO carries a real answer — a flooring type, a
@@ -652,14 +686,23 @@ export async function getAIResponse(
     return { text: "", inputTokens: 0, outputTokens: 0 };
   }
 
-  // First-contact bare greeting (no prior bot reply) → open with the promotion
-  // and ask the flooring type, deterministically. A plain "hi"/"hola"/"olá" used
-  // to get a silent reaction or empty reply, leaving the lead unanswered.
+  // TYPE FIRST: on first contact, when we do NOT yet know the flooring type
+  // (no ad detection, client has not named one), open by asking which of the
+  // three types they want — for a bare greeting AND for a generic pricing/promo/
+  // "how does it work" inquiry — instead of pitching the vinyl promo. The client
+  // answers and the normal per-type script continues. A plain "hi"/"hola"/"olá"
+  // used to get a silent reaction; a "how much?" used to get the $5 vinyl answer.
   const lastMsg = messages[messages.length - 1];
   const hasPriorAssistant = messages.some((m) => m.role === "assistant");
-  if (!hasPriorAssistant && lastMsg?.role === "user" && isBareGreeting(lastMsg.content)) {
+  if (
+    !hasPriorAssistant &&
+    lastMsg?.role === "user" &&
+    !conversationFlooringType(messages) &&
+    !isJobSeeker(lastMsg.content) &&
+    (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content))
+  ) {
     const opener = openerMessage(lastMsg.content);
-    console.log("[AI] First-contact greeting — sending opener:", opener.slice(0, 50));
+    console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
     return { text: opener, inputTokens: 0, outputTokens: 0 };
   }
 

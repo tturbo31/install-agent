@@ -15,9 +15,9 @@ export const WHAT_IS_INCLUDED_HARDWOOD_RESPONSE = "Hello, for hardwood our promo
 // greets, names the promotion, and asks which of the three flooring types they
 // want, so the client answers and the normal per-type flow continues. Language is
 // chosen from the greeting itself. No price, no dashes, no emoji.
-export const OPENER_EN = "Hi! We're running a promotion and we work with tile, vinyl, and hardwood flooring. Which one are you interested in, tile, vinyl, or hardwood?";
-export const OPENER_ES = "¡Hola! Tenemos una promoción y trabajamos con piso tile, vinílico y hardwood. ¿Cuál te interesa, tile, vinílico o hardwood?";
-export const OPENER_PT = "Olá! Estamos com uma promoção e trabalhamos com piso tile, vinílico e hardwood. Qual você prefere, tile, vinílico ou hardwood?";
+export const OPENER_EN = "Hi, we're running a promotion and we work with tile, vinyl, and hardwood flooring. Which one are you interested in, tile, vinyl, or hardwood?";
+export const OPENER_ES = "Hola, tenemos una promoción y trabajamos con piso tile, vinílico y hardwood. ¿Cuál te interesa, tile, vinílico o hardwood?";
+export const OPENER_PT = "Olá, estamos com uma promoção e trabalhamos com piso tile, vinílico e hardwood. Qual você prefere, tile, vinílico ou hardwood?";
 
 // SAFETY NET — used when the lead came from an ad but we have NOT confirmed which
 // flooring type the ad was for. The inclusions differ per product (vinyl includes

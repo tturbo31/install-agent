@@ -58,7 +58,7 @@ function main() {
     ck(`${name}: imports aiOutageHandoffMessage`, /aiOutageHandoffMessage/.test(src));
     ck(`${name}: catches getAIResponse failure`, /catch\s*\(aiErr\)/.test(src), rel);
     ck(`${name}: sends the fallback to the client`, sendRe.test(src), rel);
-    ck(`${name}: hands the conversation to a human`, /mode:\s*"human"/.test(src.split("catch (aiErr)")[1]?.slice(0, 2400) ?? ""), rel);
+    ck(`${name}: does NOT permanently pause on outage (auto-recovers next msg)`, !/mode:\s*"human"/.test(src.split("catch (aiErr)")[1]?.slice(0, 2400) ?? ""), rel);
     ck(`${name}: notifies the owner on outage`, /notifyOwners\(/.test(src.split("catch (aiErr)")[1]?.slice(0, 2400) ?? ""), rel);
     ck(`${name}: skips fallback when booking already confirmed`, /if\s*\(!isBookingConfirmed\)/.test(src.split("catch (aiErr)")[1]?.slice(0, 1600) ?? ""), rel);
   }

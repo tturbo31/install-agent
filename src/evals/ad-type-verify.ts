@@ -115,11 +115,18 @@ async function main() {
   console.log("   VINYL →", qVinyl.replace(/\s+/g, " ").slice(0, 160));
   ck("vinyl: returns the VINYL included response (flooring + labor + quarter round)", qVinyl.includes(WHAT_IS_INCLUDED_RESPONSE), qVinyl);
 
-  // ── 4. REGRESSION: organic lead (no ad context) → unchanged vinyl answer ──
-  console.log("\n[4] organic lead, no ad context → unchanged vinyl answer");
+  // ── 4. TYPE FIRST: organic lead, type unknown → ask the type (not vinyl) ──
+  console.log("\n[4] organic lead, type unknown → ask the type (never assume vinyl)");
   const qNone = await ai([{ role: "user", content: "What is included in the package?" }]);
   console.log("   ORG   →", qNone.replace(/\s+/g, " ").slice(0, 160));
-  ck("organic (no ad context): still the exact vinyl WHAT_IS_INCLUDED response", qNone.includes(WHAT_IS_INCLUDED_RESPONSE), qNone);
+  ck("organic, type unknown: asks the type, never assumes vinyl", qNone.includes(WHAT_IS_INCLUDED_ASK_TYPE), qNone);
+  // But once the client has named vinyl earlier in the chat, it gives the vinyl answer.
+  const qVinylKnown = await ai([
+    { role: "user", content: "I'm interested in vinyl" },
+    { role: "assistant", content: "Great! Our vinyl promo is $5 per sqft including the flooring and labor. One area or the whole house?" },
+    { role: "user", content: "What is included in the package?" },
+  ]);
+  ck("vinyl established earlier → vinyl included answer (no re-ask)", qVinylKnown.includes(WHAT_IS_INCLUDED_RESPONSE), qVinylKnown);
 
   // ── 4c. SAFETY NET: ad lead, type UNKNOWN → ask the type, NEVER vinyl ──────
   console.log("\n[4c] ad lead, type unknown → ask the type (never the $5 vinyl answer)");
