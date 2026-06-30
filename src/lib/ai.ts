@@ -684,6 +684,36 @@ export function isPureClosing(text: string): boolean {
   return CLOSING_PATTERNS.some((p) => p.test(t));
 }
 
+// Burst-aware pure-closing check — judges the WHOLE un-answered burst, not just
+// the last bubble. THE SILENCE BUG: the 10s debounce collapses a client's rapid
+// bubbles so only the LAST one's handler replies. When a client asks a real
+// question and then sends a polite "thanks!"/"ok" a few seconds later (before the
+// bot has answered), the debounce keeps only the "thanks!"; judging that single
+// bubble as a pure closing then DISCARDS the model's correct answer to the
+// earlier question and the bot goes silent on a hot lead — on all three channels.
+// Fix: it is a pure closing ONLY when the last bubble is a closing AND every other
+// still-un-answered bubble in the same burst (the user messages after the last
+// assistant turn) also carries no question, booking info, or substantive content.
+export function isPureClosingBurst(history: Array<{ role: string; content: string }>): boolean {
+  if (!history || history.length === 0) return false;
+  const last = history[history.length - 1];
+  if (!last || last.role !== "user") return false;
+  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
+  // The latest bubble must itself be a pure closing, or there is nothing to skip.
+  if (!isPureClosing(strip(last.content))) return false;
+  // Walk back across the un-answered burst (the user bubbles since the last
+  // assistant reply). If any earlier one is a real, still-unanswered message,
+  // the model's answer to it must be sent — never silenced by the trailing thanks.
+  for (let i = history.length - 2; i >= 0; i--) {
+    if (history[i].role === "assistant") break; // reached the last answered turn
+    const t = strip(history[i].content);
+    if (QUESTION_SIGNALS.test(t) || SUBSTANTIVE_CONTENT.test(t) || BOOKING_INFO_SIGNALS.test(t)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
 export async function getAIResponse(
   messages: ChatMessage[],

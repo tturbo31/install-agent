@@ -18,6 +18,7 @@ import {
   CREDIT_ALERT,
   containsBookingInfo,
   isAskingForBookingInfo,
+  isPureClosingBurst,
   detectAdFlooringType,
   adFlooringTypeNote,
   classifyAdCreativeType,
@@ -978,8 +979,10 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // Pure closing / thanks with no new question → stay silent instead of
-    // sending another text. Never overrides the post-booking flow.
-    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiText) || isPureClosing(enrichedText))) {
+    // sending another text. Never overrides the post-booking flow. Burst-aware:
+    // a trailing "thanks!" must NOT silence the model's answer to an earlier,
+    // still-un-answered question that the 10s debounce folded into this turn.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiText) || isPureClosingBurst(history))) {
       console.log("[IG] React-only (closing/thanks) — no text sent");
       return;
     }

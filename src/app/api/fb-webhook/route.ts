@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -715,8 +715,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     // Pure closing / thanks with no new question → stay silent instead of
     // sending another text (Messenger has no Page-side reaction API). Never
-    // overrides the post-booking flow.
-    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosing(enrichedText))) {
+    // overrides the post-booking flow. Burst-aware: a trailing "thanks!" must NOT
+    // silence the model's answer to an earlier, still-un-answered question that
+    // the 10s debounce folded into this turn.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosingBurst(history))) {
       console.log("[FB] React-only (closing/thanks) — no text sent");
       return;
     }

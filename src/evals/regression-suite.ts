@@ -17,6 +17,7 @@ import {
   openerMessage,
   containsBookingInfo,
   isAskingForBookingInfo,
+  isPureClosingBurst,
   type ChatMessage,
 } from "../lib/ai";
 import {
@@ -129,6 +130,42 @@ async function main() {
   ck("Greenacres (Palm Beach) → served", !/don'?t (?:serve|cover)|do not (?:serve|cover)|outside (?:our|the)/i.test(inArea2), inArea2);
   const outArea = await ai([{ role: "user", content: "Do you serve Naples?" }]);
   ck("Naples (Gulf coast) → politely declined", /don'?t (?:serve|cover)|do not (?:serve|cover)|only serve|outside|don'?t cover/i.test(outArea), outArea);
+
+  // ── ERROR 8: trailing "thanks!" silenced an earlier un-answered question
+  // The 10s debounce folds rapid client bubbles into one turn; only the LAST
+  // bubble's handler replies. Judging the trailing "thanks!" alone as a pure
+  // closing discarded the model's answer to the real earlier question → silence
+  // on all 3 channels. isPureClosingBurst judges the WHOLE un-answered burst.
+  console.log("\n[ERROR 8] Trailing thanks must NOT silence an earlier un-answered question");
+  ck("question + trailing 'thanks!' (no reply yet) → NOT a closing (must answer)",
+    isPureClosingBurst([
+      { role: "user", content: "How much do you charge per sqft for 300 sqft?" },
+      { role: "user", content: "Thank you!" },
+    ]) === false);
+  ck("standalone 'thanks!' after the bot already answered → IS a closing (stay silent)",
+    isPureClosingBurst([
+      { role: "user", content: "How much for 300 sqft?" },
+      { role: "assistant", content: "For 300 sqft of vinyl it comes to about $2,000." },
+      { role: "user", content: "Thank you so much!" },
+    ]) === true);
+  ck("question + trailing 'ok thanks' burst → NOT a closing (must answer)",
+    isPureClosingBurst([
+      { role: "user", content: "Do you install over existing tile?" },
+      { role: "user", content: "ok thanks" },
+    ]) === false);
+  ck("address bubble then 'thanks' → NOT a closing (booking info must not be dropped)",
+    isPureClosingBurst([
+      { role: "user", content: "5pm today" },
+      { role: "user", content: "113 NW 11th St Ft Lauderdale FL 33311" },
+      { role: "user", content: "thanks!" },
+    ]) === false);
+  ck("latest is a real question (not a closing) → NOT a closing",
+    isPureClosingBurst([
+      { role: "assistant", content: "Happy to help!" },
+      { role: "user", content: "do you do stairs?" },
+    ]) === false);
+  eachChannel("uses burst-aware pure-closing (isPureClosingBurst(history))",
+    (s) => s.includes("isPureClosingBurst(history)"));
 
   console.log(`\n================= REGRESSION SUITE: ${pass} passed, ${fail} failed =================`);
   if (fail) console.log("FAILED:", fails.join(" | "));

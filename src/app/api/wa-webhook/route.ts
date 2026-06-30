@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo } from "@/lib/ai";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -610,8 +610,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     // Pure closing / thanks with no new question → react to the message instead
-    // of sending another text. Never overrides the post-booking flow.
-    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosing(enrichedText))) {
+    // of sending another text. Never overrides the post-booking flow. Burst-aware:
+    // a trailing "thanks!" must NOT silence the model's answer to an earlier,
+    // still-un-answered question that the 10s debounce folded into this turn.
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosingBurst(history))) {
       await sendWhatsAppReaction(phone, messageId, "👍");
       console.log("[WA] React-only (closing/thanks) — reacted, no text sent");
       return;
