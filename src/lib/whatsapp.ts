@@ -14,20 +14,35 @@ function getClientToken(): string {
   return process.env.ZAPI_CLIENT_TOKEN!;
 }
 
-export async function sendWhatsAppMessage(phone: string, text: string): Promise<void> {
+export type WaSendResult = { ok: boolean; status: number; error?: string };
+
+// Send a WhatsApp text via Z-API. RESILIENT + VISIBLE: a failed send is the
+// silent killer — the DB stores the assistant reply either way, so the panel
+// shows "replied" while the client got NOTHING (the reported bug). So we now:
+//  • retry once on a transient failure (network drop, 5xx, Z-API blip),
+//  • return a {ok,status,error} result so the caller can react,
+//  • log LOUDLY with the Z-API error body so the cause is diagnosable.
+export async function sendWhatsAppMessage(phone: string, text: string): Promise<WaSendResult> {
   const url = `${ZAPI_BASE}/instances/${getInstanceId()}/token/${getToken()}/send-text`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Client-Token": getClientToken(),
-    },
-    body: JSON.stringify({ phone, message: text }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    console.error("sendWhatsAppMessage error:", JSON.stringify(err));
+  let last: WaSendResult = { ok: false, status: 0, error: "not attempted" };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Client-Token": getClientToken() },
+        body: JSON.stringify({ phone, message: text }),
+      });
+      if (res.ok) return { ok: true, status: res.status };
+      const errBody = await res.text().catch(() => "");
+      last = { ok: false, status: res.status, error: errBody.slice(0, 300) };
+      console.error(`🚨 sendWhatsAppMessage FAILED (attempt ${attempt}/2) phone=${phone} status=${res.status} body=${errBody.slice(0, 300)}`);
+    } catch (err) {
+      last = { ok: false, status: 0, error: String(err).slice(0, 300) };
+      console.error(`🚨 sendWhatsAppMessage EXCEPTION (attempt ${attempt}/2) phone=${phone}:`, err);
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
   }
+  return last;
 }
 
 // React to a client's message with an emoji (e.g. a thumbs up) instead of
