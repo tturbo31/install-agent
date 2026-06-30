@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, type AdFlooringType } from "@/lib/ai";
+import { fetchAdCreative } from "@/lib/facebook";
+import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
@@ -196,6 +198,43 @@ async function processCancelCommand(
     console.error("WA cancel error:", err);
   }
   return clean;
+}
+
+// ─── Click-to-WhatsApp ad referral extraction ─────────────────────────────
+// A lead that taps an Instagram/Facebook "Click to WhatsApp" ad arrives with the
+// ad's referral context (Meta fields: source_id, headline, body, source_url,
+// image/thumbnail). Z-API's wrapper key for this varies by version, so scan the
+// likely locations defensively and never throw on a shape we don't recognize.
+// Whatever we find feeds the type-first logic so a TILE ad never gets the vinyl
+// $5 pitch. Returns null when there is no ad context (a normal organic message).
+function extractWaAdReferral(
+  body: Record<string, unknown>
+): { adId?: string; adTitle?: string; adImage?: string; sourceUrl?: string } | null {
+  const asObj = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  const candidates = [
+    body.referral, body.referralMessage, body.adReferral, body.conversionSource, body.ctwaContext,
+    asObj(body.message)?.referral, asObj(body.text)?.referral, asObj(body.notification)?.referral,
+  ]
+    .map(asObj)
+    .filter((x): x is Record<string, unknown> => !!x);
+  for (const r of candidates) {
+    const get = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = r[k];
+        if (typeof v === "string" && v.trim()) return v.trim();
+      }
+      return undefined;
+    };
+    const adId = get("source_id", "sourceId", "ad_id", "adId", "id");
+    const headline = get("headline", "title", "ad_title", "adTitle");
+    const bodyTxt = get("body", "sourceBody", "description", "caption");
+    const sourceUrl = get("source_url", "sourceUrl", "url");
+    const adImage = get("image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "media_url", "mediaUrl", "thumbnail");
+    const adTitle = [headline, bodyTxt].filter(Boolean).join(" ") || undefined;
+    if (adId || adTitle || adImage || sourceUrl) return { adId, adTitle, adImage, sourceUrl };
+  }
+  return null;
 }
 
 // ─── Main message handler ─────────────────────────────────────────────────
@@ -468,6 +507,23 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }).eq("id", conv.id);
     }
 
+    // Capture Click-to-WhatsApp ad context so the type-first logic below knows the
+    // ad's flooring type (a TILE ad must never get the vinyl $5 pitch). Defensive:
+    // stores only what Z-API actually provides; absence is fine (we then ask).
+    const adRef = extractWaAdReferral(body);
+    if (adRef) {
+      console.log("[WA AD] referral detected:", JSON.stringify(adRef).slice(0, 300));
+      const c = conv as Record<string, unknown>;
+      const upd: Record<string, unknown> = {};
+      if (adRef.adId && !c.ad_id) upd.ad_id = adRef.adId;
+      if (adRef.adTitle && !c.ad_title) upd.ad_title = adRef.adTitle;
+      if (adRef.adImage && !c.creative_url) upd.creative_url = adRef.adImage;
+      if (Object.keys(upd).length) {
+        await supabaseAdmin.from("instagram_conversations").update(upd).eq("id", conv.id);
+        Object.assign(c, upd);
+      }
+    }
+
     // Load memories in parallel with timeout
     const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
       Promise.race([p, new Promise<null>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]).catch(() => null);
@@ -540,6 +596,51 @@ async function handleWaMessage(body: Record<string, unknown>) {
         const detectedSqft = recentUserTexts.reduce<number | null>((found, t) => found ?? detectLargeLeadSqft(t), null);
         if (detectedSqft) {
           systemParts.push(`[LARGE LEAD ALERT: Client stated ${detectedSqft} sqft which is >= 500. This is a LARGE LEAD. You MUST propose the free in-person visit. Do NOT give any price or dollar amount by DM. Do NOT calculate "$X for this project". Respond with STEP 2B only.]`);
+        }
+
+        // ── TYPE FIRST (WhatsApp parity with IG/FB) ──────────────────────────
+        // We advertise tile, vinyl, and hardwood at DIFFERENT rates, and the
+        // worst error is pitching the $5 vinyl promo to a TILE-ad lead. So detect
+        // the type from any captured ad data AND the client's own words; if known,
+        // lock the bot to that product's terms; until it is known, inject the ad
+        // note so the bot ASKS the type first and NEVER assumes vinyl.
+        const convAny = conv as Record<string, unknown>;
+        const userBlob = history
+          .filter((m: { role: string; content: string }) => m.role === "user")
+          .map((m: { role: string; content: string }) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+          .join(" ");
+        const adSignals = [
+          convAny.ad_title as string | undefined,
+          convAny.creative_url as string | undefined,
+          convAny.ad_id as string | undefined,
+          userBlob,
+        ];
+        let adType = detectAdFlooringType(...adSignals);
+        // Best-effort auto-detect from the ad creative (opening turn only, then
+        // persisted so the tile answer survives later turns). Vision is trusted
+        // only for a clear 'tile' verdict; ad TEXT is trusted for all three types.
+        const adId = convAny.ad_id as string | undefined;
+        if (!adType && adId && !messagesForAI.some((m) => m.role === "assistant")) {
+          let resolved: AdFlooringType | null = null;
+          const ad = await withTimeout(fetchAdCreative(adId), 6000);
+          if (ad?.text) resolved = detectAdFlooringType(ad.text);
+          if (!resolved && ad?.imageUrl) {
+            resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
+          }
+          if (!resolved && convAny.creative_url) {
+            resolved = (await withTimeout(classifyAdCreativeType(convAny.creative_url as string), 6000)) === "tile" ? "tile" : null;
+          }
+          if (resolved) {
+            adType = resolved;
+            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
+            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+          }
+        }
+        if (adType) {
+          systemParts.push(adFlooringTypeNote(adType));
+        } else {
+          // Type still unknown → ask first, never assume vinyl (the reported bug).
+          systemParts.push(AD_REPLY_NOTE);
         }
       }
       const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;

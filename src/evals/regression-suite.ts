@@ -167,6 +167,22 @@ async function main() {
   eachChannel("uses burst-aware pure-closing (isPureClosingBurst(history))",
     (s) => s.includes("isPureClosingBurst(history)"));
 
+  // ── ERROR 9: WhatsApp pitched the vinyl $5 promo to a TILE-ad lead
+  // The WA webhook had NO ad handling (IG/FB did), so a Click-to-WhatsApp tile-ad
+  // lead got the vinyl package. ALL 3 channels must now detect the ad's flooring
+  // type and, until it is known, ask first (AD_REPLY_NOTE) instead of assuming
+  // vinyl. The brain behavior is covered by ERROR 2/3; here we assert the WEBHOOK
+  // wiring exists in every channel (parity).
+  console.log("\n[ERROR 9] All 3 channels detect ad type & ask first (never assume vinyl)");
+  eachChannel("injects ad flooring-type detection",
+    (s) => s.includes("detectAdFlooringType") && s.includes("adFlooringTypeNote"));
+  eachChannel("falls back to ASK-the-type note when type unknown",
+    (s) => s.includes("AD_REPLY_NOTE"));
+  eachChannel("best-effort ad creative auto-detect (fetch + vision)",
+    (s) => s.includes("fetchAdCreative") && s.includes("classifyAdCreativeType"));
+  ck("WhatsApp parses Click-to-WhatsApp ad referral",
+    ROUTES.WhatsApp.includes("extractWaAdReferral"));
+
   console.log(`\n================= REGRESSION SUITE: ${pass} passed, ${fail} failed =================`);
   if (fail) console.log("FAILED:", fails.join(" | "));
   process.exit(fail > 0 ? 1 : 0);
