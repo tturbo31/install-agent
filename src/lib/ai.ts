@@ -225,9 +225,21 @@ export type AdFlooringType = "tile" | "vinyl" | "hardwood";
 // and a client who clicked a wood-look-TILE ad naturally types "wood look" — so
 // committing to vinyl there is exactly the reported bug. Genuine tile excludes
 // "tile-look". Hardwood is real wood only (never bare "wood"/"wood look").
-const AD_VINYL = /\b(vinyl|vinil|lvp|spc|laminate|laminad[oa])\b/i;
-const AD_TILE = /\b(?:tiles?|porcelain|porcelanato|ceramic|cer[aâ]mic[ao]|azulejo)\b(?![\s-]?look)/i;
-const AD_HARDWOOD = /\b(hardwood|solid\s*hardwood|engineered\s*(?:wood|hardwood))\b/i;
+// Every stem accepts the inflected forms real clients actually type — otherwise
+// the client names their type and the bot STILL re-asks it (the reported bug):
+//  - "laminate[ds]?" = laminate/laminated/laminates; "laminad[oa]s?" = PT/ES
+//    laminado/a/os/as. The bare "laminate" stem MISSED "laminated floor".
+//  - "v[iy]n[iy]ls?" = vinyl/vinil/vynil/vynyl + plurals (vynil is a VERY common
+//    misspelling). "lvt" (Luxury Vinyl Tile) is a mainstream vinyl product name.
+//  - AD_TILE pluralizes each stem (porcelains, ceramics, azulejos, porcelanatos)
+//    while still EXCLUDING "tile-look" copy (that appears on vinyl creatives too).
+//  - AD_HARDWOOD adds "solid wood" (= solid hardwood) and "engineered floor(ing)"
+//    (engineered flooring is an engineered-WOOD product in the trade). It still
+//    NEVER matches bare "wood"/"wood look" — that is genuinely ambiguous (wood-look
+//    vinyl exists), so it stays null and the bot asks, which is correct.
+const AD_VINYL = /\b(v[iy]n[iy]ls?|lvp|lvt|spc|laminate[ds]?|laminad[oa]s?)\b/i;
+const AD_TILE = /\b(?:tiles?|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?)\b(?![\s-]?look)/i;
+const AD_HARDWOOD = /\b(hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring))\b/i;
 
 // Detect the flooring type from ad signals (ad_title/creative_url/ad_id) OR from
 // a type the CLIENT explicitly named. Returns null when NO explicit type is named
@@ -589,7 +601,10 @@ const FLOORING_CTX = /\b(floors?|flooring|pisos?)\b/i;
 const INQUIRY_INTENT = /\b(interested|interesad[oa]|interessad[oa]|need|want|looking|quiero|necesito|busco|preciso|quero|gostaria|option|options|opci[oó]n|op[çc][õo]es|install|redo|new|do you (?:do|have|offer|install))\b/i;
 const PROMO_PRICE = /\b(promotion|promo|promo[çc][aã]o|promoci[oó]n|deal|special|oferta|price|pricing|cost|quote|estimate|cu[aá]nto|precio|cuesta|or[çc]amento|presupuesto)\b/i;
 const HOW_WORK = /how\s+(?:much|does\s+(?:it|this|that|your|the)\s+\w*\s*work|do\s+you\s+(?:charge|price|work))/i;
-const SPECIFIC_TYPE = /\b(tiles?|vinyl|vinil|laminate|laminad[oa]|hardwood|porcelain|porcelanato|ceramic|cer[aâ]mic[ao]|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejo|lvp|spc)\b/i;
+// Mirrors the AD_* stems (same inflected forms) so "the client already named a
+// type, skip the opener" agrees with detectAdFlooringType and the bot never
+// re-asks a plural/misspelled/shorthand type the client already gave.
+const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
 const SEE_OR_COLOR = /\b(photo|picture|image|catalog|colou?r|grey|gray|style|sample|show me|wood.?look|stone.?look|tile.?look|marble.?look|website|instagram)\b/i;
 const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego)\b/i;
 
@@ -613,7 +628,7 @@ export function isFlooringInquiry(text: string): boolean {
 // hot lead. When any of this substance is present, it is NOT a closing.
 // Question words ("how much", "sqft", "quote"...) are already handled by
 // QUESTION_SIGNALS; this catches DECLARATIVE answers that carry no question.
-const SUBSTANTIVE_CONTENT = /\b(vinyl|vinil|laminate|laminad[oa]|hardwood|wood|madeira|tile|tiles|porcelain|porcelanato|ceramic|cer[aâ]mic[ao]|azulejo|lvp|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do)\b/i;
+const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do)\b/i;
 
 export function hasSubstantiveContent(text: string): boolean {
   return SUBSTANTIVE_CONTENT.test(text || "");

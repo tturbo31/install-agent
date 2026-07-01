@@ -73,6 +73,21 @@ async function main() {
   ck("ad_title 'Porcelain Floors Miami' → tile", detectAdFlooringType("Porcelain Floors Miami") === "tile");
   ck("ad_title 'Luxury Vinyl Plank $5' → vinyl", detectAdFlooringType("Luxury Vinyl Plank $5") === "vinyl");
   ck("ad_title 'Laminate Sale' → vinyl", detectAdFlooringType("Laminate Sale") === "vinyl");
+  // English inflected forms the client actually types (the "laminated floor" bug):
+  ck("client 'laminated floor' → vinyl (was MISS)", detectAdFlooringType("I need to put laminated floor in my garage") === "vinyl");
+  ck("client 'laminate flooring' → vinyl", detectAdFlooringType("laminate flooring") === "vinyl");
+  ck("client 'laminates' → vinyl", detectAdFlooringType("laminates") === "vinyl");
+  ck("client 'piso laminado' (PT) → vinyl", detectAdFlooringType("piso laminado") === "vinyl");
+  // Plurals / misspelling / product-name / shorthand gaps (audit findings):
+  ck("'porcelains' → tile", detectAdFlooringType("I'm interested in porcelains") === "tile");
+  ck("'ceramics' → tile", detectAdFlooringType("do you do ceramics") === "tile");
+  ck("'hardwoods' → hardwood", detectAdFlooringType("I want hardwoods") === "hardwood");
+  ck("'vinyls' → vinyl", detectAdFlooringType("do you do vinyls?") === "vinyl");
+  ck("misspelled 'vynil' → vinyl", detectAdFlooringType("I want vynil floors") === "vinyl");
+  ck("'LVT' → vinyl", detectAdFlooringType("Do you install LVT?") === "vinyl");
+  ck("'engineered flooring' → hardwood", detectAdFlooringType("engineered flooring") === "hardwood");
+  ck("'solid wood floors' → hardwood", detectAdFlooringType("solid wood floors") === "hardwood");
+  ck("bare 'wood floors' → null (ambiguous, still ask)", detectAdFlooringType("I want wood floors") === null);
   ck("ad_title 'Hardwood Flooring Deal' → hardwood", detectAdFlooringType("Hardwood Flooring Deal") === "hardwood");
   ck("creative_url with /tile/ → tile", detectAdFlooringType(undefined, ".../ads/edge-tile/cover.jpg") === "tile");
   ck("color-only 'Forged Brown' → null (unknown)", detectAdFlooringType("Forged Brown") === null);

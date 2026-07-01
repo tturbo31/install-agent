@@ -187,6 +187,49 @@ async function main() {
   ck("WhatsApp caps the type question (no infinite ask-the-type loop)",
     /typeAskCount/.test(ROUTES.WhatsApp) && ROUTES.WhatsApp.includes("STOP ASKING"));
 
+  // ── ERROR 10: client SAID the type ("laminated floor") but the bot still
+  // asked "tile, vinyl, or hardwood?" and looped the opener. Root cause: the
+  // vinyl/laminate token regexes matched only the bare stem "laminate" (\b failed
+  // on "laminated"/"laminates"), so detectAdFlooringType returned null, the
+  // deterministic first-contact opener fired, and the LLM never saw the message.
+  // This is the exact screenshot: "I need to put laminated floor in my garage.
+  // Its 20x19 around 400 sq feet total. Can you please let me know how much..."
+  console.log("\n[ERROR 10] Client says 'laminated floor' → recognized as vinyl, NOT the type-ask loop");
+  // Detection (deterministic — the true root-cause guard):
+  ck("'laminated floor' → vinyl (was MISS: bot re-asked the type)", detectAdFlooringType("I need to put laminated floor in my garage") === "vinyl");
+  ck("'laminate flooring' → vinyl", detectAdFlooringType("laminate flooring") === "vinyl");
+  ck("'laminates' → vinyl", detectAdFlooringType("laminates") === "vinyl");
+  ck("'piso laminado' (PT) still → vinyl", detectAdFlooringType("piso laminado") === "vinyl");
+  ck("'pisos laminados' (PT plural) → vinyl", detectAdFlooringType("quero pisos laminados") === "vinyl");
+  // Same bug CLASS (audit findings): plurals, the 'vynil' misspelling, LVT, and
+  // engineered/solid-wood shorthands must also be recognized, never re-asked.
+  ck("plural 'porcelains' → tile", detectAdFlooringType("I'm interested in porcelains") === "tile");
+  ck("plural 'ceramics' → tile", detectAdFlooringType("do you do ceramics") === "tile");
+  ck("plural 'hardwoods' → hardwood", detectAdFlooringType("I want hardwoods") === "hardwood");
+  ck("plural 'vinyls' → vinyl", detectAdFlooringType("do you do vinyls?") === "vinyl");
+  ck("misspelling 'vynil' → vinyl", detectAdFlooringType("I want vynil floors") === "vinyl");
+  ck("'LVT' → vinyl", detectAdFlooringType("Do you install LVT?") === "vinyl");
+  ck("'engineered flooring' → hardwood", detectAdFlooringType("engineered flooring for the first floor") === "hardwood");
+  ck("'solid wood floors' → hardwood", detectAdFlooringType("solid wood floors in the bedrooms") === "hardwood");
+  // Guards: ambiguous "wood look" and multi-type stay null (bot asks, never mis-pins).
+  ck("bare 'wood floors' still → null (ambiguous, ask)", detectAdFlooringType("I want wood floors") === null);
+  ck("'real wood look' still → null", detectAdFlooringType("real wood look") === null);
+  ck("'tile or vinyl' still → null (ambiguous)", detectAdFlooringType("deciding between tile and vinyl") === null);
+  // End-to-end, exact screenshot message on WhatsApp, NO type note injected —
+  // proving the internal conversationFlooringType now catches "laminated" so the
+  // deterministic opener does NOT hijack and the brain handles it as vinyl.
+  const JESSICA = "Hi! I need to put laminated floor in my garage. Its 20x19 around 400 sq feet total. Can you please let me know how much the instal would be";
+  const r10 = await ai([{ role: "user", content: JESSICA + waBook("") }]);
+  console.log("   →", r10.replace(/\s+/g, " ").slice(0, 180));
+  ck("does NOT send the bare 3-type opener", r10 !== OPENER_EN && r10 !== OPENER_ES && r10 !== OPENER_PT, r10);
+  ck("does NOT re-ask 'tile, vinyl, or hardwood?' (type already stated)", !(/\btile\b/i.test(r10) && /\bvinyl\b/i.test(r10) && /\bhardwood\b/i.test(r10)), r10);
+  ck("recognizes the job (quotes a price or engages vinyl, not a canned question)", /\$\s?\d|vinyl|laminate|quote|estimate/i.test(r10), r10);
+  // And with the vinyl type note the webhook now injects (detection returns vinyl),
+  // the bot commits to vinyl terms and never loops the type question.
+  const r10b = await ai([{ role: "user", content: JESSICA + waBook(adFlooringTypeNote("vinyl")) }]);
+  console.log("   →", r10b.replace(/\s+/g, " ").slice(0, 180));
+  ck("vinyl note: never re-asks the flooring type", !(/\btile\b/i.test(r10b) && /\bhardwood\b/i.test(r10b)), r10b);
+
   console.log(`\n================= REGRESSION SUITE: ${pass} passed, ${fail} failed =================`);
   if (fail) console.log("FAILED:", fails.join(" | "));
   process.exit(fail > 0 ? 1 : 0);
