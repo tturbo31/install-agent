@@ -182,6 +182,10 @@ async function main() {
     (s) => s.includes("fetchAdCreative") && s.includes("classifyAdCreativeType"));
   ck("WhatsApp parses Click-to-WhatsApp ad referral",
     ROUTES.WhatsApp.includes("extractWaAdReferral"));
+  ck("WhatsApp scans the raw payload for the ad's flooring type",
+    ROUTES.WhatsApp.includes("collectStrings"));
+  ck("WhatsApp caps the type question (no infinite ask-the-type loop)",
+    /typeAskCount/.test(ROUTES.WhatsApp) && ROUTES.WhatsApp.includes("STOP ASKING"));
 
   console.log(`\n================= REGRESSION SUITE: ${pass} passed, ${fail} failed =================`);
   if (fail) console.log("FAILED:", fails.join(" | "));

@@ -237,6 +237,17 @@ function extractWaAdReferral(
   return null;
 }
 
+// Recursively collect every string value in a payload (bounded), so we can scan
+// the WHOLE Z-API body for the ad's own text without guessing which wrapper key
+// holds the Click-to-WhatsApp referral. A tile ad's headline ("1000 sq.ft. TILE
+// INSTALLATION...") lands somewhere in that tree; this finds it wherever it is.
+function collectStrings(v: unknown, out: string[], depth = 0): void {
+  if (depth > 4 || out.length > 300) return;
+  if (typeof v === "string") { if (v.length < 600) out.push(v); return; }
+  if (Array.isArray(v)) { for (const x of v) collectStrings(x, out, depth + 1); return; }
+  if (v && typeof v === "object") { for (const x of Object.values(v as Record<string, unknown>)) collectStrings(x, out, depth + 1); }
+}
+
 // ─── Main message handler ─────────────────────────────────────────────────
 async function handleWaMessage(body: Record<string, unknown>) {
   try {
@@ -524,6 +535,23 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
     }
 
+    // Robust type capture from the FIRST message's raw payload: the ad's own text
+    // (e.g. a "TILE INSTALLATION" headline) may sit under a Z-API key we don't
+    // recognize, so scan the whole body and persist a clearly-detected type. Only
+    // on the opening message (before any bot reply), so a later quoted bubble that
+    // lists all three options can never mis-tag the conversation.
+    if (wasNewConv && !(conv as Record<string, unknown>).ad_title) {
+      const strings: string[] = [];
+      collectStrings(body, strings);
+      const scannedType = detectAdFlooringType(strings.join(" "));
+      if (scannedType) {
+        const persisted = `[${scannedType}]`;
+        await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+        Object.assign(conv as Record<string, unknown>, { ad_title: persisted });
+        console.log("[WA AD] flooring type from payload scan:", scannedType);
+      }
+    }
+
     // Load memories in parallel with timeout
     const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
       Promise.race([p, new Promise<null>((_, r) => setTimeout(() => r(new Error("timeout")), ms))]).catch(() => null);
@@ -639,8 +667,19 @@ async function handleWaMessage(body: Record<string, unknown>) {
         if (adType) {
           systemParts.push(adFlooringTypeNote(adType));
         } else {
-          // Type still unknown → ask first, never assume vinyl (the reported bug).
-          systemParts.push(AD_REPLY_NOTE);
+          // Type unknown. Ask which type — but NEVER loop it: if the bot already
+          // listed the three types 2+ times and the client still has not named
+          // one (e.g. keeps replying "Ok"), STOP asking and pivot to the free
+          // estimate. Repeating the identical question is the reported bug.
+          const typeAskCount = history.filter(
+            (m: { role: string; content: string }) =>
+              m.role === "assistant" && /\btile\b/i.test(m.content) && /\bhardwood\b/i.test(m.content)
+          ).length;
+          if (typeAskCount >= 2) {
+            systemParts.push("[TYPE STILL UNKNOWN, STOP ASKING: You already asked which flooring type (tile, vinyl, or hardwood) and the client has not answered. Do NOT ask the type again and do NOT assume vinyl or quote any price. Move forward warmly in ONE short sentence: offer a FREE in-person estimate so we confirm everything and give the exact price on site, and ask what day works. NEVER repeat the same type question again.]");
+          } else {
+            systemParts.push(AD_REPLY_NOTE);
+          }
         }
       }
       const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
