@@ -160,6 +160,21 @@ const PRODUCT_TYPE_Q = new RegExp(
   "i"
 );
 
+// True when we have ALREADY asked the client which flooring type they want in a
+// recent assistant turn (any bot message that lists the type options — the canned
+// opener and the model's own asks both name tile + hardwood). Used so the
+// deterministic type-ask NEVER fires twice: resending the identical canned
+// "which one, tile, vinyl, or hardwood?" line mid-conversation is the reported
+// robotic-loop bug (a client asked "what's included / how much" three times and
+// got the same canned opener three times, and one called it a "scam bot"). Once
+// asked, the full-context model handles the follow-up naturally.
+function assistantAlreadyAskedType(messages: ChatMessage[]): boolean {
+  return messages
+    .filter((m) => m.role === "assistant")
+    .slice(-4)
+    .some((m) => /\btile\b/i.test(m.content) && /\bhardwood\b/i.test(m.content));
+}
+
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "user") return null;
@@ -188,7 +203,12 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
       PRODUCT_TYPE_Q.test(text) ||
       /\bhow\s+(?:much|does\s+(?:it|this|that|your|the)|do\s+you\s+(?:charge|price|work))\b/i.test(text) ||
       isFlooringInquiry(text);
-    if (vinylProne) return openerMessage(last.content);
+    // FIRST-CONTACT ONLY: the canned type-ask opener is a safety net for a
+    // brand-new lead whose type we do not know. Mid-conversation we must NOT
+    // re-fire it — the full-context model answers what the client asked and folds
+    // in the type question naturally, instead of blurting the identical canned
+    // "which one, tile, vinyl, or hardwood?" line again (the robotic-loop bug).
+    if (vinylProne && !messages.some((m) => m.role === "assistant")) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -199,11 +219,15 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
       if (rule.id === "what_included") {
-        // Known type → its exact inclusions. Type still unknown → NEVER assume
-        // vinyl; ask which type first (tile is labor only, vinyl includes the
-        // material). Once the client names a type, conversationFlooringType picks
-        // it up and the right inclusions are given.
-        return adType ? whatIsIncludedResponseFor(adType) : WHAT_IS_INCLUDED_ASK_TYPE;
+        // Known type → its exact inclusions.
+        if (adType) return whatIsIncludedResponseFor(adType);
+        // Type still unknown → ask which type first (tile is labor only, vinyl
+        // includes the material). But ask AT MOST ONCE: if we already asked the
+        // type, hand the repeat to the full-context model so it never resends the
+        // identical canned ask-type line ("what's included?" x3 → same line x3
+        // was the loop). First time through, the deterministic ask is safe.
+        if (assistantAlreadyAskedType(messages)) return null;
+        return WHAT_IS_INCLUDED_ASK_TYPE;
       }
       return rule.response;
     }
@@ -743,6 +767,21 @@ export async function getAIResponse(
     return { text: "", inputTokens: 0, outputTokens: 0 };
   }
 
+  // JOB SEEKERS FIRST: someone looking for work or offering their own labor
+  // (installer, painter, "are you hiring", "busco trabajo") is never a customer.
+  // Guard this at the very top so a hardcoded intercept or the type-ask opener
+  // can never turn it into a sales pitch (the reported "job seeker got the promo
+  // opener" bug). Only on true first contact, and only the client's own text.
+  const firstUser = messages[messages.length - 1];
+  if (
+    firstUser?.role === "user" &&
+    !messages.some((m) => m.role === "assistant") &&
+    isJobSeeker(firstUser.content.split(/\n\n?\[SYSTEM:/)[0])
+  ) {
+    console.log("[AI] Job seeker on first contact — REACT_ONLY (no pitch)");
+    return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+  }
+
   // TYPE FIRST: on first contact, when we do NOT yet know the flooring type
   // (no ad detection, client has not named one), open by asking which of the
   // three types they want — for a bare greeting AND for a generic pricing/promo/
@@ -808,7 +847,9 @@ export async function getAIResponse(
 25. CAN BOOK ANY LISTED DAY, INCLUDING FUTURE WEEKS: The REAL-TIME SCHEDULE covers about three weeks ahead. You CAN and SHOULD book next week or the week after when the client wants it. NEVER say you cannot see, access, or open the calendar for a future week, and never say you can only book this week. Any date shown in the schedule is bookable. If the same weekday appears more than once, use the soonest one unless the client says "next week" or names a specific date.
 26. SERVICE AREA HARD GATE (overrides scheduling): We serve ONLY the Miami / South Florida EAST coast, from Homestead up to Jupiter (Miami-Dade, Broward, Palm Beach). We do NOT serve the Gulf / WEST coast at all (Tampa, St. Petersburg, Clearwater, Sarasota, Bradenton, Fort Myers, Cape Coral, Lehigh Acres, Estero, Bonita Springs, Naples, Marco Island, Port Charlotte, Punta Gorda), nor north of Jupiter (Treasure Coast), nor the Florida Keys south of Homestead. BEFORE proposing a visit, offering any time slot, confirming an appointment, or generating [BOOK:...], you MUST check the client's stated city/address. If it is on the west/Gulf coast or otherwise outside Homestead-to-Jupiter, you MUST NOT book — politely say we only serve the Miami area (the South Florida east coast from Homestead to Jupiter) and we do not cover their area. NEVER generate [BOOK:...] for an out-of-area address under any circumstance. This rule overrides every scheduling instruction.
 27. NO SQFT ARITHMETIC / NO INVENTED TOTALS: NEVER add, subtract, or recompute the client's stated square footage into a different number, and NEVER narrate a calculation out loud (forbidden examples: "that puts you at about 1,600 sqft to cover", "1900 minus 300", "so that's X sqft total"). Do NOT assume some rooms (bathrooms, laundry, kitchen) get a different material and subtract them, the whole job is the same flooring unless the client says otherwise. If you need to reference the size, repeat the client's own number back unchanged. For ANY job of 500 sqft or more, do NOT compute, quote, or restate any sqft total at all, just acknowledge warmly and move to the free in-person visit. Math errors and invented totals destroy trust, so when unsure, say nothing about the number and propose the visit.
-28. BATHROOM REMODELING RULE: We DO bathroom remodels (reforma de banheiro), not only flooring. When the client asks if we do, offer, or want a bathroom remodel or renovation (remodel, renovate, redo, or gut the bathroom), confirm YES we do it, explain that for a remodel we first need to check the space in person to give an accurate quote, and propose the FREE in-person visit exactly like a large lead: never quote a remodel price by DM, and never decline it for being small (it always goes to the visit, any size). This does NOT apply to a request for FLOORING in a bathroom (that is a normal flooring job under the usual sqft rules, including the under-200-sqft decline) or to a small tile/patch repair (we do not do repairs).`;
+28. BATHROOM REMODELING RULE: We DO bathroom remodels (reforma de banheiro), not only flooring. When the client asks if we do, offer, or want a bathroom remodel or renovation (remodel, renovate, redo, or gut the bathroom), confirm YES we do it, explain that for a remodel we first need to check the space in person to give an accurate quote, and propose the FREE in-person visit exactly like a large lead: never quote a remodel price by DM, and never decline it for being small (it always goes to the visit, any size). This does NOT apply to a request for FLOORING in a bathroom (that is a normal flooring job under the usual sqft rules, including the under-200-sqft decline) or to a small tile/patch repair (we do not do repairs).
+29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
+30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {

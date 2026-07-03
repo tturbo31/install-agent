@@ -189,14 +189,25 @@ async function main() {
   ck("'what material do you use?' (organic) → asks the type, no vinyl/$5", askType(mMat), mMat);
   const mOpt = await ai([{ role: "user", content: "what are the material options?" }]);
   ck("'what are the material options?' → asks the type", askType(mOpt), mOpt);
-  // how-it-works on TURN 2 (after the opener) with no type named → still asks
+  // how-it-works on TURN 2 (after the opener) with no type named. The canned
+  // opener no longer fires mid-conversation (that was the robotic-loop bug), so
+  // the full-context model answers. A SAFE answer either asks the type price-free
+  // OR transparently lists all THREE per-type rates; it must NEVER lead with the
+  // $5 vinyl package alone as THE price (the "assume vinyl" danger). So: it must
+  // name all three types, never claim the vinyl quarter-round package universally,
+  // and if it quotes the vinyl $5 it must ALSO give the tile $4.50 and hardwood
+  // $3.20, proving it is not assuming vinyl for an unknown-type lead.
+  const safeTypeAnswer = (r: string) =>
+    /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r) &&
+    !/quarter round/i.test(r) &&
+    (!/\$\s?5\b/.test(r) || (/4\.50/.test(r) && /3\.20/.test(r)));
   const mHiw2 = await ai([
     { role: "user", content: "hi" },
     { role: "assistant", content: "Hola, trabajamos con piso vinílico de luxo, tile e hardwood. Qual é a sua preferência?" },
     { role: "user", content: "before I pick, how does your pricing work?" },
   ]);
   console.log("   how-it-works turn2 →", mHiw2.replace(/\s+/g, " ").slice(0, 120));
-  ck("how-it-works on turn 2, type unknown → asks the type, no $5/$2", askType(mHiw2), mHiw2);
+  ck("how-it-works on turn 2, type unknown → asks type OR lists all 3 rates (never assumes vinyl)", safeTypeAnswer(mHiw2), mHiw2);
   // capability question is still ANSWERED, never converted to a type-ask
   const mCap = await ai([{ role: "user", content: "is this can be used in the West Indies? looking for the best flooring options" }]);
   ck("capability/suitability question → answered, not a type-ask", /waterproof|humid|tropical|climate|stone|resist|20.?year|yes/i.test(mCap) && !askType(mCap), mCap);

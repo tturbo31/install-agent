@@ -159,6 +159,16 @@ const GRADERS = {
     label: 'Proposes in-person visit (large project)',
     check: (t: string) => /visit|in.?person|come by|measure|stop by/i.test(t),
   },
+  proposesVisitOrAsksType: {
+    // For a large lead whose flooring type is still UNKNOWN, the type-first
+    // feature correctly asks the type first (price-free) instead of proposing the
+    // visit right away; once the type is known it proposes the visit. Both are
+    // valid, no-DM-price responses, so accept either.
+    label: 'Proposes a visit OR asks the flooring type (large lead, no DM price)',
+    check: (t: string) =>
+      /visit|in.?person|come by|measure|stop by/i.test(t) ||
+      (/tile/i.test(t) && /vinyl/i.test(t) && /hardwood/i.test(t)),
+  },
   noColorNames: {
     label: 'No specific color/product names listed (redirect to website)',
     check: (t: string) => !/\b(White Knight|Coastal Mist|Forged Brown|Mocha|Grey Shield|Nordic Shadow|Lia\s+in\s+marble|marble\s+white)\b/i.test(t),
@@ -355,9 +365,13 @@ interface Scenario {
 
 const SCENARIOS: Scenario[] = [
   {
-    // Owner requirement: this response MUST state the $5 package and $2 labor-only rates
-    name: '"What is included?" → exact hardcoded text, NO prices (short version)',
-    messages: [{ role: "user", content: "What is included in the package?" }],
+    // The "what is included" answer is the VINYL package (material included), so it
+    // is only correct once the type is known to be vinyl. With the type-first
+    // feature, an unknown-type "what is included?" asks the type instead (covered
+    // by ad-type-verify), so this scenario names vinyl to test the exact vinyl
+    // included text with NO verbose $5/$2/over-1,000-sqft breakdown.
+    name: '"What is included?" (vinyl known) → exact hardcoded text, NO prices',
+    messages: [{ role: "user", content: "For vinyl, what is included in the package?" }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasWhatIsIncluded", "noOldVerboseIncluded"],
   },
   {
@@ -378,9 +392,9 @@ const SCENARIOS: Scenario[] = [
   },
   {
     // KEY NEW TEST: 500 sqft explicitly stated → visit required, no final price by DM
-    name: '500 sqft price question → visit proposed, no final DM price',
+    name: '500 sqft price question (type unknown) → asks type or proposes visit, no final DM price',
     messages: [{ role: "user", content: "How much does the flooring cost including installation? For 500 sqft." }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "proposesVisit", "noDMPriceForLargeProject"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "proposesVisitOrAsksType", "noDMPriceForLargeProject"],
     llmJudge: false,
   },
   {
