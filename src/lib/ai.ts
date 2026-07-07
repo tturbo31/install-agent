@@ -875,9 +875,9 @@ export async function getAIResponse(
       // sentence answers are unaffected; the stop_reason guard below salvages any
       // reply that still hits the limit.
       max_tokens: 600,
-      // Two cache breakpoints (both zero-behavior-change, billing only):
+      // Three cache breakpoints (all zero-behavior-change, billing only):
       // 1. Stable system block — shared by EVERY conversation on EVERY channel,
-      //    so any message from any client within 5 minutes of the previous one
+      //    so any message from any client within the TTL of the previous one
       //    reads the big base prompt at ~10% price.
       // 2. Last message — caches the per-client system remainder + conversation
       //    history, so a client's next reply in an active back-and-forth re-reads
@@ -886,13 +886,20 @@ export async function getAIResponse(
       // is byte-identical across conversations — memory/corrections empty, just
       // the FINAL REMINDERS — so its ~5K tokens are shared cache too; for
       // returning clients it caches across that client's own turns.)
+      // TTL is 1h, NOT the default 5m: measured over 72h of production traffic
+      // (535 calls), only 69% of calls arrive within 5min of the previous one —
+      // the other 31% found the 5m cache expired and paid full price PLUS the
+      // 1.25x write premium. 98% of calls arrive within 1h of the previous one.
+      // The 1h write costs 2x (vs 1.25x) but happens ~once an hour instead of
+      // dozens of times a day, so the effective input price drops from ~0.46x
+      // to ~0.14x of list. Same bytes, same model, same replies — billing only.
       system: [
-        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const } },
-        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const } },
+        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
       ],
       messages: messages.map((m, i) =>
         i === messages.length - 1
-          ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const } }] }
+          ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
           : { role: m.role, content: m.content }
       ),
     });
