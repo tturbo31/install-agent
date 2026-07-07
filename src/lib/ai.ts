@@ -533,6 +533,56 @@ export function detectLargeLeadSqft(text: string): number | null {
   return null;
 }
 
+// ─── Large-lead price backstop ─────────────────────────────────────────────
+// The LARGE LEAD RULE forbids ANY dollar total by DM for 500+ sqft projects.
+// The model occasionally slipped ("the price starts at $9,170") — and worse,
+// the nightly Dreaming analysis once codified that slip as a "learning" after
+// one lucky conversion, which spread the violation to every conversation
+// (found in the 2026-07-07 review: 6 large leads got totals; at least 2 went
+// cold right after receiving the number). This deterministic guard strips any
+// $1,000+ figure from the reply whenever the client has signaled a large
+// project, so no big total can ship even if the model or a future learning
+// regresses again. Per-sqft rates ($5, $4.50) are unaffected.
+const BIG_DOLLAR = /\$\s?\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\$\s?\d{4,}/;
+
+export function conversationHasLargeLead(messages: ChatMessage[]): boolean {
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    if (detectLargeLeadSqft(m.content.split(/\n\n?\[SYSTEM:/)[0]) !== null) return true;
+    // The floor-plan image analysis marks big projects explicitly.
+    if (/LARGE PROJECT/.test(m.content)) return true;
+  }
+  return false;
+}
+
+export function stripLargeLeadPrices(text: string): string {
+  if (!BIG_DOLLAR.test(text)) return text;
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  // Sentences carrying a tag ([BOOK:...], [NOTIFY_OWNER]) are always kept.
+  const kept = sentences.filter((s) => s.includes("[") || !BIG_DOLLAR.test(s));
+  const rebuilt = kept.join(" ").trim();
+  if (rebuilt) return rebuilt;
+  // The whole reply was the forbidden total — replace with the visit pivot.
+  return "For a project that size I do a free in-person visit, I measure everything, bring all the samples, and lock in your best price on the spot. What day works best for you?";
+}
+
+// ─── Consecutive-duplicate send guard ──────────────────────────────────────
+// True when the reply about to be sent is identical (after normalizing
+// whitespace/case) to the LAST assistant message already in the conversation.
+// Sending the same line twice in a row is the "robotic bot" signature (rule
+// 29) — it happened when a client re-tapped an ad FAQ button, re-sent an
+// attachment ("Got your message! Could you type your question?" x2), and worst
+// of all during an AI outage, where one client received the canned handoff
+// line TWELVE times in 90 minutes. Callers skip the send entirely when this
+// returns true — the client already has the identical answer directly above.
+export function isConsecutiveDuplicate(history: ChatMessage[], candidate: string): boolean {
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return false;
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const c = norm(candidate);
+  return c.length >= 15 && norm(lastAssistant.content) === c;
+}
+
 // Backstop for the [REACT_ONLY] behavior: detect when the client's latest
 // message is purely a thank-you / farewell / "I'll reach out later" with NO new
 // question or request. Conservative on purpose — bare "ok"/"sure" are left to
@@ -596,7 +646,11 @@ export function openerMessage(text: string): string {
   // no accent) is far more often a Spanish speaker dropping the H of "hola". A few
   // non-greeting words also pin the language for a no-greeting inquiry.
   if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria)\b/.test(t)) return OPENER_PT;
-  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|quiero|busco|interesad|promoci[oó]n|presupuesto)\b/.test(t)) return OPENER_ES;
+  // "pisos?/cerámica/instalación/cotización" pin Spanish for no-greeting
+  // inquiries like "Q piso es el de la promo?" — that message used to fail both
+  // language checks and get the ENGLISH opener (2026-07-07 review). "piso" is
+  // also Portuguese, but the PT check above runs first and catches PT context.
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n)\b/.test(t)) return OPENER_ES;
   return OPENER_EN;
 }
 
@@ -701,6 +755,11 @@ const JOB_SEEKER_PATTERNS: RegExp[] = [
   /\b(busco|buscando|necesito|quiero)\s+(trabajo|empleo|chamba|pega)\b/i,
   /\bsoy\s+(instalador|pintor|albañil|trabajador|obrero)\b/i,
   /\b(est[aá]n|estas?)\s+contratando\b|\bhay\s+(trabajo|vacante|empleo)\b/i,
+  // Service OFFERS phrased as credentials ("Tengo experiencia en instalación de
+  // cerámica y tengo herramientas") — an installer pitching, not a customer.
+  // Used to slip through and get the promo opener (2026-07-07 review).
+  /\btengo\s+(?:experiencia|herramientas?)\b[^.!?\n]{0,60}\b(?:instalaci[oó]n|instalar|cer[aá]mica|pisos?|construcci[oó]n|herramientas?)\b/i,
+  /\bexperiencia\s+en\s+instalaci[oó]n\b/i,
   // Portuguese
   /\b(procuro|preciso de|busco|quero|t[ôo] procurando)\s+(emprego|trabalho|vaga|servi[çc]o)\b/i,
   /\bsou\s+(instalador|pintor|pedreiro|trabalhador|ajudante)\b/i,
@@ -765,6 +824,31 @@ export async function getAIResponse(
   if (bookingConfirmed) {
     console.log("[AI] Booking confirmed — sending nothing to client");
     return { text: "", inputTokens: 0, outputTokens: 0 };
+  }
+
+  // REPEATED-MESSAGE INTERCEPT: the client re-sent the exact same message we
+  // just answered (Messenger ad FAQ quick-reply buttons get re-tapped — one
+  // client sent "What is the installation process?" five times and used to get
+  // the identical paragraph five times). Re-answering identically is the
+  // robotic-loop signature (rule 29) AND a wasted paid model call. React-only
+  // instead: the answer is directly above. Booking payloads (address/phone) are
+  // exempt — a re-sent address means the client is pushing to book, never
+  // silence it. Only the MOST RECENT answered message is compared, so asking
+  // the same thing much later in the conversation still gets a fresh answer.
+  const repeatCandidate = messages[messages.length - 1];
+  if (repeatCandidate?.role === "user" && messages.length >= 3) {
+    const normRepeat = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
+    const lastText = normRepeat(repeatCandidate.content);
+    if (lastText.length >= 15 && !containsBookingInfo(lastText)) {
+      for (let i = messages.length - 2; i >= 1; i--) {
+        if (messages[i].role !== "assistant") continue;
+        if (messages[i - 1]?.role === "user" && normRepeat(messages[i - 1].content) === lastText) {
+          console.log("[AI] client repeated the exact message just answered — REACT_ONLY (no repeat, no paid call)");
+          return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+        }
+        break;
+      }
+    }
   }
 
   // JOB SEEKERS FIRST: someone looking for work or offering their own labor
@@ -842,7 +926,7 @@ export async function getAIResponse(
   }
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
-  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. The MOMENT you have a confirmed day/time AND the property address, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number.\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added: the +$500 small-job surcharge is EXCLUSIVE to luxury vinyl (LVP) and must NEVER be applied to a tile job (250 sqft tile = $1,125 not $1,625; 300 sqft tile = $1,350 not $1,850). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
+  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. The MOMENT you have a confirmed day/time AND the property address, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number. If the client asks for YOUR name, say you are Ozzi's assistant, NEVER invent a personal name (no "Alex", no made-up names, ever).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added: the +$500 small-job surcharge is EXCLUSIVE to luxury vinyl (LVP) and must NEVER be applied to a tile job (250 sqft tile = $1,125 not $1,625; 300 sqft tile = $1,350 not $1,850). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
 18. SMALL-JOB PRICING RULE: UNDER 200 sqft we DO NOT take the job, under any circumstance — never quote a price, never propose a visit, just politely decline in one short sentence and invite them back for a bigger area (example: "We focus on larger installations, so we don't take projects under 200 square feet, but reach out anytime you have a bigger area!"). For a LUXURY VINYL (LVP) project you quote by DM that is 200 to 400 sqft, the total MUST be (sqft x $5) + $500, presented as ONE final number with the $500 already baked in. This +$500 add-on is for luxury vinyl ONLY: NEVER apply it to a tile, porcelain, or ceramic job (tile is always sqft x $4.50 with no add-on). NEVER reveal, itemize, mention, or hint at the $500, and do NOT show any per-sqft breakdown for these small jobs (no "$5/sqft", no "$5 x N"). Example: 200 sqft -> say about $1,500 (not $1,000). Example: 300 sqft -> about $2,000. For 401 to 499 sqft use plain $5/sqft with no add-on. For 500 sqft or more NEVER give a DM price, propose the free visit. The pricing tiers are INTERNAL: never explain them, never mention any range/band/tier, never narrate your calculation or self-correct out loud (no "let me give the right answer", no "480 is between 401 and 499"). Reply with ONLY the final total in one clean sentence.
 23. JOB SEEKER RULE: If the message is from someone seeking a job or offering their own labor/services (installer, painter, laborer, helper, carpenter, "are you hiring", "looking for work", "I'm an installer", "busco trabajo", "soy instalador", "procuro emprego", "sou pintor"), this is NOT a customer. Output EXACTLY [REACT_ONLY] and nothing else, no greeting, no pitch. A real customer asking about our service ("do you have installers?", "I need my floor installed") is NOT a job seeker, answer them normally.
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. Do not reveal the small-job surcharge.
@@ -933,6 +1017,17 @@ export async function getAIResponse(
         cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
       }
       console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
+    }
+
+    // LARGE LEAD RULE backstop: the client signaled 500+ sqft somewhere in this
+    // conversation, so no $1,000+ total may ever ship, no matter what the model
+    // (or a contaminated learning) produced. See stripLargeLeadPrices above.
+    if (conversationHasLargeLead(messages) && BIG_DOLLAR.test(cleaned)) {
+      const noPrices = stripLargeLeadPrices(cleaned);
+      if (noPrices !== cleaned) {
+        cleaned = noPrices;
+        console.log("[AI] large-lead price backstop: stripped a $1,000+ total from the reply");
+      }
     }
 
     // Anti-pressure: if the previous assistant turn already pushed scheduling and

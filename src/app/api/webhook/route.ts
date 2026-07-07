@@ -22,6 +22,7 @@ import {
   detectAdFlooringType,
   adFlooringTypeNote,
   classifyAdCreativeType,
+  isConsecutiveDuplicate,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
@@ -695,6 +696,20 @@ async function handleWebhook(body: WebhookPayload) {
       } else {
         finalResponse = "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need.";
       }
+      // Dedup: a client re-sending an unsupported attachment (e.g. two files in
+      // a row) used to get this identical canned line each time — a robotic
+      // repeat (rule 29). Once is enough; stay silent on the repeat.
+      const { data: lastBot } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (lastBot?.[0] && isConsecutiveDuplicate([{ role: "assistant", content: lastBot[0].content }], finalResponse)) {
+        console.log("[IG] no-content fallback identical to last reply — staying silent (no robotic repeat)");
+        return;
+      }
       await sendInstagramMessage(senderIgsid, finalResponse);
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conversation.id,
@@ -943,6 +958,14 @@ async function handleWebhook(body: WebhookPayload) {
       }
       if (!isBookingConfirmed) {
         const fallback = aiOutageHandoffMessage(lang);
+        // Outage dedup: during a sustained outage EVERY inbound hits this path —
+        // one client once received this exact canned line 12 times in 90 minutes
+        // (2026-07-06). If the last thing we sent is already this line, stay
+        // silent; the client was told once and the owner was already notified.
+        if (isConsecutiveDuplicate(messagesForAI, fallback)) {
+          console.log("[IG] outage handoff already sent — staying silent (no repeat)");
+          return;
+        }
         try {
           await sendInstagramMessage(senderIgsid, fallback);
           await supabaseAdmin.from("instagram_messages").insert({
@@ -1095,6 +1118,15 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     void trackConversationMetrics(conversation.id, "instagram", inputTokens, outputTokens, booked);
+
+    // Rule 29 backstop: never send the exact same message twice in a row. A
+    // re-tapped FAQ button used to get the identical reply again (robotic
+    // loop). The client already has this answer directly above — stay silent.
+    // Booking turns are exempt: a [BOOK:] confirmation must always go out.
+    if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
+      console.log("[IG] reply identical to previous bot message — staying silent (no robotic repeat)");
+      return;
+    }
 
     // ── Send response ────────────────────────────────────────────────────
     await sendInstagramMessage(senderIgsid, finalResponse);

@@ -246,7 +246,13 @@ Pricing: Luxury Vinyl $5/sqft (floor+labor). Tile labor only: $4.50/sqft. Visit 
 
 Conversations marked [CONVERTED ✓] ended with a scheduled appointment — these are your most valuable signal.
 Your job: find patterns that CAUSED conversions and generate specific, actionable improvements for the agent.
-IMPORTANT: Owner manual corrections are the highest priority signal. They show exactly where the agent failed and what the correct response is. Always incorporate them into the improvements.`,
+IMPORTANT: Owner manual corrections are the highest priority signal. They show exactly where the agent failed and what the correct response is. Always incorporate them into the improvements.
+
+HARD CONSTRAINTS — your learnings must NEVER contradict these owner rules, even when a converted conversation broke one and got away with it:
+1. For projects of 500 sqft or more, the agent must NEVER give any dollar total, "starting price", ballpark, or estimate by DM — the ONLY allowed move is the free in-person visit. NEVER recommend giving an opening number for large projects, no matter how many conversions did it.
+2. NEVER recommend revealing internal pricing mechanics (the small-job add-on, pricing tiers, or per-sqft breakdowns on small jobs).
+3. If a conversation converted WHILE violating a rule above, do NOT extract that behavior as a pattern. Credit the compliant elements that helped instead (the two-slot offer, the free-visit reframe, language mirroring).
+A past learning that violated constraint 1 spread a pricing-rule violation to every conversation — treat such learnings as forbidden output.`,
     messages: [
       {
         role: "user",

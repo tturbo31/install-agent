@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
@@ -493,6 +493,20 @@ async function handleWaMessage(body: Record<string, unknown>) {
       const fallback = imageUrl
         ? "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need."
         : "Got your message! Could you type your question?";
+      // Dedup: a client re-sending an unsupported attachment (e.g. two PDFs in a
+      // row) used to get this identical canned line each time — a robotic repeat
+      // (rule 29). Once is enough; stay silent on the repeat.
+      const { data: lastBot } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (lastBot?.[0] && isConsecutiveDuplicate([{ role: "assistant", content: lastBot[0].content }], fallback)) {
+        console.log("[WA] no-content fallback identical to last reply — staying silent (no robotic repeat)");
+        return;
+      }
       await sendWhatsAppMessage(phone, fallback);
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
       return;
@@ -720,6 +734,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
       if (!isBookingConfirmed) {
         const fallback = aiOutageHandoffMessage(lang);
+        // Outage dedup: during a sustained outage EVERY inbound hits this path —
+        // one client once received this exact canned line 12 times in 90 minutes
+        // (2026-07-06). If the last thing we sent is already this line, stay
+        // silent; the client was told once and the owner was already notified.
+        if (isConsecutiveDuplicate(messagesForAI, fallback)) {
+          console.log("[WA] outage handoff already sent — staying silent (no repeat)");
+          return;
+        }
         try {
           await sendWhatsAppMessage(phone, fallback);
           await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
@@ -852,6 +874,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     void trackConversationMetrics(conv.id, "whatsapp", inputTokens, outputTokens, booked);
+
+    // Rule 29 backstop: never send the exact same message twice in a row. A
+    // re-tapped FAQ button used to get the identical reply again (robotic
+    // loop). The client already has this answer directly above — stay silent.
+    // Booking turns are exempt: a [BOOK:] confirmation must always go out.
+    if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
+      console.log("[WA] reply identical to previous bot message — staying silent (no robotic repeat)");
+      return;
+    }
 
     await sendWhatsAppMessage(phone, finalResponse);
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });

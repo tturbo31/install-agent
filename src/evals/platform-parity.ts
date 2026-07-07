@@ -88,6 +88,11 @@ const SHARED: Check[] = [
   { label: "Strip forbidden tags before send", test: (s) => s.includes("stripForbiddenTags") },
   { label: "Empty-response guard (never send blank)", test: (s) => s.includes("Empty response after tag stripping") },
   { label: "METRICS: track tokens + conversion", test: (s) => s.includes("trackConversationMetrics") },
+  // Rule 29 backstop, added 2026-07-07 after the review found a client who got
+  // the identical canned line 12x during an outage and FAQ-button loops: the
+  // same message must never be sent twice in a row, on ANY send path (AI reply,
+  // no-content canned line, outage handoff).
+  { label: "Consecutive-duplicate send guard (3 paths)", test: (s) => (s.match(/isConsecutiveDuplicate\(/g) ?? []).length >= 3 },
 ];
 
 // ── INTENTIONAL per-platform differences (informational, NOT failures) ───────
