@@ -504,7 +504,8 @@ function stripSchedulingPush(text: string): string {
 // time/day/availability, names a clock time, or accepts a slot). The injected
 // [SYSTEM: ...] note (which contains availability slots) is excluded so its
 // am/pm tokens never count as the client engaging scheduling.
-function clientEngagedScheduling(userText: string): boolean {
+// Exported for the conversion-fixes eval guard.
+export function clientEngagedScheduling(userText: string): boolean {
   const clientText = userText.split(/\n\n?\[SYSTEM:/)[0];
   // Includes timing-adjustment phrases ("can you come earlier", "anything before
   // 3", "what about after 5", "sooner") so a client negotiating the time is never
@@ -513,7 +514,7 @@ function clientEngagedScheduling(userText: string): boolean {
   // availability phrases ("I get off at 5:30", "after work", "off work") — these
   // ARE the client engaging scheduling, so the anti-pressure guard must not fire
   // and mangle the bot's slot reply into a dangling fragment.
-  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\ba\s+las\s+\d/i.test(clientText);
+  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\bduring\s+the\s+week\b|\bweek\s*days?\b|\bweekends?\b|\bi\s+work\b|\bwork(?:ing)?\s+(?:all\s+)?(?:day|days|week)\b|\bonly\s+(?:on\s+)?(?:weekends?|saturdays?|sundays?|evenings?|nights?|mornings?)\b|\bdays?\s+off\b|\bfin(?:es)?\s+de\s+semana\b|\bentre\s+semana\b|\bd[ií]as?\s+de\s+semana\b/i.test(clientText);
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
@@ -760,6 +761,12 @@ const JOB_SEEKER_PATTERNS: RegExp[] = [
   // Used to slip through and get the promo opener (2026-07-07 review).
   /\btengo\s+(?:experiencia|herramientas?)\b[^.!?\n]{0,60}\b(?:instalaci[oó]n|instalar|cer[aá]mica|pisos?|construcci[oó]n|herramientas?)\b/i,
   /\bexperiencia\s+en\s+instalaci[oó]n\b/i,
+  // "necesito trabajar yo sé entalar pisos y tengo una compañía de remodelación"
+  // (2026-07-08 review) — an installer/contractor pitching their own company.
+  // "entalar" is a common misspelling of "instalar".
+  /\bnecesito\s+trabajar\b/i,
+  /\b(?:yo\s+)?s[eé]\s+(?:c[oó]mo\s+)?[ei]n[st]?talar\b/i,
+  /\btengo\s+una?\s+(?:compañ[ií]a|empresa)\s+de\s+(?:remodelaci[oó]n|construcci[oó]n|pisos|instalaci[oó]n)\b/i,
   // Portuguese
   /\b(procuro|preciso de|busco|quero|t[ôo] procurando)\s+(emprego|trabalho|vaga|servi[çc]o)\b/i,
   /\bsou\s+(instalador|pintor|pedreiro|trabalhador|ajudante)\b/i,
@@ -1053,12 +1060,16 @@ export async function getAIResponse(
         lastMsg?.role === "user" && !clientEngagedScheduling(lastMsg.content)
       ) {
         const stripped = stripSchedulingPush(cleaned);
-        // Only apply the strip when something substantive remains. If the whole
-        // reply was a scheduling push, KEEP the original — sending a generic
-        // "Happy to answer any other questions" non-answer (the old fallback) was
-        // worse than just letting the scheduling answer through, and it repeated
-        // on short client replies the detector missed (e.g. "You cant before?").
-        if (stripped && stripped !== cleaned) {
+        // Only apply the strip when something SUBSTANTIVE remains (>= 40 chars
+        // of real text). If the whole reply was a scheduling push, KEEP the
+        // original — sending a generic non-answer was worse than letting the
+        // scheduling answer through. The 40-char floor exists because a client
+        // said "I cant during the week, i work", the model correctly offered
+        // weekend slots, and the strip reduced the reply to a dead-end
+        // "No problem." (2026-07-08 review) — a mangled two-word reply is
+        // always worse than an extra slot offer.
+        const substance = stripped.replace(/\[[^\]]*\]/g, "").trim();
+        if (stripped && stripped !== cleaned && substance.length >= 40) {
           cleaned = stripped;
           console.log("[AI] anti-pressure: stripped repeated scheduling push");
         }

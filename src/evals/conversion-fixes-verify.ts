@@ -16,6 +16,7 @@ import {
   openerMessage,
   isJobSeeker,
   containsBookingInfo,
+  clientEngagedScheduling,
   getAIResponse,
   type ChatMessage,
 } from "@/lib/ai";
@@ -124,6 +125,32 @@ check(
 check(
   "Customer with tools question is NOT a job seeker",
   !isJobSeeker("Do I need to buy the materials or do you bring everything?"),
+);
+
+console.log("\n── 6. Availability constraints count as scheduling engagement ──");
+// "I cant during the week, i work" got its weekend-slot reply STRIPPED to a
+// dead-end "No problem." by the anti-pressure guard (2026-07-08 review) —
+// these phrases must all register as the client engaging scheduling.
+check("'I cant during the week, i work' engages scheduling", clientEngagedScheduling("I cant during the week, i work"));
+check("'only on weekends' engages scheduling", clientEngagedScheduling("only on weekends please"));
+check("'I work all day' engages scheduling", clientEngagedScheduling("I work all day"));
+check("'my day off is friday' engages scheduling", clientEngagedScheduling("my day off is friday"));
+check("'solo fines de semana' engages scheduling", clientEngagedScheduling("solo fines de semana"));
+check("'no puedo entre semana' engages scheduling", clientEngagedScheduling("no puedo entre semana"));
+check(
+  "Plain info question does NOT engage scheduling",
+  !clientEngagedScheduling("What is the wear layer thickness?"),
+);
+
+console.log("\n── 7. Spanish contractor/installer pitches stay silent ──");
+check(
+  "'necesito trabajar yo sé entalar pisos y tengo una compañía de remodelación' → job seeker",
+  isJobSeeker("Buenos días necesito trabajar yo sé entalar pisos y tengo una compañía de remodelación 3057470061 este es mi número"),
+);
+check("'yo sé instalar pisos' → job seeker", isJobSeeker("yo sé instalar pisos de todo tipo"));
+check(
+  "Customer asking US to install is NOT a job seeker",
+  !isJobSeeker("Do you install vinyl floors in Miami? I need my house done"),
 );
 
 async function repeatInterceptChecks() {
