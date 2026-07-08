@@ -255,16 +255,26 @@ async function handleFbMessage(body: Record<string, unknown>) {
           if (conv?.id) {
             // Bot-own echo? The bot saves every reply to history right after
             // sending, so an identical recent assistant message means this echo
-            // is our own send — skip it.
-            const { data: recentBot } = await supabaseAdmin
-              .from("instagram_messages")
-              .select("content")
-              .eq("conversation_id", conv.id)
-              .eq("role", "assistant")
-              .order("created_at", { ascending: false })
-              .limit(5);
+            // is our own send — skip it. RACE GUARD: the echo can arrive BEFORE
+            // the bot's history insert commits, so on a miss wait and re-check
+            // before declaring this a human reply (wrongly pausing on the bot's
+            // own echo would silence a live lead).
             const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-            const isOwnEcho = (recentBot ?? []).some((m) => norm(m.content) === norm(echoText));
+            const matchesRecentBot = async () => {
+              const { data: recentBot } = await supabaseAdmin
+                .from("instagram_messages")
+                .select("content")
+                .eq("conversation_id", conv.id)
+                .eq("role", "assistant")
+                .order("created_at", { ascending: false })
+                .limit(5);
+              return (recentBot ?? []).some((m) => norm(m.content) === norm(echoText));
+            };
+            let isOwnEcho = await matchesRecentBot();
+            if (!isOwnEcho) {
+              await new Promise((r) => setTimeout(r, 3000));
+              isOwnEcho = await matchesRecentBot();
+            }
             if (!isOwnEcho) {
               await supabaseAdmin.from("instagram_messages").insert({
                 conversation_id: conv.id,
