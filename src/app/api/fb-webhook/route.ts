@@ -231,7 +231,16 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const messaging = (entry?.messaging as Record<string, unknown>[])?.[0];
     if (!messaging) return;
 
-    // Skip echoes — save as training examples
+    // Echoes: a message SENT by the page. Two very different cases:
+    //  (a) the bot's own API send echoing back — must be IGNORED (it is already
+    //      saved to history; recording it as [Treino] would poison the owner
+    //      corrections with every bot reply once message_echoes is subscribed);
+    //  (b) a HUMAN typing from the Page Inbox (the owner taking over) — record
+    //      it as [Treino] so the brain sees the correction AND pause the
+    //      conversation (mode=human): on 2026-07-08 the owner manually offered
+    //      Saturday 3pm, the bot could not see it and re-offered its own slots
+    //      right after the client accepted. Owner takeover must silence the bot
+    //      until "Reativar todas".
     if ((messaging.message as Record<string, unknown>)?.is_echo) {
       const echoText = (messaging.message as Record<string, unknown>)?.text as string;
       const echoSenderId = (messaging.sender as Record<string, unknown>)?.id as string;
@@ -244,11 +253,27 @@ async function handleFbMessage(body: Record<string, unknown>) {
             .eq("igsid", `fb_${clientPsid}`)
             .maybeSingle();
           if (conv?.id) {
-            void supabaseAdmin.from("instagram_messages").insert({
-              conversation_id: conv.id,
-              role: "assistant",
-              content: `[Treino] ${echoText}`,
-            });
+            // Bot-own echo? The bot saves every reply to history right after
+            // sending, so an identical recent assistant message means this echo
+            // is our own send — skip it.
+            const { data: recentBot } = await supabaseAdmin
+              .from("instagram_messages")
+              .select("content")
+              .eq("conversation_id", conv.id)
+              .eq("role", "assistant")
+              .order("created_at", { ascending: false })
+              .limit(5);
+            const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+            const isOwnEcho = (recentBot ?? []).some((m) => norm(m.content) === norm(echoText));
+            if (!isOwnEcho) {
+              await supabaseAdmin.from("instagram_messages").insert({
+                conversation_id: conv.id,
+                role: "assistant",
+                content: `[Treino] ${echoText}`,
+              });
+              await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conv.id);
+              console.log(`[FB] owner manual reply captured — conversation ${conv.id} paused (mode=human)`);
+            }
           }
         }
       }

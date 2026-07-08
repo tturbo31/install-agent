@@ -259,7 +259,41 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (waSetting?.paused) return;
 
     if (body.type !== "ReceivedCallback") return;
-    if (body.fromMe === true) return;
+    if (body.fromMe === true) {
+      // A message sent FROM the business number (arrives when Z-API "notify
+      // sent by me" is enabled). The bot's own API sends also come through
+      // here — skip those via recent-history match. A HUMAN typing from the
+      // business phone is an owner takeover: record it as [Treino] and pause
+      // the conversation so the bot never contradicts the owner (same fix as
+      // FB/IG, 2026-07-08: the bot re-offered slots right after the owner
+      // manually offered one and the client accepted).
+      const ownText = (body.text as { message?: string } | undefined)?.message;
+      const peerPhone = body.phone as string | undefined;
+      if (ownText && peerPhone) {
+        const { data: ownConv } = await supabaseAdmin
+          .from("instagram_conversations")
+          .select("id")
+          .eq("igsid", `wa_${peerPhone}`)
+          .maybeSingle();
+        if (ownConv?.id) {
+          const { data: recentBot } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("content")
+            .eq("conversation_id", ownConv.id)
+            .eq("role", "assistant")
+            .order("created_at", { ascending: false })
+            .limit(5);
+          const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+          const isOwnEcho = (recentBot ?? []).some((m) => norm(m.content) === norm(ownText));
+          if (!isOwnEcho) {
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: ownConv.id, role: "assistant", content: `[Treino] ${ownText}` });
+            await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", ownConv.id);
+            console.log(`[WA] owner manual reply captured — conversation ${ownConv.id} paused (mode=human)`);
+          }
+        }
+      }
+      return;
+    }
 
     const phone = body.phone as string;
     if (!phone) return;

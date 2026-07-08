@@ -304,12 +304,32 @@ async function handleWebhook(body: WebhookPayload) {
           .eq("igsid", customerIgsid)
           .maybeSingle();
         if (conv?.id) {
-          void supabaseAdmin.from("instagram_messages").insert({
-            conversation_id: conv.id,
-            role: "assistant",
-            content: `[Treino] ${ownerText}`,
-          });
-          console.log("Training response saved for conversation", conv.id);
+          // Bot-own echo? The bot saves every reply to history right after
+          // sending, so an identical recent assistant message means this echo
+          // is our own send — skip it (recording it as [Treino] would poison
+          // the owner corrections with every bot reply). A HUMAN typing from
+          // the business inbox is a genuine owner takeover: record it and
+          // pause the conversation so the bot never contradicts the owner
+          // (2026-07-08: bot re-offered slots right after the owner manually
+          // offered Saturday 3pm and the client accepted).
+          const { data: recentBot } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("content")
+            .eq("conversation_id", conv.id)
+            .eq("role", "assistant")
+            .order("created_at", { ascending: false })
+            .limit(5);
+          const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+          const isOwnEcho = (recentBot ?? []).some((m) => norm(m.content) === norm(ownerText));
+          if (!isOwnEcho) {
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conv.id,
+              role: "assistant",
+              content: `[Treino] ${ownerText}`,
+            });
+            await supabaseAdmin.from("instagram_conversations").update({ mode: "human" }).eq("id", conv.id);
+            console.log(`[IG] owner manual reply captured — conversation ${conv.id} paused (mode=human)`);
+          }
         }
       }
       return;
