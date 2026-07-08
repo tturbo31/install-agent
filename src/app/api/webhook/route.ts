@@ -812,10 +812,12 @@ async function handleWebhook(body: WebhookPayload) {
         : Promise.resolve(null),
     ]);
 
-    // ── Load conversation history (last 15 messages) ──────────────────────
+    // ── Load conversation history (last 15 messages; created_at feeds the
+    //    repeated-message intercept so it can tell a double-tap from a genuine
+    //    re-ask hours later) ───────────────────────────────────────────────
     const { data: historyRaw } = await supabaseAdmin
       .from("instagram_messages")
-      .select("role, content")
+      .select("role, content, created_at")
       .eq("conversation_id", conversation.id)
       .order("created_at", { ascending: false })
       .limit(15);
@@ -840,11 +842,12 @@ async function handleWebhook(body: WebhookPayload) {
 
     const lang = detectLang(history.map((m) => m.content).join(" "));
 
-    type AiMsg = { role: "user" | "assistant"; content: string };
+    type AiMsg = { role: "user" | "assistant"; content: string; at?: string };
 
     let messagesForAI: AiMsg[] = history.map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
+      at: m.created_at as string | undefined,
     }));
 
     const lastIdx = messagesForAI.length - 1;

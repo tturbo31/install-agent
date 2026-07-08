@@ -42,7 +42,10 @@ function getOpenAI(): OpenAI {
   return _openai;
 }
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+// `at` (ISO timestamp) is optional context the webhooks attach from the DB —
+// used ONLY by the repeated-message intercept to tell a button double-tap
+// (seconds apart) from a genuine re-ask hours later. Never sent to the API.
+export type ChatMessage = { role: "user" | "assistant"; content: string; at?: string };
 
 // ─── Hard-coded intercepts — bypass AI for specific question patterns ─────────
 // These override the AI completely because the model cannot be reliably
@@ -915,8 +918,21 @@ export async function getAIResponse(
       for (let i = messages.length - 2; i >= 1; i--) {
         if (messages[i].role !== "assistant") continue;
         if (messages[i - 1]?.role === "user" && normRepeat(messages[i - 1].content) === lastText) {
-          console.log("[AI] client repeated the exact message just answered — REACT_ONLY (no repeat, no paid call)");
-          return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+          // ONLY suppress the quick double-tap (same FAQ button hit again
+          // within 15 minutes). A repeat AFTER that window is a genuine
+          // re-ask that deserves a real answer — a client re-sent "What is
+          // the installation process?" 2 HOURS after getting only the
+          // type-ask opener (which never answered the question) and was
+          // wrongly silenced (2026-07-08, Nardine). Without timestamps we
+          // never suppress — answering twice beats ignoring a client.
+          const prevAt = messages[i - 1].at ? Date.parse(messages[i - 1].at as string) : NaN;
+          const nowAt = repeatCandidate.at ? Date.parse(repeatCandidate.at as string) : NaN;
+          const gapMin = (nowAt - prevAt) / 60000;
+          if (Number.isFinite(gapMin) && gapMin >= 0 && gapMin <= 15) {
+            console.log("[AI] client repeated the exact message within 15min — REACT_ONLY (double-tap, no repeat)");
+            return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+          }
+          console.log("[AI] repeated question after a gap (or no timestamps) — answering it fresh");
         }
         break;
       }

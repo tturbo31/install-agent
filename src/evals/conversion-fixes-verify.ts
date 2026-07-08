@@ -212,20 +212,29 @@ async function priceNegotiationChecks() {
 }
 
 async function repeatInterceptChecks() {
-  console.log("\n── 5. Repeated-message intercept (no paid call, no identical re-answer) ──");
-  // The early return fires BEFORE the API call, so this test costs zero tokens.
-  const repeated = await getAIResponse(
+  console.log("\n── 5. Repeated-message intercept (double-tap only, 15min window) ──");
+  // Double-tap (2 min apart): suppressed BEFORE the API call — zero tokens.
+  const doubleTap = await getAIResponse(
     [
-      { role: "user", content: "What is the installation process?" },
-      { role: "assistant", content: "We move all the furniture, install the floors, add the quarter round, clean everything up, all within 2 to 3 days." },
-      { role: "user", content: "What is the installation process?" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T18:16:00Z" },
+      { role: "assistant", content: "We move all the furniture, install the floors, add the quarter round, clean everything up, all within 2 to 3 days.", at: "2026-07-08T18:16:30Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T18:18:00Z" },
     ],
-    null,
-    null,
-    null,
-    false
+    null, null, null, false
   );
-  check("Identical re-sent question → [REACT_ONLY], zero tokens", repeated.text === "[REACT_ONLY]" && repeated.inputTokens === 0);
+  check("Toque duplo (2min) → [REACT_ONLY], zero tokens", doubleTap.text === "[REACT_ONLY]" && doubleTap.inputTokens === 0);
+
+  // Genuine re-ask 2 HOURS later (the Nardine case, 2026-07-08): the opener
+  // never answered the question — the repeat MUST get a real answer now.
+  const reAsk = await getAIResponse(
+    [
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T18:16:00Z" },
+      { role: "assistant", content: "Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?", at: "2026-07-08T18:16:30Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T20:21:00Z" },
+    ],
+    null, null, null, false
+  );
+  check("Re-pergunta 2h depois → resposta de verdade (caso Nardine)", reAsk.text !== "[REACT_ONLY]" && reAsk.text.length > 30, reAsk.text.slice(0, 80));
   check(
     "Re-sent ADDRESS is exempt from the intercept (booking payload)",
     containsBookingInfo("11725 sw 17 ct Miramar fl 33025"),

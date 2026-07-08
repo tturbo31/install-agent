@@ -632,10 +632,11 @@ async function handleWaMessage(body: Record<string, unknown>) {
         : Promise.resolve(null),
     ]);
 
-    // Load conversation history
+    // Load conversation history (created_at feeds the repeated-message
+    // intercept so it can tell a double-tap from a genuine re-ask hours later)
     const { data: historyRaw } = await supabaseAdmin
       .from("instagram_messages")
-      .select("role, content")
+      .select("role, content, created_at")
       .eq("conversation_id", conv.id)
       .order("created_at", { ascending: false })
       .limit(15);
@@ -654,8 +655,8 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // Detect conversation language so confirmation/recovery messages match it
     const lang = detectLang(history.map((m) => m.content).join(" "));
 
-    type AiMsg = { role: "user" | "assistant"; content: string };
-    let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    type AiMsg = { role: "user" | "assistant"; content: string; at?: string };
+    let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content, at: m.created_at as string | undefined }));
 
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
