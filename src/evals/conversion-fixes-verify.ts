@@ -21,6 +21,21 @@ import {
   type ChatMessage,
 } from "@/lib/ai";
 import { OPENER_ES, OPENER_EN } from "@/lib/system-prompt";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+// Load .env.local (same pattern as regression-suite) — section 8's negative
+// test intentionally reaches the real API to prove the FAQ button is NOT
+// hijacked by the price-negotiation intercept.
+try {
+  const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
+  for (const line of content.split("\n")) {
+    const t = line.trim(); if (!t || t.startsWith("#")) continue;
+    const i = t.indexOf("="); if (i === -1) continue;
+    const k = t.slice(0, i).trim(); const v = t.slice(i + 1).trim().replace(/^["']|["']$/g, "");
+    if (k && !process.env[k]) process.env[k] = v;
+  }
+} catch { /* CI without .env.local — API-reaching checks will fail loudly */ }
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +88,12 @@ check(
   "[BOOK:] tag sentence always survives",
   stripLargeLeadPrices('All set! [BOOK:{"date":"2026-07-09","time":"15:00"}] The total is $6,860.').includes("[BOOK:"),
 );
+const mixedSentence = stripLargeLeadPrices(
+  "Our vinyl promo is $5 per sqft, so for 1,577 sqft it comes to about $7,885, and I bring all the samples to the free visit. What day works best for you?"
+);
+check("Cláusula com o total ($7,885) é removida", !/7\s*,?\s*885/.test(mixedSentence), mixedSentence);
+check("A taxa permitida ($5/sqft) na MESMA frase sobrevive", /\$5 per sqft/.test(mixedSentence), mixedSentence);
+check("O resto da frase continua fluido", /samples|free visit/i.test(mixedSentence));
 
 console.log("\n── 2. Consecutive-duplicate send guard ──");
 const OUTAGE = "Thanks for your message! Let me get our team to reach out, someone will get right back to you.";
@@ -153,6 +174,43 @@ check(
   !isJobSeeker("Do you install vinyl floors in Miami? I need my house done"),
 );
 
+async function priceNegotiationChecks() {
+  console.log("\n── 8. Price negotiation → notify owners, never commit (owner rule 2026-07-08) ──");
+  // The intercept fires BEFORE the API call — these tests cost zero tokens.
+  const history: ChatMessage[] = [
+    { role: "user", content: "Is this also for tile?" },
+    { role: "assistant", content: "For tile the rate is $4.50 per sqft for the installation labor only. How many square feet?" },
+  ];
+  const competitor = await getAIResponse(
+    [...history, { role: "user", content: "We already bought the tile from floor & decor but they quoted 3.99 per square foot so I guess we'll do it with them" }],
+    null, null, null, false
+  );
+  check("Cotação de concorrente → notifica os donos", competitor.text.includes("[NOTIFY_OWNER]") && competitor.inputTokens === 0);
+  check("Nunca promete cobrir o preço", !/beat|match|lower than/i.test(competitor.text));
+  check("Diz que a equipe verifica o espaço", /check the space/i.test(competitor.text));
+
+  const goLower = await getAIResponse(
+    [...history, { role: "user", content: "Can you go any lower on that?" }],
+    null, null, null, false
+  );
+  check("'Can you go any lower?' → notifica os donos", goLower.text.includes("[NOTIFY_OWNER]") && goLower.inputTokens === 0);
+
+  const spanish = await getAIResponse(
+    [...history, { role: "user", content: "Otra empresa me cotizó a $4 el pie, pueden hacerlo más barato?" }],
+    null, null, null, false
+  );
+  check("Espanhol → resposta em espanhol + notifica", spanish.text.includes("[NOTIFY_OWNER]") && /equipo|espacio/i.test(spanish.text));
+
+  const faqButton = await getAIResponse(
+    [{ role: "user", content: "Do you offer any discounts for larger spaces?" }],
+    null, null, null, false
+  );
+  check(
+    "Botão de FAQ 'discounts for larger spaces' NÃO dispara a notificação",
+    !faqButton.text.includes("get to a better number"),
+  );
+}
+
 async function repeatInterceptChecks() {
   console.log("\n── 5. Repeated-message intercept (no paid call, no identical re-answer) ──");
   // The early return fires BEFORE the API call, so this test costs zero tokens.
@@ -174,7 +232,9 @@ async function repeatInterceptChecks() {
   );
 }
 
-repeatInterceptChecks().then(() => {
-  console.log(`\n=========== CONVERSION-FIXES-VERIFY: ${passed} passed, ${failed} failed ===========`);
-  process.exit(failed > 0 ? 1 : 0);
-});
+repeatInterceptChecks()
+  .then(priceNegotiationChecks)
+  .then(() => {
+    console.log(`\n=========== CONVERSION-FIXES-VERIFY: ${passed} passed, ${failed} failed ===========`);
+    process.exit(failed > 0 ? 1 : 0);
+  });

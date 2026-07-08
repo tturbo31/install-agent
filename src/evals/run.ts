@@ -461,12 +461,16 @@ const SCENARIOS: Scenario[] = [
   // get the WhatsApp redirect. The screenshot bug was a material question that got
   // a website/Instagram link instead of the product description.
   {
-    name: '[BUG FIX] "what kind of materials, what is the material allowance?" → describe vinyl, NO link',
+    // Updated 2026-07-08: the newer TYPE-GATING owner rule (2026-07-03, reminder
+    // 10b) says with the flooring type still UNKNOWN the bot must NOT assume
+    // vinyl — asking "tile, vinyl, or hardwood?" is now equally correct here,
+    // so this accepts either the vinyl description or the type question.
+    name: '[BUG FIX] "what kind of materials, what is the material allowance?" → describe vinyl or ask type, NO link',
     messages: [
       { role: "assistant", content: "Hi Aj! Need help with flooring installation? Let's discuss your project!" },
       { role: "user", content: "what kind of materials what is the material allowance?" },
     ],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinyl", "noLinkRedirect"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "describesVinylOrListsTypes", "noLinkRedirect"],
   },
   {
     name: '[BUG FIX] "What are the material options you have" → vinyl or list types, NO link',

@@ -251,7 +251,8 @@ IMPORTANT: Owner manual corrections are the highest priority signal. They show e
 HARD CONSTRAINTS — your learnings must NEVER contradict these owner rules, even when a converted conversation broke one and got away with it:
 1. For projects of 500 sqft or more, the agent must NEVER give any dollar total, "starting price", ballpark, or estimate by DM — the ONLY allowed move is the free in-person visit. NEVER recommend giving an opening number for large projects, no matter how many conversions did it.
 2. NEVER recommend revealing internal pricing mechanics (the small-job add-on, pricing tiers, or per-sqft breakdowns on small jobs).
-3. If a conversation converted WHILE violating a rule above, do NOT extract that behavior as a pattern. Credit the compliant elements that helped instead (the two-slot offer, the free-visit reframe, language mirroring).
+3. When a client mentions a competitor's lower price or asks to lower/match/beat a price, the ONLY compliant pattern is: notify the owner ([NOTIFY_OWNER]) and tell the client the team will check the space in person and see about a better number. NEVER advise committing to beat or match a number ("I can beat that quote" is forbidden — the agent once promised to beat a $3.99/sqft rate the business cannot do).
+4. If a conversation converted WHILE violating a rule above, do NOT extract that behavior as a pattern. Credit the compliant elements that helped instead (the two-slot offer, the free-visit reframe, language mirroring).
 A past learning that violated constraint 1 spread a pricing-rule violation to every conversation — treat such learnings as forbidden output.`,
     messages: [
       {

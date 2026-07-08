@@ -50,6 +50,37 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: string; skipIfSubstantive?: boolean }> = [
   {
+    // PRICE NEGOTIATION / COMPETITOR QUOTE — owner rule (2026-07-08): the bot
+    // must NEVER commit to beating or matching a price (it once wrote "I can
+    // beat that $3.99 quote" for a rate the business cannot do). Instead: tell
+    // the client the team will check the space and see about a better number,
+    // and notify BOTH owners so a human runs the negotiation. Response is
+    // language-matched in checkHardcodedResponse (id-based special case).
+    id: "price_negotiation",
+    patterns: [
+      // "another company / other contractor ... $X / cheaper / lower price"
+      /\b(?:another|other|different)\s+(?:company|contractor|installer|guy|guys|place|crew)\b[^.!?]{0,80}?(?:\$\s?\d|price|quote|cheaper|less|lower)/i,
+      // "they quoted (me) 3.99 per square foot" / "someone offered me $4"
+      /\b(?:they|he|she|someone|company|competitor)\s+(?:quoted|offered|gave)\s+(?:me\s+|us\s+)?\$?\s?\d/i,
+      /\bquoted\s+(?:me\s+|us\s+)?\$?\s?\d+(?:\.\d{1,2})?\s*(?:per|a|\/)\s*(?:sq|square)/i,
+      // direct asks to go lower / match / beat
+      /\bcan\s+(?:you|u)\s+(?:go|do|get|make\s+it)\s+(?:any\s+)?(?:lower|cheaper|better|less)\b/i,
+      /\b(?:match|beat)\s+(?:that|their|the)\s+(?:price|quote|offer|number)\b/i,
+      /\b(?:lower|drop|reduce|bring\s+down)\s+(?:the\s+|your\s+)?price\b/i,
+      /\bbest\s+price\s+you\s+can\s+(?:do|give|offer)\b/i,
+      // Spanish
+      /\b(?:otra|otro)\s+(?:compa[ñn][ií]a|empresa|contratista)\b[^.!?]{0,80}?(?:\$|precio|cotiz|m[aá]s\s+barat)/i,
+      /\bme\s+(?:cotizaron|ofrecieron|dieron)\s+(?:a\s+)?\$?\s?\d/i,
+      /\b(?:bajar|rebajar|mejorar)\s+(?:el\s+)?precio\b/i,
+      /\bpuede[ns]?\s+(?:hacer(?:lo)?\s+)?m[aá]s\s+barato\b/i,
+      // Portuguese
+      /\boutra\s+empresa\b[^.!?]{0,80}?(?:\$|pre[çc]o|or[çc]amento|mais\s+barat)/i,
+      /\b(?:baixar|abaixar|melhorar)\s+o\s+(?:pre[çc]o|valor)\b/i,
+      /\bme\s+(?:passaram|deram|cotaram)\s+\$?\s?\d/i,
+    ],
+    response: "", // resolved per-language in checkHardcodedResponse
+  },
+  {
     id: "what_included",
     patterns: [
       /what\s+is\s+included/i,
@@ -218,6 +249,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
+      if (rule.id === "price_negotiation") return priceNegotiationHandoff(text);
       if (rule.id === "what_included") {
         // Known type → its exact inclusions.
         if (adType) return whatIsIncludedResponseFor(adType);
@@ -559,8 +591,27 @@ export function conversationHasLargeLead(messages: ChatMessage[]): boolean {
 export function stripLargeLeadPrices(text: string): string {
   if (!BIG_DOLLAR.test(text)) return text;
   const sentences = text.split(/(?<=[.!?])\s+/);
-  // Sentences carrying a tag ([BOOK:...], [NOTIFY_OWNER]) are always kept.
-  const kept = sentences.filter((s) => s.includes("[") || !BIG_DOLLAR.test(s));
+  const kept: string[] = [];
+  for (const s of sentences) {
+    // Sentences carrying a tag ([BOOK:...], [NOTIFY_OWNER]) are always kept.
+    if (s.includes("[") || !BIG_DOLLAR.test(s)) {
+      kept.push(s);
+      continue;
+    }
+    // CLAUSE-LEVEL strip: the model often packs the allowed per-sqft rate and
+    // the forbidden total into ONE sentence ("Our promo is $5 per sqft, so
+    // 1,577 sqft comes to about $7,885, and..."). Dropping the whole sentence
+    // also killed the legitimate "$5 per sqft" answer — so drop only the
+    // comma-clauses that carry the big total and keep the rest. Split on
+    // comma+SPACE only: the thousands separator inside "$9,170" has no space
+    // after it and must never be treated as a clause boundary.
+    const clauses = s.split(/,\s+/).filter((cl) => cl.includes("[") || !BIG_DOLLAR.test(cl));
+    // A lone leading-connector leftover ("so", "and") is a dangling lead-in
+    // to the removed total, not a real clause — drop it.
+    const cleaned = clauses.filter((cl, i) => !(clauses.length === 1 && i === 0 && LEADING_CONNECTOR.test(cl.trim())));
+    const rebuiltSentence = cleaned.join(", ").trim().replace(/[,\s]+$/, "");
+    if (rebuiltSentence) kept.push(/[.!?]$/.test(rebuiltSentence) ? rebuiltSentence : rebuiltSentence + ".");
+  }
   const rebuilt = kept.join(" ").trim();
   if (rebuilt) return rebuilt;
   // The whole reply was the forbidden total — replace with the visit pivot.
@@ -653,6 +704,20 @@ export function openerMessage(text: string): string {
   // also Portuguese, but the PT check above runs first and catches PT context.
   if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n)\b/.test(t)) return OPENER_ES;
   return OPENER_EN;
+}
+
+// Language-matched handoff for price-negotiation asks (owner rule 2026-07-08):
+// never commit to a better number — the team checks the space and decides, and
+// BOTH owners are notified via the [NOTIFY_OWNER] tag.
+export function priceNegotiationHandoff(text: string): string {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
+  // PT check first with PT-exclusive words only ("empresa"/"me" exist in
+  // Spanish too — "Otra empresa me cotizó" once landed on the PT reply).
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite))(?![a-zà-ÿ])/.test(t) || /\b(?:você|voce|obrigad\w*|or[çc]amento|pre[çc]o|abaixar|baixar|conseguem?)\b/.test(t))
+    return "Vou passar isso para a nossa equipe. Vamos verificar o espaço pessoalmente e ver se conseguimos chegar num valor melhor para você, alguém já entra em contato![NOTIFY_OWNER]";
+  if (/(?:^|[\s!.,?¡¿])(?:hola|buenas|buenos)(?![a-zà-ÿ])/.test(t) || /\b(?:cotiz\w*|ofrecieron|precio|barat[oa]s?|compa[ñn][ií]as?|pueden?|empresa|rebajar)\b/.test(t))
+    return "Déjame pasar esto a nuestro equipo. Vamos a verificar el espacio en persona y ver si podemos llegar a un mejor número para ti, alguien te contacta en seguida![NOTIFY_OWNER]";
+  return "Let me get our team on this one. We'll check the space in person and see if we can get to a better number for you, someone will reach out shortly![NOTIFY_OWNER]";
 }
 
 // The flooring type already established for this conversation — from the ad-type
@@ -949,7 +1014,8 @@ export async function getAIResponse(
 27. NO SQFT ARITHMETIC / NO INVENTED TOTALS: NEVER add, subtract, or recompute the client's stated square footage into a different number, and NEVER narrate a calculation out loud (forbidden examples: "that puts you at about 1,600 sqft to cover", "1900 minus 300", "so that's X sqft total"). Do NOT assume some rooms (bathrooms, laundry, kitchen) get a different material and subtract them, the whole job is the same flooring unless the client says otherwise. If you need to reference the size, repeat the client's own number back unchanged. For ANY job of 500 sqft or more, do NOT compute, quote, or restate any sqft total at all, just acknowledge warmly and move to the free in-person visit. Math errors and invented totals destroy trust, so when unsure, say nothing about the number and propose the visit.
 28. BATHROOM REMODELING RULE: We DO bathroom remodels (reforma de banheiro), not only flooring. When the client asks if we do, offer, or want a bathroom remodel or renovation (remodel, renovate, redo, or gut the bathroom), confirm YES we do it, explain that for a remodel we first need to check the space in person to give an accurate quote, and propose the FREE in-person visit exactly like a large lead: never quote a remodel price by DM, and never decline it for being small (it always goes to the visit, any size). This does NOT apply to a request for FLOORING in a bathroom (that is a normal flooring job under the usual sqft rules, including the under-200-sqft decline) or to a small tile/patch repair (we do not do repairs).
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
-30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.`;
+30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
+31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {

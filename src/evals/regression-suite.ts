@@ -117,7 +117,14 @@ async function main() {
 
   // ── ERROR 6: conversations stuck silent forever in mode="human"
   console.log("\n[ERROR 6] No automatic permanent pause (mode=human only on deliberate takeover)");
-  eachChannel("no automatic mode:\"human\" in the webhook", (s) => !s.includes('mode: "human"'));
+  // mode:"human" is allowed in EXACTLY ONE place: the owner-takeover branch
+  // (a human typing from the page inbox / business phone — added 2026-07-08 at
+  // the owner's request so the bot never contradicts him mid-negotiation).
+  // Any additional occurrence would be the old auto-pause bug creeping back.
+  eachChannel('mode:"human" ONLY in the owner-takeover branch', (s) => {
+    const count = (s.match(/mode: "human"/g) ?? []).length;
+    return count === 1 && s.includes("owner manual reply captured");
+  });
   eachChannel("failed booking still hands off + notifies owner", (s) => s.includes("bookingFailureHandoffMessage") && s.includes("[NOTIFY_OWNER]"));
   eachChannel("AI outage still sends a holding reply + notifies", (s) => s.includes("aiOutageHandoffMessage") && s.includes("notifyOwners"));
   eachChannel("still honors a DELIBERATE owner pause (mode === human)", (s) => /mode === "human"/.test(s));
