@@ -3,6 +3,10 @@
     {
       "path": "/api/dream?secret=Pepeka&run=1",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/followup?secret=Pepeka&run=1",
+      "schedule": "0 23 * * *"
     }
   ]
 }
