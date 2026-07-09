@@ -307,6 +307,23 @@ const GRADERS = {
     check: (t: string) =>
       /installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:small\s+)?repair|do not do (?:small )?repair|only.*install/i.test(t),
   },
+  steersAwayFromCarpet: {
+    // Bug (2026-07-05, Melanie): a lead choosing between "carpet, vinyl, or
+    // hardwood" asked "do you also install carpet?" and got no clear answer.
+    // We do NOT install carpet (vinyl/tile/hardwood only), so the bot must say
+    // so and steer to a product we DO sell — never claim we install carpet, and
+    // never quote a carpet install price. Carpet REMOVAL prep is separate.
+    label: 'Says we do NOT install carpet and steers to vinyl/tile/hardwood',
+    check: (t: string) => {
+      const mentionsCarpet = /carpet/i.test(t);
+      const affirmsCarpet = /\b(?:yes|we\s+(?:do|install|offer|can\s+(?:do|install)))\b[^.!?\n]{0,25}carpet/i.test(t);
+      const negatesCarpet =
+        /\b(?:don'?t|do\s+not|not|no|neither|unfortunately|aren'?t|isn'?t)\b[^.!?\n]{0,30}carpet/i.test(t) ||
+        /carpet[^.!?\n]{0,30}\b(?:not|isn'?t|aren'?t|don'?t|do\s+not|something\s+we)\b/i.test(t);
+      const steers = /vinyl|tile|hardwood/i.test(t);
+      return mentionsCarpet && negatesCarpet && !affirmsCarpet && steers;
+    },
+  },
 } satisfies Record<string, { label: string; check: (t: string) => boolean }>;
 
 type GraderKey = keyof typeof GRADERS;
@@ -667,6 +684,21 @@ const SCENARIOS: Scenario[] = [
     name: '[REGRESSION] "repair a few broken tiles in my bathroom" → installations only (not a remodel)',
     messages: [{ role: "user", content: "Hi, can you repair a few broken tiles in my bathroom?" }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesRepair"],
+  },
+
+  // ── CARPET (new clarification) ───────────────────────────────────────────
+  // Bug (2026-07-05, Melanie): a lead deciding between "carpet, vinyl, or
+  // hardwood" asked "do you also install carpet?" and drifted with no clear
+  // steer. We do NOT install carpet — say so and pivot to a product we sell.
+  {
+    name: '[CARPET] "Do you also install carpet? (deciding carpet vs vinyl vs hardwood)" → we don\'t do carpet, steer to vinyl/hardwood',
+    messages: [{ role: "user", content: "Do you also install carpet? We are going back and forth between carpet, vinyl, or hardwood." }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "steersAwayFromCarpet"],
+  },
+  {
+    name: '[CARPET-REGRESSION] "remove my old carpet and install vinyl" → does NOT wrongly decline (carpet removal is prep we do)',
+    messages: [{ role: "user", content: "Can you remove my old carpet and install vinyl in my living room? About 400 sqft." }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags"],
   },
 ];
 

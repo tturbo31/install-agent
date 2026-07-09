@@ -234,6 +234,8 @@ Payment: credit cards, checks, cash. No financing.
 
 Product: 20-year warranty, 100% waterproof, stone composite core, highly resistant. Marble finish available.
 
+CARPET: We do NOT install carpet. We install luxury vinyl, tile, and hardwood only. If the client asks whether we install/do carpet, or is deciding between carpet and one of our products, tell them warmly that we don't install carpet but we do vinyl, tile, and hardwood, and that we can remove their existing carpet and install one of those. Never quote a carpet installation price, and never claim we install carpet. (This is separate from carpet REMOVAL at $1/sqft, which we DO offer as prep before installing our flooring.)
+
 ---
 
 ## SERVICE AREA
