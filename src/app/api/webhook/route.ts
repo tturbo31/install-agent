@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -114,6 +115,10 @@ async function processBookingCommand(
           .from("instagram_conversations")
           .update({ booking_confirmed: true })
           .eq("id", conversationId);
+        // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
+        waitUntil(funilOnBookingConfirmed(conversationId, senderIgsid, {
+          date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+        }));
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
       // Could not move it — old booking is left intact, hand the change to Ozzi.
@@ -177,6 +182,11 @@ async function processBookingCommand(
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
+      // FUNIL: visita confirmada → agendamento_marcado (data_visita em ISO com
+      // o horário combinado). Fire-and-forget: nunca atrasa a confirmação.
+      waitUntil(funilOnBookingConfirmed(conversationId, senderIgsid, {
+        date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+      }));
       return {
         response: bookingSuccessMessage(lang),
         booked: true,
@@ -528,6 +538,27 @@ async function handleWebhook(body: WebhookPayload) {
       .from("instagram_conversations")
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conversation.id);
+
+    // ── FUNIL → plataforma de análise (fire-and-forget, nunca bloqueia) ──
+    // Só quando ESTA instância inseriu a mensagem (dedup de webhook repetido).
+    // Cobre: lead_criado (telefone capturado), conversando (1/dia) e
+    // retomou_conversa (lead sumido voltou). Roda antes do gate mode=human de
+    // propósito: a resposta do cliente conta para o funil mesmo com o dono no
+    // controle da conversa.
+    if (insertedMsg?.id) {
+      waitUntil(
+        funilOnInboundMessage(
+          { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username },
+          rawText,
+          insertedMsg.created_at ?? new Date().toISOString(),
+          // referral do anúncio click-to-message: só chega nos primeiros
+          // eventos, então o funil o persiste já aqui para o lead_criado
+          // (que pode acontecer dias depois) saber de qual anúncio o lead veio.
+          messaging.referral ?? null
+        )
+      );
+      waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
+    }
 
     if (conversation.mode === "human") return;
 

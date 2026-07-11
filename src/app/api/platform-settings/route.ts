@@ -5,6 +5,9 @@ export async function GET() {
   const { data, error } = await supabaseAdmin
     .from("platform_settings")
     .select("platform, paused")
+    // O funil usa linhas técnicas nesta tabela ("funil_sumido_*", "funil_check_*")
+    // como flags atômicas — o painel só deve exibir os 3 canais reais.
+    .in("platform", ["instagram", "facebook", "whatsapp"])
     .order("platform");
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

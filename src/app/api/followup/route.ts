@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runFollowupSweep } from "@/lib/followup";
+import { maybeRunFunilSilenceCheck } from "@/lib/funil";
 
 // One-shot follow-up sweep for hot leads that went quiet mid-scheduling.
 // Triggered by the daily Vercel Cron (see vercel.json) and manually:
@@ -30,6 +31,10 @@ export async function GET(req: NextRequest) {
   try {
     const dry = req.nextUrl.searchParams.get("dry") === "1";
     const result = await runFollowupSweep({ dry });
+    // FUNIL: o cron diário também garante ao menos 1 varredura de
+    // parou_de_responder por dia, mesmo num dia sem tráfego de webhook.
+    // maybeRunFunilSilenceCheck nunca lança e respeita o throttle de 6h.
+    if (!dry) await maybeRunFunilSilenceCheck();
     return NextResponse.json(result);
   } catch (err) {
     console.error("[FOLLOWUP] sweep crashed:", err);
