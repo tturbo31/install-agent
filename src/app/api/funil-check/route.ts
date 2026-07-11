@@ -25,6 +25,17 @@ export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get("run") !== "1") {
     return NextResponse.json({ ok: true, usage: "add &run=1 to run the parou_de_responder sweep now" });
   }
-  const result = await runFunilSilenceCheck();
+  // Modo de teste (secret-gated): &now=<epoch ms> simula o relógio, mas SÓ com
+  // &conv=<conversation_id> junto — um relógio adiantado contra a base inteira
+  // dispararia parou_de_responder prematuro para leads reais.
+  const nowParam = req.nextUrl.searchParams.get("now");
+  const convParam = req.nextUrl.searchParams.get("conv");
+  if (nowParam && !convParam) {
+    return NextResponse.json({ error: "now requires conv (isolated test only)" }, { status: 400 });
+  }
+  const result = await runFunilSilenceCheck(
+    nowParam ? Number(nowParam) : undefined,
+    convParam ?? undefined
+  );
   return NextResponse.json(result);
 }

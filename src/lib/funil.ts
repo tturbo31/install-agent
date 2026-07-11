@@ -341,14 +341,16 @@ export async function runFunilSilenceCheck(nowMs?: number, onlyConvId?: string):
 
       // Claim atômico: só quem criou a flag envia — 1 único disparo por sumiço.
       if (!(await marcarSumido(conv.id))) continue;
-      await enviarEventoFunil("parou_de_responder", {
+      const envio = await enviarEventoFunil("parou_de_responder", {
         telefone: captura.telefone,
         ig_username: conv.username ?? null,
         ig_id: conv.igsid,
         horas_sem_resposta: Math.round(horas),
       });
       out.disparados++;
-      out.detalhes.push(`${conv.username ?? conv.igsid} (${Math.round(horas)}h)`);
+      // O status HTTP da plataforma fica visível no JSON do /api/funil-check —
+      // é a prova observável de que o envio saiu DESTE ambiente (prod/local).
+      out.detalhes.push(`${conv.username ?? conv.igsid} (${Math.round(horas)}h) -> HTTP ${envio.status}${envio.ok ? "" : ` (${(envio.body ?? "").slice(0, 60)})`}`);
     }
     console.log(`[FUNIL] silence check: ${out.verificadas} verificadas, ${out.disparados} parou_de_responder`);
   } catch (err) {
