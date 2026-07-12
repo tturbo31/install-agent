@@ -539,21 +539,19 @@ async function handleWebhook(body: WebhookPayload) {
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conversation.id);
 
-    // ── FUNIL → plataforma de análise (fire-and-forget, nunca bloqueia) ──
+    // ── FUNIL → Ozzi Plataforma (fire-and-forget, nunca bloqueia) ──
     // Só quando ESTA instância inseriu a mensagem (dedup de webhook repetido).
-    // Cobre: lead_criado (telefone capturado), conversando (1/dia) e
+    // Cobre: lead_criado (1ª mensagem de contato novo, com atribuição do
+    // anúncio via referral CTWA), conversando (1ª resposta real) e
     // retomou_conversa (lead sumido voltou). Roda antes do gate mode=human de
     // propósito: a resposta do cliente conta para o funil mesmo com o dono no
     // controle da conversa.
     if (insertedMsg?.id) {
       waitUntil(
         funilOnInboundMessage(
-          { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username },
+          { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username, created_at: conversation.created_at },
           rawText,
           insertedMsg.created_at ?? new Date().toISOString(),
-          // referral do anúncio click-to-message: só chega nos primeiros
-          // eventos, então o funil o persiste já aqui para o lead_criado
-          // (que pode acontecer dias depois) saber de qual anúncio o lead veio.
           messaging.referral ?? null
         )
       );

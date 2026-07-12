@@ -1,43 +1,56 @@
-// ─── Funil de atendimento → plataforma de análise ───────────────────────────
-// Decide QUANDO cada evento do funil dispara e garante que nada duplica.
-// Canal coberto: Instagram (spec do dono, 2026-07-09).
+// ─── Funil de atendimento → Ozzi Plataforma ─────────────────────────────────
+// Decide QUANDO cada evento do funil dispara, nos 3 canais (Instagram,
+// WhatsApp, Messenger), e garante que nada duplica do nosso lado (a plataforma
+// ainda deduplica por ig_id e pelos 10 últimos dígitos do telefone).
 //
-// DEDUP SEM TABELA NOVA (o token de gerenciamento do Supabase expirou, então
-// DDL não é possível por ora — supabase/migrations/002_funil_estado.sql fica
-// como upgrade futuro):
-//  • lead_criado / conversando → derivados do próprio histórico de mensagens
+// EVENTOS (spec do dono, 2026-07-11):
+//  lead_criado          → primeira mensagem de um contato NOVO (com atribuição
+//                         de anúncio via referral CTWA quando houver)
+//  conversando          → primeira resposta REAL do cliente (não a cada msg)
+//  parou_de_responder   → sem resposta há >24h com a última palavra nossa
+//  retomou_conversa     → lead marcado como sumido voltou a falar
+//  agendamento_marcado  → visita confirmada/remarcada (data_visita ISO)
+//  visita_realizada / no_show → SEM sinal automático hoje (o agendador só
+//                         registra cancelamento) — expostos via
+//                         funilVisitaResultado() e o endpoint /api/funil-check.
+//
+// DEDUP SEM TABELA NOVA (o token de gerenciamento do Supabase expirou; DDL
+// indisponível — supabase/migrations/002_funil_estado.sql fica como upgrade):
+//  • lead_criado/conversando → derivados do próprio histórico de mensagens
 //    (determinístico: reprocessar a mesma mensagem chega à mesma decisão);
 //  • sumido/retomou → linha própria em platform_settings por conversa
-//    ("funil_sumido_<convId>"). O INSERT com ignoreDuplicates é atômico no PK:
-//    quem inseriu a linha "ganhou" o direito de enviar parou_de_responder, quem
-//    deletou ganhou o retomou_conversa — corrida entre instâncias é impossível.
-//    (O GET /api/platform-settings filtra essas linhas para não poluir o painel.)
-//  • throttle do sweep de 6h → linha "funil_check_<epochMs>" (época no próprio
-//    nome, já que a tabela só tem platform+paused).
-// Tudo aqui é fire-and-forget via waitUntil: NUNCA lança para o atendimento.
+//    ("funil_sumido_<convId>"): INSERT ignoreDuplicates é atômico no PK — quem
+//    inseriu ganhou o parou_de_responder, quem deletou ganhou o retomou;
+//  • anúncio de origem → "funil_ad_<convId>::<ad_id>::<ad_title>" (a tabela de
+//    conversas NÃO tem colunas de anúncio; o update legado falha silencioso);
+//  • throttle do sweep de 6h → "funil_check_<epochMs>".
+// Tudo chamado via waitUntil (fire-and-forget): NUNCA lança para o atendimento.
 import { supabaseAdmin } from "@/lib/supabase";
-import { enviarEventoFunil } from "@/lib/plataforma";
+import { enviarEventoFunil, type EnvioResultado } from "@/lib/plataforma";
 
-export type ConvFunil = { id: string; igsid: string; name?: string | null; username?: string | null };
+export type ConvFunil = { id: string; igsid: string; name?: string | null; username?: string | null; created_at?: string | null };
 export type ReferralIG = { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | null;
 type MsgRow = { role: string; content: string; created_at: string };
 
 const H = 3600_000;
 const SILENCIO_H = 24; // "sem responder há mais de 24h"
 const SWEEP_MIN_GAP_H = 6; // cadência do parou_de_responder
-const CANAL = "instagram";
 
-// Marco zero do funil: telefones capturados ANTES desta data não contam como
-// lead_criado (o evento nunca foi enviado — a feature não existia), então
-// conversando/parou_de_responder nunca disparam para eles. Evita eventos
-// órfãos na plataforma para leads antigos. Se um lead antigo agendar, o
-// lead_criado é enviado na hora do agendamento (backfill correto). O env é
-// só para os testes conseguirem simular históricos retroativos.
+// Marco zero do funil: conversas CRIADAS antes desta data nunca receberam
+// lead_criado (a feature não existia), então os demais eventos não disparam
+// para elas — exceto no agendamento, que faz o backfill do lead na hora.
+// O env existe só para os testes simularem históricos retroativos.
 function funilDesde(): string {
   return process.env.FUNIL_DESDE || "2026-07-09T19:00:00Z";
 }
 
 const stripSys = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
+
+export function canalDe(igsid: string): "instagram" | "whatsapp" | "facebook" {
+  if (igsid.startsWith("wa_")) return "whatsapp";
+  if (igsid.startsWith("fb_")) return "facebook";
+  return "instagram";
+}
 
 // ─── Telefone ────────────────────────────────────────────────────────────────
 // Padrão US (10/11 dígitos) com fronteiras de dígito, + qualquer +E.164. Não
@@ -52,6 +65,38 @@ export function extrairTelefone(texto: string): string | null {
   const us = t.match(FONE_US);
   if (us) return `+1${us[1]}${us[2]}${us[3]}`;
   return null;
+}
+
+// Melhor telefone conhecido do contato: no WhatsApp é o próprio número
+// (obrigatório); nos outros canais, o primeiro que o cliente digitou.
+// `extra` pode ser texto livre (mensagem) OU um telefone cru (booking.phone) —
+// só passa adiante se realmente PARECER um telefone; nunca texto de mensagem
+// (bug pego no e2e: telefone:"Hi, I want new floors..." foi para a plataforma).
+export function telefoneDoContato(igsid: string, msgs: MsgRow[], extra?: string | null): string | null {
+  if (igsid.startsWith("wa_")) return `+${igsid.slice(3).replace(/\D/g, "")}`;
+  for (const m of msgs) {
+    if (m.role !== "user") continue;
+    const tel = extrairTelefone(m.content);
+    if (tel) return tel;
+  }
+  if (extra) {
+    const tel = extrairTelefone(extra);
+    if (tel) return tel;
+    const digitos = (extra.match(/\d/g) || []).length;
+    if (digitos >= 7 && extra.length <= 25) return extra; // telefone cru (booking.phone)
+  }
+  return null;
+}
+
+// Identificação presente em TODOS os eventos: manda o que tiver.
+function identidade(conv: ConvFunil, msgs: MsgRow[], extraFone?: string | null): Record<string, unknown> {
+  const canal = canalDe(conv.igsid);
+  return {
+    // ig_id = id estável do contato (IGSID no Instagram, PSID no Messenger).
+    ig_id: canal === "whatsapp" ? undefined : canal === "facebook" ? conv.igsid.slice(3) : conv.igsid,
+    ig_username: canal === "instagram" ? conv.username ?? undefined : undefined,
+    telefone: telefoneDoContato(conv.igsid, msgs, extraFone) ?? undefined,
+  };
 }
 
 // ─── data_visita em ISO com fuso de Miami (DST correto) ─────────────────────
@@ -92,8 +137,9 @@ async function buscarDadosAnuncio(adId: string | null | undefined): Promise<{ ad
   }
 }
 
-// ─── Flag "sumido" atômica via platform_settings ─────────────────────────────
+// ─── Flags atômicas via platform_settings ────────────────────────────────────
 const sumidoKey = (convId: string) => `funil_sumido_${convId}`;
+const adKeyPrefix = (convId: string) => `funil_ad_${convId}::`;
 
 // true = ESTA instância criou a flag agora (ganhou o envio do parou_de_responder)
 async function marcarSumido(convId: string): Promise<boolean> {
@@ -125,6 +171,50 @@ async function estaSumido(convId: string): Promise<boolean> {
   return !!data;
 }
 
+// Anúncio de origem persistido na chave (primeiro anúncio vence).
+export async function persistirAnuncioDaConversa(convId: string, referral: ReferralIG): Promise<void> {
+  try {
+    const adId = referral?.ad_id ?? "";
+    const adTitle = referral?.ads_context_data?.ad_title ?? "";
+    if (!adId && !adTitle) return;
+    const { data: existentes } = await supabaseAdmin
+      .from("platform_settings")
+      .select("platform")
+      .like("platform", `${adKeyPrefix(convId)}%`)
+      .limit(1);
+    if (existentes && existentes.length > 0) return;
+    const key = `${adKeyPrefix(convId)}${encodeURIComponent(adId)}::${encodeURIComponent(adTitle).slice(0, 400)}`;
+    await supabaseAdmin
+      .from("platform_settings")
+      .upsert({ platform: key, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
+  } catch (err) {
+    console.warn("[FUNIL] persistirAnuncio falhou:", String(err).slice(0, 150));
+  }
+}
+
+async function dadosDeAnuncioDaConversa(convId: string, referral?: ReferralIG): Promise<{ ad_id: string | null; ad_name: string | null; campanha: string | null }> {
+  let adId: string | null = referral?.ad_id ?? null;
+  let adName: string | null = referral?.ads_context_data?.ad_title ?? null;
+  if (!adId && !adName) {
+    try {
+      const { data } = await supabaseAdmin
+        .from("platform_settings")
+        .select("platform")
+        .like("platform", `${adKeyPrefix(convId)}%`)
+        .limit(1);
+      const key = data?.[0]?.platform as string | undefined;
+      if (key) {
+        const [, rawId, rawTitle] = key.slice("funil_ad_".length).split("::");
+        adId = rawId ? decodeURIComponent(rawId) : null;
+        adName = rawTitle ? decodeURIComponent(rawTitle) : null;
+      }
+    } catch { /* sem anúncio persistido */ }
+  }
+  const graph = await buscarDadosAnuncio(adId);
+  // ad_title do referral do webhook é a fonte primária do nome; Graph completa.
+  return { ad_id: adId, ad_name: adName ?? graph.ad_name, campanha: graph.campanha };
+}
+
 // ─── Histórico auxiliar ──────────────────────────────────────────────────────
 async function mensagensDaConversa(convId: string): Promise<MsgRow[]> {
   const { data } = await supabaseAdmin
@@ -136,176 +226,136 @@ async function mensagensDaConversa(convId: string): Promise<MsgRow[]> {
   return (data ?? []) as MsgRow[];
 }
 
-// Primeira captura VÁLIDA de telefone (mensagem do cliente, após o marco zero
-// do funil). É o "lead_criado já disparou?" derivado do histórico.
-function capturaDeTelefone(msgs: MsgRow[]): { telefone: string; at: string } | null {
-  const desde = funilDesde();
-  for (const m of msgs) {
-    if (m.role !== "user" || m.created_at < desde) continue;
-    const tel = extrairTelefone(m.content);
-    if (tel) return { telefone: tel, at: m.created_at };
-  }
-  return null;
+// Botões de FAQ dos anúncios Meta — um toque não é "resposta real".
+const FAQ_BUTTON = /^\s*(?:what type of materials are included|what is the installation process|do you offer any discounts for larger spaces|is labor cost also \$?4,?500|can i customize the design|what is included in the materials package|is installation cost included in the price|is installation labor cost extra|schedule a quote)\s*\??\s*$/i;
+
+export function isAdFaqButtonFunil(text: string): boolean {
+  return FAQ_BUTTON.test(stripSys(text));
 }
 
-// Qualquer telefone do histórico (inclusive pré-funil) — só para compor payload.
-function qualquerTelefone(msgs: MsgRow[]): string | null {
-  for (const m of msgs) {
-    if (m.role !== "user") continue;
-    const tel = extrairTelefone(m.content);
-    if (tel) return tel;
-  }
-  return null;
+// Conversa participa do funil? (criada após o marco zero → lead_criado saiu)
+function convNoFunil(conv: ConvFunil): boolean {
+  return !!conv.created_at && conv.created_at >= funilDesde();
 }
 
-// ─── Persistência do anúncio de origem (sem DDL) ────────────────────────────
-// A tabela de conversas NÃO tem colunas de anúncio (o update legado que tentava
-// gravá-las falha silencioso desde sempre). O funil persiste o referral numa
-// linha técnica de platform_settings com os dados CODIFICADOS NA CHAVE
-// ("funil_ad_<convId>::<ad_id>::<ad_title-urlencoded>"), já que a tabela só tem
-// platform+paused. Primeira gravação vence; leitura por prefixo.
-const adKeyPrefix = (convId: string) => `funil_ad_${convId}::`;
-
-export async function persistirAnuncioDaConversa(convId: string, referral: ReferralIG): Promise<void> {
-  try {
-    const adId = referral?.ad_id ?? "";
-    const adTitle = referral?.ads_context_data?.ad_title ?? "";
-    if (!adId && !adTitle) return;
-    const { data: existentes } = await supabaseAdmin
-      .from("platform_settings")
-      .select("platform")
-      .like("platform", `${adKeyPrefix(convId)}%`)
-      .limit(1);
-    if (existentes && existentes.length > 0) return; // primeiro anúncio vence
-    const key = `${adKeyPrefix(convId)}${encodeURIComponent(adId)}::${encodeURIComponent(adTitle).slice(0, 400)}`;
-    await supabaseAdmin
-      .from("platform_settings")
-      .upsert({ platform: key, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
-  } catch (err) {
-    console.warn("[FUNIL] persistirAnuncio falhou:", String(err).slice(0, 150));
-  }
-}
-
-async function dadosDeAnuncioDaConversa(convId: string): Promise<{ ad_id: string | null; ad_name: string | null; campanha: string | null }> {
-  let adId: string | null = null;
-  let adName: string | null = null;
-  try {
-    const { data } = await supabaseAdmin
-      .from("platform_settings")
-      .select("platform")
-      .like("platform", `${adKeyPrefix(convId)}%`)
-      .limit(1);
-    const key = data?.[0]?.platform as string | undefined;
-    if (key) {
-      const [, rawId, rawTitle] = key.slice("funil_ad_".length).split("::");
-      adId = rawId ? decodeURIComponent(rawId) : null;
-      adName = rawTitle ? decodeURIComponent(rawTitle) : null;
-    }
-  } catch { /* sem anúncio persistido */ }
-  const graph = await buscarDadosAnuncio(adId);
-  // ad_title do referral do webhook é a fonte primária do nome; Graph completa.
-  return { ad_id: adId, ad_name: adName ?? graph.ad_name, campanha: graph.campanha };
-}
-
-// ─── EVENTOS DE ENTRADA (toda mensagem do cliente no IG) ─────────────────────
-// Dispara, conforme o caso: retomou_conversa, lead_criado, conversando.
-// `msgCreatedAt` é o created_at da mensagem recém-inserida (fronteira do "antes").
+// ─── EVENTOS DE ENTRADA (toda mensagem do cliente, nos 3 canais) ─────────────
+// Dispara conforme o caso: lead_criado (1ª mensagem de contato novo, com
+// atribuição de anúncio), retomou_conversa (sumido voltou), conversando
+// (primeira resposta real). `msgCreatedAt` = created_at da mensagem recém-
+// inserida (fronteira do "antes"); `referral` = anúncio CTWA quando houver.
 export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, msgCreatedAt: string, referral?: ReferralIG): Promise<void> {
   try {
     if (referral) await persistirAnuncioDaConversa(conv.id, referral);
+    if (!convNoFunil(conv)) return; // lead antigo (pré-funil): backfill só no agendamento
+
     const msgs = await mensagensDaConversa(conv.id);
     const anteriores = msgs.filter((m) => m.created_at < msgCreatedAt);
-    const captura = capturaDeTelefone(anteriores);
-    const telAgora = extrairTelefone(rawText);
-    const base = { ig_username: conv.username ?? null, ig_id: conv.igsid };
+    const base = identidade(conv, msgs, rawText);
 
-    // 1) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
-    // flag envia; nas demais instâncias/mensagens vira no-op.
-    if ((captura || telAgora) && (await estaSumido(conv.id)) && (await limparSumido(conv.id))) {
-      await enviarEventoFunil("retomou_conversa", { telefone: captura?.telefone ?? telAgora, ...base });
-      return; // retomou já sinaliza atividade — não empilha "conversando" na mesma mensagem
-    }
-
-    // 2) LEAD_CRIADO: primeiro telefone da conversa apareceu AGORA.
-    if (!captura && telAgora) {
-      const ad = await dadosDeAnuncioDaConversa(conv.id);
+    // 1) LEAD_CRIADO: primeira mensagem de um contato novo. Atribuição do
+    // anúncio via referral (CTWA); conversa orgânica omite os campos ad_*.
+    if (!anteriores.some((m) => m.role === "user")) {
+      const ad = await dadosDeAnuncioDaConversa(conv.id, referral);
       await enviarEventoFunil("lead_criado", {
-        telefone: telAgora,
-        nome: conv.name ?? conv.username ?? null,
-        canal: CANAL,
         ...base,
-        ad_id: ad.ad_id,
-        ad_name: ad.ad_name,
-        campanha: ad.campanha,
+        nome: conv.name ?? conv.username ?? undefined,
+        canal: canalDe(conv.igsid),
+        ad_id: ad.ad_id ?? undefined,
+        ad_name: ad.ad_name ?? undefined,
+        campanha: ad.campanha ?? undefined,
       });
       return;
     }
 
-    // 3) CONVERSANDO: resposta do lead após o lead_criado — no máximo 1 por
-    // 24h, derivado do histórico: só dispara se NENHUMA outra mensagem do
-    // cliente posterior à captura do telefone existe nas últimas 24h.
-    if (captura) {
-      const nowMs = Date.parse(msgCreatedAt);
-      const recente = anteriores.some(
-        (m) => m.role === "user" && m.created_at > captura.at && nowMs - Date.parse(m.created_at) < 24 * H
-      );
-      if (!recente) {
-        await enviarEventoFunil("conversando", { telefone: captura.telefone, ...base });
-      }
+    // 2) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
+    // flag envia; nas demais instâncias/mensagens vira no-op.
+    if ((await estaSumido(conv.id)) && (await limparSumido(conv.id))) {
+      await enviarEventoFunil("retomou_conversa", base);
+      return;
+    }
+
+    // 3) CONVERSANDO: primeira resposta REAL do cliente (depois de já termos
+    // falado com ele), uma única vez por conversa — nunca a cada mensagem.
+    // Um toque de botão de FAQ do anúncio não conta como resposta real.
+    const primeiroBot = msgs.findIndex((m) => m.role === "assistant" && m.created_at < msgCreatedAt);
+    if (primeiroBot === -1) return; // ainda não respondemos nada
+    const jaConversou = anteriores.some(
+      (m, i) => m.role === "user" && i > primeiroBot && stripSys(m.content).trim().length > 0 && !isAdFaqButtonFunil(m.content)
+    );
+    const estaEhReal = stripSys(rawText).trim().length > 0 && !isAdFaqButtonFunil(rawText);
+    if (!jaConversou && estaEhReal) {
+      await enviarEventoFunil("conversando", base);
     }
   } catch (err) {
     console.warn("[FUNIL] funilOnInboundMessage falhou (atendimento intacto):", String(err).slice(0, 200));
   }
 }
 
-// ─── AGENDAMENTO_MARCADO (visita confirmada / remarcada) ─────────────────────
+// ─── AGENDAMENTO_MARCADO (visita confirmada / remarcada, nos 3 canais) ───────
 export async function funilOnBookingConfirmed(
   conversationId: string,
   igsid: string,
   booking: { date?: string; time?: string; phone?: string; name?: string }
 ): Promise<void> {
   try {
-    const { data: conv } = await supabaseAdmin
+    const { data: convRow } = await supabaseAdmin
       .from("instagram_conversations")
-      .select("id, igsid, name, username")
+      .select("id, igsid, name, username, created_at")
       .eq("id", conversationId)
       .single();
-    const base = { ig_username: (conv?.username as string | null) ?? null, ig_id: igsid };
+    const conv: ConvFunil = {
+      id: conversationId,
+      igsid,
+      name: (convRow?.name as string | null) ?? null,
+      username: (convRow?.username as string | null) ?? null,
+      created_at: (convRow?.created_at as string | null) ?? null,
+    };
     const msgs = await mensagensDaConversa(conversationId);
-    const captura = capturaDeTelefone(msgs);
-    const telefone =
-      captura?.telefone ??
-      (booking.phone ? extrairTelefone(booking.phone) ?? booking.phone : null) ??
-      qualquerTelefone(msgs);
+    const base = identidade(conv, msgs, booking.phone);
 
-    // Garantia: agendou sem o lead_criado ter saído (telefone só existiu no
-    // JSON do booking) → cria o lead primeiro para a plataforma ter o registro.
-    if (!captura && telefone) {
+    // Lead antigo (pré-funil) agendou → backfill do lead_criado primeiro, para
+    // a plataforma ter o cadastro completo antes do agendamento.
+    if (!convNoFunil(conv)) {
       const ad = await dadosDeAnuncioDaConversa(conversationId);
       await enviarEventoFunil("lead_criado", {
-        telefone,
-        nome: booking.name ?? (conv?.name as string | null) ?? (conv?.username as string | null) ?? null,
-        canal: CANAL,
         ...base,
-        ad_id: ad.ad_id,
-        ad_name: ad.ad_name,
-        campanha: ad.campanha,
+        nome: booking.name ?? conv.name ?? conv.username ?? undefined,
+        canal: canalDe(igsid),
+        ad_id: ad.ad_id ?? undefined,
+        ad_name: ad.ad_name ?? undefined,
+        campanha: ad.campanha ?? undefined,
       });
     }
 
     if (!booking.date || !booking.time) return;
     await limparSumido(conversationId); // agendou = não está sumido (sem evento)
     await enviarEventoFunil("agendamento_marcado", {
-      telefone,
-      data_visita: dataVisitaIso(booking.date, booking.time),
       ...base,
+      data_visita: dataVisitaIso(booking.date, booking.time),
     });
   } catch (err) {
     console.warn("[FUNIL] funilOnBookingConfirmed falhou (atendimento intacto):", String(err).slice(0, 200));
   }
 }
 
-// ─── PAROU_DE_RESPONDER (sweep) ──────────────────────────────────────────────
+// ─── VISITA_REALIZADA / NO_SHOW ──────────────────────────────────────────────
+// O agendador NÃO registra o resultado da visita hoje (só cancelamento), então
+// não há sinal automático confiável — presumir seria inventar dado. Estes dois
+// eventos são disparados sob demanda: pelo endpoint /api/funil-check
+// (?visita=realizada|no_show&telefone=...) que o dono, a plataforma ou o app
+// de agendamento podem chamar com 1 requisição.
+export async function funilVisitaResultado(
+  resultado: "realizada" | "no_show",
+  ident: { telefone?: string; ig_id?: string }
+): Promise<EnvioResultado> {
+  const evento = resultado === "realizada" ? "visita_realizada" : "no_show";
+  return enviarEventoFunil(evento, {
+    telefone: ident.telefone ?? undefined,
+    ig_id: ident.ig_id ?? undefined,
+  });
+}
+
+// ─── PAROU_DE_RESPONDER (sweep, nos 3 canais) ───────────────────────────────
 export type SilenceCheckResult = { verificadas: number; disparados: number; detalhes: string[] };
 
 export async function runFunilSilenceCheck(nowMs?: number, onlyConvId?: string): Promise<SilenceCheckResult> {
@@ -315,7 +365,7 @@ export async function runFunilSilenceCheck(nowMs?: number, onlyConvId?: string):
     const desde = new Date(now - 7 * 24 * H).toISOString();
     let query = supabaseAdmin
       .from("instagram_conversations")
-      .select("id, igsid, name, username, mode, booking_confirmed, updated_at")
+      .select("id, igsid, name, username, mode, booking_confirmed, created_at, updated_at")
       .gte("updated_at", desde)
       .order("updated_at", { ascending: false })
       .limit(500);
@@ -323,15 +373,13 @@ export async function runFunilSilenceCheck(nowMs?: number, onlyConvId?: string):
     const { data: convs } = await query;
 
     for (const conv of convs ?? []) {
-      // Só Instagram (spec); pós-booking o silêncio do bot é intencional.
-      if (conv.igsid.startsWith("wa_") || conv.igsid.startsWith("fb_")) continue;
+      // Pós-booking o silêncio do bot é intencional; pré-funil não tem lead_criado.
       if (conv.mode !== "agent" || conv.booking_confirmed === true) continue;
+      if (!convNoFunil(conv as ConvFunil)) continue;
       out.verificadas++;
 
       const msgs = await mensagensDaConversa(conv.id);
       if (!msgs.length) continue;
-      const captura = capturaDeTelefone(msgs); // lead_criado já disparou?
-      if (!captura) continue;
       const ultima = msgs[msgs.length - 1];
       if (ultima.role !== "assistant") continue; // cliente tem a última palavra → não é sumiço
       const ultimaDoCliente = [...msgs].reverse().find((m) => m.role === "user");
@@ -341,12 +389,7 @@ export async function runFunilSilenceCheck(nowMs?: number, onlyConvId?: string):
 
       // Claim atômico: só quem criou a flag envia — 1 único disparo por sumiço.
       if (!(await marcarSumido(conv.id))) continue;
-      const envio = await enviarEventoFunil("parou_de_responder", {
-        telefone: captura.telefone,
-        ig_username: conv.username ?? null,
-        ig_id: conv.igsid,
-        horas_sem_resposta: Math.round(horas),
-      });
+      const envio = await enviarEventoFunil("parou_de_responder", identidade(conv as ConvFunil, msgs));
       out.disparados++;
       // O status HTTP da plataforma fica visível no JSON do /api/funil-check —
       // é a prova observável de que o envio saiu DESTE ambiente (prod/local).

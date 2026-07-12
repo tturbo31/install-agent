@@ -15,6 +15,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
 
 export const maxDuration = 60;
 
@@ -70,6 +71,10 @@ async function processBookingCommand(
       });
       if (r.success) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
+        // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
+        waitUntil(funilOnBookingConfirmed(conversationId, `wa_${waId}`, {
+          date: bookingData.date, time: bookingData.time, phone: bookingData.phone ?? waId, name: bookingData.name,
+        }));
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
       // Do NOT pause: an automatic failure must never permanently silence the lead
@@ -116,6 +121,10 @@ async function processBookingCommand(
         .from("instagram_conversations")
         .update({ booking_confirmed: true })
         .eq("id", conversationId);
+      // FUNIL: visita confirmada → agendamento_marcado (data_visita em ISO).
+      waitUntil(funilOnBookingConfirmed(conversationId, `wa_${waId}`, {
+        date: bookingData.date, time: bookingData.time, phone: clientPhone, name: bookingData.name,
+      }));
       return { response: bookingSuccessMessage(lang), booked: true };
     } else if (result.error === "already_booked") {
       console.warn("[WA] Duplicate booking blocked by scheduler guard");
@@ -406,6 +415,22 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .from("instagram_conversations")
       .update({ updated_at: new Date().toISOString() })
       .eq("id", conv.id);
+
+    // ── FUNIL → Ozzi Plataforma (fire-and-forget, nunca bloqueia) ──
+    // lead_criado (1ª mensagem, canal whatsapp, telefone = próprio número),
+    // conversando (1ª resposta real) e retomou_conversa. Antes do gate
+    // mode=human de propósito: a resposta do cliente conta para o funil mesmo
+    // com o dono no controle. Só quando ESTA instância inseriu a mensagem.
+    if (insertedMsg?.id) {
+      waitUntil(
+        funilOnInboundMessage(
+          { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },
+          rawText,
+          insertedMsg.created_at ?? new Date().toISOString()
+        )
+      );
+      waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
+    }
 
     if (conv.mode === "human") return;
 
