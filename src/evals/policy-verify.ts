@@ -28,7 +28,10 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, undefined, false).then(r => r.text);
 
-const DECLINES = (t: string) => /don'?t take|do not take|under 200|focus on larger|too small|won'?t be able|not able to take|we only|larger (projects|installations|jobs)/i.test(t);
+// "wouldn't be able to take that on since we focus on installations over 200
+// square feet" is a valid decline phrasing the model produces — accept
+// "wouldn't be able" and "over 200" alongside the original stems.
+const DECLINES = (t: string) => /don'?t take|do not take|under 200|over 200|focus on larger|too small|won'?t be able|wouldn'?t be able|not able to take|we only|larger (projects|installations|jobs)/i.test(t);
 const HAS_PRICE = (t: string) => /\$\s?\d/.test(t);
 const PROPOSES_VISIT = (t: string) => /visit|in.?person|come (by|out|measure)|stop by|measure in person/i.test(t);
 

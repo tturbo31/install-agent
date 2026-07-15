@@ -59,7 +59,9 @@ function main() {
     ck(`${name}: catches getAIResponse failure`, /catch\s*\(aiErr\)/.test(src), rel);
     ck(`${name}: sends the fallback to the client`, sendRe.test(src), rel);
     ck(`${name}: does NOT permanently pause on outage (auto-recovers next msg)`, !/mode:\s*"human"/.test(src.split("catch (aiErr)")[1]?.slice(0, 2400) ?? ""), rel);
-    ck(`${name}: notifies the owner on outage`, /notifyOwners\(/.test(src.split("catch (aiErr)")[1]?.slice(0, 2400) ?? ""), rel);
+    // 3600-char window: the IG catch block's guard comments pushed notifyOwners
+    // to offset ~2670, past the old 2400 window (pre-existing false negative).
+    ck(`${name}: notifies the owner on outage`, /notifyOwners\(/.test(src.split("catch (aiErr)")[1]?.slice(0, 3600) ?? ""), rel);
     ck(`${name}: skips fallback when booking already confirmed`, /if\s*\(!isBookingConfirmed\)/.test(src.split("catch (aiErr)")[1]?.slice(0, 1600) ?? ""), rel);
   }
 

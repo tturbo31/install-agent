@@ -21,7 +21,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import { getAIResponse, type ChatMessage } from "../lib/ai";
-import { OPENER_EN, OPENER_ES, OPENER_PT, WHAT_IS_INCLUDED_ASK_TYPE } from "../lib/system-prompt";
+import { OPENER_EN, OPENER_ES, OPENER_PT, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES } from "../lib/system-prompt";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -41,7 +41,7 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, null, false).then(r => r.text);
 
-const CANNED = new Set([OPENER_EN.trim(), OPENER_ES.trim(), OPENER_PT.trim(), WHAT_IS_INCLUDED_ASK_TYPE.trim()]);
+const CANNED = new Set([OPENER_EN.trim(), OPENER_ES.trim(), OPENER_PT.trim(), WHAT_IS_INCLUDED_ASK_TYPE.trim(), OPENER_PROCESS_EN.trim(), OPENER_PROCESS_ES.trim(), OPENER_DISCOUNT_EN.trim(), OPENER_DISCOUNT_ES.trim()]);
 const isCanned = (t: string) => CANNED.has(t.trim());
 const namesAllThreeTypes = (t: string) => /\btile\b/i.test(t) && /\bvinyl\b/i.test(t) && /\bhardwood\b/i.test(t);
 

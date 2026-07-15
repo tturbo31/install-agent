@@ -26,6 +26,19 @@ export const OPENER_PT = "Olá, trabalhamos com piso vinílico de luxo, tile e h
 // the one answer that can never be wrong.
 export const WHAT_IS_INCLUDED_ASK_TYPE = "Hello! We run separate promotions for tile, vinyl, and hardwood, and what is included is a little different for each. Which one are you interested in, tile, vinyl, or hardwood?";
 
+// AD-FAQ AWARE OPENERS (2026-07-15 review): the Meta ad quick-reply buttons send
+// known first messages ("What is the installation process?", "Do you offer any
+// discounts for larger spaces?"). The generic type-ask opener used to ignore the
+// tapped question entirely — the single biggest funnel leak of the 4-day review
+// (~17 leads went silent right after it). These variants acknowledge/answer the
+// tapped question in one line AND ask the type in the SAME message (per the
+// AD_REPLY_NOTE rule), still deterministic and zero-token. They name tile +
+// hardwood so assistantAlreadyAskedType() counts them as the one allowed type-ask.
+export const OPENER_PROCESS_EN = "Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?";
+export const OPENER_PROCESS_ES = "Buena pregunta, movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+export const OPENER_DISCOUNT_EN = "Yes, larger spaces get our best pricing, and the estimate visit is completely free. Which flooring are you thinking about, tile, vinyl, or hardwood?";
+export const OPENER_DISCOUNT_ES = "Sí, los espacios grandes tienen nuestro mejor precio, y la visita para el estimado es totalmente gratis. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+
 // Injected by the Instagram/Facebook webhooks ONLY when the client replied to an
 // ad. The ad advertises three flooring types at different per-sqft rates, so the
 // bot must FIRST ask which type before quoting. Kept here as the single source of

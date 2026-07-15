@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES } from "@/lib/system-prompt";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -93,6 +93,10 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /is\s+(labor|installation)\s+included/i,
       /does\s+(it|the\s+package)\s+include\s+(labor|installation)/i,
       /what\s+does?\s+(it|that)\s+include/i,
+      // "Is installation labor cost extra?" / "Is labor cost also $4,500?" — the
+      // Meta ad FAQ variants (2026-07-15 review): inclusions questions, same flow.
+      /\blabor\s+(?:cost\s+)?(?:extra|included|also)\b/i,
+      /\bis\s+(?:the\s+)?labor\s+cost\b/i,
     ],
     response: WHAT_IS_INCLUDED_RESPONSE,
   },
@@ -109,6 +113,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /qual\s+(é\s+o\s+)?visual\s+(dos?\s+)?(piso|ch[aã]o|vinyl)/i,
       /(foto|imagem|amostra|cat[aá]logo)\s+dos?\s+(pisos?|chão|ch[aã]o|op[cç])/i,
     ],
+    id: "see_options_pt",
     response: "Para isso é melhor falar direto com a nossa equipe pelo WhatsApp no (561) 674-8334, que a gente te ajuda a encontrar o piso ideal![NOTIFY_OWNER]",
     skipIfSubstantive: true,
   },
@@ -138,6 +143,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /do\s+you\s+(?:have|carry|sell|offer|got|stock)\s+(?!.{0,20}(?:warranty|guarantee|financ|appointment|time|slot))(?:any\s+|some\s+|a\s+|the\s+)?(?:\w+\s+){0,3}(floor|flooring|vinyl|lvp|colou?r|style|option|wood|marble|grey|gray|plank|laminate|hardwood|design|pattern|finish)/i,
       /what\s+(?:do\s+you\s+(?:have|carry|sell|offer|got)|(?:kinds?|types?|colou?rs?|styles?|options?|designs?|finishes?)\s+(?:do\s+you|are\s+(?:available|there)))/i,
     ],
+    id: "see_options_en",
     response: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor![NOTIFY_OWNER]",
     skipIfSubstantive: true,
   },
@@ -242,17 +248,29 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // re-fire it — the full-context model answers what the client asked and folds
     // in the type question naturally, instead of blurting the identical canned
     // "which one, tile, vinyl, or hardwood?" line again (the robotic-loop bug).
-    if (vinylProne && !messages.some((m) => m.role === "assistant")) return openerMessage(last.content);
+    // A first message that already declares 500+ sqft skips the canned opener
+    // entirely (OPENER EXCEPTION): the model must acknowledge the size and
+    // propose the free visit.
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
   // vinyl description; tile questions get the Floor & Decor answer. All three
   // must bypass the "redirect to WhatsApp" options deflection.
   const skipDeflection = SUBSTANTIVE_PRODUCT_Q.test(text) || PRODUCT_TYPE_Q.test(text) || /\b(tile|porcelain|ceramic)\b/i.test(text);
+  // The client is ALREADY talking to us on WhatsApp (the wa-webhook injects the
+  // [WHATSAPP CHANNEL ...] note): telling them to "message our team on WhatsApp"
+  // reads broken and killed threads (2026-07-15 review, 4 conversations). Same
+  // handoff, channel-appropriate wording: the team follows up right here.
+  const onWhatsApp = messages.some((m) => /\[WHATSAPP CHANNEL/i.test(m.content));
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
       if (rule.id === "price_negotiation") return priceNegotiationHandoff(text);
+      if (onWhatsApp && rule.id === "see_options_en")
+        return "I'll have our team send you some photos of the options right here![NOTIFY_OWNER]";
+      if (onWhatsApp && rule.id === "see_options_pt")
+        return "Vou pedir para a nossa equipe te mandar fotos das opções por aqui mesmo![NOTIFY_OWNER]";
       if (rule.id === "what_included") {
         // Known type → its exact inclusions.
         if (adType) return whatIsIncludedResponseFor(adType);
@@ -298,7 +316,11 @@ export type AdFlooringType = "tile" | "vinyl" | "hardwood";
 //    vinyl exists), so it stays null and the bot asks, which is correct.
 const AD_VINYL = /\b(v[iy]n[iy]ls?|lvp|lvt|spc|laminate[ds]?|laminad[oa]s?)\b/i;
 const AD_TILE = /\b(?:tiles?|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?)\b(?![\s-]?look)/i;
-const AD_HARDWOOD = /\b(hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring))\b/i;
+// "oak (wood) floor" is a real-wood species name — a client naming oak means
+// hardwood ("Do you install oak wood floor?" used to get the type-ask opener,
+// 2026-07-15 review). "oak look"/"oak-look" stays excluded (that copy appears on
+// vinyl creatives too).
+const AD_HARDWOOD = /\b(hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|oak(?![\s-]?look)(?:\s+(?:wood|floors?|flooring))?)\b/i;
 
 // Detect the flooring type from ad signals (ad_title/creative_url/ad_id) OR from
 // a type the CLIENT explicitly named. Returns null when NO explicit type is named
@@ -340,7 +362,7 @@ export function adFlooringTypeNote(type: AdFlooringType): string {
   if (type === "hardwood") {
     return `[AD_FLOORING_TYPE: hardwood]\n[AD TYPE KNOWN — HARDWOOD: This client replied to one of our HARDWOOD ads, so you ALREADY know they want hardwood. Do NOT ask whether they want tile, vinyl, or hardwood. Our hardwood promotion is $3.20 per square foot for INSTALLATION LABOR ONLY; the client buys their own wood material and the promotion includes NOTHING else, no flooring material and no quarter round. NEVER tell them the package includes the flooring or the quarter round, that is the vinyl offer. For 500 sqft or more give NO price by DM and propose the free in-person visit.]`;
   }
-  return `[AD_FLOORING_TYPE: vinyl]\n[AD TYPE KNOWN — VINYL: This client replied to one of our VINYL ads, so you ALREADY know they want vinyl. Do NOT ask whether they want tile, vinyl, or hardwood. Our vinyl promotion is $5 per square foot and that already includes the flooring, the installation labor, and the quarter round. Offer the free quote and ask one area or the whole house, unless the size is already 500 sqft or more, then propose the free in-person visit.]`;
+  return `[AD_FLOORING_TYPE: vinyl]\n[AD TYPE KNOWN — VINYL: This client replied to one of our VINYL ads, so you ALREADY know they want vinyl. Do NOT ask whether they want tile, vinyl, or hardwood. Our vinyl promotion is $5 per square foot and that already includes the flooring, the installation labor, and the quarter round. Offer the free quote and ask one area or the whole house, UNLESS the client has ALREADY stated a size of 500 sqft or more anywhere in the conversation (like "Vinyl, 1400 square feet"): in that case NEVER ask one area or whole house and NEVER quote a number, acknowledge the size and go straight to proposing the free in-person visit.]`;
 }
 
 // Best-effort vision fallback (the "check the ad creative" path): when no ad text
@@ -692,7 +714,7 @@ export function isBareGreeting(text: string): boolean {
 // Pick the first-contact opener in the language of the greeting itself (the
 // greeting word is the most reliable language signal), so a "Hola" gets Spanish
 // and an "Olá" gets Portuguese.
-export function openerMessage(text: string): string {
+export function openerLang(text: string): "en" | "es" | "pt" {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
   // Accent-safe boundaries: JS \b does not work around accented letters, so a
   // trailing \b after "olá" never matches. Anchor on start/space/punctuation and
@@ -700,13 +722,45 @@ export function openerMessage(text: string): string {
   // Accented "olá" / "oi" / "bom dia" are clearly Portuguese; bare "ola" (no H,
   // no accent) is far more often a Spanish speaker dropping the H of "hola". A few
   // non-greeting words also pin the language for a no-greeting inquiry.
-  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria)\b/.test(t)) return OPENER_PT;
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria)\b/.test(t)) return "pt";
   // "pisos?/cerámica/instalación/cotización" pin Spanish for no-greeting
   // inquiries like "Q piso es el de la promo?" — that message used to fail both
   // language checks and get the ENGLISH opener (2026-07-07 review). "piso" is
   // also Portuguese, but the PT check above runs first and catches PT context.
-  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n)\b/.test(t)) return OPENER_ES;
-  return OPENER_EN;
+  // "loza/losa" ("Quw material de loza es ese") and "nesesitan/instalar" cover
+  // common misspelled Spanish first messages that used to get the English opener.
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o)\b/.test(t)) return "es";
+  return "en";
+}
+
+export function openerMessage(text: string): string {
+  const lang = openerLang(text);
+  return lang === "pt" ? OPENER_PT : lang === "es" ? OPENER_ES : OPENER_EN;
+}
+
+// The Meta ad quick-reply FAQ buttons arrive as known first messages. Answer the
+// tapped question in the SAME deterministic message that asks the type — never
+// blurt the generic opener over a direct question (2026-07-15 review: ~17 leads
+// went silent right after the generic opener ignored their tapped FAQ).
+const AD_FAQ_PROCESS = /\bwhat(?:'?s| is)?\s+the\s+installation\s+process\b|\bhow\s+does\s+the\s+installation\s+work\b|\bc[oó]mo\s+es\s+el\s+proceso\b|proceso\s+de\s+instalaci[oó]n/i;
+const AD_FAQ_DISCOUNT = /\bdiscounts?\b[^.!?\n]{0,40}\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?|jobs?)\b|\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?)\b[^.!?\n]{0,20}\bdiscounts?\b|\bdescuentos?\b[^.!?\n]{0,40}\b(?:espacios?|[aá]reas?|proyectos?)\s+(?:m[aá]s\s+)?grandes?\b/i;
+
+// OPENER EXCEPTION backstop (2026-07-15 review): a FIRST message that already
+// declares 500+ sqft ("I have about 2500sf how much can you do it for…") must
+// NEVER get the canned type-ask opener — the prompt's OPENER EXCEPTION requires
+// acknowledging the size and proposing the free visit, which only the model can
+// do. Six large leads got the canned opener in 4 days; two never replied again.
+// Metric side: 47+ m2 ≈ 500+ sqft.
+export function mentionsLargeSqft(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  const re = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(sq\.?\s*(?:ft|feet|foot)?\.?|sf\b|sqft|square\s*(?:feet|foot|ft)|ft2|ft²|pies(?:\s+cuadrados)?|m2|m²|mts?2|metros?(?:\s+cuadrados)?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) {
+    const n = parseFloat(m[1].replace(/,/g, ""));
+    const isMetric = /^m(?:etro|ts?|²|2)/i.test(m[2]) || /^m2$/i.test(m[2]);
+    if (isMetric ? n >= 47 : n >= 500) return true;
+  }
+  return false;
 }
 
 // Language-matched handoff for price-negotiation asks (owner rule 2026-07-08):
@@ -751,9 +805,9 @@ const HOW_WORK = /how\s+(?:much|does\s+(?:it|this|that|your|the)\s+\w*\s*work|do
 // Mirrors the AD_* stems (same inflected forms) so "the client already named a
 // type, skip the opener" agrees with detectAdFlooringType and the bot never
 // re-asks a plural/misspelled/shorthand type the client already gave.
-const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
+const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|oak(?![\s-]?look)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
 const SEE_OR_COLOR = /\b(photo|picture|image|catalog|colou?r|grey|gray|style|sample|show me|wood.?look|stone.?look|tile.?look|marble.?look|website|instagram)\b/i;
-const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego)\b/i;
+const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego|baseboards?|quarter\s*round|rodap[ée]s?|z[oó]calos?)\b/i;
 
 export function isFlooringInquiry(text: string): boolean {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
@@ -793,6 +847,24 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
   /\b(another|different|a new|other|earlier|later|otro|otra|nuevo|outro|outra)\b[^.!?\n]{0,12}\b(day|time|date|d[ií]a|hora)\b[^.!?\n]{0,32}\b(work|instead|better|para|mejor|melhor)/i,
   /\binstead of\b[^.!?\n]{0,20}\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|\d{1,2}\s*(?:am|pm))\b/i,
   /\bcan('?t| ?not| we)\b[^.!?\n]{0,40}\b(make|do|come)\b[^.!?\n]{0,20}\b(it|the visit|the appointment|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|that day|that time)\b[^.!?\n]{0,30}\b(another|different|instead|reschedul|move|change)\b/i,
+  // CANCEL intent (2026-07-15 review): two booked clients said "Sorry I need to
+  // cancel or we could do this friday 2pm" (IG) and "please cancel the appointment
+  // for tomorrow, will text you with new time" (WA) and got TOTAL SILENCE — no
+  // pattern here covered "cancel", so the silent post-booking path swallowed a
+  // cancellation. The visit stayed booked (wasted trip) and the replacement time
+  // was never picked up. A cancellation IS the reschedule family: engage and let
+  // the model run [CANCEL_BOOKING] / [RESCHEDULE] per its existing rules.
+  /\b(cancel(l?(ed|ing|ation))?|cancelar?|cancelo|cancelen?|desmarcar?|anular?)\b/i,
+  // "I can't make it (tomorrow / Monday / at 3pm)" with no explicit "move/change"
+  // verb is still a booked client telling us the visit will not happen — engage.
+  /\bcan'?t\s+(?:make|do)\s+(?:it|the\s+(?:visit|appointment))\b/i,
+  /\bno\s+(?:voy\s+a\s+)?pod(?:er|r[ée])\b|\bno\s+puedo\s+(?:ir|estar|ese|el|la|ma[ñn]ana|hoy)\b|\bn[ãa]o\s+(?:vou\s+)?poder\b|\bn[ãa]o\s+posso\b/i,
+  // Slot-availability probe from a booked client ("Hi Ozzi, do you still have the
+  // 1pm time slot available on Wednesday?" got silence, 2026-07-15 review): asking
+  // whether a DIFFERENT time is open is a reschedule probe, never a closing.
+  /\b(?:do\s+)?(?:you|u)\s+(?:still\s+)?have\b[^.!?\n]{0,50}\b(?:slot|opening|spot|time)\b/i,
+  /\b(?:slot|spot|opening|time\s*slot|hora|horario|hor[áa]rio|cita|turno)\b[^.!?\n]{0,30}\b(?:available|open|free|libre|disponible|dispon[ií]vel)\b/i,
+  /\b(?:available|disponible|dispon[ií]vel|libre)\b[^.!?\n]{0,30}\b(?:slot|spot|opening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|ma[ñn]ana|amanh[ãa]|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i,
 ];
 
 export function isRescheduleRequest(text: string): boolean {
@@ -824,6 +896,9 @@ const JOB_SEEKER_PATTERNS: RegExp[] = [
   /\b(busco|buscando|necesito|quiero)\s+(trabajo|empleo|chamba|pega)\b/i,
   /\bsoy\s+(instalador|pintor|albañil|trabajador|obrero)\b/i,
   /\b(est[aá]n|estas?)\s+contratando\b|\bhay\s+(trabajo|vacante|empleo)\b/i,
+  // "¿Necesitan instaladores?" (incl. common misspellings "nesesitan istalador",
+  // 2026-07-15 review: an installer asking for work got the English sales opener).
+  /\b(?:necesitan?|nesesitan?|ocupan)\s+(?:alg[uú]n\s+|un\s+|una\s+)?(?:in?stal+adore?s?|trabajadore?s?|ayudantes?|obreros?|emplead[oa]s?)\b/i,
   // Service OFFERS phrased as credentials ("Tengo experiencia en instalación de
   // cerámica y tengo herramientas") — an installer pitching, not a customer.
   // Used to slip through and get the promo opener (2026-07-07 review).
@@ -885,6 +960,47 @@ export function isPureClosingBurst(history: Array<{ role: string; content: strin
     }
   }
   return true;
+}
+
+// ─── Internal-monologue leak scrubber ───────────────────────────────────────
+// Three REAL leaks shipped to clients in the 2026-07-11..15 window:
+//   "…What's the full address so I can get you scheduled? Wait, let me handle
+//    this properly. 16 steps at $140 per step is $2,240… Let me redo this: …"
+//   "This is a small tile job quoted by DM, not a visit, so I just need to
+//    notify Ozzi to follow up. Since the client accepted the quote, I'll
+//    escalate. Great, I'll have Ozzi reach out to you directly…"
+//   "I have Saturday August 16 at... wait, let me check what I have open…"
+// The model narrates its own decision process INTO the reply. Drop every
+// sentence that is clearly the model talking ABOUT the conversation (third-
+// person "the client…", "I'll escalate", "notify Ozzi to follow up", "let me
+// redo…") rather than TO the client. Patterns are deliberately narrow so real
+// client-facing lines ("I need to come measure", "I'll have Ozzi reach out to
+// you") NEVER match. Fail open: if nothing substantive survives, keep the
+// original text — an awkward reply still beats silence or a broken fragment.
+const REASONING_LEAK_SENTENCE = new RegExp(
+  [
+    /\bwait,?\s+let\s+me\b/.source,
+    /\blet\s+me\s+(?:redo|recalculate|re-?check|recompute|handle\s+this\s+properly|start\s+over|try\s+(?:this|that)\s+again|give\s+the\s+right\s+answer|fix\s+that)\b/.source,
+    /\bscratch\s+that\b/.source,
+    /\b(?:i|we)(?:'|’)?ll\s+escalate\b/.source,
+    /\bi\s+(?:just\s+)?need\s+to\s+notify\b/.source,
+    /\bnotify\s+(?:ozzi|the\s+owner|the\s+team)\s+to\b/.source,
+    /\bthe\s+client\s+(?:accepted|wants|said|asked|is\s+asking|gave|confirmed|has\s+(?:accepted|confirmed|given))\b/.source,
+    /\bthis\s+is\s+a\b[^.!?\n]{0,60}\b(?:job|lead|request)\b[^.!?\n]{0,50}\b(?:quoted|by\s+dm|not\s+a\s+visit)\b/.source,
+  ].join("|"),
+  "i"
+);
+
+export function stripReasoningLeak(text: string): string {
+  if (!REASONING_LEAK_SENTENCE.test(text)) return text;
+  // Sentence split that never breaks inside a decimal price ("$4.50").
+  const parts = text.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [text];
+  const kept = parts.filter((s) => !REASONING_LEAK_SENTENCE.test(s));
+  const result = kept.join("").replace(/[ \t]{2,}/g, " ").trim();
+  const substance = result.replace(/\[[^\]]*\]/g, "").trim();
+  if (substance.length < 20) return text;
+  console.log("[AI] reasoning-leak scrubber: removed internal monologue sentence(s) from the reply");
+  return result;
 }
 
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
@@ -964,6 +1080,33 @@ export async function getAIResponse(
   const hasPriorAssistant = messages.some((m) => m.role === "assistant");
   if (!hasPriorAssistant && lastMsg?.role === "user" && !conversationFlooringType(messages) && !isJobSeeker(lastMsg.content)) {
     const t = lastMsg.content.split(/\n\n?\[SYSTEM:/)[0];
+    // OPENER EXCEPTION backstop: 500+ sqft already declared in the very first
+    // message → NEVER the canned type-ask; the model acknowledges the size and
+    // proposes the free visit per the prompt's OPENER EXCEPTION.
+    const largeFirstMessage = mentionsLargeSqft(t);
+    // AD-FAQ AWARE OPENERS: the tapped quick-reply question gets its one-line
+    // answer folded into the SAME deterministic type-ask (still zero-token).
+    // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
+    if (!largeFirstMessage) {
+      const lang = openerLang(t);
+      if (AD_FAQ_PROCESS.test(t)) {
+        const opener = lang === "es" ? OPENER_PROCESS_ES : OPENER_PROCESS_EN;
+        console.log("[AI] First contact, ad-FAQ (installation process) — answering + asking the type");
+        return { text: opener, inputTokens: 0, outputTokens: 0 };
+      }
+      if (AD_FAQ_DISCOUNT.test(t)) {
+        const opener = lang === "es" ? OPENER_DISCOUNT_ES : OPENER_DISCOUNT_EN;
+        console.log("[AI] First contact, ad-FAQ (larger-space discounts) — answering + asking the type");
+        return { text: opener, inputTokens: 0, outputTokens: 0 };
+      }
+      // "Is installation labor cost extra?" / "Is labor cost also $4,500?" (the
+      // mangled ad FAQ): an inclusions question — the ask-type inclusions line
+      // acknowledges it properly instead of the generic opener steamrolling it.
+      if (/\blabor\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?labor\s+cost\b/i.test(t)) {
+        console.log("[AI] First contact, ad-FAQ (labor cost) — inclusions ask-type line");
+        return { text: WHAT_IS_INCLUDED_ASK_TYPE, inputTokens: 0, outputTokens: 0 };
+      }
+    }
     // The lead came from an ad but we could NOT detect its type (no
     // [AD_FLOORING_TYPE] marker, just the ad-reply note / placeholder). This is
     // exactly the "clicked the tile ad → got the vinyl $5 pitch" case: ask the
@@ -972,8 +1115,8 @@ export async function getAIResponse(
     const adContext = /\[AD REPLY:|\[Client replied to our ad\]|Client shared a post\/reel from our ad/i.test(lastMsg.content);
     const excludedTopic =
       SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
-      OTHER_TOPIC.test(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with/i.test(t);
-    if (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic)) {
+      OTHER_TOPIC.test(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
+    if (!largeFirstMessage && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(lastMsg.content);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
@@ -1014,7 +1157,7 @@ export async function getAIResponse(
   }
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
-  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. The MOMENT you have a confirmed day/time AND the property address, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number. If the client asks for YOUR name, say you are Ozzi's assistant, NEVER invent a personal name (no "Alex", no made-up names, ever).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added: the +$500 small-job surcharge is EXCLUSIVE to luxury vinyl (LVP) and must NEVER be applied to a tile job (250 sqft tile = $1,125 not $1,625; 300 sqft tile = $1,350 not $1,850). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
+  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for address and phone ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. The MOMENT you have a confirmed day/time AND the property address, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. WHATSAPP EXCEPTION: if a [WHATSAPP CHANNEL] note is in context the client is ALREADY messaging us on WhatsApp, so never tell them to message us on WhatsApp, instead say the team will send the photos of the options right here and add [NOTIFY_OWNER]. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number. If the client asks for YOUR name, say you are Ozzi's assistant, NEVER invent a personal name (no "Alex", no made-up names, ever).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added: the +$500 small-job surcharge is EXCLUSIVE to luxury vinyl (LVP) and must NEVER be applied to a tile job (250 sqft tile = $1,125 not $1,625; 300 sqft tile = $1,350 not $1,850). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.
 18. SMALL-JOB PRICING RULE: UNDER 200 sqft we DO NOT take the job, under any circumstance — never quote a price, never propose a visit, just politely decline in one short sentence and invite them back for a bigger area (example: "We focus on larger installations, so we don't take projects under 200 square feet, but reach out anytime you have a bigger area!"). For a LUXURY VINYL (LVP) project you quote by DM that is 200 to 400 sqft, the total MUST be (sqft x $5) + $500, presented as ONE final number with the $500 already baked in. This +$500 add-on is for luxury vinyl ONLY: NEVER apply it to a tile, porcelain, or ceramic job (tile is always sqft x $4.50 with no add-on). NEVER reveal, itemize, mention, or hint at the $500, and do NOT show any per-sqft breakdown for these small jobs (no "$5/sqft", no "$5 x N"). Example: 200 sqft -> say about $1,500 (not $1,000). Example: 300 sqft -> about $2,000. For 401 to 499 sqft use plain $5/sqft with no add-on. For 500 sqft or more NEVER give a DM price, propose the free visit. The pricing tiers are INTERNAL: never explain them, never mention any range/band/tier, never narrate your calculation or self-correct out loud (no "let me give the right answer", no "480 is between 401 and 499"). Reply with ONLY the final total in one clean sentence.
 23. JOB SEEKER RULE: If the message is from someone seeking a job or offering their own labor/services (installer, painter, laborer, helper, carpenter, "are you hiring", "looking for work", "I'm an installer", "busco trabajo", "soy instalador", "procuro emprego", "sou pintor"), this is NOT a customer. Output EXACTLY [REACT_ONLY] and nothing else, no greeting, no pitch. A real customer asking about our service ("do you have installers?", "I need my floor installed") is NOT a job seeker, answer them normally.
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. Do not reveal the small-job surcharge.
@@ -1031,7 +1174,10 @@ export async function getAIResponse(
 28. BATHROOM REMODELING RULE: We DO bathroom remodels (reforma de banheiro), not only flooring. When the client asks if we do, offer, or want a bathroom remodel or renovation (remodel, renovate, redo, or gut the bathroom), confirm YES we do it, explain that for a remodel we first need to check the space in person to give an accurate quote, and propose the FREE in-person visit exactly like a large lead: never quote a remodel price by DM, and never decline it for being small (it always goes to the visit, any size). This does NOT apply to a request for FLOORING in a bathroom (that is a normal flooring job under the usual sqft rules, including the under-200-sqft decline) or to a small tile/patch repair (we do not do repairs).
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
 30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
-31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.`;
+31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.
+32. AD PRICE MISMATCH RULE: If the client quotes a price they saw in one of our ads ("the ad says $2,350 for 1000 sqft", "the promotion mentioned $2,300") that does NOT match the promotions in these rules, NEVER confirm, endorse, repeat, or validate that number as ours, and NEVER do math that legitimizes it (never "that $2,300 promo is our vinyl package"). Say the promotions vary by flooring type and the exact price is confirmed at the free in-person measure, then continue the normal flow. Never call the ad wrong or fake either, just move to what you can offer.
+33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. The CLIENT AVAILABILITY RULE still applies first.
+34. NO INVENTED COMPANY FACTS: NEVER state years in business, number of installers or crews, business hours, company history, or any company fact that is not written in these rules. If asked, keep it warm and general (the team has deep local experience across South Florida) and steer back to the free visit. Also never assert which city a zip code belongs to.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {
@@ -1097,6 +1243,10 @@ export async function getAIResponse(
     }
     let cleaned = mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(rawText))));
     const hadDash = rawText !== cleaned;
+
+    // Never ship the model's internal monologue ("Wait, let me redo this…",
+    // "Since the client accepted the quote, I'll escalate.") to a client.
+    cleaned = stripReasoningLeak(cleaned);
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {

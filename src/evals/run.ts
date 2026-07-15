@@ -563,9 +563,13 @@ const SCENARIOS: Scenario[] = [
   // fragment "...all in one price. Since you get off at 5:30." The reply must
   // state the $5 promo and contain NO dangling lead-in fragment.
   {
+    // 2026-07-15: the client now NAMES vinyl — under the newer TYPE-GATED rules
+    // (reminder 29) an unknown-type promo question correctly gets the type-ask
+    // with NO price, which broke the old hasPrice expectation. With vinyl known,
+    // the $5 promo must come through AND still carry no dangling fragment.
     name: '[BUG FIX] promo question + "I get off about 5:30" → no dangling "Since..." fragment',
     messages: [
-      { role: "user", content: "I want to redo my whole house, about 1577 sqft." },
+      { role: "user", content: "I want to redo my whole house with vinyl, about 1577 sqft." },
       { role: "assistant", content: "For a house at 1,577 sqft, I need to come measure in person to give you the best price. I bring floor samples so you can pick right there, and the visit is completely free. I have Monday the 15th at 3pm or 5pm, which works better for you?" },
       { role: "user", content: "What promotional package do you have right now? And I usually get off about 5:30" },
     ],
