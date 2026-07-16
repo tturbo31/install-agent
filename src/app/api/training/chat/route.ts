@@ -2,15 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getAIResponse, analyzeImageFromBase64 } from "@/lib/ai";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 const SANDBOX_IGSID = "training_sandbox";
 const RESPONSE_DELAY_MS = 8000;
-const ADMIN_SECRET = process.env.ADMIN_SECRET ?? "Pepeka";
 
 function checkAdminAuth(req: NextRequest): boolean {
   const header = req.headers.get("x-admin-secret");
   const query = req.nextUrl.searchParams.get("secret");
-  return header === ADMIN_SECRET || query === ADMIN_SECRET;
+  return isDashboardAuthorized(header) || isDashboardAuthorized(query);
 }
 
 // Load all owner corrections saved via [Treino] prefix

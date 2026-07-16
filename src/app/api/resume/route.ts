@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -9,9 +10,7 @@ const supabaseAdmin = createClient(
 // POST /api/resume?secret=TOKEN — re-enable agent on all conversations
 export async function POST(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
-  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN;
-  if (secret !== adminSecret && secret !== verifyToken) {
+  if (!isDashboardAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

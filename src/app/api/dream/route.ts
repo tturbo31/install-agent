@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDreaming, getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 // Nightly analysis fans out across dozens of conversations plus two Claude
 // calls — give it room so the cron never silently times out mid-run.
 export const maxDuration = 300;
 
-function isAuthorized(secret: string | null): boolean {
-  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
-  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN;
-  return secret === adminSecret || (!!verifyToken && secret === verifyToken);
-}
+// Accepts ADMIN_SECRET, INSTAGRAM_VERIFY_TOKEN, or the legacy literal — the same
+// set this route accepted before ADMIN_SECRET was ever set, so the cron URL in
+// vercel.json (?secret=Pepeka) keeps working. See src/lib/admin-auth.ts.
+const isAuthorized = isDashboardAuthorized;
 
 // GET — two modes:
 //   ?run=1  → RUN the nightly self-improvement analysis. Vercel Cron Jobs only

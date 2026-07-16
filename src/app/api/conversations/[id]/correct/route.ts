@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { buildCorrectionContent } from "@/lib/corrections";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 // POST /api/conversations/[id]/correct
 // Saves an owner correction for an AI message. The correction is stored as a
@@ -16,8 +17,7 @@ export async function POST(
   // Same admin gate as the training endpoints.
   const secret =
     req.headers.get("x-admin-secret") ?? req.nextUrl.searchParams.get("secret");
-  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
-  if (secret !== adminSecret) {
+  if (!isDashboardAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

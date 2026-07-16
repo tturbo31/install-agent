@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrCreateSystemStore } from "@/lib/dreaming";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 import Anthropic from "@anthropic-ai/sdk";
 
 let _anthropic: Anthropic | null = null;
@@ -11,9 +12,7 @@ function getAnthropic() {
 // POST /api/train — save a training example (client question + owner response)
 export async function POST(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  const adminSecret = process.env.ADMIN_SECRET ?? "Pepeka";
-  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN;
-  if (secret !== adminSecret && secret !== verifyToken) {
+  if (!isDashboardAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

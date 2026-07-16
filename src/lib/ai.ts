@@ -420,7 +420,7 @@ export function stripForbiddenTags(text: string): string {
   return cleaned;
 }
 
-function removeEmojis(text: string): string {
+export function removeEmojis(text: string): string {
   // Strip emoji unicode ranges as a safety net
   const cleaned = text.replace(
     /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{1F200}-\u{1F2FF}\u{1F900}-\u{1F9FF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}\u{1F004}\u{1F0CF}]/gu,
@@ -472,7 +472,7 @@ function mergeLeadingGreeting(text: string): string {
   return cleaned;
 }
 
-function removeDashes(text: string): string {
+export function removeDashes(text: string): string {
   const emDash = String.fromCharCode(0x2014);
   const enDash = String.fromCharCode(0x2013);
   const figDash = String.fromCharCode(0x2012);

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 export const maxDuration = 30;
 
 const ZAPI_BASE = "https://api.z-api.io";
-const ADMIN_SECRET = process.env.ADMIN_SECRET ?? "Pepeka";
 
 // GET /api/wa-diag?secret=... — reports the LIVE Z-API connection state using
 // the PRODUCTION credentials (the ones that actually send). This is the only way
@@ -14,7 +14,7 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET ?? "Pepeka";
 // raw Z-API result so the exact send error is visible. Admin-secret protected.
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
-  if (secret !== ADMIN_SECRET && secret !== process.env.INSTAGRAM_VERIFY_TOKEN) {
+  if (!isDashboardAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
