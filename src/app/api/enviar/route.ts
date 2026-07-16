@@ -176,9 +176,14 @@ export async function POST(req: NextRequest) {
   const result = await sendWhatsAppMessage(telefone, textoFinal);
   if (!result.ok) {
     console.error(`[ENVIAR] Z-API send failed phone=${telefone} status=${result.status} erro=${result.error}`);
-    // Surface Z-API's own status when it is a real HTTP error; otherwise 502
-    // (network/exception) so the platform can tell "rejected" from "unreachable".
-    const status = result.status >= 400 && result.status <= 599 ? result.status : 502;
+    // Surface Z-API's own status when it is a real HTTP error, so the platform
+    // can tell "rejected" from "unreachable" — EXCEPT 401/403. On this endpoint
+    // those two mean exactly one thing to the caller ("your x-admin-secret is
+    // wrong"), so letting Z-API's own auth failure wear them would send the
+    // integrator hunting a secret that is perfectly fine. Our auth already
+    // returned above; anything here is upstream, hence 502.
+    const raw = result.status;
+    const status = raw >= 400 && raw <= 599 && raw !== 401 && raw !== 403 ? raw : 502;
     return NextResponse.json(
       { ok: false, erro: `falha ao enviar pelo WhatsApp: ${result.error ?? "erro desconhecido"}`, zapiStatus: result.status },
       { status }

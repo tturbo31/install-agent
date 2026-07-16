@@ -162,6 +162,30 @@ export function tripsSchedulingDetector(text: string): boolean {
   return containsSchedulingOffer(text || "");
 }
 
+// ─── Discount promises (owner rule 31) ──────────────────────────────────────
+// Price decisions belong to Ozzi. The bot must never volunteer, hint at, or
+// promise a lower/better number. This matters most on the FALLBACK path: if
+// Anthropic is down (out of credits / 529 — a documented recurring failure here)
+// every follow-up in that window becomes the platform's raw draft, and a draft
+// like "we could take a bit off the price" would otherwise ship untouched.
+// Deliberately does NOT match financing ("brings it to $125 a month"), which is
+// allowed when the platform supplies the monthly figure.
+const DISCOUNT_PROMISE =
+  /\b(?:discount|descuento|rebaja[rs]?|price\s*match|match\s+(?:that|their|the)\s+(?:price|quote|number)|beat\s+(?:that|their|the|any)\s+(?:price|quote|number|offer)|knock\s+(?:off|down)|take\s+(?:a\s+bit|some|a\s+little|something|\$?\d+)?\s*off\b|lower\s+(?:the|your)?\s*price|drop\s+(?:the|your)?\s*price|reduce\s+(?:the|your)?\s*price|better\s+(?:price|deal|number|offer)|special\s+deal|cut\s+(?:you\s+)?a\s+deal|work\s+(?:something|with\s+you)\s+on\s+the\s+price|bajar\s+(?:el\s+)?precio|mejor\s+(?:precio|oferta|n[uú]mero)|m[aá]s\s+barato|hacer(?:lo|te)?\s+un\s+descuento|oferta\s+especial)\b/i;
+
+export function promisesDiscount(text: string): boolean {
+  return DISCOUNT_PROMISE.test(text || "");
+}
+
+// The single policy gate every outbound follow-up must clear, whatever wrote it
+// (model, model retry, or the platform's draft). Returns the reason it failed,
+// or null when the text is safe to send.
+export function followupPolicyViolation(text: string): string | null {
+  if (tripsSchedulingDetector(text)) return "parece oferta de horario (dispararia o fluxo de remarcacao)";
+  if (promisesDiscount(text)) return "promete desconto ou preco melhor (regra 31 do dono)";
+  return null;
+}
+
 let _anthropic: Anthropic | null = null;
 function getAnthropic(): Anthropic {
   if (!_anthropic) {
@@ -201,7 +225,7 @@ async function askModel(context: string, corrective: string | null) {
 }
 
 const CORRECTIVE =
-  'Your previous attempt used a phrase our system reads as scheduling (something like "works for you", "what day", "which time", "get started right away", or a clock time). Rewrite the SAME message without any such phrase. Invite a reply about the QUOTE instead, for example "any questions?" or "want to move forward?".';
+  'Your previous attempt broke a hard rule: it either used a phrase our system reads as scheduling ("works for you", "what day", "which time", "get started right away", a clock time) or it hinted at a discount or a better price. Rewrite the SAME message with neither. Invite a reply about the QUOTE instead, for example "any questions?" or "want to move forward?", and never suggest the price could change.';
 
 // Writes the follow-up. Degrades in this order, never dropping the touch:
 //   AI → AI retry (if the first trips the scheduling detector) → the platform's
@@ -221,9 +245,9 @@ export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<C
         console.warn(`[ENVIAR] attempt ${attempt}: model returned an unusably short follow-up`);
         continue;
       }
-      if (tripsSchedulingDetector(r.text)) {
-        // Would make the webhook treat the client's reply as a reschedule request.
-        console.warn(`[ENVIAR] attempt ${attempt}: follow-up tripped the scheduling detector, rejecting: ${r.text.slice(0, 90)}`);
+      const violation = followupPolicyViolation(r.text);
+      if (violation) {
+        console.warn(`[ENVIAR] attempt ${attempt}: rejeitado (${violation}): ${r.text.slice(0, 90)}`);
         continue;
       }
       console.log(`[ENVIAR] follow-up ${input.etapa}/${input.idioma} written by AI (attempt ${attempt}) | in=${tokensIn} out=${tokensOut} | ${r.text.slice(0, 70)}`);
@@ -234,11 +258,19 @@ export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<C
     }
   }
 
-  // The platform's own draft, but only if it is clean on both counts.
+  // The platform's own draft — but it is UNTRUSTED copy that never passed our
+  // rules, so it must clear the exact same gate as the model's output. This is
+  // the path that runs when Anthropic is down, i.e. when EVERY follow-up in the
+  // window would ship it: a draft promising a discount or a time slot must be
+  // dropped in favour of the template, not forwarded to a real client.
   const draft = sanitizeOutbound(input.sugestao_texto ?? "");
-  if (draft.length >= 15 && !tripsSchedulingDetector(draft)) {
-    console.warn("[ENVIAR] falling back to the platform draft");
-    return { text: draft, source: "sugestao", inputTokens: tokensIn, outputTokens: tokensOut };
+  if (draft.length >= 15) {
+    const draftViolation = followupPolicyViolation(draft);
+    if (!draftViolation) {
+      console.warn("[ENVIAR] falling back to the platform draft");
+      return { text: draft, source: "sugestao", inputTokens: tokensIn, outputTokens: tokensOut };
+    }
+    console.warn(`[ENVIAR] platform draft rejeitado (${draftViolation}), indo para o template seguro`);
   }
 
   const template = safeFollowupTemplate(input.idioma, input.etapa);

@@ -14,7 +14,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { isDashboardAuthorized, isStrongAdminSecret, LEGACY_ADMIN_SECRET, MIN_STRONG_SECRET_LENGTH } from "../lib/admin-auth";
-import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES, safeFollowupTemplate, tripsSchedulingDetector } from "../lib/quote-followup";
+import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES, safeFollowupTemplate, tripsSchedulingDetector, promisesDiscount, followupPolicyViolation } from "../lib/quote-followup";
 import { containsSchedulingOffer } from "../lib/ai";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -176,10 +176,42 @@ function main() {
     }
   }
 
+  // ── 5c. RASCUNHO DA PLATAFORMA é copy NÃO CONFIÁVEL (achado 3/3 do painel) ─
+  // Se a Anthropic cair (créditos zerados / 529 — falha recorrente documentada),
+  // TODO follow-up da janela vira o rascunho cru da plataforma. Ele nunca passou
+  // pelas nossas regras, então tem de passar pelo MESMO portão do texto da IA.
+  console.log("\n[5c] Rascunho da plataforma passa pelo mesmo portão (fallback de outage)");
+  const rascunhosProibidos: Array<[string, string]> = [
+    ["Hi Maria, I can do Tuesday at 10am, and I could take a bit off the price", "horario+desconto"],
+    ["Hi Maria, just following up on your quote, let me know if that works for you.", "horario"],
+    ["Hi Maria, we can offer you a discount if you decide this week.", "desconto"],
+    ["Hi Maria, we could give you a better price if you move forward now.", "desconto"],
+    ["Hola Maria, podemos bajar el precio si decides esta semana.", "desconto ES"],
+    ["Hola Maria, te hacemos un descuento especial.", "desconto ES"],
+  ];
+  for (const [t, tipo] of rascunhosProibidos) {
+    ck(`portão REJEITA rascunho (${tipo}): "${t.slice(0, 40)}…"`, followupPolicyViolation(t) !== null, `violacao=${followupPolicyViolation(t)}`);
+  }
+  ck("detector de desconto pega 'take a bit off the price'", promisesDiscount("I could take a bit off the price"));
+  ck("detector de desconto pega 'better price'", promisesDiscount("we could give you a better price"));
+  // FALSOS POSITIVOS: financiamento é PERMITIDO quando a plataforma manda a parcela.
+  const permitidos = [
+    "Hi Maria, your quote for $4,500 still stands, financing can bring it to about $125 a month, want to move forward?",
+    "Hola Carlos, tu cotización de $8,200 sigue en pie y el financiamiento puede dividirlo en pagos de $228 al mes.",
+    "Hi Maria, just making sure the quote reached you, any questions at all?",
+  ];
+  for (const t of permitidos) {
+    ck(`portão ACEITA mensagem legítima: "${t.slice(0, 40)}…"`, followupPolicyViolation(t) === null, `violacao=${followupPolicyViolation(t)}`);
+  }
+  ck("financiamento NÃO é confundido com desconto", !promisesDiscount("financing can bring it to about $125 a month"));
+  for (const l of ["en", "es"] as const)
+    for (const e of FOLLOWUP_STAGES)
+      ck(`template seguro ${l}/${e} passa no portão completo`, followupPolicyViolation(safeFollowupTemplate(l, e)) === null);
+
   const gen = readFileSync(join(process.cwd(), "src/lib/quote-followup.ts"), "utf-8");
-  ck("gerador REJEITA texto que dispara o detector", /if \(tripsSchedulingDetector\(r\.text\)\)/.test(gen));
+  ck("gerador REJEITA texto do modelo que viola o portão", /const violation = followupPolicyViolation\(r\.text\)/.test(gen));
+  ck("gerador REJEITA rascunho da plataforma que viola o portão", /const draftViolation = followupPolicyViolation\(draft\)/.test(gen));
   ck("gerador tenta 1 retry corretivo antes de desistir", /CORRECTIVE/.test(gen) && /for \(const attempt of \[1, 2\]/.test(gen));
-  ck("gerador também valida a sugestão da plataforma", /draft\.length >= 15 && !tripsSchedulingDetector\(draft\)/.test(gen));
   ck("gerador cai em template seguro como último recurso", /safeFollowupTemplate\(input\.idioma, input\.etapa\)/.test(gen));
   ck("prompt proíbe explicitamente as frases-armadilha", /works for you/.test(gen) && /get started right away/.test(gen));
   // Custo: no PIOR caso são 2 chamadas (~1000 tokens de input), nunca um loop.
@@ -194,6 +226,8 @@ function main() {
   ck("followup é escrito pelo agente", /composeQuoteFollowup/.test(route));
   ck("falha do WhatsApp devolve status >= 400 com {ok:false,erro}", /ok: false, erro: `falha ao enviar pelo WhatsApp/.test(route));
   ck("sucesso devolve {ok:true}", /ok: true, enviado: true/.test(route));
+  // Um 401/403 do Z-API nao pode se disfarcar do NOSSO 401 (segredo errado).
+  ck("falha de auth do Z-API não vira 401/403 nosso (vira 502)", /raw !== 401 && raw !== 403 \? raw : 502/.test(route));
   ck("registra o followup no histórico", /if \(tipo === "followup"\) registrado = await recordInHistory/.test(route));
   ck("NÃO registra mensagem_direta (relatório do dono não vira thread de cliente)", /Record ONLY the AI-written follow-ups/.test(route));
   ck("valida telefone (só dígitos, 8 a 15)", /digits\.length < 8 \|\| digits\.length > 15/.test(route));
