@@ -337,6 +337,117 @@ function addDaysStr(dateStr: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// ─── Weekday↔date reconciliation for the [BOOK] date ────────────────────────
+// THE BUG (2026-07-16, Facebook client 6247 SW 139 Ave): the bot offered
+// "Thursday at 7pm or Friday at 7pm this week", the client typed "Thursday is
+// fine", and the visit was booked for FRIDAY 2026-07-17 instead of Thursday
+// 2026-07-16 — a day late. The model is given the real schedule (each line
+// "Weekday ... [YYYY-MM-DD]") and rule 16 says copy the date from the line whose
+// weekday it promised, but it still sometimes writes the neighbouring day's date.
+// NOTHING server-side checked it: processBookingCommand booked whatever date the
+// model wrote. This guard is that missing check.
+//
+// It fires ONLY on a clear, unambiguous mismatch: when the CLIENT'S OWN last
+// weekday word (their explicit pick, e.g. "Thursday is fine") disagrees with the
+// weekday of the [BOOK] date. The model gets the WEEK right and the DAY wrong by
+// one or two, so we snap to the NEAREST date carrying the client's weekday. When
+// the client's message is ambiguous (names two weekdays, or none), we fall back
+// to the bot's last single-weekday offer; if that is ambiguous too, we do NOT
+// touch the date. Never books the past.
+const WEEKDAY_PATTERNS: Array<[number, RegExp]> = [
+  [0, /\b(sundays?|domingos?)\b/i],
+  [1, /\b(mondays?|lunes|segundas?(?:[\s-]?feira)?)\b/i],
+  [2, /\b(tuesdays?|tues|martes|ter[cç]as?(?:[\s-]?feira)?)\b/i],
+  [3, /\b(wednesdays?|wed|mi[eé]rcoles|quartas?(?:[\s-]?feira)?)\b/i],
+  [4, /\b(thursdays?|thurs?|jueves|quintas?(?:[\s-]?feira)?)\b/i],
+  [5, /\b(fridays?|viernes|sextas?(?:[\s-]?feira)?)\b/i],
+  [6, /\b(saturdays?|s[áa]bados?)\b/i],
+];
+
+// Distinct weekday numbers (0=Sun..6=Sat) named in a message, ignoring any
+// injected [SYSTEM: ...] note (the schedule inside it lists every weekday).
+export function weekdaysNamed(text: string): number[] {
+  const clean = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  const out: number[] = [];
+  for (const [num, re] of WEEKDAY_PATTERNS) if (re.test(clean)) out.push(num);
+  return out;
+}
+
+export type BookingReconciliation = {
+  date: string;
+  corrected: boolean;
+  from?: string;
+  intendedWeekday?: number;
+  reason?: string;
+};
+
+export function reconcileBookingWeekday(
+  bookingDate: string,
+  history: Array<{ role: string; content: string }>
+): BookingReconciliation {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(bookingDate || "")) return { date: bookingDate, corrected: false };
+  const bookedWeekday = ymd(bookingDate).weekday;
+  const msgs = history ?? [];
+
+  // Scope the intent to the CURRENT scheduling round, anchored on the bot's last
+  // slot offer (its last message naming any weekday). This is what stops a stale
+  // weekday word from earlier in a long chat — or from before a reschedule — from
+  // dragging a correct new date back to an old day: "you were on Thursday, want
+  // Friday instead?" / "yes push it" must resolve to FRIDAY (the offer), not the
+  // Thursday the client typed ten messages ago.
+  let offerIdx = -1;
+  let offerDays: number[] = [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== "assistant") continue;
+    const days = weekdaysNamed(msgs[i].content);
+    if (days.length >= 1) { offerIdx = i; offerDays = days; break; }
+  }
+
+  // Intent priority within the round:
+  //  1. a weekday the CLIENT named AT OR AFTER the offer (their explicit pick),
+  //  2. else the offer's own weekday if it named exactly one,
+  //  3. else (no offer at all) the client's last single-weekday word anywhere.
+  let intended: number | null = null;
+  const from = offerIdx >= 0 ? offerIdx : 0;
+  for (let i = msgs.length - 1; i >= from; i--) {
+    if (msgs[i].role !== "user") continue;
+    const days = weekdaysNamed(msgs[i].content);
+    if (days.length === 1) { intended = days[0]; break; }
+    if (days.length > 1) { intended = null; break; } // client itself ambiguous → don't guess
+  }
+  if (intended === null && offerIdx >= 0 && offerDays.length === 1) {
+    intended = offerDays[0];
+  }
+  if (intended === null && offerIdx < 0) {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role !== "user") continue;
+      const days = weekdaysNamed(msgs[i].content);
+      if (days.length === 1) { intended = days[0]; break; }
+      if (days.length > 1) break;
+    }
+  }
+
+  if (intended === null || intended === bookedWeekday) {
+    return { date: bookingDate, corrected: false, intendedWeekday: intended ?? undefined };
+  }
+
+  // Snap to the NEAREST date carrying the intended weekday. Forward distance is
+  // 1..6 (0 excluded since weekdays differ); the nearest of {forward, forward-7}.
+  const forward = (((intended - bookedWeekday) % 7) + 7) % 7;
+  const delta = Math.abs(forward) <= Math.abs(forward - 7) ? forward : forward - 7;
+  let corrected = addDaysStr(bookingDate, delta);
+  // Never book the past: if the nearest match already passed, take next week's.
+  if (corrected < easternTodayStr()) corrected = addDaysStr(corrected, 7);
+
+  return {
+    date: corrected,
+    corrected: corrected !== bookingDate,
+    from: bookingDate,
+    intendedWeekday: intended,
+    reason: `client picked ${DAY_NAMES[intended]} but [BOOK] date ${bookingDate} is ${DAY_NAMES[bookedWeekday]}; snapped to ${corrected}`,
+  };
+}
+
 // Date context injected into the AI prompt — always Eastern, never UTC.
 export function getEasternDateContext(): string {
   const todayStr = easternTodayStr();

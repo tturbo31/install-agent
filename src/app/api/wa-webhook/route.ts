@@ -5,7 +5,7 @@ import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZ
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -47,7 +47,8 @@ async function processBookingCommand(
   conversationId: string,
   isAlreadyBooked: boolean,
   lang: "es" | "en",
-  isReschedule: boolean = false
+  isReschedule: boolean = false,
+  history: Array<{ role: string; content: string }> = []
 ): Promise<{ response: string; booked: boolean }> {
   if (isAlreadyBooked && !isReschedule) {
     return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
@@ -56,6 +57,17 @@ async function processBookingCommand(
   if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // DETERMINISTIC weekday↔date guard: the model sometimes writes the wrong
+    // day's date for the weekday the client picked (a "Thursday" visit was
+    // booked on Friday, 2026-07-16). Snap it back before anything is written.
+    if (bookingData.date) {
+      const rec = reconcileBookingWeekday(bookingData.date, history);
+      if (rec.corrected) {
+        console.warn(`[WA] booking date corrected: ${rec.reason}`);
+        bookingData.date = rec.date;
+      }
+    }
 
     // ── Reschedule: move the existing visit to the new date/time. Address/phone
     //    are copied from the saved booking, so only the new date/time are needed. ──
@@ -932,7 +944,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
     }
 
-    const { response: afterBooking, booked } = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling);
+    const { response: afterBooking, booked } = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling, history);
     const afterCancel = await processCancelCommand(afterBooking, phone, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
     const finalResponse = stripForbiddenTags(afterNotify);

@@ -8,7 +8,7 @@ import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -62,7 +62,8 @@ async function processBookingCommand(
   conversationId: string,
   isAlreadyBooked: boolean,
   lang: "es" | "en",
-  isReschedule: boolean = false
+  isReschedule: boolean = false,
+  history: Array<{ role: string; content: string }> = []
 ): Promise<{ response: string; booked: boolean }> {
   if (isAlreadyBooked && !isReschedule) {
     return { response: aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").trim(), booked: false };
@@ -71,6 +72,18 @@ async function processBookingCommand(
   if (!bookingMatch) return { response: aiResponse, booked: false };
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // DETERMINISTIC weekday↔date guard: the model sometimes writes the wrong
+    // day's date for the weekday the client picked (a "Thursday" visit was
+    // booked on Friday). Snap it back before anything is written. See
+    // reconcileBookingWeekday.
+    if (bookingData.date) {
+      const rec = reconcileBookingWeekday(bookingData.date, history);
+      if (rec.corrected) {
+        console.warn(`[FB] booking date corrected: ${rec.reason}`);
+        bookingData.date = rec.date;
+      }
+    }
 
     // ── Reschedule: move the existing visit to the new date/time. Address/phone
     //    are copied from the saved booking, so only the new date/time are needed. ──
@@ -885,7 +898,7 @@ async function handleFbMessage(body: Record<string, unknown>) {
       }
     }
 
-    const { response: afterBooking, booked } = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling);
+    const { response: afterBooking, booked } = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling, history);
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
     const finalResponse = stripForbiddenTags(afterNotify);
