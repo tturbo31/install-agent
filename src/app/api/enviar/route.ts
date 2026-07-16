@@ -9,6 +9,7 @@ import {
   MAX_MESSAGE_LENGTH,
   type FollowupLang,
   type FollowupStage,
+  type ComposeResult,
 } from "@/lib/quote-followup";
 
 // ─── POST /api/enviar — outbound WhatsApp for the Ozzi Plataforma ────────────
@@ -124,8 +125,11 @@ export async function POST(req: NextRequest) {
   const dry = body.dry === true;
 
   // ── Build the text ─────────────────────────────────────────────────────────
+  // "exato" = mensagem_direta literal; os demais vêm do compositor e dizem à
+  // plataforma se o texto saiu do modelo, do retry, do rascunho dela, ou do
+  // template de segurança — útil para ela monitorar a qualidade dos envios.
   let texto: string;
-  let origem: "exato" | "ai" | "sugestao" = "exato";
+  let origem: "exato" | ComposeResult["source"] = "exato";
 
   if (tipo === "mensagem_direta") {
     // Sent EXACTLY as supplied — this carries the owner's morning report, so we

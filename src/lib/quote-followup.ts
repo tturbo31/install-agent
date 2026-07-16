@@ -4,6 +4,7 @@ import {
   removeEmojis,
   stripWrappingQuotes,
   stripReasoningLeak,
+  containsSchedulingOffer,
 } from "@/lib/ai";
 
 // ─── Quote follow-ups written by the agent, driven by the Ozzi Plataforma ────
@@ -96,7 +97,7 @@ HARD RULES:
 3. Zero dashes, no -, no en dash, no em dash. Use commas or periods.
 4. Zero emojis. Plain text only.
 5. NEVER negotiate, offer, hint at, or promise a discount, a better price, a deal, a price match, or that the price could come down. The quote is the quote. Price decisions belong to Ozzi alone.
-6. NEVER offer, propose, or ask about appointment times, days, slots, or scheduling a visit. The visit already happened. Never ask "what day works" or name any day or hour.
+6. NEVER offer, propose, or ask about appointment times, days, slots, or scheduling a visit. The visit already happened. Never name any day or hour, and never use any of these phrases or anything close to them: "works for you", "works best for you", "what day", "which day", "what time", "which time", "what works", "which works", "get started right away". They read as scheduling to our system and would send the client into a booking flow by mistake. To invite a reply, ask about the QUOTE instead ("any questions?", "want to move forward?", "anything I can clarify?").
 7. NEVER invent facts. Only use the figures given to you below. No square footage, no dates, no timelines, no warranties, no company history, no invented names.
 8. Only mention the price if a quote total is supplied. Only mention financing or a monthly payment if a monthly payment figure is supplied.
 9. Do not open with a standalone greeting sentence. Merge it: "Hi Maria, just making sure..." not "Hi Maria! Just making sure...".
@@ -121,6 +122,46 @@ export function sanitizeOutbound(text: string): string {
   return out.slice(0, MAX_MESSAGE_LENGTH);
 }
 
+// ─── The scheduling-phrase trap (found by adversarial review, 2026-07-15) ────
+// A quote follow-up must NEVER read as a scheduling offer. This is not a style
+// preference, it is a correctness invariant: for a client whose visit is already
+// booked, all three webhooks do
+//     if (containsSchedulingOffer(lastAssistantMessage)) engageReschedule = true
+// so if our follow-up ends with a phrase like "let me know if that works for
+// you", the client's next message is routed into RESCHEDULE MODE and the bot
+// starts trying to MOVE a visit that already happened. "works for you" is an
+// entirely natural thing to write in a follow-up, so the prompt rule alone is
+// not enough — we verify the produced text and fall back to copy that provably
+// cannot trip the detector.
+//
+// SAFE_TEMPLATE is the last resort, never the first choice: every line here is
+// asserted against containsSchedulingOffer in enviar-verify.ts.
+const SAFE_TEMPLATE: Record<FollowupLang, Record<FollowupStage, string>> = {
+  en: {
+    D1: "Hi, just making sure our quote reached you, any questions at all?",
+    D3: "Hi, did you get a chance to look over the quote? Happy to clear up anything about it.",
+    D7: "Hi, your quote still stands, want to move forward or is there anything I can clarify first?",
+    D14: "Hi, is there anything holding you back on the quote? Happy to help with whatever it is.",
+    D30: "Hi, we are here whenever you are ready, just reach out and we will take it from there.",
+  },
+  es: {
+    D1: "Hola, solo para confirmar que recibiste tu cotización, cualquier duda me avisas.",
+    D3: "Hola, ¿pudiste revisar la cotización? Con gusto te aclaro cualquier detalle.",
+    D7: "Hola, tu cotización sigue en pie, ¿quieres seguir adelante o te aclaro algo primero?",
+    D14: "Hola, ¿hay algo que te detenga con la cotización? Con gusto te ayudo con lo que sea.",
+    D30: "Hola, aquí estamos cuando estés listo, solo escríbeme y seguimos desde ahí.",
+  },
+};
+
+export function safeFollowupTemplate(lang: FollowupLang, stage: FollowupStage): string {
+  return SAFE_TEMPLATE[lang][stage];
+}
+
+// True when the text would be misread as a scheduling offer by the webhooks.
+export function tripsSchedulingDetector(text: string): boolean {
+  return containsSchedulingOffer(text || "");
+}
+
 let _anthropic: Anthropic | null = null;
 function getAnthropic(): Anthropic {
   if (!_anthropic) {
@@ -129,40 +170,79 @@ function getAnthropic(): Anthropic {
   return _anthropic;
 }
 
-export type ComposeResult = { text: string; source: "ai" | "sugestao"; inputTokens: number; outputTokens: number };
+export type ComposeResult = {
+  text: string;
+  source: "ai" | "ai-retry" | "sugestao" | "template";
+  inputTokens: number;
+  outputTokens: number;
+};
 
-// Writes the follow-up. Falls back to the platform's own draft (sanitized) if the
-// model is unavailable, so an Anthropic blip degrades to "the platform's wording"
-// instead of dropping the client's touch entirely. Throws only when there is
-// nothing safe left to send.
+// One model call. Returns the sanitized text plus usage.
+async function askModel(context: string, corrective: string | null) {
+  const res = await getAnthropic().messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 300,
+    // COST: this prompt is ~500 tokens, i.e. BELOW Anthropic's 1024-token
+    // minimum cacheable length, so a cache_control breakpoint here would be
+    // silently ignored and buys nothing. We deliberately do not set one. This
+    // call is ~500 in / ~60 out per follow-up (fractions of a cent) and, being
+    // a separate system prefix, it CANNOT disturb the main brain's 3 cached
+    // breakpoints in ai.ts — that shared ~11K stable block is untouched.
+    system: SYSTEM,
+    messages: [{ role: "user" as const, content: corrective ? `${context}\n\n${corrective}` : context }],
+  });
+  const block = res.content[0];
+  const raw = block?.type === "text" ? block.text : "";
+  return {
+    text: sanitizeOutbound(raw),
+    inputTokens: res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0),
+    outputTokens: res.usage.output_tokens,
+  };
+}
+
+const CORRECTIVE =
+  'Your previous attempt used a phrase our system reads as scheduling (something like "works for you", "what day", "which time", "get started right away", or a clock time). Rewrite the SAME message without any such phrase. Invite a reply about the QUOTE instead, for example "any questions?" or "want to move forward?".';
+
+// Writes the follow-up. Degrades in this order, never dropping the touch:
+//   AI → AI retry (if the first trips the scheduling detector) → the platform's
+//   own draft (if it is clean) → a safe canned template.
+// Throws only if even the template is somehow unusable.
 export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<ComposeResult> {
   const context = buildFollowupContext(input);
-  try {
-    const res = await getAnthropic().messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 300,
-      // COST: this prompt is ~500 tokens, i.e. BELOW Anthropic's 1024-token
-      // minimum cacheable length, so a cache_control breakpoint here would be
-      // silently ignored and buys nothing. We deliberately do not set one. This
-      // call is ~500 in / ~60 out per follow-up (fractions of a cent) and, being
-      // a separate system prefix, it CANNOT disturb the main brain's 3 cached
-      // breakpoints in ai.ts — that shared ~11K stable block is untouched.
-      system: SYSTEM,
-      messages: [{ role: "user" as const, content: context }],
-    });
-    const block = res.content[0];
-    const raw = block?.type === "text" ? block.text : "";
-    const text = sanitizeOutbound(raw);
-    if (text.length >= 15) {
-      console.log(`[ENVIAR] follow-up ${input.etapa}/${input.idioma} written by AI | in=${res.usage.input_tokens} cacheRead=${res.usage.cache_read_input_tokens ?? 0} out=${res.usage.output_tokens} | ${text.slice(0, 70)}`);
-      return { text, source: "ai", inputTokens: res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0), outputTokens: res.usage.output_tokens };
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for (const attempt of [1, 2] as const) {
+    try {
+      const r = await askModel(context, attempt === 2 ? CORRECTIVE : null);
+      tokensIn += r.inputTokens;
+      tokensOut += r.outputTokens;
+      if (r.text.length < 15) {
+        console.warn(`[ENVIAR] attempt ${attempt}: model returned an unusably short follow-up`);
+        continue;
+      }
+      if (tripsSchedulingDetector(r.text)) {
+        // Would make the webhook treat the client's reply as a reschedule request.
+        console.warn(`[ENVIAR] attempt ${attempt}: follow-up tripped the scheduling detector, rejecting: ${r.text.slice(0, 90)}`);
+        continue;
+      }
+      console.log(`[ENVIAR] follow-up ${input.etapa}/${input.idioma} written by AI (attempt ${attempt}) | in=${tokensIn} out=${tokensOut} | ${r.text.slice(0, 70)}`);
+      return { text: r.text, source: attempt === 1 ? "ai" : "ai-retry", inputTokens: tokensIn, outputTokens: tokensOut };
+    } catch (err) {
+      console.error(`[ENVIAR] attempt ${attempt}: follow-up generation failed:`, err);
+      break; // API is down — retrying the same call buys nothing, go to fallbacks.
     }
-    console.warn("[ENVIAR] AI returned an unusably short follow-up, falling back to the platform draft");
-  } catch (err) {
-    console.error("[ENVIAR] follow-up generation failed, falling back to the platform draft:", err);
   }
 
-  const fallback = sanitizeOutbound(input.sugestao_texto ?? "");
-  if (fallback.length >= 5) return { text: fallback, source: "sugestao", inputTokens: 0, outputTokens: 0 };
-  throw new Error("nao foi possivel gerar a mensagem e nenhum sugestao_texto utilizavel foi enviado");
+  // The platform's own draft, but only if it is clean on both counts.
+  const draft = sanitizeOutbound(input.sugestao_texto ?? "");
+  if (draft.length >= 15 && !tripsSchedulingDetector(draft)) {
+    console.warn("[ENVIAR] falling back to the platform draft");
+    return { text: draft, source: "sugestao", inputTokens: tokensIn, outputTokens: tokensOut };
+  }
+
+  const template = safeFollowupTemplate(input.idioma, input.etapa);
+  if (!template) throw new Error("nao foi possivel gerar a mensagem do follow-up");
+  console.warn(`[ENVIAR] falling back to the safe ${input.idioma}/${input.etapa} template`);
+  return { text: template, source: "template", inputTokens: tokensIn, outputTokens: tokensOut };
 }

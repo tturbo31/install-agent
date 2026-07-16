@@ -14,7 +14,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { isDashboardAuthorized, isStrongAdminSecret, LEGACY_ADMIN_SECRET, MIN_STRONG_SECRET_LENGTH } from "../lib/admin-auth";
-import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES } from "../lib/quote-followup";
+import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES, safeFollowupTemplate, tripsSchedulingDetector } from "../lib/quote-followup";
 import { containsSchedulingOffer } from "../lib/ai";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -147,6 +147,44 @@ function main() {
     "Hi Maria, your quote still stands and financing can bring it to about $125 a month, want to move forward?",
   ]) ck(`exemplo válido não parece oferta de horário: "${exemplo.slice(0, 42)}…"`, !containsSchedulingOffer(exemplo), exemplo);
 
+  // ── 5b. A ARMADILHA "works for you" (achada na revisão adversarial) ────────
+  // Para um cliente JÁ AGENDADO, os 3 webhooks fazem:
+  //   if (containsSchedulingOffer(ultimaMensagemNossa)) engageReschedule = true
+  // Então um follow-up terminando em "let me know if that works for you" joga a
+  // resposta do cliente no RESCHEDULE MODE e o bot tenta MOVER uma visita que já
+  // aconteceu. A frase é naturalíssima num follow-up: o prompt sozinho não basta.
+  console.log("\n[5b] Armadilha da frase de agendamento (bug real pego na revisão)");
+  const armadilhas = [
+    "Hi Maria, your quote for $4,500 still stands, just let me know if that works for you.",
+    "Hi Maria, we can get started right away once you give the word.",
+    "Hi Maria, what day would be best to go over the quote?",
+    "Hola Maria, tu cotización sigue en pie, avísame a las 3pm.",
+  ];
+  for (const t of armadilhas) {
+    ck(`detector PEGA a armadilha: "${t.slice(0, 46)}…"`, tripsSchedulingDetector(t), t);
+  }
+  ck("tripsSchedulingDetector é exatamente o detector do webhook", tripsSchedulingDetector("does that work for you?") === containsSchedulingOffer("does that work for you?"));
+
+  // Todo template de segurança TEM de passar — é o último recurso do gerador.
+  const langs = ["en", "es"] as const;
+  for (const l of langs) {
+    for (const e of FOLLOWUP_STAGES) {
+      const t = safeFollowupTemplate(l, e);
+      ck(`template seguro ${l}/${e} não dispara o detector`, !tripsSchedulingDetector(t), t);
+      ck(`template seguro ${l}/${e} sobrevive à sanitização intacto`, sanitizeOutbound(t) === t, t);
+      ck(`template seguro ${l}/${e} não cita preço nem horário`, !/\$\s?\d/.test(t) && !/\b\d{1,2}\s*(am|pm)\b/i.test(t), t);
+    }
+  }
+
+  const gen = readFileSync(join(process.cwd(), "src/lib/quote-followup.ts"), "utf-8");
+  ck("gerador REJEITA texto que dispara o detector", /if \(tripsSchedulingDetector\(r\.text\)\)/.test(gen));
+  ck("gerador tenta 1 retry corretivo antes de desistir", /CORRECTIVE/.test(gen) && /for \(const attempt of \[1, 2\]/.test(gen));
+  ck("gerador também valida a sugestão da plataforma", /draft\.length >= 15 && !tripsSchedulingDetector\(draft\)/.test(gen));
+  ck("gerador cai em template seguro como último recurso", /safeFollowupTemplate\(input\.idioma, input\.etapa\)/.test(gen));
+  ck("prompt proíbe explicitamente as frases-armadilha", /works for you/.test(gen) && /get started right away/.test(gen));
+  // Custo: no PIOR caso são 2 chamadas (~1000 tokens de input), nunca um loop.
+  ck("no máximo 2 chamadas ao modelo, nunca loop infinito", /\[1, 2\] as const/.test(gen));
+
   // ── 6. Fiação da rota ──────────────────────────────────────────────────────
   console.log("\n[6] Fiação de /api/enviar");
   const route = readFileSync(join(process.cwd(), "src/app/api/enviar/route.ts"), "utf-8");
@@ -198,8 +236,10 @@ function main() {
   ck("quote-followup usa system prefix próprio (não contamina o cache do cérebro)", /system: SYSTEM,/.test(qf));
   ck("quote-followup NÃO injeta timestamp no prompt", !/new Date\(\)|Date\.now\(\)|toISOString/.test(qf));
   ck("quote-followup é barato: max_tokens <= 300", /max_tokens: 300/.test(qf));
-  // O gerador roda 1 chamada por follow-up; um loop aqui viraria custo silencioso.
-  ck("quote-followup faz no máximo 1 chamada ao modelo por follow-up", (qf.match(/messages\.create\(/g) ?? []).length === 1);
+  // Um unico ponto de chamada ao modelo (o retry reusa askModel), limitado a 2
+  // tentativas: um loop aqui viraria custo silencioso.
+  ck("quote-followup: 1 único ponto de chamada ao modelo", (qf.match(/messages\.create\(/g) ?? []).length === 1);
+  ck("quote-followup: no pior caso 2 chamadas (~1k tokens), nunca loop", /\[1, 2\] as const/.test(qf));
 
   console.log(`\n============== ENVIAR-VERIFY: ${pass} passed, ${fail} failed ==============`);
   if (fails.length) for (const f of fails) console.log(`  ✗ ${f}`);
