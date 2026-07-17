@@ -1005,6 +1005,17 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bnotify\s+(?:ozzi|the\s+owner|the\s+team)\s+to\b/.source,
     /\bthe\s+client\s+(?:accepted|wants|said|asked|is\s+asking|gave|confirmed|has\s+(?:accepted|confirmed|given))\b/.source,
     /\bthis\s+is\s+a\b[^.!?\n]{0,60}\b(?:job|lead|request)\b[^.!?\n]{0,50}\b(?:quoted|by\s+dm|not\s+a\s+visit)\b/.source,
+    // SPANISH/PORTUGUESE leaks — the English-only list let "El cliente eligió el
+    // lunes pero no especificó la hora, necesito confirmar cuál de las dos
+    // prefiere antes de pedir los datos." ship to a client (caught LIVE by the
+    // 2026-07-17 E2E replay). Third-person "el cliente / o cliente" narration
+    // and planning phrases are never client-facing text.
+    /\bel\s+cliente\s+(?:eligi[oó]|elige|dij[oó]|pidi[oó]|quiere|acept[oó]|confirm[oó]|mand[oó]|envi[oó]|no\s+(?:especific[oó]|eligi[oó]|confirm[oó]|dij[oó]))\b/.source,
+    /\bo\s+cliente\s+(?:escolheu|disse|pediu|quer|aceitou|confirmou|mandou|enviou|n[ãa]o\s+(?:especificou|escolheu|confirmou|disse))\b/.source,
+    /\bantes\s+de\s+pedir\s+(?:los\s+datos|os\s+dados)\b/.source,
+    /\bnecesito\s+(?:confirmar|verificar|revisar)\s+cu[aá]l\b/.source,
+    /\bdebo\s+(?:confirmar|preguntar|verificar|revisar)\b/.source,
+    /\bespera,?\s+d[eé]jame\b|\bd[eé]jame\s+(?:recalcular|rehacer|corregir)\b/.source,
   ].join("|"),
   "i"
 );

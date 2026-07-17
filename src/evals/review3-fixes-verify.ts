@@ -19,7 +19,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { isPureClosing, isPureClosingBurst, isCancelRequest, getAIResponse } from "../lib/ai";
+import { isPureClosing, isPureClosingBurst, isCancelRequest, getAIResponse, stripReasoningLeak } from "../lib/ai";
 
 // .env.local: o teste v5 (500+ sqft no burst) cai corretamente no MODELO (não no
 // opener enlatado), então precisa da chave real — 1 chamada barata.
@@ -116,6 +116,20 @@ async function main() {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: usa isRealAddress + needAddressMessage`, /if \(!isRealAddress\(bookingData\.address\)\)/.test(src) && /needAddressMessage\(lang\)/.test(src), rel);
   }
+
+  console.log("\n[E] Vazamento de raciocínio em ESPANHOL/PORTUGUÊS (pego pelo E2E ao vivo)");
+  const leakES = "El cliente eligió el lunes pero no especificó la hora, necesito confirmar cuál de las dos prefiere antes de pedir los datos. Perfecto, ¿a las 9am o a la 1pm cuál te queda mejor?";
+  const cleanES = stripReasoningLeak(leakES);
+  ck("frase 'El cliente eligió...' é removida", !/el cliente eligi/i.test(cleanES), cleanES);
+  ck("a pergunta real ao cliente sobrevive", /Perfecto, ¿a las 9am/i.test(cleanES), cleanES);
+  const leakPT = "O cliente escolheu segunda mas não especificou a hora. Perfeito, ¿9am ou 1pm?";
+  ck("versão PT 'O cliente escolheu...' é removida", !/o cliente escolheu/i.test(stripReasoningLeak(leakPT)), stripReasoningLeak(leakPT));
+  // Frases legítimas ao cliente NÃO podem ser cortadas:
+  for (const legit of [
+    "¡Perfecto! Solo me falta confirmar el día y la hora, ¿cuál te queda mejor para la visita?",
+    "Necesito ir a medir en persona para darte el mejor precio, la visita es gratis.",
+    "Perfecto, ¿a las 9am o a la 1pm, cuál te queda mejor?",
+  ]) ck(`legítima intacta: "${legit.slice(0, 44)}…"`, stripReasoningLeak(legit) === legit, stripReasoningLeak(legit));
 
   console.log(`\n=========== REVIEW3-FIXES-VERIFY: ${pass} passed, ${fail} failed ===========`);
   if (fails.length) for (const f of fails) console.log(`  ✗ ${f}`);
