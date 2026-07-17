@@ -423,10 +423,14 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "proposesVisit", "noDMPriceForLargeProject"],
   },
   {
-    // KEY NEW TEST: client explicitly refuses visit for large project → approximate ok + still offer visit
+    // KEY NEW TEST: client explicitly refuses visit for large project → approximate ok + still offer visit.
+    // 2026-07-17: the client now NAMES vinyl — with the type unknown, the newer
+    // TYPE-GATED rules (reminder 29) make "which type first?" an equally valid
+    // reply, so the strict proposesVisit grader flapped on prompt-byte changes.
+    // With vinyl known the visit re-offer is the stable, required behavior.
     name: 'Client refuses visit (large project) → approximate given with visit offer',
     messages: [
-      { role: "user", content: "I need flooring for my whole house, about 1500 sqft." },
+      { role: "user", content: "I need vinyl flooring for my whole house, about 1500 sqft." },
       { role: "assistant", content: "For that size, I need to visit and measure in person to give you the best price. I bring the floor samples so you can pick right there. When would work for you?" },
       { role: "user", content: "I don't want a visit, just give me a rough estimate." },
     ],

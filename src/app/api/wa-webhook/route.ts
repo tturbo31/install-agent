@@ -5,7 +5,7 @@ import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZ
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -67,6 +67,14 @@ async function processBookingCommand(
         console.warn(`[WA] booking date corrected: ${rec.reason}`);
         bookingData.date = rec.date;
       }
+    }
+
+    // SLOT CONFIRMATION guard: never book a day/time the client never picked
+    // (RODOLFO, 2026-07-16: booked off a volunteered address+phone with no slot
+    // chosen). Address and phone are not slot selections.
+    if (bookingData.date && bookingData.time && !clientConfirmedSlot(history)) {
+      console.warn(`[WA] booking blocked — client never picked a specific slot; asking to choose`);
+      return { response: needSlotConfirmationMessage(lang), booked: false };
     }
 
     // ── Reschedule: move the existing visit to the new date/time. Address/phone

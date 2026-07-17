@@ -56,8 +56,10 @@ function main() {
   // The model wrote Friday 2026-07-17; the client picked Thursday (2026-07-16).
   const r1 = reconcileBookingWeekday("2026-07-17", prodHistory);
   ck("detects the mismatch and corrects", r1.corrected, JSON.stringify(r1));
-  ck("snaps to Thursday 2026-07-16", r1.date === "2026-07-16", r1.date);
-  ck("corrected date is actually a Thursday", weekdayOf(r1.date) === "Thursday", weekdayOf(r1.date));
+  // Snaps Friday→Thursday. The exact date is date-relative: 2026-07-16 when run
+  // on/before that day, else rolled forward by the never-book-the-past guard, so
+  // assert the invariant (a Thursday, never in the past) not a frozen date.
+  ck("snaps to a Thursday, never in the past", weekdayOf(r1.date) === "Thursday" && r1.date >= todayET, r1.date);
   ck("keeps the intended weekday = Thursday(4)", r1.intendedWeekday === 4, String(r1.intendedWeekday));
 
   // If the model had ALREADY written the right date, nothing changes.
@@ -69,8 +71,7 @@ function main() {
   // Client picks Monday; model wrote Tuesday's date.
   const monHist = [A("I have Monday at 9am or Tuesday at 9am, which works?"), U("monday works")];
   const r2 = reconcileBookingWeekday("2026-07-21", monHist); // 2026-07-21 is a Tuesday
-  ck("EN: 'monday works' over a Tuesday date → snaps to Monday", weekdayOf(r2.date) === "Monday" && r2.corrected, JSON.stringify(r2));
-  ck("EN: Monday snap is 2026-07-20 (nearest)", r2.date === "2026-07-20", r2.date);
+  ck("EN: 'monday works' over a Tuesday date → snaps to a Monday, never past", weekdayOf(r2.date) === "Monday" && r2.corrected && r2.date >= todayET, JSON.stringify(r2));
   // Spanish: client says jueves (Thursday); model wrote miércoles (Wednesday).
   const jueHist = [A("Tengo miércoles a las 5pm o jueves a las 5pm, cuál prefieres?"), U("el jueves está bien")];
   const r2es = reconcileBookingWeekday("2026-07-15", jueHist); // 2026-07-15 is a Wednesday

@@ -473,6 +473,64 @@ export function reconcileBookingWeekday(
   };
 }
 
+// ─── Slot-confirmation guard: never book a slot the client never picked ─────
+// THE BUG (2026-07-16, RODOLFO/guzman.1988): the bot offered "hoy jueves a las
+// 11am o mañana viernes a las 9am", the client answered "Podemos aser un appt
+// pero igual no estoy preparado" (never picked a slot), then volunteered his
+// address and phone — and the bot sent "Cita confirmada" for Friday 9am, a slot
+// the client NEVER chose. The SLOT CONFIRMATION RULE lived only in the prompt;
+// nothing server-side enforced it, so an address+phone was enough for the model
+// to invent a day/time. This guard is that missing enforcement.
+//
+// A [BOOK] is allowed ONLY when the client, after the bot's slot offer, gave a
+// real slot signal: a clock time ("9am", "a las 11"), a day ("jueves", "today",
+// "tomorrow"), an ordinal ("the first"), OR a plain yes when EXACTLY ONE slot was
+// on the table. Address and phone are NOT slot selections. When no such signal
+// exists, the booking is blocked and the client is asked to pick a day/time.
+const CLOCK_TIME_TOKEN = /\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi;
+const SLOT_TIME_REF = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\ba\s+las?\s+\d{1,2}\b|\b[àa]s\s+\d{1,2}\b|\b\d{1,2}\s*(?:h|hs|hrs|horas?|o'?clock)\b|\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i;
+const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])\b/i;
+const SLOT_ORDINAL = /\b(?:the\s+)?(?:first|second|1st|2nd)\b|\b(?:el\s+|la\s+)?(?:primer[oa]?|segund[oa]?)\b|\bese\s+(?:horario|d[ií]a)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/i;
+const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfeito|claro|dale|vale|de acuerdo|works|sounds good|let'?s do it|hag[aá]moslo|me funciona|funciona|pode ser|combinado|est[aá]\s+bien|est[áa]\s+perfecto)\b/i;
+
+export function clientConfirmedSlot(history: Array<{ role: string; content: string }>): boolean {
+  const msgs = history ?? [];
+  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
+
+  // The bot's most recent message that offered clock time(s).
+  let offerIdx = -1;
+  let offeredCount = 0;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== "assistant") continue;
+    const times = [...strip(msgs[i].content).matchAll(CLOCK_TIME_TOKEN)];
+    if (times.length >= 1) {
+      offerIdx = i;
+      offeredCount = new Set(times.map((t) => `${t[1]}${t[2].toLowerCase()}`)).size;
+      break;
+    }
+  }
+
+  const from = offerIdx >= 0 ? offerIdx + 1 : 0;
+  let sawAffirmative = false;
+  for (let i = from; i < msgs.length; i++) {
+    if (msgs[i].role !== "user") continue;
+    const t = strip(msgs[i].content);
+    if (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_ORDINAL.test(t)) return true;
+    if (SLOT_AFFIRMATIVE.test(t)) sawAffirmative = true;
+  }
+  // A bare "yes/ok" only confirms a slot when exactly ONE was offered.
+  if (offeredCount === 1 && sawAffirmative) return true;
+  return false;
+}
+
+// Sent when we have address/phone but the client never picked a specific
+// day/time: ask them to choose instead of inventing one.
+export function needSlotConfirmationMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Perfecto! Solo me falta confirmar el día y la hora, ¿cuál te queda mejor para la visita?"
+    : "Perfect! I just need to confirm the day and time, which works best for you for the visit?";
+}
+
 // Date context injected into the AI prompt — always Eastern, never UTC.
 export function getEasternDateContext(): string {
   const todayStr = easternTodayStr();
