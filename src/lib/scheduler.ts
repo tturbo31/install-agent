@@ -373,6 +373,21 @@ export function weekdaysNamed(text: string): number[] {
   return out;
 }
 
+// A relative or explicit-date time reference ("today", "tomorrow", "the 17th",
+// "July 17", "asap", "this weekend"). When the CLIENT counters a weekday offer
+// with one of these and names NO weekday, the earlier weekday offer is STALE:
+// the bot re-resolves to a concrete date ("today at 7pm") that carries no
+// weekday word, and the model's booked date is trusted. Without this, a real
+// case — bot offered "Friday", client said "can we do it today? we're booked
+// tomorrow", bot booked today (Thursday) correctly — would be WRONGLY snapped to
+// Friday by the stale offer (caught by the 2026-07-16 victim scan).
+const RELATIVE_TERMS = /\b(today|tonight|tomorrow|day after tomorrow|this\s+(?:morning|afternoon|evening|week|weekend)|next\s+(?:week|weekend|month)|asap|as soon as possible|earliest|soonest|right now|hoy|ma[ñn]ana|esta\s+(?:tarde|noche|semana)|pr[oó]xima\s+semana|hoje|amanh[ãa])\b/i;
+const DATE_NUMBER = /\b\d{1,2}(?:st|nd|rd|th)\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+\d{1,2}\b/i;
+function hasRelativeOrDateTerm(text: string): boolean {
+  const clean = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return RELATIVE_TERMS.test(clean) || DATE_NUMBER.test(clean);
+}
+
 export type BookingReconciliation = {
   date: string;
   corrected: boolean;
@@ -403,27 +418,37 @@ export function reconcileBookingWeekday(
     if (days.length >= 1) { offerIdx = i; offerDays = days; break; }
   }
 
-  // Intent priority within the round:
-  //  1. a weekday the CLIENT named AT OR AFTER the offer (their explicit pick),
-  //  2. else the offer's own weekday if it named exactly one,
-  //  3. else (no offer at all) the client's last single-weekday word anywhere.
-  let intended: number | null = null;
+  // Look at the CLIENT's messages in the current round (at/after the offer):
+  // a single explicit weekday word (their pick) and whether they countered with
+  // a relative/date term ("today", "the 17th") that makes the stale offer moot.
   const from = offerIdx >= 0 ? offerIdx : 0;
-  for (let i = msgs.length - 1; i >= from; i--) {
+  let clientWeekday: number | null = null;
+  let clientRelative = false;
+  for (let i = from; i < msgs.length; i++) {
     if (msgs[i].role !== "user") continue;
     const days = weekdaysNamed(msgs[i].content);
-    if (days.length === 1) { intended = days[0]; break; }
-    if (days.length > 1) { intended = null; break; } // client itself ambiguous → don't guess
+    if (days.length === 1) clientWeekday = days[0]; // last single-weekday pick wins
+    if (hasRelativeOrDateTerm(msgs[i].content)) clientRelative = true;
   }
-  if (intended === null && offerIdx >= 0 && offerDays.length === 1) {
+
+  // Intent priority within the round:
+  //  1. a weekday the CLIENT explicitly named (their pick) — always wins,
+  //  2. else, if the client did NOT counter with a relative/date term, the
+  //     offer's own weekday when it named exactly one,
+  //  3. else (no offer at all) the client's last single-weekday word anywhere.
+  // If the client countered with "today"/"tomorrow"/a date and named no weekday,
+  // we have NO reliable weekday anchor → do not touch the model's date.
+  let intended: number | null = null;
+  if (clientWeekday !== null) {
+    intended = clientWeekday;
+  } else if (offerIdx >= 0 && offerDays.length === 1 && !clientRelative) {
     intended = offerDays[0];
-  }
-  if (intended === null && offerIdx < 0) {
+  } else if (offerIdx < 0) {
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role !== "user") continue;
       const days = weekdaysNamed(msgs[i].content);
-      if (days.length === 1) { intended = days[0]; break; }
-      if (days.length > 1) break;
+      if (days.length === 1 && !hasRelativeOrDateTerm(msgs[i].content)) { intended = days[0]; break; }
+      if (days.length > 1 || hasRelativeOrDateTerm(msgs[i].content)) break;
     }
   }
 

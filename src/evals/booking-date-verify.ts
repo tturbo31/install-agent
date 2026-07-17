@@ -113,6 +113,49 @@ function main() {
   const r3resched2 = reconcileBookingWeekday("2026-07-16", reschedHist); // Thursday, wrong
   ck("reschedule: offer's Friday corrects a wrong Thursday date", r3resched2.corrected && weekdayOf(r3resched2.date) === "Friday", JSON.stringify(r3resched2));
 
+  // ── 3c. REAL VICTIM-SCAN CASES (2026-07-16) ─────────────────────────────────
+  console.log("\n[3c] The other real conversations the victim-scan surfaced");
+  // Instagram Client: bot offered Friday, client countered 'today', bot booked
+  // today (Thursday) CORRECTLY. The stale 'Friday' must NOT corrupt it. This is
+  // the false-positive that would have made the guard itself book the wrong day.
+  const todayCounter = [
+    A("Hi, for 800 sqft I need to come measure in person. I have Friday at 9am or 1pm open, which works?"),
+    U("Is there any chance we can get an appointment today? We are booked tomorrow"),
+    A("Yes, I have today at 7pm open, does that work?"),
+    U("Ok, that's fine"),
+    U("280 SW 20th rd apt 908 miami fl 33129"),
+  ];
+  const rIC = reconcileBookingWeekday("2026-07-16", todayCounter); // Thursday (today), correct
+  ck("'today' counter over a stale Friday offer → NOT corrected", !rIC.corrected && rIC.date === "2026-07-16", JSON.stringify(rIC));
+  // Maritza: client asked 'Thursday as in tomorrow?', bot confirmed 'Thursday the
+  // 16th', client picked 5pm — booked Sunday by the bug. Guard snaps back to Thu.
+  const maritza = [
+    U("4 bedrooms carpet removal and installation, living room laminate"),
+    A("That's a solid multi-room project, so I need to come measure in person."),
+    U("Thursday as in tomorrow?"),
+    A("Yes, tomorrow Thursday the 16th, I have 11am, 3pm, or 5pm open. Which works best for you?"),
+    U("5pm I'm in Homestead"),
+    U("1747 Egret Rd Homestead FL 33035"),
+  ];
+  const rM = reconcileBookingWeekday("2026-07-19", maritza); // Sunday, wrong
+  ck("Maritza: Sunday booking snaps back to the agreed Thursday", rM.corrected && weekdayOf(rM.date) === "Thursday", JSON.stringify(rM));
+  // Audrey: 'No Tuesday. Wednesday?' then bot 'Wednesday I have 9am', client '9am'
+  // — booked Thursday by the bug. Guard snaps to Wednesday.
+  const audrey = [
+    U("There's 18 steps"),
+    A("The stairs come out to $2,520. When works for you?"),
+    U("No Tuesday do not work for me. Wednesday?"),
+    A("Wednesday I have 9am, 11am, 1pm, 3pm, or 5pm, which works best for you?"),
+    U("9 am"),
+    U("2882 Crestwood Terr. Margate 33063"),
+  ];
+  const rA = reconcileBookingWeekday("2026-07-16", audrey); // Thursday, wrong (client wanted Wednesday)
+  ck("Audrey: Thursday booking snaps back to the agreed Wednesday", rA.corrected && weekdayOf(rA.date) === "Wednesday", JSON.stringify(rA));
+
+  // Extra false-positive guards: relative-only rounds are never corrected.
+  ck("'tomorrow' with a stale weekday offer → not corrected", !reconcileBookingWeekday("2026-07-17", [A("I have Monday at 9am"), U("can we do it tomorrow instead?"), A("Sure, tomorrow at 9am works"), U("ok")]).corrected);
+  ck("explicit 'the 20th' with a stale weekday offer → not corrected", !reconcileBookingWeekday("2026-07-20", [A("I have Friday open"), U("actually the 20th works better"), A("Great, the 20th at 9am"), U("yes")]).corrected);
+
   // ── 4. NEVER BOOKS THE PAST ──────────────────────────────────────────────────
   console.log("\n[4] Correction never lands in the past");
   // Use a fabricated case: whatever the guard returns, if it corrected, the date
