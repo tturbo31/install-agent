@@ -50,9 +50,30 @@ const PHONE = "13055551234";
 const ADDR = "113 NW 11th St Ft Lauderdale FL 33311";
 const today = easternTodayStr();
 
+// The note injects the REAL Eastern clock, so a frozen "5pm today" scenario
+// fails every evening: after 5pm ET the model CORRECTLY refuses the past slot
+// ("It's 5:15 now, so 5pm has already passed") — a wall-clock false negative,
+// not a bug. Late in the day the scenario books "9am tomorrow" instead.
+function addDaysStr(d: string, n: number): string {
+  const x = new Date(d + "T12:00:00Z");
+  x.setUTCDate(x.getUTCDate() + n);
+  return x.toISOString().slice(0, 10);
+}
+const nowHourET = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date()), 10) % 24;
+const useTomorrow = nowHourET >= 16;
+const tomorrow = addDaysStr(today, 1);
+const slotDate = useTomorrow ? tomorrow : today;
+const slotPick = useTomorrow ? "9am tomorrow" : "5pm today";
+const slotTime = useTomorrow ? "09:00" : "17:00";
+const todayLine = useTomorrow ? "fully booked" : "5pm, 7pm";
+const offerLine = useTomorrow
+  ? "I have tomorrow at 9am or 11am, and if those don't work, Sunday has plenty of openings. What's your address and which time works?"
+  : "I have today at 5pm or 7pm, and if those don't work, Sunday has plenty of openings. What's your address and which time works?";
+
 function waSystemNote(): string {
   const schedule = `REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):
-• TODAY [${today}]: 5pm, 7pm
+• TODAY [${today}]: ${todayLine}
+• TOMORROW [${tomorrow}]: 9am, 11am
 
 IMPORTANT — read carefully before offering any time:
 - ONLY offer times listed above.
@@ -65,14 +86,14 @@ const HEAD: ChatMessage[] = [
   { role: "user", content: "What do you charge for showers?" },
   { role: "assistant", content: "Shower work falls under bathroom remodeling, and for that I need to check the space in person to give you an accurate quote. I offer a free visit where I assess everything and lock in the right price. What day works best for you?" },
   { role: "user", content: "Anyday. Sooner the better" },
-  { role: "assistant", content: "I have today at 5pm or 7pm, and if those don't work, Sunday has plenty of openings. What's your address and which time works?" },
+  { role: "assistant", content: offerLine },
 ];
 
 const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, null, false).then(r => r.text);
 const BOOKS = (t: string) => /\[BOOK:/i.test(t);
 const REASKS_ADDRESS = (t: string) => !BOOKS(t) && /\baddress\b/i.test(t) && /\?/.test(t);
 const bookedFor = (t: string, time: string) =>
-  BOOKS(t) && new RegExp(`"time"\\s*:\\s*"${time}"`).test(t) && new RegExp(`"date"\\s*:\\s*"${today}"`).test(t) && /11th\s*St/i.test(t);
+  BOOKS(t) && new RegExp(`"time"\\s*:\\s*"${time}"`).test(t) && new RegExp(`"date"\\s*:\\s*"${slotDate}"`).test(t) && /11th\s*St/i.test(t);
 
 async function main() {
   console.log("\n================ WHATSAPP BOOKING VERIFICATION ================");
@@ -81,18 +102,18 @@ async function main() {
   // ── 1. BRAIN: slot then address (address is the latest message) → BOOK ─────
   console.log("\n[1] slot '5pm today' then address (address last)");
   const a1 = await ai([...HEAD,
-    { role: "user", content: "5pm today" },
+    { role: "user", content: slotPick },
     { role: "user", content: `${ADDR}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a1.replace(/\s+/g, " ").slice(0, 160));
   ck("books the visit (emits [BOOK:...])", BOOKS(a1), a1);
-  ck("books today at 17:00 with the street address", bookedFor(a1, "17:00"), a1);
+  ck("books today at 17:00 with the street address", bookedFor(a1, slotTime), a1);
   ck("does NOT re-ask for the address", !REASKS_ADDRESS(a1), a1);
 
   // ── 2. BRAIN: exact screenshot order (bot re-asked, THEN address) → BOOK ───
   console.log("\n[2] screenshot order: '5pm today' → re-ask → address");
   const a2 = await ai([...HEAD,
-    { role: "user", content: "5pm today" },
+    { role: "user", content: slotPick },
     { role: "assistant", content: "Perfect, what's the property address?" },
     { role: "user", content: `${ADDR}\n\n${waSystemNote()}` },
   ]);
@@ -104,7 +125,7 @@ async function main() {
   console.log("\n[3] address first, then '5pm today' (reversed order)");
   const a3 = await ai([...HEAD,
     { role: "user", content: ADDR },
-    { role: "user", content: `5pm today\n\n${waSystemNote()}` },
+    { role: "user", content: `${slotPick}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a3.replace(/\s+/g, " ").slice(0, 160));
   ck("books regardless of message order", BOOKS(a3), a3);
@@ -114,7 +135,7 @@ async function main() {
   //  not happen is dropping the booking once the address arrives, covered above.)
   console.log("\n[4] slot only, address not sent yet → asks for address");
   const a4 = await ai([...HEAD,
-    { role: "user", content: `5pm today\n\n${waSystemNote()}` },
+    { role: "user", content: `${slotPick}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a4.replace(/\s+/g, " ").slice(0, 160));
   ck("asks for the address (no booking without it)", REASKS_ADDRESS(a4) || !BOOKS(a4), a4);

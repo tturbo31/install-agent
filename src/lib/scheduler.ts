@@ -823,6 +823,28 @@ export function isRealPhoneNumber(phone?: string | null): boolean {
   return (phone.match(/\d/g) || []).length >= 7;
 }
 
+// True only when the string plausibly is a REAL street address. Guards against
+// the model dropping a placeholder into the address field to satisfy the "has
+// address" check: a 2000-sqft visit was booked with address literally "pending"
+// (fb_27019671124380652, 2026-07-17 review) — Ozzi had a Sunday visit with
+// nowhere to go. US street addresses virtually always carry a street number, so
+// require a digit, a minimum length, and no placeholder words.
+const ADDRESS_PLACEHOLDER = /\b(?:pending|tbd|t\.b\.d|n\/?a|unknown|later|address|na later|to be|will send|not sure|pendiente|por confirmar|despu[eé]s|depois|luego|messenger|whatsapp|instagram|facebook)\b/i;
+export function isRealAddress(address?: string | null): boolean {
+  const t = (address ?? "").trim();
+  if (t.length < 8) return false;
+  if (!/\d/.test(t)) return false;
+  if (ADDRESS_PLACEHOLDER.test(t) && t.length < 25) return false;
+  return true;
+}
+
+// Sent when the slot is confirmed but we still need a usable street address.
+export function needAddressMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Perfecto! ¿Cuál es la dirección completa de la propiedad para la visita?"
+    : "Perfect! What's the full property address for the visit?";
+}
+
 // Sent when we have the slot + address but still need a real callback number
 // before booking (the client gave a non-number like "Messenger", or no phone).
 export function needPhoneMessage(lang: "es" | "en"): string {

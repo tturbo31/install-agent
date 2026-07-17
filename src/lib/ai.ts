@@ -93,10 +93,12 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /is\s+(labor|installation)\s+included/i,
       /does\s+(it|the\s+package)\s+include\s+(labor|installation)/i,
       /what\s+does?\s+(it|that)\s+include/i,
-      // "Is installation labor cost extra?" / "Is labor cost also $4,500?" — the
-      // Meta ad FAQ variants (2026-07-15 review): inclusions questions, same flow.
-      /\blabor\s+(?:cost\s+)?(?:extra|included|also)\b/i,
-      /\bis\s+(?:the\s+)?labor\s+cost\b/i,
+      // Meta ad FAQ variants (2026-07-15/17 reviews): inclusions questions, same
+      // flow. "installation cost included in the price" and "what type of
+      // materials are included" escaped the router for 8 leads in 3 days.
+      /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b/i,
+      /\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b/i,
+      /\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i,
     ],
     response: WHAT_IS_INCLUDED_RESPONSE,
   },
@@ -829,7 +831,13 @@ export function isFlooringInquiry(text: string): boolean {
 // hot lead. When any of this substance is present, it is NOT a closing.
 // Question words ("how much", "sqft", "quote"...) are already handled by
 // QUESTION_SIGNALS; this catches DECLARATIVE answers that carry no question.
-const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do)\b/i;
+// Day/weekday/time words are ALWAYS substance: "El martes está bien gracias" is
+// the client PICKING the Tuesday slot, and it was silenced as a pure closing
+// because "gracias" matched and no substance token did (2026-07-17 review,
+// fb_26322579897413190 — the Saturday visit was booked but the client was never
+// told, and the Tuesday pick got no reply). A closing that names a day or a
+// clock time is an ANSWER, never a goodbye.
+const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta|\d{1,2}(?::\d{2})?\s*(?:am|pm)|a\s+las?\s+\d{1,2})\b/i;
 
 export function hasSubstantiveContent(text: string): boolean {
   return SUBSTANTIVE_CONTENT.test(text || "");
@@ -871,6 +879,16 @@ export function isRescheduleRequest(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   return RESCHEDULE_PATTERNS.some((p) => p.test(t));
+}
+
+// Cancel INTENT specifically (a subset of the reschedule family). Used by the
+// webhooks to swap the [RESCHEDULE MODE] note for a cancel-aware one: routing
+// "I need to cancel" into a note that says the client "wants to MOVE the visit"
+// made the model push invented slots ("Wednesday at 3pm works perfectly!") and
+// never emit [CANCEL_BOOKING] (Priscilla, 2026-07-17 review).
+const CANCEL_INTENT = /\b(cancel(l?(ed|ing|ation))?|cancelar?|cancelo|cancelen?|desmarcar?|anular?)\b/i;
+export function isCancelRequest(text: string): boolean {
+  return CANCEL_INTENT.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
 }
 
 // Detects someone looking for a JOB or offering their labor (installer, painter,
@@ -1080,30 +1098,46 @@ export async function getAIResponse(
   const hasPriorAssistant = messages.some((m) => m.role === "assistant");
   if (!hasPriorAssistant && lastMsg?.role === "user" && !conversationFlooringType(messages) && !isJobSeeker(lastMsg.content)) {
     const t = lastMsg.content.split(/\n\n?\[SYSTEM:/)[0];
+    // The FIRST-CONTACT BURST: on Meta, the tapped quick-reply question and the
+    // "[Client replied to our ad]" tag can arrive as SEPARATE messages in either
+    // order. The debounce answers on the LAST one — when that is the bare ad
+    // tag, matching only `t` missed the question sitting one bubble earlier and
+    // the generic opener steamrolled it (Joan Caruso, 2026-07-17 review). Since
+    // there is no assistant reply yet, EVERY user message is un-answered: match
+    // the FAQ/large-sqft/language signals against the whole burst.
+    const burst = messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+      .join("\n");
     // OPENER EXCEPTION backstop: 500+ sqft already declared in the very first
     // message → NEVER the canned type-ask; the model acknowledges the size and
     // proposes the free visit per the prompt's OPENER EXCEPTION.
-    const largeFirstMessage = mentionsLargeSqft(t);
+    const largeFirstMessage = mentionsLargeSqft(burst);
     // AD-FAQ AWARE OPENERS: the tapped quick-reply question gets its one-line
     // answer folded into the SAME deterministic type-ask (still zero-token).
     // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
     if (!largeFirstMessage) {
-      const lang = openerLang(t);
-      if (AD_FAQ_PROCESS.test(t)) {
+      const lang = openerLang(burst);
+      if (AD_FAQ_PROCESS.test(burst)) {
         const opener = lang === "es" ? OPENER_PROCESS_ES : OPENER_PROCESS_EN;
         console.log("[AI] First contact, ad-FAQ (installation process) — answering + asking the type");
         return { text: opener, inputTokens: 0, outputTokens: 0 };
       }
-      if (AD_FAQ_DISCOUNT.test(t)) {
+      if (AD_FAQ_DISCOUNT.test(burst)) {
         const opener = lang === "es" ? OPENER_DISCOUNT_ES : OPENER_DISCOUNT_EN;
         console.log("[AI] First contact, ad-FAQ (larger-space discounts) — answering + asking the type");
         return { text: opener, inputTokens: 0, outputTokens: 0 };
       }
-      // "Is installation labor cost extra?" / "Is labor cost also $4,500?" (the
-      // mangled ad FAQ): an inclusions question — the ask-type inclusions line
-      // acknowledges it properly instead of the generic opener steamrolling it.
-      if (/\blabor\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?labor\s+cost\b/i.test(t)) {
-        console.log("[AI] First contact, ad-FAQ (labor cost) — inclusions ask-type line");
+      // Inclusions-family quick-replies (all real Meta FAQ buttons seen in
+      // production): "Is installation labor cost extra?", "Is labor cost also
+      // $4,500?", "Is installation cost included in the price?", "What type of
+      // materials are included?" — the ask-type inclusions line acknowledges
+      // them properly instead of the generic opener steamrolling the question
+      // (8 leads hit the two unmapped variants in the 3-day review).
+      if (
+        /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i.test(burst)
+      ) {
+        console.log("[AI] First contact, ad-FAQ (inclusions) — inclusions ask-type line");
         return { text: WHAT_IS_INCLUDED_ASK_TYPE, inputTokens: 0, outputTokens: 0 };
       }
     }
@@ -1163,7 +1197,7 @@ export async function getAIResponse(
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. Do not reveal the small-job surcharge.
 21. ANSWER PRODUCT QUESTIONS RULE: When the client asks a real question about the product, ALWAYS answer it directly and helpfully FIRST — never deflect a genuine product question to "browse our website". Key facts you can state: our luxury vinyl is 100% waterproof, has a stone composite (SPC) core, a 20-year warranty, is highly scratch and water resistant, performs great in humid and tropical climates, and can usually be installed right over existing tile. If they ask you to recommend something, give a brief direction based on their style and then invite them to browse for the exact look. If the client is OUTSIDE South Florida (another state, the Caribbean, the West Indies, another country) and is asking about the PRODUCT, still answer their product question helpfully; only mention that our installation service covers South Florida if they specifically ask US to install or visit. NEVER dismiss an out-of-area client with "we can't help you" — answer what they asked.
 20. TILE MATERIAL RULE: We do NOT sell tile material. If the client asks whether you offer, sell, have, or carry tile, or tile/porcelain that looks like wood (wood-look tile), respond with EXACTLY this and nothing more: "We don't sell tile materials. We only do the installation. However, you can find wood-look tiles at stores like Floor & Decor." Do NOT append, add, or tack on a luxury vinyl / LVP suggestion or any upsell after it — give only those sentences and stop. NEVER respond to a TILE question by pitching luxury vinyl wood-look as if it were the same thing. (Wood-look luxury VINYL is only the right answer when the client asks about vinyl or wood-look floors generally, not tile.)
-17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE.
+17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE.
 16. DATE INTEGRITY RULE: When you name a weekday to the client (Friday, viernes, etc.), the date MUST be the exact [YYYY-MM-DD] shown next to that same weekday in the REAL-TIME SCHEDULE. NEVER compute or guess a date yourself, and NEVER pair a weekday with a date from a different schedule line. Before writing [BOOK:...], re-read the schedule line for the weekday you promised and copy its [YYYY-MM-DD] and only a time listed on that line. Example: if the schedule shows "Friday ... [2026-06-05]: 9am, 1pm", then "Friday at 1pm" books date 2026-06-05 and time 13:00, NEVER 2026-06-06. Saturday is a different line with different times. If the time the client wants is not listed under the exact date you promised, tell them it is not open and offer a time that IS listed for that date.
 15. CLIENT AVAILABILITY RULE: If the client states when they are available (examples: "only after 6pm", "I'm only home after 6", "only on weekends", "evenings only", "I work until 5", "only Saturday", "only Sunday", "no mornings"), you MUST filter all slot options to ONLY those that match their constraint. NEVER propose a time that contradicts what the client said. Examples: if the client says "after 6pm", offer ONLY 6pm or later slots on weekdays. If they say "only weekends", offer ONLY Saturday or Sunday slots. If they say "after 6pm or weekends", that means weekdays ONLY after 6pm AND weekends at any time — do NOT offer a weekday slot before 6pm, but a Saturday or Sunday at any hour is fine. If no slots in the schedule match their constraint, acknowledge it directly and ask what flexibility they have. This rule overrides the general "offer 2 available slots" instruction — always honor the client's stated availability first.
 22. NO PRESSURE RULE: Propose the visit and offer time slots ONCE. After you have already proposed the visit, do NOT tack a scheduling push onto the end of every message ("what time works for you", "what day works", "so we can get started right away", or a list of slots). When the client asks an informational question (materials, specs, thickness, wear layer, lighting, timeline, etc.), ANSWER that question and stop, with no scheduling pressure appended. Re-offer specific slots or re-ask "what time works" ONLY when the client signals readiness to book or themselves asks about scheduling or availability. NEVER end two messages in a row with the same scheduling question, that is pressuring the client and is forbidden. When the client raises an obstacle ("I don't have access", "it's owner occupied", "I can't be there", "I'm just researching", "not this week"), acknowledge it and adapt, NEVER ignore it and keep offering the same slots; if a visit is genuinely blocked, hand to Ozzi with [NOTIFY_OWNER] instead of pushing.
