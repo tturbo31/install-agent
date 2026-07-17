@@ -497,29 +497,41 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
   const msgs = history ?? [];
   const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
 
-  // The bot's most recent message that offered clock time(s).
-  let offerIdx = -1;
-  let offeredCount = 0;
-  for (let i = msgs.length - 1; i >= 0; i--) {
+  // Every bot message that carries clock time(s). The FIRST one opens the
+  // pick window. IMPORTANT: we must NOT anchor on the LAST such message — after
+  // the client picks, the bot echoes the choice back ("Perfect, Sunday at 7pm
+  // it is! What's the address?") and that echo also carries a clock time; using
+  // it as the anchor would place the window AFTER the client's pick and block a
+  // perfectly confirmed booking (caught live by the E2E replay, 2026-07-17).
+  const offerIdxs: number[] = [];
+  for (let i = 0; i < msgs.length; i++) {
     if (msgs[i].role !== "assistant") continue;
-    const times = [...strip(msgs[i].content).matchAll(CLOCK_TIME_TOKEN)];
-    if (times.length >= 1) {
-      offerIdx = i;
-      offeredCount = new Set(times.map((t) => `${t[1]}${t[2].toLowerCase()}`)).size;
-      break;
-    }
+    if ([...strip(msgs[i].content).matchAll(CLOCK_TIME_TOKEN)].length >= 1) offerIdxs.push(i);
   }
+  const firstOffer = offerIdxs.length ? offerIdxs[0] : -1;
 
-  const from = offerIdx >= 0 ? offerIdx + 1 : 0;
-  let sawAffirmative = false;
+  // 1. The client themselves named a TIME (or a day / an ordinal pick) at any
+  //    point from the first offer on → that is a real slot signal.
+  const from = firstOffer >= 0 ? firstOffer + 1 : 0;
   for (let i = from; i < msgs.length; i++) {
     if (msgs[i].role !== "user") continue;
     const t = strip(msgs[i].content);
     if (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_ORDINAL.test(t)) return true;
-    if (SLOT_AFFIRMATIVE.test(t)) sawAffirmative = true;
   }
-  // A bare "yes/ok" only confirms a slot when exactly ONE was offered.
-  if (offeredCount === 1 && sawAffirmative) return true;
+
+  // 2. Exactly ONE slot on the table + a plain affirmative right after that
+  //    offer → the "yes" unambiguously means that slot. Checked per offer
+  //    window so a later echo cannot swallow the affirmative.
+  for (let k = 0; k < offerIdxs.length; k++) {
+    const idx = offerIdxs[k];
+    const end = k + 1 < offerIdxs.length ? offerIdxs[k + 1] : msgs.length;
+    const times = [...strip(msgs[idx].content).matchAll(CLOCK_TIME_TOKEN)];
+    const distinct = new Set(times.map((t) => `${t[1]}${t[2].toLowerCase()}`)).size;
+    if (distinct !== 1) continue;
+    for (let i = idx + 1; i < end; i++) {
+      if (msgs[i].role === "user" && SLOT_AFFIRMATIVE.test(strip(msgs[i].content))) return true;
+    }
+  }
   return false;
 }
 

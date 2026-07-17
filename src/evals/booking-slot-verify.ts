@@ -79,6 +79,25 @@ function main() {
   ck("time survives even when address arrives later", clientConfirmedSlot([
     A("I have Monday at 9am or 1pm?"), U("9am"), A("Great, address?"), U("9 NW 5th St Miami"), U("3055551234"),
   ]) === true);
+  // Caught LIVE by the production E2E replay (2026-07-17): after the client
+  // picks, the bot ECHOES the slot back ("Perfect, Sunday at 7pm it is! What's
+  // the address?"). That echo also carries a clock time — anchoring the pick
+  // window on the LAST timed bot message put the window after the pick and
+  // blocked a fully confirmed booking. The pick must count from the FIRST offer.
+  ck("bot's confirmation echo does not swallow the client's pick (E2E case)", clientConfirmedSlot([
+    A("For that size I need to come measure, all free. I have Sunday at 7pm or Monday at 9am, which works better for you?"),
+    U("Sunday at 7pm works for me"),
+    A("Perfect, Sunday at 7pm it is! What is the property address and best phone number to confirm everything?"),
+    U("123 NW 5th St, Miami FL 33125"),
+    A("What is the best phone number to reach you?"),
+    U("3055550123"),
+  ]) === true);
+  ck("echo after a single-slot 'yes' also keeps the confirmation", clientConfirmedSlot([
+    A("I have Monday at 3pm, does that work?"),
+    U("yes"),
+    A("Great, Monday at 3pm then! What's the address?"),
+    U("123 Main St"),
+  ]) === true);
 
   // ── 3. NEGATIVE / SAFETY: never confirm off contact info alone ───────────────
   console.log("\n[3] Address/phone/vague replies are never a slot pick");
