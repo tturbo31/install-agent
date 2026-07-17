@@ -5,12 +5,16 @@ import { isStrongAdminSecret } from "@/lib/admin-auth";
 import {
   composeQuoteFollowup,
   sanitizeOutbound,
+  financiamentoDe,
+  financingApprovalNote,
   FOLLOWUP_STAGES,
   MAX_MESSAGE_LENGTH,
   type FollowupLang,
   type FollowupStage,
   type ComposeResult,
+  type QuoteFollowupInput,
 } from "@/lib/quote-followup";
+import { buildQuoteCtxMarker } from "@/lib/quote-reply";
 
 // ─── POST /api/enviar — outbound WhatsApp for the Ozzi Plataforma ────────────
 // The platform decides WHO and WHEN; this route decides HOW it is worded and
@@ -130,6 +134,7 @@ export async function POST(req: NextRequest) {
   // template de segurança — útil para ela monitorar a qualidade dos envios.
   let texto: string;
   let origem: "exato" | ComposeResult["source"] = "exato";
+  let followupInput: QuoteFollowupInput | null = null;
 
   if (tipo === "mensagem_direta") {
     // Sent EXACTLY as supplied — this carries the owner's morning report, so we
@@ -154,9 +159,11 @@ export async function POST(req: NextRequest) {
     const cliente = (body.cliente ?? null) as { nome?: string; primeiro_nome?: string } | null;
     const quote = (body.quote ?? null) as { valor?: number; parcela_36x?: number; dias_desde_orcamento?: number } | null;
     const sugestao = typeof body.sugestao_texto === "string" ? body.sugestao_texto : null;
+    const financiamento = (body.financiamento ?? null) as { url?: string; oferecer?: boolean } | null;
 
     try {
-      const composed = await composeQuoteFollowup({ idioma, etapa, cliente, quote, sugestao_texto: sugestao });
+      followupInput = { idioma, etapa, cliente, quote, sugestao_texto: sugestao, financiamento };
+      const composed = await composeQuoteFollowup(followupInput);
       texto = composed.text;
       origem = composed.source;
     } catch (err) {
@@ -168,8 +175,23 @@ export async function POST(req: NextRequest) {
   const textoFinal = tipo === "mensagem_direta" ? texto : sanitizeOutbound(texto);
   if (!textoFinal.trim()) return erro(400, "mensagem vazia apos o processamento");
 
+  // Financiamento: a oferta (oferecer=true) ganha uma 2ª mensagem fixa logo em
+  // seguida avisando o próximo passo ("aprovou → o Ozzi entra em contato").
+  const fin = followupInput ? financiamentoDe(followupInput) : null;
+  const notaAprovacao =
+    tipo === "followup" && fin?.oferecer && followupInput
+      ? financingApprovalNote(followupInput.idioma)
+      : null;
+
   if (dry) {
-    return NextResponse.json({ ok: true, dry: true, enviado: false, mensagem: textoFinal, origem });
+    return NextResponse.json({
+      ok: true,
+      dry: true,
+      enviado: false,
+      mensagem: textoFinal,
+      origem,
+      ...(notaAprovacao ? { mensagem_seguinte: notaAprovacao } : {}),
+    });
   }
 
   // ── Send ───────────────────────────────────────────────────────────────────
@@ -193,11 +215,48 @@ export async function POST(req: NextRequest) {
   // Record ONLY the AI-written follow-ups: those go to real clients and the brain
   // needs the context when they reply. A mensagem_direta is the owner's own
   // report, so writing it into a conversation would fabricate a client thread.
+  // O registro do follow-up leva o marcador [SYSTEM: QUOTE_FOLLOWUP {...}] (só
+  // no banco, nunca no WhatsApp): é ele que liga o modo de resposta de orçamento
+  // quando o cliente responder (quote-reply.ts) e carrega o contexto do quote.
   let registrado = false;
-  if (tipo === "followup") registrado = await recordInHistory(telefone, textoFinal);
+  if (tipo === "followup" && followupInput) {
+    const q = followupInput.quote;
+    const num = (v: unknown) => {
+      const n = typeof v === "number" ? v : Number(String(v ?? "").replace(/[^\d.-]/g, ""));
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+    };
+    const marcador = buildQuoteCtxMarker({
+      valor: num(q?.valor),
+      parcela: num(q?.parcela_36x),
+      idioma: followupInput.idioma,
+      url: fin?.url ?? "https://app.gethearth.com/partners/ozzifloors",
+    });
+    registrado = await recordInHistory(telefone, textoFinal + marcador);
+  }
 
-  console.log(`[ENVIAR] ok tipo=${tipo} phone=${telefone} origem=${origem} registrado=${registrado}`);
-  return NextResponse.json({ ok: true, enviado: true, mensagem: textoFinal, origem, registrado });
+  // 2ª mensagem da oferta de financiamento (best-effort: a 1ª já foi entregue —
+  // uma falha aqui não pode virar erro para a plataforma, que iria reenviar tudo).
+  let notaEnviada = false;
+  if (notaAprovacao) {
+    try {
+      const r2 = await sendWhatsAppMessage(telefone, notaAprovacao);
+      notaEnviada = r2.ok;
+      if (r2.ok) await recordInHistory(telefone, notaAprovacao);
+      else console.error(`[ENVIAR] nota de aprovação falhou phone=${telefone} erro=${r2.error}`);
+    } catch (err) {
+      console.error("[ENVIAR] nota de aprovação exception:", err);
+    }
+  }
+
+  console.log(`[ENVIAR] ok tipo=${tipo} phone=${telefone} origem=${origem} registrado=${registrado} financiamento=${Boolean(notaAprovacao)}`);
+  return NextResponse.json({
+    ok: true,
+    enviado: true,
+    mensagem: textoFinal,
+    origem,
+    registrado,
+    ...(notaAprovacao ? { financiamento_oferecido: true, nota_aprovacao_enviada: notaEnviada } : {}),
+  });
 }
 
 // A GET is almost always a human poking the URL in a browser. Answer with the

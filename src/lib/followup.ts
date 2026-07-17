@@ -40,7 +40,10 @@ export function followupTemplate(lang: Lang): string {
 }
 
 // Detects a follow-up we already sent (any language) — ONE per conversation, ever.
-export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar/i;
+// A nudge escrita pela IA é gravada no banco com o sufixo [SYSTEM: FOLLOWUP_NUDGE]
+// (nunca enviado ao cliente), então o marcador também o reconhece.
+export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar|\[SYSTEM: FOLLOWUP_NUDGE\]/i;
+export const FOLLOWUP_DB_SUFFIX = "\n\n[SYSTEM: FOLLOWUP_NUDGE]";
 
 // Meta ad FAQ quick-reply buttons — a tap is NOT genuine engagement. A lead
 // whose only "messages" are these templates is a browse/mis-tap ghost and must
@@ -164,10 +167,77 @@ export function isEtDaytime(nowMs: number): boolean {
 // ─── The sweep: query, decide, send ─────────────────────────────────────────
 // Framework-free so the /api/followup route stays thin AND a local
 // `npx tsx` dry-run can exercise the exact production path with zero sends.
+import Anthropic from "@anthropic-ai/sdk";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage } from "@/lib/facebook";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { removeDashes, removeEmojis, stripWrappingQuotes } from "@/lib/ai";
+import { promisesDiscount } from "@/lib/quote-followup";
+
+// ─── Nudge personalizada pela IA (2026-07-17) ───────────────────────────────
+// Pedido do dono: o follow-up do Direct deve primeiro ENTENDER o contexto da
+// conversa (por que o cliente não seguiu) e falar disso, não mandar sempre a
+// mesma frase. A IA lê o final da conversa e escreve 1-2 frases retomando
+// exatamente o ponto que ficou aberto; o template fixo vira fallback (IA fora
+// do ar / texto reprovado nos guardas). Os guardas de ELEGIBILIDADE (deferral,
+// janela de 24h da Meta, 1 nudge por conversa, ≤25/run) continuam idênticos.
+const NUDGE_SYSTEM = `You are Ozzi's assistant for Ozzi Floors (flooring installation, South Florida). A potential client was mid-conversation about their floors, we offered to schedule the free in-person estimate visit, and they went quiet. Write ONE short re-engagement message.
+
+Write ONLY the message text. Rules:
+1. Write in the language you are told. 1 or 2 short sentences, like a real person texting. No emoji, no dashes (use commas or periods), no links, no markdown, no bracket tags.
+2. START from what THEY left hanging: their last question, the floor type or area they mentioned, the thing they were deciding. Reference it naturally so it feels personal, never generic.
+3. END by warmly inviting them to schedule the free estimate visit (samples come along, exact price on the spot). Do NOT name any specific day, date, or time, you do not know the real schedule.
+4. NEVER mention, offer, or hint at a discount, deal, or better price. NEVER invent prices, sizes, or facts not present in the conversation. You may repeat a price WE already stated there.
+5. No pressure, one gentle nudge.`;
+
+let _nudgeAnthropic: Anthropic | null = null;
+function nudgeClient(): Anthropic {
+  if (!_nudgeAnthropic) {
+    _nudgeAnthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY!, maxRetries: 2, timeout: 25_000 });
+  }
+  return _nudgeAnthropic;
+}
+
+const LANG_LABEL: Record<Lang, string> = { en: "English", es: "Spanish", pt: "Portuguese" };
+
+function sanitizeNudge(text: string): string {
+  return stripWrappingQuotes(removeEmojis(removeDashes(text ?? "")))
+    .replace(/\[[A-Z_]+(?::[\s\S]*?)?\]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// Escreve a nudge personalizada; devolve null quando o texto não passa nos
+// guardas (aí o chamador usa o template fixo comprovado).
+export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang): Promise<string | null> {
+  try {
+    const tail = messages
+      .slice(-10)
+      .map((m) => `${m.role === "user" ? "Client" : "Us"}: ${(m.content || "").split(/\n\n?\[SYSTEM:/)[0].slice(0, 350)}`)
+      .join("\n");
+    const res = await nudgeClient().messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 200,
+      system: NUDGE_SYSTEM,
+      messages: [
+        {
+          role: "user" as const,
+          content: `Language to write in: ${LANG_LABEL[lang]}\n\nConversation (oldest first):\n${tail}\n\nWrite the re-engagement message now.`,
+        },
+      ],
+    });
+    const block = res.content[0];
+    const text = sanitizeNudge(block?.type === "text" ? block.text : "");
+    if (text.length < 20 || text.length > 360) return null;
+    if (promisesDiscount(text)) return null;
+    if (/https?:\/\//i.test(text)) return null;
+    return text;
+  } catch (err) {
+    console.error("[FOLLOWUP] nudge AI failed, using template:", err);
+    return null;
+  }
+}
 
 const MAX_SENDS_PER_RUN = 25; // hard cap — a bug can never mass-message
 const SCAN_WINDOW_H = 48;
@@ -254,12 +324,13 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
 
     result.eligible++;
     const channel = channelOfIgsid(conv.igsid);
-    const text = followupTemplate(decision.lang);
     const name = conv.name || conv.username || conv.igsid;
     if (opts.dry) {
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: "DRY-RUN (not sent)" });
       continue;
     }
+    // IA personaliza a partir da conversa; template comprovado é o fallback.
+    const text = (await composeColdLeadNudge(messages, decision.lang)) ?? followupTemplate(decision.lang);
     try {
       if (channel === "whatsapp") {
         const r = await sendWhatsAppMessage(conv.igsid.slice(3), text);
@@ -270,8 +341,10 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
         await sendInstagramMessage(conv.igsid, text);
       }
       // Record it exactly like the webhooks do, so the panel shows it and the
-      // FOLLOWUP_MARKER dedup can never let a second nudge through.
-      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: text });
+      // FOLLOWUP_MARKER dedup can never let a second nudge through. O sufixo
+      // [SYSTEM: FOLLOWUP_NUDGE] (só no banco) garante o dedup mesmo com texto
+      // personalizado pela IA.
+      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: text + FOLLOWUP_DB_SUFFIX });
       await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: true });
       console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}) to ${name}`);

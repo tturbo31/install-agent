@@ -16,6 +16,7 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { findQuoteFollowupContext, composeQuoteReply } from "@/lib/quote-reply";
 
 export const maxDuration = 60;
 
@@ -510,6 +511,62 @@ async function handleWaMessage(body: Record<string, unknown>) {
         .limit(1)
         .maybeSingle();
       if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── Cliente de FOLLOW-UP DE ORÇAMENTO respondeu ────────────────────────
+    // A visita já aconteceu e a plataforma mandou follow-up (financiamento)
+    // pelo /api/enviar — o histórico carrega o marcador [SYSTEM: QUOTE_FOLLOWUP].
+    // INDEPENDE de booking_confirmed: a maior parte da carteira veio do Lovable
+    // e nunca agendou pelo bot, então sem este bloco a resposta cairia no funil
+    // de VENDA NOVA (o bot tentaria marcar outra visita do zero). Responde com
+    // o cérebro estreito de quote-reply (financiamento, dúvidas do orçamento,
+    // handoff pro Ozzi). Antes disso, quem era "booked" ouvia SILÊNCIO e quem
+    // não era caía no funil errado — a campanha morria nos dois caminhos.
+    if (!engageReschedule) {
+      try {
+        const quoteCtx = await findQuoteFollowupContext(conv.id);
+        if (quoteCtx) {
+          if (isPureClosing(rawText)) {
+            console.log("[WA] quote-reply: fechamento puro, ficando em silêncio");
+            return;
+          }
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(12);
+          const historico = (recentMsgs ?? []).reverse();
+          const reply = await composeQuoteReply({ ctx: quoteCtx, history: historico, clientText: rawText });
+          const sent = await sendWhatsAppMessage(phone, reply.text);
+          if (sent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: reply.text });
+            await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
+            if (reply.notifyOwner) {
+              await notifyOwners({
+                platform: "WhatsApp",
+                clientName: conv.username ?? null,
+                clientId: phone,
+                recentMessages: [...historico.slice(-7), { role: "assistant", content: reply.text }],
+                alert: "Cliente de follow-up de orçamento precisa de você (negociação, dúvida ou quer fechar).",
+              });
+            }
+            console.log(`[WA] quote-reply enviado (${reply.source}) notify=${reply.notifyOwner}`);
+            return;
+          }
+          console.error(`[WA] quote-reply falhou no envio: ${sent.error} — avisando o dono`);
+          await notifyOwners({
+            platform: "WhatsApp",
+            clientName: conv.username ?? null,
+            clientId: phone,
+            recentMessages: historico.slice(-8),
+            alert: "Cliente de follow-up de orçamento respondeu e o envio da resposta falhou.",
+          }).catch(() => {});
+          return;
+        }
+      } catch (err) {
+        console.error("WA quote-reply error (seguindo o fluxo normal):", err);
+      }
     }
 
     // If already booked (and NOT rescheduling) → notify owner silently, no message

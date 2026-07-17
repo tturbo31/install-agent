@@ -38,7 +38,30 @@ export type QuoteFollowupInput = {
     dias_desde_orcamento?: number | string | null;
   } | null;
   sugestao_texto?: string | null;
+  // Financiamento (Hearth): quando oferecer=true este toque LIDERA com a oferta
+  // de financiamento e inclui o link da aplicação; quando só a url vem (sem
+  // oferecer), o link já foi enviado antes — pode lembrar de leve, sem repetir.
+  financiamento?: { url?: string | null; oferecer?: boolean } | null;
 };
+
+// Link público do formulário de financiamento (Hearth) — fallback quando a
+// plataforma não mandar a URL no payload.
+export const HEARTH_URL_PADRAO = "https://app.gethearth.com/partners/ozzifloors";
+
+// URL segura para ir numa mensagem: https, sem espaços, sem colchetes e sem
+// travessões (que a sanitização converteria e quebraria o link).
+function urlSegura(raw: unknown): string | null {
+  const u = typeof raw === "string" ? raw.trim() : "";
+  if (!/^https:\/\/[^\s\[\]—–]+$/.test(u)) return null;
+  return u;
+}
+
+export function financiamentoDe(input: QuoteFollowupInput): { url: string; oferecer: boolean } | null {
+  const f = input.financiamento;
+  if (!f) return null;
+  const url = urlSegura(f.url) ?? HEARTH_URL_PADRAO;
+  return { url, oferecer: f.oferecer === true };
+}
 
 // WhatsApp hard-caps a text body at 4096 chars; our own copy should never come
 // close, so this is only a runaway guard.
@@ -84,7 +107,44 @@ export function buildFollowupContext(input: QuoteFollowupInput): string {
       : null,
   ].filter(Boolean);
 
+  const fin = financiamentoDe(input);
+  if (fin?.oferecer) {
+    lines.push(
+      `FINANCING OFFER, THIS OVERRIDES THE TOUCH INTENT ABOVE: lead the message with our financing option. Tell them they do not need to pay everything at once${
+        formatMoney(input.quote?.parcela_36x) ? `, mention the monthly figure above` : ""
+      }, say the application takes about 2 minutes online and that checking their options does not affect their credit score, and include this exact link once, exactly as written, nothing added around it: ${fin.url} , inviting them to fill it out. Up to three short sentences are allowed for this message only.`
+    );
+  } else if (fin) {
+    lines.push(
+      `Financing exists and this client ALREADY received our financing application link in an earlier message. You may briefly remind them that financing is available if it fits naturally, but do NOT paste any link again.`
+    );
+  }
+
   return lines.join("\n");
+}
+
+// ─── Financiamento: 2ª mensagem fixa e template de segurança ─────────────────
+// A 2ª mensagem (enviada logo após a oferta com o link) avisa o próximo passo.
+// Determinística de propósito: zero risco, zero custo, e NUNCA pode disparar o
+// detector de agendamento (é a última mensagem nossa na conversa).
+const APPROVAL_NOTE: Record<FollowupLang, string> = {
+  en: "As soon as your application is approved, Ozzi will personally reach out to you to finalize everything.",
+  es: "En cuanto tu solicitud sea aprobada, Ozzi se comunicará contigo personalmente para finalizar todo.",
+};
+
+export function financingApprovalNote(lang: FollowupLang): string {
+  return APPROVAL_NOTE[lang];
+}
+
+// Último recurso da mensagem de OFERTA de financiamento (IA fora do ar): já sai
+// com o link. {url} é substituído pela URL segura.
+const SAFE_FINANCING: Record<FollowupLang, string> = {
+  en: "Hi, good news about your flooring quote: you can finance the project instead of paying everything at once. Checking your options takes about 2 minutes and does not affect your credit score, just fill out this form: {url}",
+  es: "Hola, buenas noticias sobre tu cotización: puedes financiar el proyecto en vez de pagar todo de una vez. Ver tus opciones toma unos 2 minutos y no afecta tu crédito, solo llena este formulario: {url}",
+};
+
+export function safeFinancingTemplate(lang: FollowupLang, url: string): string {
+  return SAFE_FINANCING[lang].replaceAll("{url}", url);
 }
 
 const SYSTEM = `You are Ozzi's assistant for Ozzi Floors, a flooring installation company in South Florida. You write ONE short WhatsApp follow-up message to a client who ALREADY had the free in-person visit and ALREADY received their quote.
@@ -93,7 +153,8 @@ Write ONLY the message text. No preamble, no explanation, no quotes around it, n
 
 HARD RULES:
 1. Write in the requested language only.
-2. One or two sentences. Never three. Short and human, like a real person texting.
+2. One or two sentences. Never three. Short and human, like a real person texting. EXCEPTION: when the context asks you to include the financing application link, up to three short sentences are allowed.
+2b. Never include any link or URL, EXCEPT the exact financing link when the context explicitly tells you to include it, copied character for character, exactly once.
 3. Zero dashes, no -, no en dash, no em dash. Use commas or periods.
 4. Zero emojis. Plain text only.
 5. NEVER negotiate, offer, hint at, or promise a discount, a better price, a deal, a price match, or that the price could come down. The quote is the quote. Price decisions belong to Ozzi alone.
@@ -233,6 +294,7 @@ const CORRECTIVE =
 // Throws only if even the template is somehow unusable.
 export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<ComposeResult> {
   const context = buildFollowupContext(input);
+  const fin = financiamentoDe(input);
   let tokensIn = 0;
   let tokensOut = 0;
 
@@ -250,11 +312,28 @@ export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<C
         console.warn(`[ENVIAR] attempt ${attempt}: rejeitado (${violation}): ${r.text.slice(0, 90)}`);
         continue;
       }
+      // Oferta de financiamento SEM o link intacto não cumpre o objetivo do
+      // toque (o cliente precisa conseguir clicar) — trata como tentativa ruim.
+      if (fin?.oferecer && !r.text.includes(fin.url)) {
+        console.warn(`[ENVIAR] attempt ${attempt}: oferta de financiamento sem o link intacto`);
+        continue;
+      }
       console.log(`[ENVIAR] follow-up ${input.etapa}/${input.idioma} written by AI (attempt ${attempt}) | in=${tokensIn} out=${tokensOut} | ${r.text.slice(0, 70)}`);
       return { text: r.text, source: attempt === 1 ? "ai" : "ai-retry", inputTokens: tokensIn, outputTokens: tokensOut };
     } catch (err) {
       console.error(`[ENVIAR] attempt ${attempt}: follow-up generation failed:`, err);
       break; // API is down — retrying the same call buys nothing, go to fallbacks.
+    }
+  }
+
+  // OFERTA de financiamento: o rascunho da plataforma não tem o link, então o
+  // fallback correto é o template de financiamento (já traz o link e passa no
+  // portão por construção — verificado em enviar-verify).
+  if (fin?.oferecer) {
+    const t = safeFinancingTemplate(input.idioma, fin.url);
+    if (followupPolicyViolation(t) === null) {
+      console.warn(`[ENVIAR] falling back to the safe financing ${input.idioma} template`);
+      return { text: t, source: "template", inputTokens: tokensIn, outputTokens: tokensOut };
     }
   }
 

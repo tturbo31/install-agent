@@ -14,7 +14,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { isDashboardAuthorized, isStrongAdminSecret, LEGACY_ADMIN_SECRET, MIN_STRONG_SECRET_LENGTH } from "../lib/admin-auth";
-import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES, safeFollowupTemplate, tripsSchedulingDetector, promisesDiscount, followupPolicyViolation } from "../lib/quote-followup";
+import { buildFollowupContext, sanitizeOutbound, FOLLOWUP_STAGES, safeFollowupTemplate, tripsSchedulingDetector, promisesDiscount, followupPolicyViolation, financiamentoDe, financingApprovalNote, safeFinancingTemplate, HEARTH_URL_PADRAO } from "../lib/quote-followup";
+import { buildQuoteCtxMarker, parseQuoteCtxMarker, QUOTE_CTX_PREFIX } from "../lib/quote-reply";
 import { containsSchedulingOffer } from "../lib/ai";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -217,6 +218,50 @@ function main() {
   // Custo: no PIOR caso são 2 chamadas (~1000 tokens de input), nunca um loop.
   ck("no máximo 2 chamadas ao modelo, nunca loop infinito", /\[1, 2\] as const/.test(gen));
 
+  // ── 5d. FINANCIAMENTO (Hearth) — oferta com link + 2ª mensagem fixa ────────
+  console.log("\n[5d] Financiamento: link intacto, 2ª mensagem segura, marcador de contexto");
+  const URL_FIN = "https://app.gethearth.com/partners/ozzifloors";
+  // normalização do payload da plataforma
+  ck("financiamentoDe: null sem payload", financiamentoDe({ idioma: "en", etapa: "D1" }) === null);
+  ck("financiamentoDe: usa a URL da plataforma", financiamentoDe({ idioma: "en", etapa: "D1", financiamento: { url: URL_FIN, oferecer: true } })?.url === URL_FIN);
+  ck("financiamentoDe: URL inválida cai no padrão Hearth", financiamentoDe({ idioma: "en", etapa: "D1", financiamento: { url: "javascript:alert(1)", oferecer: true } })?.url === HEARTH_URL_PADRAO);
+  ck("financiamentoDe: oferecer só quando explicitamente true", financiamentoDe({ idioma: "en", etapa: "D1", financiamento: { url: URL_FIN } })?.oferecer === false);
+  // contexto da oferta
+  const ctxFin = buildFollowupContext({ idioma: "en", etapa: "D1", quote: { valor: 4500, parcela_36x: 125 }, financiamento: { url: URL_FIN, oferecer: true } });
+  ck("contexto da oferta inclui o link exato", ctxFin.includes(URL_FIN));
+  ck("contexto da oferta manda liderar com o financiamento", /FINANCING OFFER/.test(ctxFin));
+  const ctxJaOferecido = buildFollowupContext({ idioma: "en", etapa: "D7", financiamento: { url: URL_FIN, oferecer: false } });
+  ck("já ofereceu: proíbe repetir o link", /do NOT paste any link again/.test(ctxJaOferecido) && !ctxJaOferecido.includes(URL_FIN));
+  // templates e nota de aprovação passam em TODOS os portões
+  for (const l of ["en", "es"] as const) {
+    const t = safeFinancingTemplate(l, URL_FIN);
+    ck(`template de financiamento ${l} contém o link`, t.includes(URL_FIN), t);
+    ck(`template de financiamento ${l} sobrevive à sanitização com o link intacto`, sanitizeOutbound(t).includes(URL_FIN), sanitizeOutbound(t));
+    ck(`template de financiamento ${l} passa no portão`, followupPolicyViolation(t) === null, `violacao=${followupPolicyViolation(t)}`);
+    const nota = financingApprovalNote(l);
+    ck(`nota de aprovação ${l} não dispara o detector de agendamento`, !tripsSchedulingDetector(nota), nota);
+    ck(`nota de aprovação ${l} sobrevive à sanitização intacta`, sanitizeOutbound(nota) === nota, nota);
+    ck(`nota de aprovação ${l} passa no portão`, followupPolicyViolation(nota) === null);
+  }
+  // marcador de contexto no histórico (liga o modo quote-reply do wa-webhook)
+  const marcador = buildQuoteCtxMarker({ valor: 4500, parcela: 125, idioma: "es", url: URL_FIN });
+  ck("marcador usa o prefixo estável", marcador.includes(QUOTE_CTX_PREFIX));
+  const parsed = parseQuoteCtxMarker(`Hola, tu cotización...${marcador}`, "2026-07-17T12:00:00Z");
+  ck("marcador faz round-trip (valor/parcela/idioma/url)", parsed?.valor === 4500 && parsed?.parcela === 125 && parsed?.idioma === "es" && parsed?.url === URL_FIN);
+  ck("marcador ilegível vira null (nunca quebra o webhook)", parseQuoteCtxMarker(`${QUOTE_CTX_PREFIX}{lixo]`, "2026-07-17T12:00:00Z") === null);
+  // fiação: gerador exige o link intacto na oferta; rota manda a 2ª mensagem
+  const qfSrc = readFileSync(join(process.cwd(), "src/lib/quote-followup.ts"), "utf-8");
+  ck("gerador REJEITA oferta sem o link intacto", /!r\.text\.includes\(fin\.url\)/.test(qfSrc));
+  ck("fallback da oferta é o template de financiamento (não o rascunho sem link)", /safeFinancingTemplate\(input\.idioma, fin\.url\)/.test(qfSrc));
+  const routeFin = readFileSync(join(process.cwd(), "src/app/api/enviar/route.ts"), "utf-8");
+  ck("rota envia a 2ª mensagem (nota de aprovação) após a oferta", /financingApprovalNote\(/.test(routeFin) && /notaAprovacao/.test(routeFin));
+  ck("2ª mensagem é best-effort (falha não vira erro p/ plataforma reenviar)", /nota de aprovação exception/.test(routeFin));
+  ck("rota grava o marcador de contexto no histórico", /buildQuoteCtxMarker/.test(routeFin));
+  // wa-webhook: cliente de follow-up não fica mais no silêncio
+  const waSrc = readFileSync(join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf-8");
+  ck("wa-webhook roteia resposta de cliente de orçamento pro quote-reply", /findQuoteFollowupContext/.test(waSrc) && /composeQuoteReply/.test(waSrc));
+  ck("wa-webhook mantém o aviso ao dono como fallback", /WA post-booking notify error/.test(waSrc));
+
   // ── 6. Fiação da rota ──────────────────────────────────────────────────────
   console.log("\n[6] Fiação de /api/enviar");
   const route = readFileSync(join(process.cwd(), "src/app/api/enviar/route.ts"), "utf-8");
@@ -225,10 +270,10 @@ function main() {
   ck("mensagem_direta é enviada EXATAMENTE como veio (sem sanitizar)", /tipo === "mensagem_direta" \? texto : sanitizeOutbound\(texto\)/.test(route));
   ck("followup é escrito pelo agente", /composeQuoteFollowup/.test(route));
   ck("falha do WhatsApp devolve status >= 400 com {ok:false,erro}", /ok: false, erro: `falha ao enviar pelo WhatsApp/.test(route));
-  ck("sucesso devolve {ok:true}", /ok: true, enviado: true/.test(route));
+  ck("sucesso devolve {ok:true}", /ok: true,\s*enviado: true/.test(route));
   // Um 401/403 do Z-API nao pode se disfarcar do NOSSO 401 (segredo errado).
   ck("falha de auth do Z-API não vira 401/403 nosso (vira 502)", /raw !== 401 && raw !== 403 \? raw : 502/.test(route));
-  ck("registra o followup no histórico", /if \(tipo === "followup"\) registrado = await recordInHistory/.test(route));
+  ck("registra o followup no histórico", /if \(tipo === "followup" && followupInput\)/.test(route) && /recordInHistory\(telefone, textoFinal \+ marcador\)/.test(route));
   ck("NÃO registra mensagem_direta (relatório do dono não vira thread de cliente)", /Record ONLY the AI-written follow-ups/.test(route));
   ck("valida telefone (só dígitos, 8 a 15)", /digits\.length < 8 \|\| digits\.length > 15/.test(route));
   ck("valida etapa contra a lista", /FOLLOWUP_STAGES\.includes\(etapa\)/.test(route));
