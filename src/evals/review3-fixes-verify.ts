@@ -19,7 +19,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { isPureClosing, isPureClosingBurst, isCancelRequest, getAIResponse, stripReasoningLeak } from "../lib/ai";
+import { isPureClosing, isPureClosingBurst, isCancelRequest, getAIResponse, stripReasoningLeak, scrubForeignPhones } from "../lib/ai";
 
 // .env.local: o teste v5 (500+ sqft no burst) cai corretamente no MODELO (não no
 // opener enlatado), então precisa da chave real — 1 chamada barata.
@@ -130,6 +130,21 @@ async function main() {
     "Necesito ir a medir en persona para darte el mejor precio, la visita es gratis.",
     "Perfecto, ¿a las 9am o a la 1pm, cuál te queda mejor?",
   ]) ck(`legítima intacta: "${legit.slice(0, 44)}…"`, stripReasoningLeak(legit) === legit, stripReasoningLeak(legit));
+
+  console.log("\n[F] Nenhum telefone além do (561) 674-8334 sai em mensagem");
+  const echoed = "No worries at all, I'll have Ozzi reach out to you directly at 3057668885 shortly!";
+  const scrubbed = scrubForeignPhones(echoed);
+  ck("número do cliente ecoado é removido (caso Rezashahid)", !/3057668885/.test(scrubbed), scrubbed);
+  ck("a frase sobrevive legível", /I'll have Ozzi reach out to you directly shortly!/.test(scrubbed), scrubbed);
+  ck("número oficial (561) 674-8334 é preservado", scrubForeignPhones("Call our team at (561) 674-8334 anytime!") === "Call our team at (561) 674-8334 anytime!");
+  ck("formato +1 do oficial preservado", /674-8334/.test(scrubForeignPhones("Reach us at +1 (561) 674-8334.")));
+  ck("outro número em formato (xxx) xxx-xxxx é removido", !/942-7955/.test(scrubForeignPhones("I'll call you at (305) 942-7955 soon.")));
+  ck("[BOOK:{...phone...}] fica intacto", scrubForeignPhones('All set![BOOK:{"name":"x","phone":"3057668885","date":"2026-07-20","time":"09:00"}]').includes('"phone":"3057668885"'));
+  ck("texto sem telefone passa intacto", scrubForeignPhones("Perfect, see you Monday at 9am!") === "Perfect, see you Monday at 9am!");
+  ck("endereço com CEP não é confundido com telefone", scrubForeignPhones("Visit at 123 NW 5th St, Miami FL 33125 confirmed.") === "Visit at 123 NW 5th St, Miami FL 33125 confirmed.");
+  const aiSrc2 = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
+  ck("scrub ligado no pipeline de saída", /cleaned = scrubForeignPhones\(cleaned\)/.test(aiSrc2));
+  ck("regra 11 proíbe ecoar o número do cliente", /not even the CLIENT'S OWN number back to them/.test(aiSrc2));
 
   console.log(`\n=========== REVIEW3-FIXES-VERIFY: ${pass} passed, ${fail} failed ===========`);
   if (fails.length) for (const f of fails) console.log(`  ✗ ${f}`);
