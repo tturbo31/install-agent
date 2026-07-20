@@ -14,7 +14,8 @@ export type EventoFunil =
   | "retomou_conversa"
   | "agendamento_marcado"
   | "visita_realizada"
-  | "no_show";
+  | "no_show"
+  | "followup_respondeu"; // cliente de follow-up de orçamento respondeu → plataforma encerra a cadência
 
 export type EnvioResultado = { ok: boolean; status: number; body?: string };
 

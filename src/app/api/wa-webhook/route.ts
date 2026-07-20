@@ -16,6 +16,7 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply } from "@/lib/quote-reply";
 
 export const maxDuration = 60;
@@ -529,6 +530,11 @@ async function handleWaMessage(body: Record<string, unknown>) {
       try {
         const quoteCtx = await findQuoteFollowupContext(conv.id);
         if (quoteCtx) {
+          // Cliente de follow-up RESPONDEU (qualquer coisa): avisa a plataforma
+          // para ENCERRAR a cadência automática deste telefone na hora — a
+          // conversa agora é conduzida aqui/pelo Ozzi, nunca mais por drip.
+          // (Caso real 2026-07-19: "I pay full" e o D7 continuava agendado.)
+          await enviarEventoFunil("followup_respondeu", { telefone: phone });
           if (isPureClosing(rawText)) {
             console.log("[WA] quote-reply: fechamento puro, ficando em silêncio");
             return;
