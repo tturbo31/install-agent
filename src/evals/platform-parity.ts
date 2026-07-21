@@ -53,8 +53,12 @@ const SHARED: Check[] = [
   { label: "Grace window before redundant booking-info re-ask", test: (s) => s.includes("isAskingForBookingInfo") && s.includes("discarding redundant re-ask") },
 
   // Returning client / booking state
-  { label: "Returning-client served check (hasExistingBooking)", test: (s) => s.includes("hasExistingBooking") },
+  { label: "Returning-client served check (upcoming-aware)", test: (s) => s.includes("getClientBookingSnapshot") && /served\?\.upcoming/.test(s) },
+  { label: "Stale booked flag reset (visit already past)", test: (s) => s.includes("booked flag is stale") && /booking_confirmed: false/.test(s) },
+  { label: "PAST VISIT note after stale reset", test: (s) => s.includes("pastVisitSystemNote") && s.includes("pastVisitNote") },
   { label: "Reschedule intent detection", test: (s) => s.includes("isRescheduleRequest") && s.includes("containsSchedulingOffer") },
+  { label: "Burst-aware reschedule detection (debounced bubbles)", test: (s) => s.includes("unansweredUserBurst") && /isRescheduleRequest\(gateBurst\)/.test(s) },
+  { label: "Visit-details deterministic reply (booked question)", test: (s) => s.includes("isVisitDetailQuestion") && s.includes("visitDetailsMessage") },
   { label: "Already-booked → silent owner notify", test: (s) => /isBooked && !engageReschedule/.test(s) },
   { label: "isBookingConfirmed / isRescheduling split", test: (s) => s.includes("isBookingConfirmed") && s.includes("isRescheduling") },
 

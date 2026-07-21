@@ -752,6 +752,69 @@ export async function slotConflictRecoveryMessage(lang: "es" | "en"): Promise<st
   }
 }
 
+// ─── Client booking snapshot (upcoming vs past) ───────────────────────────
+// The booking_confirmed flag on the conversation is a one-way latch, but a
+// visit is a moment in time: once the booked date is behind us, the client is
+// a normal person with a flooring need again. Before this, a client whose
+// visit happened (or was missed) WEEKS ago still hit the silent post-booking
+// path forever — new quote requests, callback requests, FAQ taps, and ad
+// re-taps all died unanswered (4 real clients found in the 2026-07-21 review,
+// one silent for 26 days). The webhooks use this snapshot to (a) keep the
+// silence only while a visit is actually upcoming, and (b) answer "are you
+// coming at 3?" style questions with the real booked date/time.
+export type ClientBookingSnapshot = {
+  upcoming: { date: string; time: string } | null; // earliest visit today or later
+  lastPast: { date: string; time: string } | null; // most recent visit already behind us
+};
+
+export async function getClientBookingSnapshot(igsid: string): Promise<ClientBookingSnapshot | null> {
+  try {
+    const db = await getAuthenticatedClient();
+    const { data, error } = await db
+      .from("bookings")
+      .select("booking_date, booking_time")
+      .like("email", `ia-${igsid}@%`)
+      .order("booking_date", { ascending: false })
+      .limit(25);
+    if (error) {
+      console.error("getClientBookingSnapshot error:", error.message);
+      return null; // caller keeps the legacy behavior on lookup failure
+    }
+    const today = easternTodayStr();
+    let upcoming: ClientBookingSnapshot["upcoming"] = null;
+    let lastPast: ClientBookingSnapshot["lastPast"] = null;
+    for (const b of data ?? []) {
+      if (!b.booking_date) continue;
+      if (b.booking_date >= today) {
+        // rows come newest-first, so the LAST >= today row is the earliest upcoming
+        upcoming = { date: b.booking_date, time: b.booking_time ?? "" };
+      } else if (!lastPast) {
+        lastPast = { date: b.booking_date, time: b.booking_time ?? "" };
+      }
+    }
+    return { upcoming, lastPast };
+  } catch (err) {
+    console.error("getClientBookingSnapshot exception:", err);
+    return null;
+  }
+}
+
+const MONTH_NAMES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+// Deterministic answer for a booked client asking about their OWN visit
+// ("Are you coming at 3?", "Which day, Tuesday?"). No model involved, so it can
+// never hallucinate a date: it restates the scheduler's real booking and opens
+// the reschedule door. Two short sentences, no dashes, no emojis (owner rules).
+export function visitDetailsMessage(lang: "es" | "en", dateStr: string, timeStr: string): string {
+  const { weekday, month, day } = ymd(dateStr);
+  const time = /^\d{1,2}:\d{2}$/.test((timeStr || "").trim()) ? fmt12(timeStr.trim()) : (timeStr || "").trim();
+  const atTime = time ? (lang === "es" ? ` a las ${time}` : ` at ${time}`) : "";
+  if (lang === "es") {
+    return `Tu visita está confirmada para el ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${atTime}. Ozzi te avisa unos 40 minutos antes de llegar, y si necesitas mover la visita solo dime el nuevo día y hora.`;
+  }
+  return `Your visit is confirmed for ${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}${atTime}. Ozzi will message you about 40 minutes before arriving, and if you need to move the visit just tell me the new day and time.`;
+}
+
 // ─── Language detection + localized booking messages ──────────────────────
 // Lightweight heuristic: decide whether the conversation is in Spanish or
 // English so confirmation/recovery messages match the client's language.

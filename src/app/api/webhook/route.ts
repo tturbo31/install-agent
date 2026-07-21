@@ -26,12 +26,15 @@ import {
   classifyAdCreativeType,
   isConsecutiveDuplicate,
   adRetapNudge,
+  unansweredUserBurst,
+  isVisitDetailQuestion,
+  pastVisitSystemNote,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -619,13 +622,36 @@ async function handleWebhook(body: WebhookPayload) {
       return;
     }
 
-    // Returning client who already booked or was already served (visit done),
-    // even if booked outside the bot — hand to the team, never re-engage.
+    // Returning client who booked outside the bot (in person, manually): treat
+    // as booked ONLY while a visit is actually upcoming. A client whose visit
+    // is already behind us is a normal lead again — the old "never re-engage"
+    // latch silenced quote requests and callbacks for WEEKS (2026-07-21 review).
     if (!wasNewConv && !(conversation as Record<string, unknown>).booking_confirmed) {
-      const served = await hasExistingBooking(senderIgsid).catch(() => false);
-      if (served) {
+      const served = await getClientBookingSnapshot(senderIgsid);
+      if (served?.upcoming) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversation.id);
         (conversation as Record<string, unknown>).booking_confirmed = true;
+      }
+    }
+
+    // ── Stale booked flag: booking_confirmed only means "stay out of the way"
+    //    while the visit is UPCOMING. Once the scheduler shows no future visit,
+    //    reset the flag and let the client flow normally (with a PAST VISIT note
+    //    so the model doesn't cold-pitch). Scheduler unreachable → keep legacy
+    //    booked behavior (fail safe, never fail chatty). ──
+    let isBooked = !!(conversation as Record<string, unknown>).booking_confirmed;
+    let bookedVisit: { date: string; time: string } | null = null;
+    let pastVisitNote: string | null = null;
+    if (isBooked) {
+      const snap = await getClientBookingSnapshot(senderIgsid);
+      if (snap && !snap.upcoming) {
+        console.log("[IG] booked flag is stale (no upcoming visit) — re-engaging as a normal client");
+        await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: false }).eq("id", conversation.id);
+        (conversation as Record<string, unknown>).booking_confirmed = false;
+        isBooked = false;
+        pastVisitNote = pastVisitSystemNote(snap.lastPast);
+      } else if (snap?.upcoming) {
+        bookedVisit = snap.upcoming;
       }
     }
 
@@ -635,8 +661,23 @@ async function handleWebhook(body: WebhookPayload) {
     //    the follow-up that just names the new day ("Friday at 3pm") won't match,
     //    so we also keep engaging while a reschedule is already in progress (the
     //    last assistant message offered slots). ──
-    const isBooked = !!(conversation as Record<string, unknown>).booking_confirmed;
     let engageReschedule = isBooked && isRescheduleRequest(rawText);
+    // Burst-aware: the 10s debounce means only the LAST bubble is judged, but
+    // the reschedule intent may live in an earlier bubble of the same burst
+    // ("I can't tomorrow / Can you make possible for tomorrow / 11 is perfect /
+    // Done" — only "Done" reached this check and the client was silenced,
+    // 2026-07-20). Judge the whole un-answered burst.
+    let gateBurst = "";
+    if (isBooked && !engageReschedule) {
+      const { data: burstMsgs } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content")
+        .eq("conversation_id", conversation.id)
+        .order("created_at", { ascending: false })
+        .limit(10);
+      gateBurst = unansweredUserBurst((burstMsgs ?? []).reverse());
+      if (gateBurst && isRescheduleRequest(gateBurst)) engageReschedule = true;
+    }
     if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
       const { data: lastAsst } = await supabaseAdmin
         .from("instagram_messages")
@@ -647,6 +688,48 @@ async function handleWebhook(body: WebhookPayload) {
         .limit(1)
         .maybeSingle();
       if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── Booked client asking about their OWN visit ("Are you coming at 3?",
+    //    "Which day, Tuesday?") → deterministic answer with the real booked
+    //    date/time. No model call, so it can never invent a date; the owner is
+    //    still notified. Before this, these questions died in the silent path
+    //    and one client waited home on the wrong day (2026-07-20). ──
+    if (isBooked && !engageReschedule && bookedVisit && (isVisitDetailQuestion(rawText) || isVisitDetailQuestion(gateBurst))) {
+      const details = visitDetailsMessage(detectLang(`${rawText} ${gateBurst}`), bookedVisit.date, bookedVisit.time);
+      const { data: lastBotForDup } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!(lastBotForDup?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForDup.content }], details))) {
+        await sendInstagramMessage(senderIgsid, details);
+        await supabaseAdmin.from("instagram_messages").insert({
+          conversation_id: conversation.id,
+          role: "assistant",
+          content: details,
+        });
+      }
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Instagram",
+          clientName: conversation.username ?? null,
+          clientId: senderIgsid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("Visit-details notify error:", err);
+      }
+      return;
     }
 
     // ── If already booked (and NOT rescheduling) → notify owner silently, no message ──
@@ -923,6 +1006,9 @@ async function handleWebhook(body: WebhookPayload) {
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
+      if (pastVisitNote) {
+        systemParts.push(pastVisitNote);
       }
       if (isRescheduling) {
         // CANCEL intent gets its own framing: routing "I need to cancel" into a

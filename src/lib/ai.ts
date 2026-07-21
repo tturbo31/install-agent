@@ -632,10 +632,24 @@ export function stripLargeLeadPrices(text: string): string {
     // comma-clauses that carry the big total and keep the rest. Split on
     // comma+SPACE only: the thousands separator inside "$9,170" has no space
     // after it and must never be treated as a clause boundary.
-    const clauses = s.split(/,\s+/).filter((cl) => cl.includes("[") || !BIG_DOLLAR.test(cl));
+    const rawClauses = s.split(/,\s+/);
+    const clauses: string[] = [];
+    let droppedLeadClause = false;
+    for (const cl of rawClauses) {
+      if (cl.includes("[") || !BIG_DOLLAR.test(cl)) clauses.push(cl);
+      else if (clauses.length === 0) droppedLeadClause = true;
+    }
     // A lone leading-connector leftover ("so", "and") is a dangling lead-in
     // to the removed total, not a real clause — drop it.
     const cleaned = clauses.filter((cl, i) => !(clauses.length === 1 && i === 0 && LEADING_CONNECTOR.test(cl.trim())));
+    // The LEADING clause carried the price and was removed: the survivor now
+    // starts mid-sentence ("and the exact price always depends…" shipped to a
+    // real client, 2026-07-21, Otto). Strip the orphaned connector and
+    // re-capitalize so the seam reads like a normal sentence.
+    if (droppedLeadClause && cleaned.length > 0) {
+      const healed = cleaned[0].trim().replace(LEADING_CONNECTOR, "").replace(/^[\s,]+/, "");
+      if (healed) cleaned[0] = healed.charAt(0).toUpperCase() + healed.slice(1);
+    }
     const rebuiltSentence = cleaned.join(", ").trim().replace(/[,\s]+$/, "");
     if (rebuiltSentence) kept.push(/[.!?]$/.test(rebuiltSentence) ? rebuiltSentence : rebuiltSentence + ".");
   }
@@ -905,12 +919,79 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
   /\b(?:do\s+)?(?:you|u)\s+(?:still\s+)?have\b[^.!?\n]{0,50}\b(?:slot|opening|spot|time)\b/i,
   /\b(?:slot|spot|opening|time\s*slot|hora|horario|hor[áa]rio|cita|turno)\b[^.!?\n]{0,30}\b(?:available|open|free|libre|disponible|dispon[ií]vel)\b/i,
   /\b(?:available|disponible|dispon[ií]vel|libre)\b[^.!?\n]{0,30}\b(?:slot|spot|opening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|ma[ñn]ana|amanh[ãa]|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i,
+  // "I can't tomorrow" / "can't Tuesday" with no verb at all is still a booked
+  // client saying the visit day no longer works (2026-07-20, YunioC: the burst
+  // "I can't tomorrow / Can you make possible for tomorrow in the morning / 11 is
+  // perfect / Done" got TOTAL SILENCE — no pattern matched any single bubble).
+  /\b(?:can'?t|cannot|can\s+not)\b[^.!?\n]{0,25}\b(?:tomorrow|today|tonight|that\s+day|this\s+time|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+  // "Can you make (it) possible for tomorrow in the morning" — a reschedule ask
+  // phrased without move/change verbs (same 2026-07-20 silence).
+  /\bmake\s+(?:it\s+)?possible\b[^.!?\n]{0,40}\b(?:tomorrow|today|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
 ];
 
 export function isRescheduleRequest(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   return RESCHEDULE_PATTERNS.some((p) => p.test(t));
+}
+
+// Joined client text of the trailing user bubbles since the last assistant
+// reply. The 10s debounce means only the LAST bubble's handler acts, so any
+// intent spread across a rapid burst is invisible to single-bubble checks
+// (2026-07-20, YunioC: "I can't tomorrow" + "Can you make possible for tomorrow
+// in the morning" + "11 is perfect" + "Done" — only "Done" was judged, and a
+// booked client's reschedule request was silenced). Gate decisions on booked
+// conversations must judge THIS text, not just the final bubble.
+export function unansweredUserBurst(history: Array<{ role: string; content: string }>): string {
+  const parts: string[] = [];
+  for (let i = (history ?? []).length - 1; i >= 0; i--) {
+    if (history[i].role === "assistant") break;
+    if (history[i].role !== "user") continue;
+    const t = (history[i].content || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+    if (t) parts.unshift(t);
+  }
+  return parts.join("\n");
+}
+
+// A BOOKED client asking about their own scheduled visit ("Are you coming at
+// 3?", "Which day, Tuesday?", "What time will you arrive?"). These used to fall
+// into the silent post-booking path (2026-07-20, YunioC waited at home on the
+// wrong day; 2026-07-10, a client asked "Which day, Tuesday" right after the
+// confirmation and never got an answer). Only consulted when booking_confirmed
+// is true AND an upcoming visit exists, so mild over-matching is low risk: the
+// worst case is a correct restatement of the client's own appointment.
+const VISIT_DETAIL_PATTERNS: RegExp[] = [
+  /\b(?:are\s+)?(?:you|u)\s+(?:still\s+)?coming\b/i,
+  /\b(?:are\s+)?we\s+still\s+on\b/i,
+  /\bstill\s+(?:on|good|coming)\s+for\b/i,
+  /\b(?:what|which)\s+day\b/i,
+  /\bwhat\s+time\b/i,
+  /\bwhen\s+(?:is|are|will|do)\b[^.!?\n]{0,30}\b(?:visit|appointment|arrive|arriving|come|coming|you)\b/i,
+  /\bconfirm\b[^.!?\n]{0,30}\b(?:visit|appointment|time|day|date)\b/i,
+  // Spanish
+  /\ba\s+qu[eé]\s+hora\b/i,
+  /\b(?:vienes|vendr[aá]s?|llegas|llegar[aá]s?)\b/i,
+  /\bsigue\s+en\s+pie\b/i,
+  /\bcu[aá]ndo\s+(?:es|vienen?|llegan?|ser[ií]a)\b/i,
+  /\bqu[eé]\s+d[ií]a\b/i,
+  // Portuguese
+  /\bque\s+horas\b/i,
+  /\bqual\s+dia\b/i,
+  /\bquando\s+(?:[eé]|vem|chega)\b/i,
+];
+
+export function isVisitDetailQuestion(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  return VISIT_DETAIL_PATTERNS.some((p) => p.test(t));
+}
+
+// System note injected when a stale booked flag was just reset: the client HAD
+// a visit, it is behind us, and they are talking to us again. The model must
+// answer like a returning-client conversation, not a cold sales opener.
+export function pastVisitSystemNote(lastPast: { date: string; time: string } | null): string {
+  const when = lastPast?.date ? ` (their visit was on ${lastPast.date})` : "";
+  return `[PAST VISIT: This client already had an in-person visit with us${when} and that date is behind us. Do NOT restart the cold sales pitch or re-introduce the company. Answer their message directly. If it concerns their existing quote, price, project status, or anything only Ozzi can resolve, say Ozzi will follow up personally and add [NOTIFY_OWNER]. If they want NEW work or a new visit, follow the normal flow.]`;
 }
 
 // Cancel INTENT specifically (a subset of the reschedule family). Used by the

@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, hasExistingBooking, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -488,14 +488,38 @@ async function handleWaMessage(body: Record<string, unknown>) {
       return;
     }
 
-    // Returning client who already booked or was already served (visit done) —
-    // even if the booking was made outside the bot. Hand them to the team, never
-    // re-engage. Only checked for existing conversations to avoid slowing new leads.
+    // Returning client who booked outside the bot (in person, manually): treat
+    // as booked ONLY while a visit is actually upcoming. A client whose visit
+    // is already behind us is a normal lead again — the old "never re-engage"
+    // latch silenced quote requests and callbacks for WEEKS (2026-07-21 review).
+    // Only checked for existing conversations to avoid slowing new leads.
     if (!wasNewConv && !(conv as Record<string, unknown>).booking_confirmed) {
-      const served = await hasExistingBooking(waIgsid).catch(() => false);
-      if (served) {
+      const served = await getClientBookingSnapshot(waIgsid);
+      if (served?.upcoming) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conv.id);
         (conv as Record<string, unknown>).booking_confirmed = true;
+      }
+    }
+
+    // ── Stale booked flag: booking_confirmed only means "stay out of the way"
+    //    while the visit is UPCOMING. Once the scheduler shows no future visit,
+    //    reset the flag and let the client flow normally (with a PAST VISIT note
+    //    so the model doesn't cold-pitch). Scheduler unreachable → keep legacy
+    //    booked behavior (fail safe, never fail chatty). The quote-followup
+    //    intercept below still runs first for cadence clients (marker-based). ──
+    let isBooked = !!(conv as Record<string, unknown>).booking_confirmed;
+    let bookedVisit: { date: string; time: string } | null = null;
+    let pastVisitNote: string | null = null;
+    if (isBooked) {
+      const snap = await getClientBookingSnapshot(waIgsid);
+      if (snap && !snap.upcoming) {
+        console.log("[WA] booked flag is stale (no upcoming visit) — re-engaging as a normal client");
+        await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: false }).eq("id", conv.id);
+        (conv as Record<string, unknown>).booking_confirmed = false;
+        isBooked = false;
+        pastVisitNote = pastVisitSystemNote(snap.lastPast);
+      } else if (snap?.upcoming) {
+        bookedVisit = snap.upcoming;
       }
     }
 
@@ -503,8 +527,21 @@ async function handleWaMessage(body: Record<string, unknown>) {
     //    engage after a booking. Keep engaging while a reschedule is in progress
     //    (last assistant message offered slots), so the follow-up that just names
     //    the new day is still routed through the reschedule flow. ──
-    const isBooked = !!(conv as Record<string, unknown>).booking_confirmed;
     let engageReschedule = isBooked && isRescheduleRequest(rawText);
+    // Burst-aware: the 10s debounce means only the LAST bubble is judged, but
+    // the reschedule intent may live in an earlier bubble of the same burst
+    // (real IG silence 2026-07-20). Judge the whole un-answered burst.
+    let gateBurst = "";
+    if (isBooked && !engageReschedule) {
+      const { data: burstMsgs } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: false })
+        .limit(10);
+      gateBurst = unansweredUserBurst((burstMsgs ?? []).reverse());
+      if (gateBurst && isRescheduleRequest(gateBurst)) engageReschedule = true;
+    }
     if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
       const { data: lastAsst } = await supabaseAdmin
         .from("instagram_messages")
@@ -576,6 +613,47 @@ async function handleWaMessage(body: Record<string, unknown>) {
       } catch (err) {
         console.error("WA quote-reply error (seguindo o fluxo normal):", err);
       }
+    }
+
+    // ── Booked client asking about their OWN visit ("Are you coming at 3?",
+    //    "Which day, Tuesday?") → deterministic answer with the real booked
+    //    date/time. No model call, so it can never invent a date; the owner is
+    //    still notified. ──
+    if (isBooked && !engageReschedule && bookedVisit && (isVisitDetailQuestion(rawText) || isVisitDetailQuestion(gateBurst))) {
+      const details = visitDetailsMessage(detectLang(`${rawText} ${gateBurst}`), bookedVisit.date, bookedVisit.time);
+      const { data: lastBotForDup } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!(lastBotForDup?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForDup.content }], details))) {
+        await sendWhatsAppMessage(phone, details);
+        await supabaseAdmin.from("instagram_messages").insert({
+          conversation_id: conv.id,
+          role: "assistant",
+          content: details,
+        });
+      }
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "WhatsApp",
+          clientName: conv.username ?? null,
+          clientId: phone,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("WA visit-details notify error:", err);
+      }
+      return;
     }
 
     // If already booked (and NOT rescheduling) → notify owner silently, no message
@@ -782,6 +860,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
       if (isOwnerHandled) {
         systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+      }
+      if (pastVisitNote) {
+        systemParts.push(pastVisitNote);
       }
       if (isRescheduling) {
         // CANCEL intent gets its own framing: routing "I need to cancel" into a
