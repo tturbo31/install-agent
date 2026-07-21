@@ -662,6 +662,36 @@ export function isConsecutiveDuplicate(history: ChatMessage[], candidate: string
   return c.length >= 15 && norm(lastAssistant.content) === c;
 }
 
+// ─── Ad re-tap nudge ────────────────────────────────────────────────────────
+// A client who taps our ad AGAIN sends another contentless "[Client replied to
+// our ad]" event. The model regenerates the type-ask opener almost verbatim,
+// the duplicate guard above suppresses it, and the client gets dead air (three
+// real IG leads went silent this way, 2026-07-18/21). When the suppressed turn
+// is exactly this case — the client has NEVER typed real text, only ad
+// placeholders — send this differently-worded nudge instead of nothing. Sent
+// at most once per conversation: on later re-taps the model's opener is no
+// longer adjacent-duplicate (the nudge sits between), so it goes out normally.
+const AD_PLACEHOLDER_RE = /^\[Client (?:replied to|shared a post\/reel from) our ad[^\]]*\]$/i;
+const AD_RETAP_NUDGE_EN =
+  "Hi again! Just reply with the word tile, vinyl, or hardwood and I'll send you the current promotion for it. I'm here whenever you're ready.";
+const AD_RETAP_NUDGE_ES =
+  "Hola de nuevo! Solo respondeme con la palabra tile, vinyl o hardwood y te mando la promocion actual de ese piso. Aqui estoy cuando gustes.";
+export function adRetapNudge(history: ChatMessage[]): string | null {
+  const users = history.filter((m) => m.role === "user");
+  if (users.length < 2) return null;
+  // Only when the client never typed anything themselves — with real text in
+  // play the model's answer matters and silence-vs-nudge is not our call here.
+  if (!users.every((m) => AD_PLACEHOLDER_RE.test(m.content.trim()))) return null;
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return null;
+  const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n)\b/i.test(lastAssistant.content);
+  const nudge = isEs ? AD_RETAP_NUDGE_ES : AD_RETAP_NUDGE_EN;
+  // Once is enough — never build a nudge loop.
+  const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  if (history.some((m) => m.role === "assistant" && norm(m.content) === norm(nudge))) return null;
+  return nudge;
+}
+
 // Backstop for the [REACT_ONLY] behavior: detect when the client's latest
 // message is purely a thank-you / farewell / "I'll reach out later" with NO new
 // question or request. Conservative on purpose — bare "ok"/"sure" are left to

@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -935,6 +935,16 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // loop). The client already has this answer directly above — stay silent.
     // Booking turns are exempt: a [BOOK:] confirmation must always go out.
     if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
+      // Exception: a client who re-tapped our ad without ever typing text is a
+      // returning LEAD, not a re-tapped FAQ — dead air here killed real leads.
+      // Send a differently-worded nudge once instead of staying silent.
+      const nudge = adRetapNudge(messagesForAI);
+      if (nudge) {
+        console.log("[FB] ad re-tap after opener — sending varied nudge instead of silence");
+        await sendFacebookMessage(psid, nudge);
+        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: nudge });
+        return;
+      }
       console.log("[FB] reply identical to previous bot message — staying silent (no robotic repeat)");
       return;
     }

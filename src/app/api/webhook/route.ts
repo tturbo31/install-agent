@@ -25,6 +25,7 @@ import {
   adFlooringTypeNote,
   classifyAdCreativeType,
   isConsecutiveDuplicate,
+  adRetapNudge,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
@@ -1215,6 +1216,20 @@ async function handleWebhook(body: WebhookPayload) {
     // loop). The client already has this answer directly above — stay silent.
     // Booking turns are exempt: a [BOOK:] confirmation must always go out.
     if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
+      // Exception: a client who re-tapped our ad without ever typing text is a
+      // returning LEAD, not a re-tapped FAQ — dead air here killed real leads.
+      // Send a differently-worded nudge once instead of staying silent.
+      const nudge = adRetapNudge(messagesForAI);
+      if (nudge) {
+        console.log("[IG] ad re-tap after opener — sending varied nudge instead of silence");
+        await sendInstagramMessage(senderIgsid, nudge);
+        await supabaseAdmin.from("instagram_messages").insert({
+          conversation_id: conversation.id,
+          role: "assistant",
+          content: nudge,
+        });
+        return;
+      }
       console.log("[IG] reply identical to previous bot message — staying silent (no robotic repeat)");
       return;
     }
