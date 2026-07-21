@@ -79,16 +79,27 @@ async function main() {
     { role: "assistant", content: OPENER_EN },
     { role: "user", content: PH },
   ]) !== null);
+  // O bug que o replay em produção pegou (21/07): o webhook anexa
+  // "\n\n[SYSTEM: ...]" à última msg do cliente ANTES do check — o regex
+  // ancorado nunca casava e o nudge jamais saía. O sufixo tem que ser tolerado.
+  ck("placeholder com sufixo [SYSTEM: ...] do webhook ainda casa", adRetapNudge([
+    { role: "user", content: PH },
+    { role: "assistant", content: OPENER_EN },
+    { role: "user", content: `${PH}\n\n[SYSTEM: TODAY: Tuesday, July 21, 2026.\n\n${"You are replying inside an ad conversation."}]` },
+  ]) !== null);
 
-  // Fiação: os dois webhooks Meta usam o nudge DENTRO do branch da guarda.
+  // Fiação: nos dois webhooks Meta o nudge decide ANTES da chamada de IA —
+  // depois dela existem DOIS caminhos de silêncio ([REACT_ONLY] e a guarda de
+  // duplicata) e o replay em produção provou que o modelo usa os dois.
   console.log("\n[A2] Fiação nos webhooks");
   for (const [tag, rel] of [["IG", "src/app/api/webhook/route.ts"], ["FB", "src/app/api/fb-webhook/route.ts"]] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
-    const guardIdx = src.indexOf("isConsecutiveDuplicate(messagesForAI, finalResponse)");
-    ck(`${tag}: guarda de duplicata existe`, guardIdx > 0);
-    const trecho = src.slice(guardIdx, guardIdx + 900);
-    ck(`${tag}: nudge dentro do branch da guarda (antes do return silencioso)`, /adRetapNudge\(messagesForAI\)/.test(trecho));
-    ck(`${tag}: nudge é enviado E gravado no histórico`, /content: nudge/.test(trecho));
+    const nudgeIdx = src.indexOf("adRetapNudge(messagesForAI)");
+    const aiIdx = src.indexOf("await getAIResponse(");
+    ck(`${tag}: nudge determinístico existe`, nudgeIdx > 0);
+    ck(`${tag}: nudge decide ANTES da chamada de IA`, nudgeIdx > 0 && aiIdx > 0 && nudgeIdx < aiIdx);
+    const trecho = src.slice(nudgeIdx, nudgeIdx + 700);
+    ck(`${tag}: nudge é enviado E gravado no histórico`, /content: retapNudge/.test(trecho));
   }
 
   // ── B. quote-reply: pedido de reenvio devolve o total na hora ──────────────

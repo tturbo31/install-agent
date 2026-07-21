@@ -664,13 +664,14 @@ export function isConsecutiveDuplicate(history: ChatMessage[], candidate: string
 
 // ─── Ad re-tap nudge ────────────────────────────────────────────────────────
 // A client who taps our ad AGAIN sends another contentless "[Client replied to
-// our ad]" event. The model regenerates the type-ask opener almost verbatim,
-// the duplicate guard above suppresses it, and the client gets dead air (three
-// real IG leads went silent this way, 2026-07-18/21). When the suppressed turn
-// is exactly this case — the client has NEVER typed real text, only ad
-// placeholders — send this differently-worded nudge instead of nothing. Sent
-// at most once per conversation: on later re-taps the model's opener is no
-// longer adjacent-duplicate (the nudge sits between), so it goes out normally.
+// our ad]" event. The model then either regenerates the type-ask opener almost
+// verbatim (suppressed by the duplicate guard) or answers [REACT_ONLY] — both
+// dead air for a returning lead (three real IG leads went silent this way,
+// 2026-07-18/21). When the whole client side of the history is ad placeholders
+// — the client has NEVER typed real text — the webhooks skip the model and send
+// this differently-worded nudge deterministically, at most once per
+// conversation. The webhook appends "\n\n[SYSTEM: ...]" context to the latest
+// user message BEFORE this check runs, so the suffix is stripped per message.
 const AD_PLACEHOLDER_RE = /^\[Client (?:replied to|shared a post\/reel from) our ad[^\]]*\]$/i;
 const AD_RETAP_NUDGE_EN =
   "Hi again! Just reply with the word tile, vinyl, or hardwood and I'll send you the current promotion for it. I'm here whenever you're ready.";
@@ -681,7 +682,8 @@ export function adRetapNudge(history: ChatMessage[]): string | null {
   if (users.length < 2) return null;
   // Only when the client never typed anything themselves — with real text in
   // play the model's answer matters and silence-vs-nudge is not our call here.
-  if (!users.every((m) => AD_PLACEHOLDER_RE.test(m.content.trim()))) return null;
+  const clientPart = (s: string) => s.split("\n\n[SYSTEM:")[0].trim();
+  if (!users.every((m) => AD_PLACEHOLDER_RE.test(clientPart(m.content)))) return null;
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
   if (!lastAssistant) return null;
   const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n)\b/i.test(lastAssistant.content);
