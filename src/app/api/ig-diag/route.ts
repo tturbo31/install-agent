@@ -144,11 +144,20 @@ export async function GET(req: NextRequest) {
         results.push({ igsid: c.igsid, name: c.username ?? c.name, skipped: "already rescued" });
         continue;
       }
-      if (dry) {
-        results.push({ igsid: c.igsid, name: c.username ?? c.name, wouldResend: String(last.content).slice(0, 120) });
+      // O conteúdo armazenado carrega marcadores internos (ex.: a nudge de
+      // follow-up termina em "\n\n[SYSTEM: FOLLOWUP_NUDGE]" para dedup). O
+      // cliente recebe SÓ o texto — no primeiro resgate real (2026-07-22) o
+      // marcador foi junto e apareceu na DM do cliente.
+      const clientText = String(last.content).split(/\n\n?\[SYSTEM:/)[0].trim();
+      if (!clientText) {
+        results.push({ igsid: c.igsid, name: c.username ?? c.name, skipped: "marker-only content" });
         continue;
       }
-      const sent = await sendInstagramMessage(c.igsid, String(last.content));
+      if (dry) {
+        results.push({ igsid: c.igsid, name: c.username ?? c.name, wouldResend: clientText.slice(0, 120) });
+        continue;
+      }
+      const sent = await sendInstagramMessage(c.igsid, clientText);
       if (sent.ok) {
         await supabaseAdmin.from("platform_settings").insert({ platform: marker, paused: false });
       }

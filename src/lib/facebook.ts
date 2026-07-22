@@ -1,4 +1,5 @@
 import { reportSendFailure } from "@/lib/delivery";
+import { stripInternalMarkers } from "@/lib/outbound-text";
 
 const FB_API = "https://graph.facebook.com/v24.0";
 
@@ -13,6 +14,8 @@ export type FbSendResult = { ok: boolean; error?: string };
 // definitive one, and return a result so callers stop recording undelivered
 // replies as sent.
 export async function sendFacebookMessage(psid: string, text: string): Promise<FbSendResult> {
+  text = stripInternalMarkers(text);
+  if (!text) return { ok: false, error: "empty text after marker strip" };
   let lastErr = "not attempted";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {

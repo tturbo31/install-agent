@@ -1,3 +1,5 @@
+import { stripInternalMarkers } from "@/lib/outbound-text";
+
 const ZAPI_BASE = "https://api.z-api.io";
 
 const OWNER_PHONES = ["15616748334", "556294554477"];
@@ -23,6 +25,8 @@ export type WaSendResult = { ok: boolean; status: number; error?: string };
 //  • return a {ok,status,error} result so the caller can react,
 //  • log LOUDLY with the Z-API error body so the cause is diagnosable.
 export async function sendWhatsAppMessage(phone: string, text: string): Promise<WaSendResult> {
+  text = stripInternalMarkers(text);
+  if (!text) return { ok: false, status: 0, error: "empty text after marker strip" };
   const url = `${ZAPI_BASE}/instances/${getInstanceId()}/token/${getToken()}/send-text`;
   let last: WaSendResult = { ok: false, status: 0, error: "not attempted" };
   for (let attempt = 1; attempt <= 2; attempt++) {

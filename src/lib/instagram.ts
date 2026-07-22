@@ -2,6 +2,7 @@ import { InstagramProfile } from "@/lib/types";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getInstagramToken } from "@/lib/ig-token";
 import { reportSendFailure } from "@/lib/delivery";
+import { stripInternalMarkers } from "@/lib/outbound-text";
 
 export async function fetchInstagramProfile(igsid: string): Promise<InstagramProfile> {
   const url = new URL(`https://graph.instagram.com/v24.0/${igsid}`);
@@ -44,6 +45,8 @@ export async function sendInstagramMessage(
   recipientIgsid: string,
   text: string
 ): Promise<IgSendResult> {
+  text = stripInternalMarkers(text);
+  if (!text) return { ok: false, via: "none", error: "empty text after marker strip" };
   const payload = JSON.stringify({ recipient: { id: recipientIgsid }, message: { text } });
   let lastErr = "not attempted";
 
