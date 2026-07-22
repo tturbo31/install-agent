@@ -144,6 +144,10 @@ for (const [name, file] of [
   ck(`${name}: burst-aware ANTES do silêncio`, iBurst > -1 && iBurst < iSilent);
   ck(`${name}: resposta de detalhes da visita ANTES do silêncio`, iVisitQ > -1 && iVisitQ < iSilent);
   ck(`${name}: served-check só marca booked com visita FUTURA`, /served\?\.upcoming/.test(src));
+  // Rosy (2026-07-21): 15 balões sem resposta encheram a janela de histórico,
+  // o opener enlatado achou que era primeiro contato e atropelou a pergunta
+  // sobre a cotação. A janela precisa reter a última resposta do bot.
+  ck(`${name}: janela de histórico retém a última resposta do bot`, src.includes("Keep at least the latest assistant reply in context") && /history\.unshift\(lastAsstMsg\)/.test(src));
 }
 
 // ── 8. isPureClosing sanity (gate ainda silencia fechamentos) ───────────────

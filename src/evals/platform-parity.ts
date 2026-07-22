@@ -63,6 +63,7 @@ const SHARED: Check[] = [
   { label: "isBookingConfirmed / isRescheduling split", test: (s) => s.includes("isBookingConfirmed") && s.includes("isRescheduling") },
 
   // Context injected into the brain
+  { label: "History window keeps last assistant reply (anti fake-first-contact)", test: (s) => s.includes("Keep at least the latest assistant reply in context") && /history\.unshift\(lastAsstMsg\)/.test(s) },
   { label: "Eastern date context", test: (s) => s.includes("getEasternDateContext") },
   { label: "Language detection", test: (s) => s.includes("detectLang") },
   { label: "Real-time availability (only pre-booking)", test: (s) => s.includes("getRealAvailabilityContext") },

@@ -961,6 +961,24 @@ async function handleWebhook(body: WebhookPayload) {
 
     const history = (historyRaw ?? []).reverse();
 
+    // The 15-message window can be ALL client bubbles when a conversation
+    // accumulated many un-answered messages (the pre-fix booked-silence). Every
+    // guard that anchors on "the last assistant message" (first-contact opener,
+    // duplicate-send, closing-burst walk-back) then sees a fake first contact —
+    // a real client asking about her quote got the canned opener this way
+    // (Rosy, 2026-07-21). Keep at least the latest assistant reply in context.
+    if (history.length > 0 && !history.some((m) => m.role === "assistant")) {
+      const { data: lastAsstMsg } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (lastAsstMsg) history.unshift(lastAsstMsg);
+    }
+
     // ── Determine booking status — DB flag only (history fallback removed:
     //    it kept triggering after cancellations because "Appointment confirmed"
     //    remains in history even after booking_confirmed is reset to false) ──
