@@ -27,17 +27,25 @@ export async function POST(
 
   const { igsid } = conversation;
 
-  // Route to the correct platform based on igsid prefix
+  // Route to the correct platform based on igsid prefix. A failed send returns
+  // 500 and stores NOTHING — the panel must never show a reply the client
+  // didn't receive (that lie hid the 2026-07-22 IG token outage for 19h).
   if (igsid.startsWith("wa_")) {
     const waId = igsid.slice(3);
-    await sendWhatsAppMessage(waId, body.text);
+    const waResult = await sendWhatsAppMessage(waId, body.text);
+    if (!waResult.ok) {
+      return NextResponse.json({ error: `WhatsApp send failed: ${waResult.error ?? waResult.status}` }, { status: 500 });
+    }
   } else if (igsid.startsWith("fb_")) {
     const psid = igsid.slice(3);
-    await sendFacebookMessage(psid, body.text);
+    const fbResult = await sendFacebookMessage(psid, body.text);
+    if (!fbResult.ok) {
+      return NextResponse.json({ error: `Messenger send failed: ${fbResult.error ?? "unknown"}` }, { status: 500 });
+    }
   } else {
     const igResult = await sendInstagramMessage(igsid, body.text);
-    if (igResult.error) {
-      return NextResponse.json({ error: igResult.error.message }, { status: 500 });
+    if (!igResult.ok) {
+      return NextResponse.json({ error: `Instagram send failed: ${igResult.error ?? "unknown"}` }, { status: 500 });
     }
   }
 

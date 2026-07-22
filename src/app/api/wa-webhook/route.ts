@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
+import { alertPausedBacklog, reportSendFailure } from "@/lib/delivery";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -457,7 +458,32 @@ async function handleWaMessage(body: Record<string, unknown>) {
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
     }
 
-    if (conv.mode === "human") return;
+    if (conv.mode === "human") {
+      // Paused conversation black hole: ping the owner (throttled) if the
+      // client keeps writing with nobody answering for over an hour.
+      const pausedText = rawText;
+      waitUntil(
+        (async () => {
+          const { data: lastBot } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("created_at")
+            .eq("conversation_id", conv.id)
+            .eq("role", "assistant")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          await alertPausedBacklog({
+            conversationId: conv.id,
+            channel: "whatsapp",
+            clientName: conv.name ?? conv.username ?? null,
+            clientId: conv.igsid,
+            lastHumanReplyAt: lastBot?.created_at ?? null,
+            clientText: pausedText,
+          });
+        })().catch((e) => console.error("[WA] paused-backlog alert error:", e))
+      );
+      return;
+    }
 
     // Debounce
     await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
@@ -630,8 +656,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
         .limit(1)
         .maybeSingle();
       if (!(lastBotForDup?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForDup.content }], details))) {
-        await sendWhatsAppMessage(phone, details);
-        await supabaseAdmin.from("instagram_messages").insert({
+        const detailsSent = await sendWhatsAppMessage(phone, details);
+        if (!detailsSent.ok) await reportSendFailure("whatsapp", phone, detailsSent.error ?? "unknown");
+        else await supabaseAdmin.from("instagram_messages").insert({
           conversation_id: conv.id,
           role: "assistant",
           content: details,
@@ -742,8 +769,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
         console.log("[WA] no-content fallback identical to last reply — staying silent (no robotic repeat)");
         return;
       }
-      await sendWhatsAppMessage(phone, fallback);
-      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+      const noContentSent = await sendWhatsAppMessage(phone, fallback);
+      if (!noContentSent.ok) await reportSendFailure("whatsapp", phone, noContentSent.error ?? "unknown");
+      else await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
       return;
     }
 
@@ -1005,8 +1033,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
           return;
         }
         try {
-          await sendWhatsAppMessage(phone, fallback);
-          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+          const outageSent = await sendWhatsAppMessage(phone, fallback);
+          if (!outageSent.ok) await reportSendFailure("whatsapp", phone, outageSent.error ?? "unknown");
+          else await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
         } catch (sendErr) {
           console.error("[WA] Fallback send failed:", sendErr);
         }
@@ -1146,7 +1175,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
       return;
     }
 
-    await sendWhatsAppMessage(phone, finalResponse);
+    // A failed send aborts the turn BEFORE the reply is stored — recording an
+    // undelivered reply hides the outage and suppresses the re-send (see the
+    // 2026-07-22 IG token incident). reportSendFailure alerts the owner.
+    const mainSent = await sendWhatsAppMessage(phone, finalResponse);
+    if (!mainSent.ok) {
+      await reportSendFailure("whatsapp", phone, mainSent.error ?? "unknown");
+      console.error("[WA] final send FAILED — reply NOT stored, client did not receive it");
+      return;
+    }
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
 
     // Update memory in background

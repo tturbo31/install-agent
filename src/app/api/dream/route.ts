@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDreaming, getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
+import { refreshInstagramTokenIfDue } from "@/lib/ig-token";
 
 // Nightly analysis fans out across dozens of conversations plus two Claude
 // calls — give it room so the cron never silently times out mid-run.
@@ -31,6 +32,15 @@ export async function GET(req: NextRequest) {
   }
 
   if (req.nextUrl.searchParams.get("run") === "1") {
+    // Keep the IG token eternally fresh (piggybacked on this cron — the Hobby
+    // plan caps us at 2 cron jobs). Refreshing daily means the 60-day expiry
+    // never arrives; letting it expire is what silenced IG on 2026-07-21.
+    try {
+      const tok = await refreshInstagramTokenIfDue();
+      if (tok.attempted) console.log("[DREAM] IG token refresh:", tok.detail);
+    } catch (e) {
+      console.error("[DREAM] IG token refresh error:", e);
+    }
     console.log("Dreaming started (cron GET) at", new Date().toISOString());
     try {
       const result = await runDreaming();

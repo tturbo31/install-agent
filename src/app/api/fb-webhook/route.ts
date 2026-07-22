@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
+import { alertPausedBacklog } from "@/lib/delivery";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -439,7 +440,32 @@ async function handleFbMessage(body: Record<string, unknown>) {
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
     }
 
-    if (conv.mode === "human") return;
+    if (conv.mode === "human") {
+      // Paused conversation black hole: ping the owner (throttled) if the
+      // client keeps writing with nobody answering for over an hour.
+      const pausedText = rawText;
+      waitUntil(
+        (async () => {
+          const { data: lastBot } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("created_at")
+            .eq("conversation_id", conv.id)
+            .eq("role", "assistant")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          await alertPausedBacklog({
+            conversationId: conv.id,
+            channel: "facebook",
+            clientName: conv.name ?? conv.username ?? null,
+            clientId: conv.igsid,
+            lastHumanReplyAt: lastBot?.created_at ?? null,
+            clientText: pausedText,
+          });
+        })().catch((e) => console.error("[FB] paused-backlog alert error:", e))
+      );
+      return;
+    }
 
     // Debounce
     await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
@@ -549,12 +575,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
         .limit(1)
         .maybeSingle();
       if (!(lastBotForDup?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForDup.content }], details))) {
-        await sendFacebookMessage(psid, details);
-        await supabaseAdmin.from("instagram_messages").insert({
-          conversation_id: conv.id,
-          role: "assistant",
-          content: details,
-        });
+        const detailsSent = await sendFacebookMessage(psid, details);
+        if (detailsSent.ok) {
+          await supabaseAdmin.from("instagram_messages").insert({
+            conversation_id: conv.id,
+            role: "assistant",
+            content: details,
+          });
+        }
       }
       try {
         const { data: recentMsgs } = await supabaseAdmin
@@ -666,8 +694,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
         console.log("[FB] no-content fallback identical to last reply — staying silent (no robotic repeat)");
         return;
       }
-      await sendFacebookMessage(psid, fallback);
-      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+      const noContentSent = await sendFacebookMessage(psid, fallback);
+      if (noContentSent.ok) {
+        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+      }
       return;
     }
 
@@ -861,8 +891,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const retapNudge = adRetapNudge(messagesForAI);
     if (retapNudge) {
       console.log("[FB] ad re-tap after opener — sending varied nudge instead of silence");
-      await sendFacebookMessage(psid, retapNudge);
-      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: retapNudge });
+      const nudgeSent = await sendFacebookMessage(psid, retapNudge);
+      if (nudgeSent.ok) {
+        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: retapNudge });
+      }
       return;
     }
 
@@ -909,8 +941,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
           return;
         }
         try {
-          await sendFacebookMessage(psid, fallback);
-          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+          const outageSent = await sendFacebookMessage(psid, fallback);
+          if (outageSent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+          }
         } catch (sendErr) {
           console.error("[FB] Fallback send failed:", sendErr);
         }
@@ -1049,7 +1083,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
       return;
     }
 
-    await sendFacebookMessage(psid, finalResponse);
+    // A failed send aborts the turn BEFORE the reply is stored — recording an
+    // undelivered reply hides the outage and suppresses the re-send (see the
+    // 2026-07-22 IG token incident). Owner already alerted inside the send.
+    const mainSent = await sendFacebookMessage(psid, finalResponse);
+    if (!mainSent.ok) {
+      console.error("[FB] final send FAILED — reply NOT stored, client did not receive it");
+      return;
+    }
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
 
     // Update memory in background

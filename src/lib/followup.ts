@@ -336,9 +336,11 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
         const r = await sendWhatsAppMessage(conv.igsid.slice(3), text);
         if (!r.ok) { result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: r.error }); continue; }
       } else if (channel === "facebook") {
-        await sendFacebookMessage(conv.igsid.slice(3), text);
+        const r = await sendFacebookMessage(conv.igsid.slice(3), text);
+        if (!r.ok) { result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: r.error }); continue; }
       } else {
-        await sendInstagramMessage(conv.igsid, text);
+        const r = await sendInstagramMessage(conv.igsid, text);
+        if (!r.ok) { result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: r.error }); continue; }
       }
       // Record it exactly like the webhooks do, so the panel shows it and the
       // FOLLOWUP_MARKER dedup can never let a second nudge through. O sufixo

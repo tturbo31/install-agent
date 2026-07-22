@@ -1,24 +1,46 @@
+import { reportSendFailure } from "@/lib/delivery";
+
 const FB_API = "https://graph.facebook.com/v24.0";
 
 function getToken(): string {
   return process.env.FACEBOOK_PAGE_TOKEN!;
 }
 
-// Send a text message via Facebook Messenger
-export async function sendFacebookMessage(psid: string, text: string): Promise<void> {
-  const res = await fetch(`${FB_API}/me/messages?access_token=${getToken()}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: psid },
-      message: { text },
-      messaging_type: "RESPONSE",
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    console.error("sendFacebookMessage error:", JSON.stringify(err));
+export type FbSendResult = { ok: boolean; error?: string };
+
+// Send a text message via Facebook Messenger. VERIFIED (2026-07-22, same
+// hardening as IG/WA): retry once on a transient failure, alert the owner on a
+// definitive one, and return a result so callers stop recording undelivered
+// replies as sent.
+export async function sendFacebookMessage(psid: string, text: string): Promise<FbSendResult> {
+  let lastErr = "not attempted";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(`${FB_API}/me/messages?access_token=${getToken()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipient: { id: psid },
+          message: { text },
+          messaging_type: "RESPONSE",
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        message_id?: string;
+        error?: { message?: string; code?: number };
+      };
+      if (!body.error && (body.message_id || res.ok)) return { ok: true };
+      lastErr = `${body.error?.code ?? res.status}: ${body.error?.message ?? "unknown"}`;
+      console.error(`🚨 sendFacebookMessage FAILED (attempt ${attempt}/2) psid=${psid} ${lastErr}`);
+      if (body.error?.code === 190) break; // dead token won't heal on retry
+    } catch (err) {
+      lastErr = String(err).slice(0, 200);
+      console.error(`🚨 sendFacebookMessage EXCEPTION (attempt ${attempt}/2):`, err);
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1200));
   }
+  await reportSendFailure("facebook", psid, lastErr);
+  return { ok: false, error: lastErr };
 }
 
 // Get Facebook user profile (name + profile pic)

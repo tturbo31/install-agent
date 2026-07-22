@@ -44,6 +44,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
+import { alertPausedBacklog } from "@/lib/delivery";
 import { trackConversationMetrics } from "@/lib/metrics";
 
 export const maxDuration = 60;
@@ -586,7 +587,31 @@ async function handleWebhook(body: WebhookPayload) {
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
     }
 
-    if (conversation.mode === "human") return;
+    if (conversation.mode === "human") {
+      // Paused conversation is a black hole for the client: nobody replies and
+      // nobody is told. Ping the owner (throttled) if the backlog goes stale.
+      waitUntil(
+        (async () => {
+          const { data: lastBot } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("created_at")
+            .eq("conversation_id", conversation.id)
+            .eq("role", "assistant")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          await alertPausedBacklog({
+            conversationId: conversation.id,
+            channel: "instagram",
+            clientName: conversation.username ?? conversation.name ?? null,
+            clientId: senderIgsid,
+            lastHumanReplyAt: lastBot?.created_at ?? null,
+            clientText: rawText,
+          });
+        })().catch((e) => console.error("[IG] paused-backlog alert error:", e))
+      );
+      return;
+    }
 
     // ── Debounce: wait 10s, then check if we're still the latest message ──
     await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
@@ -706,12 +731,14 @@ async function handleWebhook(body: WebhookPayload) {
         .limit(1)
         .maybeSingle();
       if (!(lastBotForDup?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForDup.content }], details))) {
-        await sendInstagramMessage(senderIgsid, details);
-        await supabaseAdmin.from("instagram_messages").insert({
-          conversation_id: conversation.id,
-          role: "assistant",
-          content: details,
-        });
+        const detailsSent = await sendInstagramMessage(senderIgsid, details);
+        if (detailsSent.ok) {
+          await supabaseAdmin.from("instagram_messages").insert({
+            conversation_id: conversation.id,
+            role: "assistant",
+            content: details,
+          });
+        }
       }
       try {
         const { data: recentMsgs } = await supabaseAdmin
@@ -876,12 +903,14 @@ async function handleWebhook(body: WebhookPayload) {
         console.log("[IG] no-content fallback identical to last reply — staying silent (no robotic repeat)");
         return;
       }
-      await sendInstagramMessage(senderIgsid, finalResponse);
-      await supabaseAdmin.from("instagram_messages").insert({
-        conversation_id: conversation.id,
-        role: "assistant",
-        content: finalResponse,
-      });
+      const noContentSent = await sendInstagramMessage(senderIgsid, finalResponse);
+      if (noContentSent.ok) {
+        await supabaseAdmin.from("instagram_messages").insert({
+          conversation_id: conversation.id,
+          role: "assistant",
+          content: finalResponse,
+        });
+      }
       return;
     }
 
@@ -1119,12 +1148,14 @@ async function handleWebhook(body: WebhookPayload) {
     const retapNudge = adRetapNudge(messagesForAI);
     if (retapNudge) {
       console.log("[IG] ad re-tap after opener — sending varied nudge instead of silence");
-      await sendInstagramMessage(senderIgsid, retapNudge);
-      await supabaseAdmin.from("instagram_messages").insert({
-        conversation_id: conversation.id,
-        role: "assistant",
-        content: retapNudge,
-      });
+      const nudgeSent = await sendInstagramMessage(senderIgsid, retapNudge);
+      if (nudgeSent.ok) {
+        await supabaseAdmin.from("instagram_messages").insert({
+          conversation_id: conversation.id,
+          role: "assistant",
+          content: retapNudge,
+        });
+      }
       return;
     }
 
@@ -1178,12 +1209,14 @@ async function handleWebhook(body: WebhookPayload) {
           return;
         }
         try {
-          await sendInstagramMessage(senderIgsid, fallback);
-          await supabaseAdmin.from("instagram_messages").insert({
-            conversation_id: conversation.id,
-            role: "assistant",
-            content: fallback,
-          });
+          const outageSent = await sendInstagramMessage(senderIgsid, fallback);
+          if (outageSent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conversation.id,
+              role: "assistant",
+              content: fallback,
+            });
+          }
         } catch (sendErr) {
           console.error("[IG] Fallback send failed:", sendErr);
         }
@@ -1341,7 +1374,16 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     // ── Send response ────────────────────────────────────────────────────
-    await sendInstagramMessage(senderIgsid, finalResponse);
+    // A failed send aborts the turn BEFORE the reply is stored: recording an
+    // undelivered reply is what hid the 2026-07-22 token outage for 19 hours
+    // (dashboard showed "answered", client saw nothing, and the history-based
+    // guards then suppressed the re-send). The owner was already alerted by
+    // reportSendFailure inside the send; the next inbound regenerates fresh.
+    const mainSent = await sendInstagramMessage(senderIgsid, finalResponse);
+    if (!mainSent.ok) {
+      console.error("[IG] final send FAILED — reply NOT stored, client did not receive it");
+      return;
+    }
 
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
       generateSpeech(finalResponse)

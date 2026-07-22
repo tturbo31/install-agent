@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runFollowupSweep } from "@/lib/followup";
 import { maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { refreshInstagramTokenIfDue } from "@/lib/ig-token";
 
 // One-shot follow-up sweep for hot leads that went quiet mid-scheduling.
 // Triggered by the daily Vercel Cron (see vercel.json) and manually:
@@ -26,6 +27,15 @@ export async function GET(req: NextRequest) {
 
   if (req.nextUrl.searchParams.get("run") !== "1") {
     return NextResponse.json({ ok: true, usage: "add &run=1 to sweep, &dry=1 to preview without sending" });
+  }
+
+  // Second daily shot at keeping the IG token fresh (see /api/dream — the
+  // Hobby plan caps us at 2 cron jobs, so both piggyback the refresh).
+  try {
+    const tok = await refreshInstagramTokenIfDue();
+    if (tok.attempted) console.log("[FOLLOWUP] IG token refresh:", tok.detail);
+  } catch (e) {
+    console.error("[FOLLOWUP] IG token refresh error:", e);
   }
 
   try {
