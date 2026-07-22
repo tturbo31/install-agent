@@ -3,7 +3,8 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog } from "@/lib/delivery";
+import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
+import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -1088,7 +1089,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // 2026-07-22 IG token incident). Owner already alerted inside the send.
     const mainSent = await sendFacebookMessage(psid, finalResponse);
     if (!mainSent.ok) {
-      console.error("[FB] final send FAILED — reply NOT stored, client did not receive it");
+      // Outbox: store marked as undelivered — retryFailedSends re-sends it for
+      // up to 48h (the 2026-07-22 14:38 UTC transient blip hit exactly here).
+      console.error("[FB] final send FAILED — queued with SEND_FAILED for auto-retry");
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
@@ -1128,5 +1136,8 @@ export async function POST(req: NextRequest) {
   const sender = ((messaging?.messaging as Record<string, unknown>[])?.[0]?.sender as Record<string, unknown>)?.id;
   console.log("[FB webhook] Processing message from:", sender);
   waitUntil(handleFbMessage(body));
+  // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
+  // whose delivery failed (self-throttled to 1 sweep / 10 min).
+  waitUntil(retryFailedSends());
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

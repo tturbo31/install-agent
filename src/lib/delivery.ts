@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 
 // ─── Delivery-failure visibility ────────────────────────────────────────────
 // The 2026-07-22 outage: the IG token died and the bot kept "replying" into
@@ -50,8 +51,16 @@ async function shouldAlert(kind: string, key: string, everyMs: number): Promise<
   }
 }
 
+// Graph errors that are about ONE recipient, not the channel: 551/24 account
+// unavailable/deleted, 10 outside the 24h window, 100 invalid/unknown user.
+// These must NOT fire the "channel down" siren (crying wolf kills the alarm's
+// credibility — 2026-07-22 14:38 incident review).
+const PER_RECIPIENT_CODES = new Set([551, 24, 10, 100]);
+
 // A send to a client failed after retries. Log loudly + alert the owner on
 // WhatsApp (the channel that still works) at most once per hour per channel.
+// Channel-wide failures (token, permissions, rate limit) get the loud siren;
+// single-recipient failures get a calm note.
 export async function reportSendFailure(
   channel: "instagram" | "facebook" | "whatsapp",
   clientId: string,
@@ -60,18 +69,30 @@ export async function reportSendFailure(
   console.error(`🚨 [DELIVERY] ${channel} send FAILED for ${clientId}: ${errorMsg}`);
   if (!(await shouldAlert("sendfail", channel, ALERT_EVERY_MS))) return;
   const label = CHANNEL_LABEL[channel] ?? channel;
-  const msg = [
-    `🚨 OzziFloors - ENTREGA FALHANDO no ${label}!`,
-    ``,
-    `As respostas do bot NAO estao chegando aos clientes neste canal.`,
-    `Erro: ${errorMsg.slice(0, 250)}`,
-    `Exemplo de cliente afetado: ${clientId}`,
-    ``,
-    channel === "instagram"
-      ? `Se o erro fala em token/sessao expirada: gere um token novo no Meta e envie para /api/ig-diag?settoken=... (nao precisa de deploy).`
-      : `Verifique a conexao do canal no painel.`,
-    `Ate resolver, responda os clientes manualmente pelo app.`,
-  ].join("\n");
+  const code = Number((errorMsg.match(/^(\d+):/) ?? [])[1] ?? NaN);
+  const msg = PER_RECIPIENT_CODES.has(code)
+    ? [
+        `⚠️ OzziFloors - 1 cliente inalcancavel no ${label}`,
+        ``,
+        `Nao consegui entregar a resposta para: ${clientId}`,
+        `Erro: ${errorMsg.slice(0, 250)}`,
+        ``,
+        `Provavel conta desativada, bloqueio ou janela de 24h vencida. O canal esta funcionando normalmente para os outros clientes.`,
+        `Vou tentar de novo automaticamente por 48h; se nao der, responda pelo app.`,
+      ].join("\n")
+    : [
+        `🚨 OzziFloors - ENTREGA FALHANDO no ${label}!`,
+        ``,
+        `As respostas do bot NAO estao chegando aos clientes neste canal.`,
+        `Erro: ${errorMsg.slice(0, 250)}`,
+        `Exemplo de cliente afetado: ${clientId}`,
+        ``,
+        channel === "instagram"
+          ? `Se o erro fala em token/sessao expirada: gere um token novo no Meta e envie para /api/ig-diag?settoken=... (nao precisa de deploy).`
+          : `Verifique a conexao do canal no painel.`,
+        `O sistema vai reentregar sozinho as respostas que falharem assim que o canal voltar (retry automatico por 48h).`,
+        `Ate resolver, responda os clientes manualmente pelo app.`,
+      ].join("\n");
   await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
 }
 
@@ -108,5 +129,70 @@ export async function alertPausedBacklog(params: {
     await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
   } catch (err) {
     console.error("[DELIVERY] paused-backlog alert failed:", err);
+  }
+}
+
+const RETRY_SWEEP_GAP_MS = 10 * 60 * 1000; // sweep at most every 10 min
+const RETRY_WINDOW_H = 48; // give up after 48h (reply is stale by then)
+const RETRY_BATCH = 10;
+
+// ─── Auto-retry outbox ──────────────────────────────────────────────────────
+// A reply whose send failed definitively is stored with SEND_FAILED_DB_SUFFIX
+// (see webhooks). This sweep — piggybacked on webhook traffic and both daily
+// crons — re-sends those replies until they deliver or expire. The 2026-07-22
+// 14:38 case (transient Graph blip on Messenger) needed a manual rescue; with
+// this, the same failure self-heals in ≤10 minutes.
+export async function retryFailedSends(): Promise<void> {
+  try {
+    const since = new Date(Date.now() - RETRY_WINDOW_H * 3_600_000).toISOString();
+    const { data: pending } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("id, conversation_id, content, created_at")
+      .like("content", "%[SYSTEM: SEND_FAILED]%")
+      .gte("created_at", since)
+      .order("created_at", { ascending: true })
+      .limit(RETRY_BATCH);
+    if (!pending?.length) return;
+    // Throttle only when there IS work (an empty sweep must not burn the slot).
+    if (!(await shouldAlert("sendretry", "sweep", RETRY_SWEEP_GAP_MS))) return;
+
+    const { sendInstagramMessage } = await import("@/lib/instagram");
+    const { sendFacebookMessage } = await import("@/lib/facebook");
+
+    for (const m of pending) {
+      const { data: conv } = await supabaseAdmin
+        .from("instagram_conversations")
+        .select("igsid, mode")
+        .eq("id", m.conversation_id)
+        .single();
+      if (!conv) continue;
+      const text = String(m.content).replace(/\n{0,2}\[SYSTEM: ?SEND_FAILED\]/g, "").trim();
+      // If the client wrote again after the failure, the normal flow answers
+      // with fresh context; if the owner took over, this reply is his call.
+      // Either way the undelivered row is only noise for the history guards.
+      const { data: newerUser } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("conversation_id", m.conversation_id)
+        .eq("role", "user")
+        .gt("created_at", m.created_at)
+        .limit(1);
+      if (!text || newerUser?.length || conv.mode === "human") {
+        await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
+        console.log(`[DELIVERY] retry ${conv.igsid}: dropped stale undelivered reply`);
+        continue;
+      }
+      let ok = false;
+      if (conv.igsid.startsWith("wa_")) ok = (await sendWhatsAppMessage(conv.igsid.slice(3), text)).ok;
+      else if (conv.igsid.startsWith("fb_")) ok = (await sendFacebookMessage(conv.igsid.slice(3), text)).ok;
+      else ok = (await sendInstagramMessage(conv.igsid, text)).ok;
+      if (ok) {
+        // Marker off → the panel shows a normal delivered reply.
+        await supabaseAdmin.from("instagram_messages").update({ content: text }).eq("id", m.id);
+      }
+      console.log(`[DELIVERY] retry ${conv.igsid}: ${ok ? "DELIVERED" : "still failing"}`);
+    }
+  } catch (err) {
+    console.error("[DELIVERY] retry sweep error:", err);
   }
 }

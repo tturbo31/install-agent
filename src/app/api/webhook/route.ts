@@ -44,7 +44,8 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog } from "@/lib/delivery";
+import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
+import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
 
 export const maxDuration = 60;
@@ -1381,7 +1382,15 @@ async function handleWebhook(body: WebhookPayload) {
     // reportSendFailure inside the send; the next inbound regenerates fresh.
     const mainSent = await sendInstagramMessage(senderIgsid, finalResponse);
     if (!mainSent.ok) {
-      console.error("[IG] final send FAILED — reply NOT stored, client did not receive it");
+      // Outbox: store marked as undelivered — retryFailedSends re-sends it for
+      // up to 48h (a transient Graph blip on 2026-07-22 14:38 UTC left a client
+      // mute until manual rescue; this closes that hole).
+      console.error("[IG] final send FAILED — queued with SEND_FAILED for auto-retry");
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1438,5 +1447,8 @@ export async function POST(req: NextRequest) {
 
   console.log("[IG webhook] Processing message from:", messaging.sender?.id);
   waitUntil(handleWebhook(body));
+  // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
+  // whose delivery failed (self-throttled to 1 sweep / 10 min).
+  waitUntil(retryFailedSends());
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

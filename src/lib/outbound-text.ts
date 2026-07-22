@@ -11,6 +11,12 @@
 // marcador no MEIO do texto, e cortar dali em diante engoliria o resto do alerta.
 export function stripInternalMarkers(text: string): string {
   return (text || "")
-    .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*)\]/g, "")
+    .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*|SEND_FAILED)\]/g, "")
     .trim();
 }
+
+// Sufixo gravado quando o envio FALHOU em definitivo (incidente FB 2026-07-22
+// 14:38 UTC: blip transitório do Graph sobreviveu às 2 tentativas e o cliente
+// ficou mudo até resgate manual). A resposta fica no banco marcada como
+// não-entregue e retryFailedSends (delivery.ts) reenvia sozinho por até 48h.
+export const SEND_FAILED_DB_SUFFIX = "\n\n[SYSTEM: SEND_FAILED]";

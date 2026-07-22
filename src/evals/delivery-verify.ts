@@ -94,6 +94,27 @@ function main() {
   const fup = read("src/lib/followup.ts");
   ck("follow-up sweep checks FB + IG send results", /sendFacebookMessage\(conv\.igsid\.slice\(3\), text\);\s*if \(!r\.ok\)/.test(fup) && /sendInstagramMessage\(conv\.igsid, text\);\s*if \(!r\.ok\)/.test(fup));
 
+  // ── 6. Auto-retry outbox (2026-07-22 14:38 UTC transient Messenger blip) ──
+  console.log("\n[6] auto-retry outbox for failed sends");
+  const obt = read("src/lib/outbound-text.ts");
+  ck("SEND_FAILED marker is stripped from ANY outbound text", /SEND_FAILED/.test(obt) && /\|SEND_FAILED\)/.test(obt));
+  ck("SEND_FAILED_DB_SUFFIX exported", /export const SEND_FAILED_DB_SUFFIX = "\\n\\n\[SYSTEM: SEND_FAILED\]"/.test(obt));
+  ck("retry sweep exists with 10-min throttle + 48h window", /retryFailedSends/.test(del) && /RETRY_SWEEP_GAP_MS = 10 \* 60 \* 1000/.test(del) && /RETRY_WINDOW_H = 48/.test(del));
+  ck("retry drops the queued reply when client wrote again / owner took over", /newerUser\?\.length \|\| conv\.mode === "human"/.test(del));
+  ck("retry clears the marker only after a confirmed delivery", /if \(ok\) \{[\s\S]*?update\(\{ content: text \}\)/.test(del));
+  ck("per-recipient errors get calm alert, not the channel siren", /PER_RECIPIENT_CODES/.test(del) && /inalcancavel/.test(del));
+  for (const [label, rel] of [
+    ["Instagram", "src/app/api/webhook/route.ts"],
+    ["Facebook", "src/app/api/fb-webhook/route.ts"],
+    ["WhatsApp", "src/app/api/wa-webhook/route.ts"],
+  ] as const) {
+    const src = read(rel);
+    ck(`${label}: failed main send queued with SEND_FAILED_DB_SUFFIX`, /content: finalResponse \+ SEND_FAILED_DB_SUFFIX/.test(src), rel);
+    ck(`${label}: webhook POST triggers the retry sweep`, /waitUntil\(retryFailedSends\(\)\)/.test(src), rel);
+  }
+  ck("dream cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/dream/route.ts")));
+  ck("followup cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/followup/route.ts")));
+
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail > 0) {
     console.log("FAILED:", fails.join(" | "));

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog, reportSendFailure } from "@/lib/delivery";
+import { alertPausedBacklog, reportSendFailure, retryFailedSends } from "@/lib/delivery";
+import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -1181,7 +1182,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const mainSent = await sendWhatsAppMessage(phone, finalResponse);
     if (!mainSent.ok) {
       await reportSendFailure("whatsapp", phone, mainSent.error ?? "unknown");
-      console.error("[WA] final send FAILED — reply NOT stored, client did not receive it");
+      // Outbox: store marked as undelivered — retryFailedSends re-sends it for
+      // up to 48h (the 2026-07-22 14:38 UTC transient blip on Messenger showed
+      // a double-attempt failure still needs a later retry).
+      console.error("[WA] final send FAILED — queued with SEND_FAILED for auto-retry");
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
     await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
@@ -1227,6 +1236,9 @@ export async function POST(req: NextRequest) {
   }
 
   waitUntil(handleWaMessage(body));
+  // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
+  // whose delivery failed (self-throttled to 1 sweep / 10 min).
+  waitUntil(retryFailedSends());
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }
 

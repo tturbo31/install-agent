@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runFollowupSweep } from "@/lib/followup";
 import { maybeRunFunilSilenceCheck } from "@/lib/funil";
 import { refreshInstagramTokenIfDue } from "@/lib/ig-token";
+import { retryFailedSends } from "@/lib/delivery";
 
 // One-shot follow-up sweep for hot leads that went quiet mid-scheduling.
 // Triggered by the daily Vercel Cron (see vercel.json) and manually:
@@ -37,6 +38,10 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     console.error("[FOLLOWUP] IG token refresh error:", e);
   }
+
+  // Outbox: re-send replies whose delivery failed (second daily guaranteed
+  // sweep; webhook traffic covers the rest of the day). Never throws.
+  await retryFailedSends();
 
   try {
     const dry = req.nextUrl.searchParams.get("dry") === "1";
