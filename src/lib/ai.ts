@@ -1221,6 +1221,19 @@ export async function getAIResponse(
           // type-ask opener (which never answered the question) and was
           // wrongly silenced (2026-07-08, Nardine). Without timestamps we
           // never suppress — answering twice beats ignoring a client.
+          // NOT a pure double-tap when the un-answered burst carries ANY
+          // other real bubble: the 10s debounce folds rapid messages into
+          // this turn, and "Can you schedule to see my house" + re-tapped
+          // FAQ arrived together — the intercept silenced BOTH and a hot
+          // scheduling request got dead air (2026-07-23, Romulla). The
+          // model must answer the full burst.
+          const burstHasNewContent = messages
+            .slice(i + 1, messages.length - 1)
+            .some((m) => m.role === "user" && normRepeat(m.content) && normRepeat(m.content) !== lastText);
+          if (burstHasNewContent) {
+            console.log("[AI] double-tap folded into a burst with new content — answering the full burst");
+            break;
+          }
           const prevAt = messages[i - 1].at ? Date.parse(messages[i - 1].at as string) : NaN;
           const nowAt = repeatCandidate.at ? Date.parse(repeatCandidate.at as string) : NaN;
           const gapMin = (nowAt - prevAt) / 60000;

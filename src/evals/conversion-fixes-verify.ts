@@ -239,6 +239,31 @@ async function repeatInterceptChecks() {
     "Re-sent ADDRESS is exempt from the intercept (booking payload)",
     containsBookingInfo("11725 sw 17 ct Miramar fl 33025"),
   );
+
+  // Double-tap folded into a burst that ALSO carries a scheduling request
+  // (the Romulla case, 2026-07-23): "Can you schedule to see my house" +
+  // re-tapped "What is the installation process?" landed 9s apart, the
+  // debounce merged them into one turn and the intercept silenced BOTH.
+  // The burst has new content → the model MUST answer (never [REACT_ONLY]).
+  const burstWithSchedule = await getAIResponse(
+    [
+      { role: "user", content: "What is the installation process?", at: "2026-07-23T19:22:10Z" },
+      { role: "assistant", content: "Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?", at: "2026-07-23T19:22:25Z" },
+      { role: "user", content: "Can you schedule to see my house", at: "2026-07-23T19:22:30Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-23T19:22:39Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Burst com pedido de agendamento + pergunta repetida → NUNCA muda (caso Romulla)",
+    burstWithSchedule.text !== "[REACT_ONLY]" && burstWithSchedule.text.trim().length > 30,
+    burstWithSchedule.text.slice(0, 100)
+  );
+  check(
+    "…e a resposta engaja o agendamento da visita",
+    /visit|schedule|come by|stop by|day|time|week/i.test(burstWithSchedule.text),
+    burstWithSchedule.text.slice(0, 100)
+  );
 }
 
 repeatInterceptChecks()
