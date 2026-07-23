@@ -101,7 +101,7 @@ function main() {
   ck("SEND_FAILED_DB_SUFFIX exported", /export const SEND_FAILED_DB_SUFFIX = "\\n\\n\[SYSTEM: SEND_FAILED\]"/.test(obt));
   ck("retry sweep exists with 10-min throttle + 48h window", /retryFailedSends/.test(del) && /RETRY_SWEEP_GAP_MS = 10 \* 60 \* 1000/.test(del) && /RETRY_WINDOW_H = 48/.test(del));
   ck("retry drops the queued reply when client wrote again / owner took over", /newerUser\?\.length \|\| conv\.mode === "human"/.test(del));
-  ck("retry clears the marker only after a confirmed delivery", /if \(ok\) \{[\s\S]*?update\(\{ content: text \}\)/.test(del));
+  ck("retry clears the marker only after a confirmed delivery", /if \(r\.ok\) \{[\s\S]*?update\(\{ content: text \}\)/.test(del));
   ck("per-recipient errors get calm alert, not the channel siren", /PER_RECIPIENT_CODES/.test(del) && /inalcancavel/.test(del));
   for (const [label, rel] of [
     ["Instagram", "src/app/api/webhook/route.ts"],
@@ -114,6 +114,10 @@ function main() {
   }
   ck("dream cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/dream/route.ts")));
   ck("followup cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/followup/route.ts")));
+  ck("retry gives up permanently on per-recipient errors (551 etc.)",
+    /PER_RECIPIENT_CODES\.has\(code\)[\s\S]{0,200}?delete\(\)/.test(del) && /giving up permanently/.test(del));
+  ck("repeated identical question never gets silence (rule 35)",
+    /REPEATED IDENTICAL QUESTION RULE/.test(read("src/lib/ai.ts")));
 
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail > 0) {

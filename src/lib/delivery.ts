@@ -182,15 +182,26 @@ export async function retryFailedSends(): Promise<void> {
         console.log(`[DELIVERY] retry ${conv.igsid}: dropped stale undelivered reply`);
         continue;
       }
-      let ok = false;
-      if (conv.igsid.startsWith("wa_")) ok = (await sendWhatsAppMessage(conv.igsid.slice(3), text)).ok;
-      else if (conv.igsid.startsWith("fb_")) ok = (await sendFacebookMessage(conv.igsid.slice(3), text)).ok;
-      else ok = (await sendInstagramMessage(conv.igsid, text)).ok;
-      if (ok) {
+      let r: { ok: boolean; error?: string };
+      if (conv.igsid.startsWith("wa_")) r = await sendWhatsAppMessage(conv.igsid.slice(3), text);
+      else if (conv.igsid.startsWith("fb_")) r = await sendFacebookMessage(conv.igsid.slice(3), text);
+      else r = await sendInstagramMessage(conv.igsid, text);
+      if (r.ok) {
         // Marker off → the panel shows a normal delivered reply.
         await supabaseAdmin.from("instagram_messages").update({ content: text }).eq("id", m.id);
+        console.log(`[DELIVERY] retry ${conv.igsid}: DELIVERED`);
+        continue;
       }
-      console.log(`[DELIVERY] retry ${conv.igsid}: ${ok ? "DELIVERED" : "still failing"}`);
+      // Per-recipient errors never heal (blocked/deactivated/window) — give up
+      // NOW instead of re-pinging the owner hourly for 48h (2026-07-23 review:
+      // two 551 "person isn't available" rows kept the calm alert firing).
+      const code = Number((String(r.error ?? "").match(/^(\d+):/) ?? [])[1] ?? NaN);
+      if (PER_RECIPIENT_CODES.has(code)) {
+        await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
+        console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${code}) — giving up permanently`);
+        continue;
+      }
+      console.log(`[DELIVERY] retry ${conv.igsid}: still failing (${r.error ?? "?"})`);
     }
   } catch (err) {
     console.error("[DELIVERY] retry sweep error:", err);
