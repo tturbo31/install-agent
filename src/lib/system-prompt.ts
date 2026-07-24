@@ -241,7 +241,7 @@ Tile or Porcelain install only: $4.50/sqft
 Carpet removal: $1/sqft (only if asked)
 Tile removal: $1.50/sqft (only if asked)
 Baseboards: material $1/linear ft, installation $3/linear ft (state them separately; discuss at visit or if client asks)
-Stairs: $140/step (only if asked, always "per step" never "per sqft")
+Stairs: $150/step (only if asked, always "per step" never "per sqft")
 Large job estimate: multiply sqft by $5, always say "approximate"
 Payment: credit cards, checks, cash, and financing through our partner (see FINANCING below).
 
