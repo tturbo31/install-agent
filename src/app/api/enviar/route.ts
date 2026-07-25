@@ -15,6 +15,7 @@ import {
   type QuoteFollowupInput,
 } from "@/lib/quote-followup";
 import { buildQuoteCtxMarker } from "@/lib/quote-reply";
+import { enviarEventoFunil } from "@/lib/plataforma";
 
 // ─── POST /api/enviar — outbound WhatsApp for the Ozzi Plataforma ────────────
 // The platform decides WHO and WHEN; this route decides HOW it is worded and
@@ -127,6 +128,50 @@ export async function POST(req: NextRequest) {
   if (!telefone) return erro(400, "telefone invalido: envie apenas digitos, com codigo do pais (8 a 15 digitos)");
 
   const dry = body.dry === true;
+
+  // ── Recusa de follow-up: a conversa manda ──────────────────────────────────
+  // O drip da plataforma não vê o histórico; NÓS vemos. Nunca empurrar mensagem
+  // pronta quando (a) o dono assumiu a conversa (mode=human) ou (b) a última
+  // palavra é do CLIENTE, recente e sem resposta — caso Grittel 2026-07-25: ela
+  // perguntou parcela/entrada, ficou 4 dias no vácuo e o D7 ainda ofereceu
+  // financiamento depois de ela dizer 2x que paga à vista. Nos dois casos a
+  // conversa está VIVA: avisa a plataforma para encerrar a cadência (o webhook
+  // followup_respondeu fecha as etapas pendentes) e devolve 200 enviado:false
+  // (a plataforma trata como recusa, não como falha — nunca re-tenta).
+  if (tipo === "followup" && !dry) {
+    try {
+      const { data: conv } = await supabaseAdmin
+        .from("instagram_conversations")
+        .select("id, mode")
+        .eq("igsid", `wa_${telefone}`)
+        .maybeSingle();
+      if (conv) {
+        const { data: ultima } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, created_at")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const clienteAguardando =
+          ultima?.role === "user" &&
+          Date.now() - Date.parse(ultima.created_at) < 7 * 24 * 3600 * 1000;
+        if (conv.mode === "human" || clienteAguardando) {
+          const motivo =
+            conv.mode === "human"
+              ? "conversa em atendimento humano"
+              : "cliente aguardando resposta na conversa";
+          console.log(`[ENVIAR] followup RECUSADO phone=${telefone} motivo=${motivo}`);
+          await enviarEventoFunil("followup_respondeu", { telefone });
+          return NextResponse.json({ ok: true, enviado: false, recusado: true, motivo });
+        }
+      }
+    } catch (err) {
+      // A checagem é um freio de cortesia — uma falha dela não pode derrubar o
+      // envio legítimo (a plataforma re-tentaria e dobraria a mensagem).
+      console.error("[ENVIAR] checagem de conversa falhou (seguindo com envio):", err);
+    }
+  }
 
   // ── Build the text ─────────────────────────────────────────────────────────
   // "exato" = mensagem_direta literal; os demais vêm do compositor e dizem à

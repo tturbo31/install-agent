@@ -460,6 +460,16 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     if (conv.mode === "human") {
+      // Cliente de FOLLOW-UP respondeu com a conversa em modo humano: a cadência
+      // da plataforma PRECISA parar mesmo assim — o encerramento não pode
+      // depender do bot estar ativo (caso Grittel 2026-07-25: mode=human desde
+      // o handoff, ela respondeu 3x e o drip continuou D3/D7).
+      waitUntil(
+        (async () => {
+          const quoteCtx = await findQuoteFollowupContext(conv.id);
+          if (quoteCtx) await enviarEventoFunil("followup_respondeu", { telefone: phone });
+        })().catch((e) => console.error("[WA] followup_respondeu (human mode) error:", e))
+      );
       // Paused conversation black hole: ping the owner (throttled) if the
       // client keeps writing with nobody answering for over an hour.
       const pausedText = rawText;
