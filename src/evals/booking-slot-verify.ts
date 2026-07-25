@@ -98,6 +98,18 @@ function main() {
     A("Great, Monday at 3pm then! What's the address?"),
     U("123 Main St"),
   ]) === true);
+  // Brian Guilford (2026-07-25): smart apostrophe (U+2019), en dash, and a bare
+  // "9:00" with NO am/pm — no time token matched, the [BOOK] was blocked, and
+  // the bot re-asked the day/time the client had already picked.
+  ck("bare '9:00' pick with smart punctuation (Guilford case)", clientConfirmedSlot([
+    A("Perfect, I have Tuesday the 28th at 9am or 1pm, which works better for you?"),
+    U("Let’s do 9:00–thank you"),
+    A("Perfect! What is the property address?"),
+    U("10611 Sw 124 Road Miami FL 33186"),
+  ]) === true);
+  ck("'Let’s do 9' picking an offered hour (no colon, no am/pm)", clientConfirmedSlot([
+    A("I have Tuesday at 9am or 1pm, which works better for you?"), U("Let’s do 9"),
+  ]) === true);
 
   // ── 3. NEGATIVE / SAFETY: never confirm off contact info alone ───────────────
   console.log("\n[3] Address/phone/vague replies are never a slot pick");
@@ -118,6 +130,9 @@ function main() {
   ]) === false);
   ck("'we can do an appointment' without a time → NOT confirmed", clientConfirmedSlot([
     A("I have today at 11am or tomorrow at 9am, which works?"), U("we can do an appointment but I'm not ready yet"),
+  ]) === false);
+  ck("'let's do 2 rooms' (number is not an offered hour) → NOT confirmed", clientConfirmedSlot([
+    A("I have Monday at 9am or 1pm, which works?"), U("let’s do 2 rooms"),
   ]) === false);
   ck("no offer + no client day/time at all → NOT confirmed", clientConfirmedSlot([
     A("Our promo is $5 per sqft. One area or the whole house?"), U("whole house"), U("123 Main St"),

@@ -488,14 +488,25 @@ export function reconcileBookingWeekday(
 // on the table. Address and phone are NOT slot selections. When no such signal
 // exists, the booking is blocked and the client is asked to pick a day/time.
 const CLOCK_TIME_TOKEN = /\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi;
-const SLOT_TIME_REF = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\ba\s+las?\s+\d{1,2}\b|\b[àa]s\s+\d{1,2}\b|\b\d{1,2}\s*(?:h|hs|hrs|horas?|o'?clock)\b|\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i;
+// A bare "9:00" (colon + minutes, NO am/pm) IS a slot pick: "Let’s do
+// 9:00–thank you" after a "9am or 1pm" offer carried no recognized time token,
+// so the [BOOK] was blocked and the bot re-asked a day/time the client had
+// already chosen (Brian Guilford, 2026-07-25). The colon requirement keeps
+// street numbers ("11 NW 9th St") from ever counting as a time.
+const SLOT_TIME_REF = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\ba\s+las?\s+\d{1,2}\b|\b[àa]s\s+\d{1,2}\b|\b\d{1,2}\s*(?:h|hs|hrs|horas?|o'?clock)\b|\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i;
+// "Let's do 9" — a bare colon-less hour counts as a pick ONLY when it matches
+// an hour the bot actually offered, so "let's do 2 rooms" can never confirm.
+const LETS_DO_HOUR = /\blet'?s\s+do\s+(?:it\s+at\s+)?(\d{1,2})(?::\d{2})?\b/i;
 const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])\b/i;
 const SLOT_ORDINAL = /\b(?:the\s+)?(?:first|second|1st|2nd)\b|\b(?:el\s+|la\s+)?(?:primer[oa]?|segund[oa]?)\b|\bese\s+(?:horario|d[ií]a)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/i;
 const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfeito|claro|dale|vale|de acuerdo|works|sounds good|let'?s do it|hag[aá]moslo|me funciona|funciona|pode ser|combinado|est[aá]\s+bien|est[áa]\s+perfecto)\b/i;
 
 export function clientConfirmedSlot(history: Array<{ role: string; content: string }>): boolean {
   const msgs = history ?? [];
-  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
+  // Smart-quote normalization mirrors normalizeSmartPunct in ai.ts: phone
+  // keyboards send U+2019 ("Let’s"), which silently breaks every `'?` regex
+  // below (the Guilford case). Kept local so this file stays SDK-free.
+  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
 
   // Every bot message that carries clock time(s). The FIRST one opens the
   // pick window. IMPORTANT: we must NOT anchor on the LAST such message — after
@@ -512,11 +523,19 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
 
   // 1. The client themselves named a TIME (or a day / an ordinal pick) at any
   //    point from the first offer on → that is a real slot signal.
+  const offeredHours = new Set<number>();
+  for (const i of offerIdxs) {
+    for (const t of strip(msgs[i].content).matchAll(CLOCK_TIME_TOKEN)) {
+      offeredHours.add(parseInt(t[1], 10) % 12);
+    }
+  }
   const from = firstOffer >= 0 ? firstOffer + 1 : 0;
   for (let i = from; i < msgs.length; i++) {
     if (msgs[i].role !== "user") continue;
     const t = strip(msgs[i].content);
     if (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_ORDINAL.test(t)) return true;
+    const bareHour = t.match(LETS_DO_HOUR);
+    if (bareHour && offeredHours.has(parseInt(bareHour[1], 10) % 12)) return true;
   }
 
   // 2. Exactly ONE slot on the table + a plain affirmative right after that

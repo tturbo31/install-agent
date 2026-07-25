@@ -708,6 +708,17 @@ export function adRetapNudge(history: ChatMessage[]): string | null {
   return nudge;
 }
 
+// Phone keyboards send smart punctuation: U+2019 for the apostrophe ("Let’s")
+// instead of the ASCII "'" every guard regex here is written with. "Let’s do
+// 9:00–thank you" failed `let'?s\s+do` ONLY because of the curly quote, carried
+// no other recognized substance, matched "thank you" — and the client's slot
+// pick was silenced as a pure closing (Brian Guilford, 2026-07-25). Every guard
+// that can SILENCE a client or gate a booking must normalize before matching.
+const SMART_APOSTROPHE_RE = /[‘’ʼ´]/g;
+export function normalizeSmartPunct(s: string): string {
+  return (s || "").replace(SMART_APOSTROPHE_RE, "'");
+}
+
 // Backstop for the [REACT_ONLY] behavior: detect when the client's latest
 // message is purely a thank-you / farewell / "I'll reach out later" with NO new
 // question or request. Conservative on purpose — bare "ok"/"sure" are left to
@@ -882,11 +893,13 @@ export function isFlooringInquiry(text: string): boolean {
 // because "gracias" matched and no substance token did (2026-07-17 review,
 // fb_26322579897413190 — the Saturday visit was booked but the client was never
 // told, and the Tuesday pick got no reply). A closing that names a day or a
-// clock time is an ANSWER, never a goodbye.
-const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta|\d{1,2}(?::\d{2})?\s*(?:am|pm)|a\s+las?\s+\d{1,2})\b/i;
+// clock time is an ANSWER, never a goodbye. A bare "9:00" (colon, NO am/pm) is
+// also a clock time — "Let’s do 9:00–thank you" was silenced because the am/pm
+// token missed it (Brian Guilford, 2026-07-25).
+const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|a\s+las?\s+\d{1,2})\b/i;
 
 export function hasSubstantiveContent(text: string): boolean {
-  return SUBSTANTIVE_CONTENT.test(text || "");
+  return SUBSTANTIVE_CONTENT.test(normalizeSmartPunct(text));
 }
 
 // Detects when an ALREADY-BOOKED client wants to move their appointment to a
@@ -930,7 +943,7 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
 ];
 
 export function isRescheduleRequest(text: string): boolean {
-  const t = (text || "").trim();
+  const t = normalizeSmartPunct(text).trim();
   if (!t) return false;
   return RESCHEDULE_PATTERNS.some((p) => p.test(t));
 }
@@ -981,7 +994,7 @@ const VISIT_DETAIL_PATTERNS: RegExp[] = [
 ];
 
 export function isVisitDetailQuestion(text: string): boolean {
-  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  const t = normalizeSmartPunct(text).split(/\n\n?\[SYSTEM:/)[0].trim();
   if (!t) return false;
   return VISIT_DETAIL_PATTERNS.some((p) => p.test(t));
 }
@@ -1001,7 +1014,7 @@ export function pastVisitSystemNote(lastPast: { date: string; time: string } | n
 // never emit [CANCEL_BOOKING] (Priscilla, 2026-07-17 review).
 const CANCEL_INTENT = /\b(cancel(l?(ed|ing|ation))?|cancelar?|cancelo|cancelen?|desmarcar?|anular?)\b/i;
 export function isCancelRequest(text: string): boolean {
-  return CANCEL_INTENT.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
+  return CANCEL_INTENT.test(normalizeSmartPunct(text).split(/\n\n?\[SYSTEM:/)[0]);
 }
 
 // Detects someone looking for a JOB or offering their labor (installer, painter,
@@ -1054,7 +1067,7 @@ export function isJobSeeker(text: string): boolean {
 }
 
 export function isPureClosing(text: string): boolean {
-  const t = (text || "").trim();
+  const t = normalizeSmartPunct(text).trim();
   if (!t || t.length > 80) return false;
   if (QUESTION_SIGNALS.test(t)) return false;
   if (BOOKING_INFO_SIGNALS.test(t)) return false;
@@ -1077,7 +1090,7 @@ export function isPureClosingBurst(history: Array<{ role: string; content: strin
   if (!history || history.length === 0) return false;
   const last = history[history.length - 1];
   if (!last || last.role !== "user") return false;
-  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0];
+  const strip = (c: string) => normalizeSmartPunct(c).split(/\n\n?\[SYSTEM:/)[0];
   // The latest bubble must itself be a pure closing, or there is nothing to skip.
   if (!isPureClosing(strip(last.content))) return false;
   // Walk back across the un-answered burst (the user bubbles since the last

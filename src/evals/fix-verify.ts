@@ -126,6 +126,9 @@ async function main() {
   ck("NOT closing: 'thanks, the whole house'", !isPureClosing("thanks, the whole house"));
   ck("NOT closing: 'Thank you, kitchen and living room'", !isPureClosing("Thank you, kitchen and living room"));
   ck("NOT closing: 'thanks, vinyl please'", !isPureClosing("thanks, vinyl please"));
+  // Guilford (2026-07-25): smart apostrophe (U+2019) broke `let'?s do` and the
+  // bare "9:00" (no am/pm) carried no time token — a slot pick was silenced.
+  ck("NOT closing: 'Let’s do 9:00–thank you' (smart punctuation slot pick)", !isPureClosing("Let’s do 9:00–thank you"));
   // Genuine closings MUST still be detected (no over-correction).
   ck("STILL closing: 'Thank you so much!'", isPureClosing("Thank you so much!"));
   ck("STILL closing: 'ok thanks'", isPureClosing("ok thanks"));
