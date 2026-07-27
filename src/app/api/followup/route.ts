@@ -50,26 +50,6 @@ export async function GET(req: NextRequest) {
     // parou_de_responder por dia, mesmo num dia sem tráfego de webhook.
     // maybeRunFunilSilenceCheck nunca lança e respeita o throttle de 6h.
     if (!dry) await maybeRunFunilSilenceCheck();
-    // COBRANÇA DE DESFECHO (19h NY): pede à plataforma que mande ao dono a
-    // lista das visitas de hoje sem Realizada/Não veio. Fire-and-forget com
-    // timeout — a plataforma decide se há algo a enviar; falha nunca derruba
-    // a varredura (o sweep é o trabalho principal deste cron).
-    if (!dry && process.env.PLATAFORMA_WEBHOOK_TOKEN) {
-      try {
-        const base = (process.env.PLATAFORMA_URL || "https://ozzi-plataforma.vercel.app").replace(/\/$/, "");
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 20_000);
-        const r = await fetch(`${base}/api/followup/desfecho`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-webhook-token": process.env.PLATAFORMA_WEBHOOK_TOKEN },
-          body: "{}",
-          signal: ctrl.signal,
-        }).finally(() => clearTimeout(timer));
-        console.log("[FOLLOWUP] cobrança de desfecho:", r.status, (await r.text().catch(() => "")).slice(0, 200));
-      } catch (e) {
-        console.error("[FOLLOWUP] cobrança de desfecho falhou:", String(e).slice(0, 150));
-      }
-    }
     return NextResponse.json(result);
   } catch (err) {
     console.error("[FOLLOWUP] sweep crashed:", err);
