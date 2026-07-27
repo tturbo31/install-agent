@@ -48,6 +48,10 @@ function ck(name: string, cond: boolean, detail = "") {
 
 const PHONE = "13055551234";
 const ADDR = "113 NW 11th St Ft Lauderdale FL 33311";
+// Owner rule 2026-07-27: the client must TYPE their name too — every booking
+// message in these flows carries it (the no-name path is covered by
+// name-required-verify).
+const NAMED_ADDR = `It's Mark. ${ADDR}`;
 const today = easternTodayStr();
 
 // The note injects the REAL Eastern clock, so a frozen "5pm today" scenario
@@ -67,8 +71,8 @@ const slotPick = useTomorrow ? "9am tomorrow" : "5pm today";
 const slotTime = useTomorrow ? "09:00" : "17:00";
 const todayLine = useTomorrow ? "fully booked" : "5pm, 7pm";
 const offerLine = useTomorrow
-  ? "I have tomorrow at 9am or 11am, and if those don't work, Sunday has plenty of openings. What's your address and which time works?"
-  : "I have today at 5pm or 7pm, and if those don't work, Sunday has plenty of openings. What's your address and which time works?";
+  ? "I have tomorrow at 9am or 11am, and if those don't work, Sunday has plenty of openings. What's your name, your address, and which time works?"
+  : "I have today at 5pm or 7pm, and if those don't work, Sunday has plenty of openings. What's your name, your address, and which time works?";
 
 function waSystemNote(): string {
   const schedule = `REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):
@@ -78,7 +82,7 @@ function waSystemNote(): string {
 IMPORTANT — read carefully before offering any time:
 - ONLY offer times listed above.
 - In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client.`;
-  const waNote = `[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${PHONE}). To confirm a visit, ask ONLY for the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time and the address, generate [BOOK:...] using "${PHONE}" as the phone.]`;
+  const waNote = `[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${PHONE}). To confirm a visit, ask ONLY for the client's name and the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "${PHONE}" as the phone.]`;
   return `[SYSTEM: ${getEasternDateContext()}\n\n${schedule}\n\n${waNote}]`;
 }
 
@@ -103,7 +107,7 @@ async function main() {
   console.log("\n[1] slot '5pm today' then address (address last)");
   const a1 = await ai([...HEAD,
     { role: "user", content: slotPick },
-    { role: "user", content: `${ADDR}\n\n${waSystemNote()}` },
+    { role: "user", content: `${NAMED_ADDR}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a1.replace(/\s+/g, " ").slice(0, 160));
   ck("books the visit (emits [BOOK:...])", BOOKS(a1), a1);
@@ -115,7 +119,7 @@ async function main() {
   const a2 = await ai([...HEAD,
     { role: "user", content: slotPick },
     { role: "assistant", content: "Perfect, what's the property address?" },
-    { role: "user", content: `${ADDR}\n\n${waSystemNote()}` },
+    { role: "user", content: `${NAMED_ADDR}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a2.replace(/\s+/g, " ").slice(0, 160));
   ck("recovers and books after the redundant re-ask", BOOKS(a2), a2);
@@ -124,7 +128,7 @@ async function main() {
   // ── 3. BRAIN: address arrives BEFORE the slot in history → still BOOK ──────
   console.log("\n[3] address first, then '5pm today' (reversed order)");
   const a3 = await ai([...HEAD,
-    { role: "user", content: ADDR },
+    { role: "user", content: NAMED_ADDR },
     { role: "user", content: `${slotPick}\n\n${waSystemNote()}` },
   ]);
   console.log("   →", a3.replace(/\s+/g, " ").slice(0, 160));

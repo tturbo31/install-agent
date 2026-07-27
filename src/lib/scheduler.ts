@@ -895,6 +895,34 @@ export function resolveClientName(candidates: Array<string | null | undefined>, 
   return fallback;
 }
 
+// Owner rule (2026-07-27): a visit is confirmed ONLY when the CLIENT gave all
+// three of name, address, and phone in the conversation. A profile display name
+// (IG/FB name, WhatsApp pushname) is NOT the client giving their name — the bot
+// must ASK. This is the server-side enforcement: the [BOOK] name must be real
+// (not a generic placeholder) AND at least one of its words must be something
+// the client actually typed. Token-level comparison (accent/case-insensitive)
+// so "José" matches a typed "jose" but "Ana" never matches inside "banana".
+const deaccent = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const nameTokens = (s: string) => deaccent(s).split(/[^a-z0-9]+/).filter(Boolean);
+export function clientProvidedName(name: string | null | undefined, history: Array<{ role: string; content: string }>): boolean {
+  const cleaned = cleanName((name ?? "").toString());
+  if (!cleaned || GENERIC_NAMES.has(cleaned.toLowerCase())) return false;
+  const typed = new Set(
+    (history ?? [])
+      .filter((m) => m.role === "user")
+      .flatMap((m) => nameTokens((m.content || "").split(/\n\n?\[SYSTEM:/)[0]))
+  );
+  return nameTokens(cleaned).some((w) => w.length >= 2 && !GENERIC_NAMES.has(w) && typed.has(w));
+}
+
+// Sent when the slot (and possibly address/phone) is in hand but the client
+// never gave their name: ask for it instead of booking under a profile name.
+export function needNameMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Última cosita! ¿A nombre de quién pongo la visita?"
+    : "Last thing! What name should I put the visit under?";
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with

@@ -34,7 +34,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -170,6 +170,14 @@ async function processBookingCommand(
     if (!isRealPhoneNumber(bookingData.phone)) {
       console.warn(`[IG] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
       return { response: needPhoneMessage(lang), booked: false };
+    }
+    // Owner rule (2026-07-27): the visit is confirmed ONLY with the client's
+    // NAME, address, and phone — all given by the client in the conversation.
+    // A profile display name is not the client giving their name; if they never
+    // typed it, ask for it instead of booking.
+    if (!clientProvidedName(bookingData.name, history)) {
+      console.warn(`[IG] booking blocked — client never gave their name (${JSON.stringify(bookingData.name ?? null)}); asking for it`);
+      return { response: needNameMessage(lang), booked: false };
     }
 
     const { data: convData } = await supabaseAdmin
@@ -577,12 +585,30 @@ async function handleWebhook(body: WebhookPayload) {
     // propósito: a resposta do cliente conta para o funil mesmo com o dono no
     // controle da conversa.
     if (insertedMsg?.id) {
+      // ── Atribuição de CRIATIVO (caso real 2026-07-27: 0 leads com anúncio) ──
+      // O referral dos anúncios de engajamento chega SEM ad_id/ads_context_data
+      // (só CTM/CTWA trazem) — mas o clique no anúncio entrega o próprio criativo
+      // como SHARE na 1ª mensagem, e o TÍTULO do share identifica o criativo.
+      // Referral com ad_id/título continua sendo a fonte primária; o share é o
+      // fallback. Referral cru vai pro log para diagnosticarmos formatos novos.
+      if (messaging.referral) {
+        console.log("[FUNIL] referral cru:", JSON.stringify(messaging.referral).slice(0, 500));
+      }
+      const refBruto = messaging.referral ?? null;
+      const shareTitleAd = (shareAttachment?.payload as Record<string, unknown> | undefined)?.title as string | undefined;
+      const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
+      const referralFunil =
+        refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
+          ? refBruto
+          : shareTitleAd && !ehPlantaBaixa
+            ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrl ?? undefined } }
+            : refBruto;
       waitUntil(
         funilOnInboundMessage(
           { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username, created_at: conversation.created_at },
           rawText,
           insertedMsg.created_at ?? new Date().toISOString(),
-          messaging.referral ?? null
+          referralFunil
         )
       );
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h

@@ -285,14 +285,15 @@ r = await ask([
   { role: "assistant", content: "For that size I need to come measure in person and bring samples so you can choose right there. I have Tuesday June 3rd at 2pm and Thursday at 10am. What works?" },
   { role: "user", content: "Tuesday at 2pm works for me" },
 ]);
-check(22, "Slot confirmed → ask BOTH address AND phone together", r, {
-  contains: [/address/i, /phone|number/i],
+check(22, "Slot confirmed → ask name, address AND phone together", r, {
+  contains: [/name/i, /address/i, /phone|number/i],
   notContains: [/\[BOOK:/],
 });
 
-// T23 — All 3 confirmed → generate [BOOK:...] with ≤5 words before
+// T23 — All confirmed (incl. the client's NAME, owner rule 2026-07-27) →
+// generate [BOOK:...] with ≤5 words before
 r = await ask([
-  { role: "user", content: "Tuesday at 2pm, my address is 3209 NE 7th St Miami FL, my phone is 3051234567" },
+  { role: "user", content: "Tuesday at 2pm, I'm Diego, my address is 3209 NE 7th St Miami FL, my phone is 3051234567" },
 ]);
 check(23, "Complete info → [BOOK:...] with ≤5 words before", r, {
   contains: [/\[BOOK:\{/],
@@ -453,7 +454,7 @@ r = await ask([
   { role: "user", content: "Wednesday 1:00 pm good for me" },
   { role: "assistant", content: "Perfect! What is the full address of the property and your phone number?" },
   { role: "user", content: "Call me in Messenger" },
-  { role: "user", content: "427 golden isles dr #B12 Hallandale beach , FL 33009" },
+  { role: "user", content: "Rob, 427 golden isles dr #B12 Hallandale beach , FL 33009" },
 ]);
 check(39, "'Call me in Messenger' + address → ask for real phone, do NOT book junk", r, {
   notContains: [/"phone"\s*:\s*"(?:messenger|here|instagram|dm)"/i, /\[BOOK:(?![\s\S]*"phone"\s*:\s*"[^"]*\d{7})/],
@@ -466,7 +467,7 @@ r = await ask([
   { role: "assistant", content: "For 900 sqft I need to visit and measure in person. I have Wednesday at 1pm or 5pm. What works for you?" },
   { role: "user", content: "Wednesday 1:00 pm good for me" },
   { role: "assistant", content: "Perfect! What is the full address of the property and your phone number?" },
-  { role: "user", content: "427 golden isles dr #B12 Hallandale beach FL 33009, my number is 954-624-2455" },
+  { role: "user", content: "Rob, 427 golden isles dr #B12 Hallandale beach FL 33009, my number is 954-624-2455" },
 ]);
 check(40, "Slot + address + real phone → [BOOK] with the real digits", r, {
   contains: [/\[BOOK:\{[\s\S]*"phone"\s*:\s*"[^"]*9546242455/],

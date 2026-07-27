@@ -53,7 +53,7 @@ const FRI_AVAIL_TODAY = [
   "• Saturday, June 6, 2026 [2026-06-06]: 9am, 11am",
   "Copy the exact [YYYY-MM-DD] on the same line as the weekday.",
 ].join("\n");
-const WA_NOTE = `[WHATSAPP CHANNEL: You already have the client's phone number (13053359498). Ask ONLY for the property address. Generate [BOOK:...] using "13053359498" as the phone.]`;
+const WA_NOTE = `[WHATSAPP CHANNEL: You already have the client's phone number (13053359498). Ask ONLY for the client's name and the property address. Generate [BOOK:...] using "13053359498" as the phone.]`;
 
 async function main() {
   // ═══ 1. DATE / TIMEZONE (the main complaint: "it said today was Saturday") ═══

@@ -7,7 +7,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -118,6 +118,15 @@ async function processBookingCommand(
     if (!isRealAddress(bookingData.address)) {
       console.warn(`[WA] booking blocked — address not usable (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needAddressMessage(lang), booked: false };
+    }
+    // Owner rule (2026-07-27): the visit is confirmed ONLY with the client's
+    // NAME, address, and phone — all given by the client in the conversation
+    // (on WhatsApp the phone is the chat id, so name + address are asked). A
+    // profile pushname is not the client giving their name; if they never
+    // typed it, ask for it instead of booking.
+    if (!clientProvidedName(bookingData.name, history)) {
+      console.warn(`[WA] booking blocked — client never gave their name (${JSON.stringify(bookingData.name ?? null)}); asking for it`);
+      return { response: needNameMessage(lang), booked: false };
     }
 
     // Always book under the real client name: prefer a name the client typed,
@@ -931,7 +940,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
       if (!isBookingConfirmed && !isRescheduling) {
         // WhatsApp: the client's phone number is already known from the chat.
-        systemParts.push(`[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${phone}). To confirm a visit, ask ONLY for the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time and the address, generate [BOOK:...] using "${phone}" as the phone.]`);
+        systemParts.push(`[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${phone}). To confirm a visit, ask ONLY for the client's name and the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "${phone}" as the phone.]`);
         const recentUserTexts = history
           .filter((m: { role: string; content: string }) => m.role === "user")
           .slice(-3)

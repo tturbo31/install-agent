@@ -125,13 +125,13 @@ async function main() {
       const dateStr = lm[2];
       const firstSlot = lm[3].split(",")[0].trim(); // e.g. "9am"
       console.log(`   Driving test with: ${weekday} ${dateStr} @ ${firstSlot}`);
-      const sys = `[SYSTEM: ${getEasternDateContext()}\n\n${avail}\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the property address. Generate [BOOK:...] using "13055551234" as the phone.]]`;
+      const sys = `[SYSTEM: ${getEasternDateContext()}\n\n${avail}\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Generate [BOOK:...] using "13055551234" as the phone.]]`;
       const conv: ChatMessage[] = [
         { role: "user", content: "whole house about 1500 sqft, need a visit" },
         { role: "assistant", content: `For that size I do a free in-person visit. I have ${weekday} at ${firstSlot} open, does that work?` },
         { role: "user", content: `yes ${weekday} at ${firstSlot} works` },
-        { role: "assistant", content: "Perfect, what is the property address?" },
-        { role: "user", content: `123 NW 5th St, Miami FL 33125${"\n\n" + sys}` },
+        { role: "assistant", content: "Perfect, what is your name and the property address?" },
+        { role: "user", content: `Carlos, 123 NW 5th St, Miami FL 33125${"\n\n" + sys}` },
       ];
       const out = await ai(conv);
       console.log("   AI:", out.replace(/\s+/g, " ").slice(0, 180));

@@ -107,7 +107,7 @@ async function main() {
   ck("openerLang: 'Quw material de loza es ese' → es", openerLang("Quw material de loza es ese") === "es");
 
   console.log("\n[E] Photo/catalog request INSIDE WhatsApp → no 'message us on WhatsApp'");
-  const waNote = "\n\n[SYSTEM: TODAY: Wednesday, July 15, 2026 [2026-07-15].\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the property address. Generate [BOOK:...] using \"13055551234\" as the phone.]]";
+  const waNote = "\n\n[SYSTEM: TODAY: Wednesday, July 15, 2026 [2026-07-15].\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Generate [BOOK:...] using \"13055551234\" as the phone.]]";
   const waPhotos = await getAIResponse([U("Can you send me photos of your floors?" + waNote)], null, null, null, false);
   ck("WA photo request → 'right here' handoff, not a WhatsApp redirect", /right here/i.test(waPhotos.text) && !/message our team directly on whatsapp/i.test(waPhotos.text) && waPhotos.text.includes("[NOTIFY_OWNER]"), waPhotos.text);
   const igPhotos = await getAIResponse([U("Can you send me photos of your floors?" + NOTE)], null, null, null, false);

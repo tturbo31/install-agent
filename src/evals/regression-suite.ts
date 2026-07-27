@@ -59,24 +59,32 @@ const eachChannel = (label: string, test: (src: string) => boolean) => {
 };
 
 const today = easternTodayStr();
-const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n• TODAY [${today}]: 5pm, 7pm\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the property address. Once you have a confirmed day/time and the address, generate [BOOK:...] using "13055551234" as the phone.]${extra ? "\n\n" + extra : ""}]`;
+const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n• TODAY [${today}]: 5pm, 7pm\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "13055551234" as the phone.]${extra ? "\n\n" + extra : ""}]`;
 const BOOKS = (t: string) => /\[BOOK:/i.test(t);
 
 async function main() {
   console.log("\n================= CONSOLIDATED REGRESSION SUITE (all fixed errors) =================");
 
   // ── ERROR 1: WhatsApp visit not booked / bot re-asks for an address already sent
-  console.log("\n[ERROR 1] WhatsApp: slot + address → BOOK (no redundant re-ask)");
-  const r1 = await ai([
+  // Owner rule 2026-07-27: the client's NAME is now required too — slot+address
+  // without a name must ASK the name (not book); with the name typed it books.
+  console.log("\n[ERROR 1] WhatsApp: slot + address (no name) → asks name; + name → BOOK");
+  const err1Head: ChatMessage[] = [
     { role: "user", content: "What do you charge for showers?" },
     { role: "assistant", content: "Shower work is a bathroom remodel, I do a free in-person visit. What day works?" },
     { role: "user", content: "Anyday, sooner the better" },
-    { role: "assistant", content: "I have today at 5pm or 7pm. What's your address and which time works?" },
+    { role: "assistant", content: "I have today at 5pm or 7pm. What's your name, your address, and which time works?" },
     { role: "user", content: "5pm today" },
+  ];
+  const r1 = await ai([...err1Head,
     { role: "user", content: "113 NW 11th St Ft Lauderdale FL 33311" + waBook("") },
   ]);
-  ck("books the visit", BOOKS(r1), r1);
-  ck("does not re-ask for the address", !(/\baddress\b/i.test(r1) && /\?/.test(r1)) || BOOKS(r1), r1);
+  ck("without the name: asks for it instead of booking", !BOOKS(r1) && /\bname\b/i.test(r1), r1);
+  const r1b = await ai([...err1Head,
+    { role: "user", content: "It's Maria. 113 NW 11th St Ft Lauderdale FL 33311" + waBook("") },
+  ]);
+  ck("with the name typed: books the visit", BOOKS(r1b), r1b);
+  ck("does not re-ask for the address", !(/\baddress\b/i.test(r1b) && /\?/.test(r1b)) || BOOKS(r1b), r1b);
   ck("booking-info turn bypasses the 5s rate limit", { x: containsBookingInfo("113 NW 11th St Ft Lauderdale FL 33311") }.x === true);
   eachChannel("rate-limit bypass for booking-info", (s) => /containsBookingInfo\(rawText\)/.test(s) && /&& !carriesBookingInfo\) return;/.test(s));
   eachChannel("grace window before redundant booking-info re-ask", (s) => s.includes("isAskingForBookingInfo") && s.includes("discarding redundant re-ask"));

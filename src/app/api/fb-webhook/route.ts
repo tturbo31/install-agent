@@ -10,7 +10,7 @@ import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, isRealAddress, needAddressMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -135,6 +135,14 @@ async function processBookingCommand(
     if (!isRealPhoneNumber(bookingData.phone)) {
       console.warn(`[FB] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
       return { response: needPhoneMessage(lang), booked: false };
+    }
+    // Owner rule (2026-07-27): the visit is confirmed ONLY with the client's
+    // NAME, address, and phone — all given by the client in the conversation.
+    // A profile display name is not the client giving their name; if they never
+    // typed it, ask for it instead of booking.
+    if (!clientProvidedName(bookingData.name, history)) {
+      console.warn(`[FB] booking blocked — client never gave their name (${JSON.stringify(bookingData.name ?? null)}); asking for it`);
+      return { response: needNameMessage(lang), booked: false };
     }
 
     // Always book under the real client name: prefer a name the client typed,
@@ -430,12 +438,32 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // mode=human de propósito: a resposta do cliente conta para o funil mesmo
     // com o dono no controle. Só quando ESTA instância inseriu a mensagem.
     if (insertedMsg?.id) {
+      // ── Atribuição de CRIATIVO (caso real 2026-07-27: 0 leads com anúncio) ──
+      // Igual ao IG: referral de engajamento vem sem ad_id; o clique entrega o
+      // criativo como attachment (share/template/video) e o TÍTULO identifica o
+      // criativo. Referral com ad_id/título (CTM) segue como fonte primária.
+      if (messaging.referral) {
+        console.log("[FUNIL] referral cru (fb):", JSON.stringify(messaging.referral).slice(0, 500));
+      }
+      const refBruto =
+        (messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined) ?? null;
+      const shareAtt = attachments.find((a) => a.type !== "image" && a.type !== "audio");
+      const sharePayload = shareAtt?.payload as Record<string, unknown> | undefined;
+      const shareTitleAd = (sharePayload?.title as string) ?? undefined;
+      const shareUrlAd = (sharePayload?.url as string) ?? undefined;
+      const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
+      const referralFunil =
+        refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
+          ? refBruto
+          : shareTitleAd && !ehPlantaBaixa
+            ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrlAd } }
+            : refBruto;
       waitUntil(
         funilOnInboundMessage(
           { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },
           rawText,
           insertedMsg.created_at ?? new Date().toISOString(),
-          (messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined) ?? null
+          referralFunil
         )
       );
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
