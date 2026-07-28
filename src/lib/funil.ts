@@ -34,8 +34,49 @@ export type ReferralIG = {
   // WhatsApp (CTWA): id de clique usado pela Conversions API business_messaging;
   // vai junto no lead_criado (fica no lead_eventos.detalhe da plataforma).
   ctwa_clid?: string;
-  ads_context_data?: { ad_title?: string; photo_url?: string };
+  ref?: string; // parâmetro ref do anúncio/m.me (IG/FB)
+  source?: string; // IG/FB: referral.source (ADS/SHORTLINK) | WA: source_type (ad/post)
+  type?: string; // IG/FB: referral.type (OPEN_THREAD) — fallback do source
+  clicked_at?: string; // ISO do EVENTO que trouxe o referral (timestamp do webhook)
+  ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string };
 } | null;
+
+// ─── Contrato de atribuição repassado à plataforma (missão referral 28/07) ───
+// NOMES EXATOS consumidos pela ozzi-plataforma (campos vazios ficam fora do
+// payload; a plataforma atual ignora chaves que não conhece — retrocompatível).
+export type ContratoAnuncio = {
+  ad_id?: string;
+  ctwa_clid?: string;
+  ad_source_type?: string;
+  ad_title?: string;
+  ad_media_url?: string;
+  ad_post_id?: string;
+  ad_ref?: string;
+  ad_clicked_at?: string;
+};
+
+const CAMPOS_CONTRATO: (keyof ContratoAnuncio)[] = [
+  "ad_id", "ctwa_clid", "ad_source_type", "ad_title", "ad_media_url", "ad_post_id", "ad_ref", "ad_clicked_at",
+];
+
+export function contratoAnuncio(r: ReferralIG): ContratoAnuncio {
+  if (!r) return {};
+  const limpo = (v?: string, cap = 300) => (typeof v === "string" && v.trim() ? v.trim().slice(0, cap) : undefined);
+  return {
+    ad_id: limpo(r.ad_id, 60),
+    ctwa_clid: limpo(r.ctwa_clid, 200),
+    ad_source_type: limpo(r.source, 40) ?? limpo(r.type, 40),
+    ad_title: limpo(r.ads_context_data?.ad_title),
+    ad_media_url: limpo(r.ads_context_data?.photo_url, 500) ?? limpo(r.ads_context_data?.video_url, 500),
+    ad_post_id: limpo(r.ads_context_data?.post_id, 80),
+    ad_ref: limpo(r.ref, 200),
+    ad_clicked_at: limpo(r.clicked_at, 40),
+  };
+}
+
+function contratoTemDados(c: ContratoAnuncio): boolean {
+  return CAMPOS_CONTRATO.some((k) => !!c[k]);
+}
 type MsgRow = { role: string; content: string; created_at: string };
 
 const H = 3600_000;
@@ -177,30 +218,94 @@ async function estaSumido(convId: string): Promise<boolean> {
   return !!data;
 }
 
-// Anúncio de origem persistido na chave (primeiro anúncio vence).
+// Contrato COMPLETO persistido por conversa (missão referral 28/07):
+// funil_adx_<convId>::<JSON url-encodado do ContratoAnuncio>. Complementa a
+// chave legada funil_ad_ (que segue existindo para compat com scripts antigos).
+const adxKeyPrefix = (convId: string) => `funil_adx_${convId}::`;
+
+async function lerContratoPersistido(convId: string): Promise<{ contrato: ContratoAnuncio; key: string } | null> {
+  const { data } = await supabaseAdmin
+    .from("platform_settings")
+    .select("platform")
+    .like("platform", `${adxKeyPrefix(convId)}%`)
+    .limit(1);
+  const key = data?.[0]?.platform as string | undefined;
+  if (!key) return null;
+  try {
+    return { contrato: JSON.parse(decodeURIComponent(key.slice(adxKeyPrefix(convId).length))) as ContratoAnuncio, key };
+  } catch {
+    return null;
+  }
+}
+
+async function gravarContrato(convId: string, contrato: ContratoAnuncio, keyAntiga?: string): Promise<void> {
+  const compacto: ContratoAnuncio = {};
+  for (const k of CAMPOS_CONTRATO) if (contrato[k]) compacto[k] = contrato[k];
+  let enc = encodeURIComponent(JSON.stringify(compacto));
+  if (enc.length > 2200) { delete compacto.ad_media_url; enc = encodeURIComponent(JSON.stringify(compacto)); }
+  if (enc.length > 2200) enc = enc.slice(0, 2200); // nunca estoura o índice do PK
+  if (keyAntiga) await supabaseAdmin.from("platform_settings").delete().eq("platform", keyAntiga);
+  await supabaseAdmin
+    .from("platform_settings")
+    .upsert({ platform: `${adxKeyPrefix(convId)}${enc}`, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
+}
+
+// Anúncio de origem persistido na conversa. REGRAS (missão referral 28/07):
+// o referral só vem na PRIMEIRA mensagem — se a conversa ainda não tem
+// atribuição, grava; se já tem, só PREENCHE campos faltantes (o valor existente
+// SEMPRE vence); referral vazio nunca sobrescreve nada.
 export async function persistirAnuncioDaConversa(convId: string, referral: ReferralIG): Promise<void> {
   try {
-    const adId = referral?.ad_id ?? "";
-    const adTitle = referral?.ads_context_data?.ad_title ?? "";
-    if (!adId && !adTitle) return;
-    const { data: existentes } = await supabaseAdmin
-      .from("platform_settings")
-      .select("platform")
-      .like("platform", `${adKeyPrefix(convId)}%`)
-      .limit(1);
-    if (existentes && existentes.length > 0) return;
-    const key = `${adKeyPrefix(convId)}${encodeURIComponent(adId)}::${encodeURIComponent(adTitle).slice(0, 400)}`;
-    await supabaseAdmin
-      .from("platform_settings")
-      .upsert({ platform: key, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
+    const novo = contratoAnuncio(referral);
+    if (!contratoTemDados(novo)) return; // vazio nunca sobrescreve
+
+    // Chave legada funil_ad_ (ad_id + título; primeiro anúncio vence) — mantida.
+    const adId = novo.ad_id ?? "";
+    const adTitle = novo.ad_title ?? "";
+    if (adId || adTitle) {
+      const { data: existentes } = await supabaseAdmin
+        .from("platform_settings")
+        .select("platform")
+        .like("platform", `${adKeyPrefix(convId)}%`)
+        .limit(1);
+      if (!existentes || existentes.length === 0) {
+        const key = `${adKeyPrefix(convId)}${encodeURIComponent(adId)}::${encodeURIComponent(adTitle).slice(0, 400)}`;
+        await supabaseAdmin
+          .from("platform_settings")
+          .upsert({ platform: key, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
+      }
+    }
+
+    // Contrato completo funil_adx_: cria, ou preenche só o que falta.
+    const atual = await lerContratoPersistido(convId);
+    if (!atual) {
+      await gravarContrato(convId, novo);
+      return;
+    }
+    const preenchidos = CAMPOS_CONTRATO.filter((k) => !atual.contrato[k] && novo[k]);
+    if (!preenchidos.length) return; // nada novo a preencher
+    const mesclado: ContratoAnuncio = { ...atual.contrato };
+    for (const k of preenchidos) mesclado[k] = novo[k];
+    await gravarContrato(convId, mesclado, atual.key);
   } catch (err) {
     console.warn("[FUNIL] persistirAnuncio falhou:", String(err).slice(0, 150));
   }
 }
 
-async function dadosDeAnuncioDaConversa(convId: string, referral?: ReferralIG): Promise<{ ad_id: string | null; ad_name: string | null; campanha: string | null }> {
-  let adId: string | null = referral?.ad_id ?? null;
-  let adName: string | null = referral?.ads_context_data?.ad_title ?? null;
+export async function dadosDeAnuncioDaConversa(
+  convId: string,
+  referral?: ReferralIG
+): Promise<{ ad_id: string | null; ad_name: string | null; campanha: string | null; contrato: ContratoAnuncio }> {
+  // Contrato: referral do evento atual é a fonte primária; o persistido
+  // (funil_adx_) preenche o que faltar (o referral só vem na 1ª mensagem).
+  const contrato = contratoAnuncio(referral ?? null);
+  try {
+    const persistido = await lerContratoPersistido(convId);
+    if (persistido) for (const k of CAMPOS_CONTRATO) if (!contrato[k] && persistido.contrato[k]) contrato[k] = persistido.contrato[k];
+  } catch { /* sem contrato persistido */ }
+
+  let adId: string | null = contrato.ad_id ?? null;
+  let adName: string | null = contrato.ad_title ?? null;
   if (!adId && !adName) {
     try {
       const { data } = await supabaseAdmin
@@ -213,12 +318,14 @@ async function dadosDeAnuncioDaConversa(convId: string, referral?: ReferralIG): 
         const [, rawId, rawTitle] = key.slice("funil_ad_".length).split("::");
         adId = rawId ? decodeURIComponent(rawId) : null;
         adName = rawTitle ? decodeURIComponent(rawTitle) : null;
+        if (!contrato.ad_id && adId) contrato.ad_id = adId;
+        if (!contrato.ad_title && adName) contrato.ad_title = adName;
       }
     } catch { /* sem anúncio persistido */ }
   }
   const graph = await buscarDadosAnuncio(adId);
   // ad_title do referral do webhook é a fonte primária do nome; Graph completa.
-  return { ad_id: adId, ad_name: adName ?? graph.ad_name, campanha: graph.campanha };
+  return { ad_id: adId, ad_name: adName ?? graph.ad_name, campanha: graph.campanha, contrato };
 }
 
 // ─── Histórico auxiliar ──────────────────────────────────────────────────────
@@ -266,10 +373,13 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
         ...base,
         nome: conv.name ?? conv.username ?? undefined,
         canal: canalDe(conv.igsid),
-        ad_id: ad.ad_id ?? undefined,
+        // Contrato de atribuição (missão referral 28/07) — nomes exatos:
+        // ad_id, ctwa_clid, ad_source_type, ad_title, ad_media_url,
+        // ad_post_id, ad_ref, ad_clicked_at. Plataforma antiga ignora extras.
+        ...ad.contrato,
+        // Campos legados que a plataforma atual já consome:
         ad_name: ad.ad_name ?? undefined,
         campanha: ad.campanha ?? undefined,
-        ctwa_clid: referral?.ctwa_clid ?? undefined,
       });
       return;
     }
@@ -328,7 +438,7 @@ export async function funilOnBookingConfirmed(
         ...base,
         nome: booking.name ?? conv.name ?? conv.username ?? undefined,
         canal: canalDe(igsid),
-        ad_id: ad.ad_id ?? undefined,
+        ...ad.contrato, // contrato de atribuição completo (nomes exatos)
         ad_name: ad.ad_name ?? undefined,
         campanha: ad.campanha ?? undefined,
       });

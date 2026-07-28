@@ -19,7 +19,7 @@ import {
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
-import { capturarRawFunil } from "@/lib/funil-raw";
+import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
 export const maxDuration = 60;
 
@@ -347,9 +347,13 @@ async function handleFbMessage(body: Record<string, unknown>) {
       // o ad_id. Persistimos a atribuição na conversa (funil_ad_) e capturamos
       // o payload cru; a resposta ao cliente continua vindo do evento de
       // mensagem normal que chega em seguida.
-      type RefFb = { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } };
+      type RefFb = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
       const postbackFb = messaging.postback as { title?: string; payload?: string; referral?: RefFb } | undefined;
-      const refSolo = (messaging.referral as RefFb | undefined) ?? postbackFb?.referral;
+      const refSoloBruto = (messaging.referral as RefFb | undefined) ?? postbackFb?.referral;
+      // clicked_at = timestamp do evento que trouxe o referral (proxy do clique)
+      const refSolo = refSoloBruto
+        ? { ...refSoloBruto, clicked_at: new Date((messaging.timestamp as number) || Date.now()).toISOString() }
+        : undefined;
       if (refSolo || postbackFb) {
         console.log("[FUNIL] referral cru (fb standalone):", JSON.stringify(refSolo ?? postbackFb).slice(0, 500));
         waitUntil(
@@ -493,8 +497,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
       if (messaging.referral) {
         console.log("[FUNIL] referral cru (fb):", JSON.stringify(messaging.referral).slice(0, 500));
       }
+      // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
+      // no evento (messaging.referral) ou no postback (tratado no bloco sem mid).
+      type RefFbMsg = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
       const refBruto =
-        (messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined) ?? null;
+        ((msg?.referral as RefFbMsg | undefined) ?? (messaging.referral as RefFbMsg | undefined)) ?? null;
+      const refComClique = refBruto
+        ? { ...refBruto, clicked_at: new Date((messaging.timestamp as number) || Date.now()).toISOString() }
+        : null;
       const shareAtt = attachments.find((a) => a.type !== "image" && a.type !== "audio");
       const sharePayload = shareAtt?.payload as Record<string, unknown> | undefined;
       const shareTitleAd = (sharePayload?.title as string) ?? undefined;
@@ -516,10 +526,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
       const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
       const referralFunil =
         refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
-          ? refBruto
+          ? refComClique
           : shareTitleAd && !ehPlantaBaixa
             ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrlAd } }
-            : refBruto;
+            : refComClique;
       waitUntil(
         funilOnInboundMessage(
           { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },
@@ -806,15 +816,15 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // knows which ad the lead came from (tile vs vinyl vs hardwood).
     try {
       const profile = await fetchFacebookProfile(psid);
-      const fbRef = messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined;
+      // MISSÃO REFERRAL 28/07: as colunas ad_id/ad_title/creative_url NÃO
+      // EXISTEM em instagram_conversations — incluí-las fazia o update INTEIRO
+      // falhar silencioso, perdendo o nome justamente dos leads de anúncio.
+      // A atribuição persiste via funil_adx_/funil_ad_ (lib/funil).
       const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (profile.name || profile.profile_pic) {
         update.username = profile.name;
         update.profile_pic = profile.profile_pic;
       }
-      if (fbRef?.ads_context_data?.ad_title) update.ad_title = fbRef.ads_context_data.ad_title;
-      if (fbRef?.ads_context_data?.photo_url) update.creative_url = fbRef.ads_context_data.photo_url;
-      if (fbRef?.ad_id) update.ad_id = fbRef.ad_id;
       await supabaseAdmin.from("instagram_conversations").update(update).eq("id", conv.id);
     } catch { /* ignore */ }
 
@@ -949,8 +959,9 @@ async function handleFbMessage(body: Record<string, unknown>) {
           }
           if (resolved) {
             adType = resolved;
-            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
-            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+            // só em memória: a coluna ad_title não existe no banco (o update
+            // antigo falhava silencioso — missão referral 28/07)
+            Object.assign(convAny, { ad_title: `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim() });
           }
         }
         if (adType) {
@@ -1211,7 +1222,13 @@ export async function POST(req: NextRequest) {
   const sig = req.headers.get("x-hub-signature-256");
   console.log("[FB webhook] POST received | size:", rawBody.length, "| sig present:", !!sig);
 
-  if (!verifyMetaSignature(rawBody, sig)) {
+  const sigOk = verifyMetaSignature(rawBody, sig);
+  // CAIXA-PRETA (missão referral 28/07): grava o body BRUTO de TODO POST antes
+  // de qualquer parsing/filtro/return — echo/delivery/assinatura inválida
+  // inclusos. Retenção 7 dias. É a prova do que a Meta entrega (ou não).
+  waitUntil(capturarWebhookRaw("fb", rawBody, { sigOk }));
+
+  if (!sigOk) {
     console.warn("[FB webhook] Signature verification FAILED — returning 403");
     return new NextResponse("Forbidden", { status: 403 });
   }

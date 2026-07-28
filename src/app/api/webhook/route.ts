@@ -3,8 +3,8 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
-import { capturarRawFunil } from "@/lib/funil-raw";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa } from "@/lib/funil";
+import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -181,14 +181,19 @@ async function processBookingCommand(
       return { response: needNameMessage(lang), booked: false };
     }
 
+    // MISSÃO REFERRAL 28/07: o select antigo pedia creative_url/ad_id/ad_title,
+    // colunas que NÃO existem — o select INTEIRO falhava silencioso e a nota do
+    // agendamento perdia até o @handle do cliente. Colunas reais + atribuição
+    // persistida (funil_adx_/funil_ad_) no lugar.
     const { data: convData } = await supabaseAdmin
       .from("instagram_conversations")
-      .select("creative_url, ad_id, ad_title, name, username, igsid")
+      .select("name, username, igsid")
       .eq("id", conversationId)
       .single();
 
+    const adPersistido = await dadosDeAnuncioDaConversa(conversationId).catch(() => null);
     const creativeRef =
-      convData?.ad_title ?? convData?.creative_url ?? convData?.ad_id ?? "Instagram DM";
+      adPersistido?.contrato.ad_title ?? adPersistido?.ad_name ?? adPersistido?.contrato.ad_media_url ?? adPersistido?.ad_id ?? "Instagram DM";
     const instagramHandle = convData?.username ? `@${convData.username}` : convData?.igsid ?? "";
     const noteParts = [
       bookingData.notes ?? "",
@@ -471,7 +476,7 @@ async function handleWebhook(body: WebhookPayload) {
     // (video / ig_reel / story), often with NO text in this event. That used to fall
     // through to `if (!rawText) return` below — creating an empty conversation with no
     // reply (exactly the "No messages yet" + raw IGSID we saw). Treat it as a hot lead.
-    const isAdReferral = !!(messaging.referral ?? postbackIG?.referral);
+    const isAdReferral = !!(messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral);
     const hasAnyAttachment = attachments.length > 0;
 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
@@ -600,8 +605,14 @@ async function handleWebhook(body: WebhookPayload) {
       if (messaging.referral) {
         console.log("[FUNIL] referral cru:", JSON.stringify(messaging.referral).slice(0, 500));
       }
-      // referral pode vir embutido na mensagem OU dentro do postback
-      const refBruto = messaging.referral ?? postbackIG?.referral ?? null;
+      // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
+      // no evento (messaging.referral / messaging_referral) ou no postback.
+      const refBruto = messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral ?? null;
+      // Timestamp do clique = timestamp do evento que trouxe o referral (a Meta
+      // não manda o instante do clique em si; este é o melhor proxy).
+      const refComClique = refBruto
+        ? { ...refBruto, clicked_at: new Date(messaging.timestamp || Date.now()).toISOString() }
+        : null;
       // P0 (auditoria 28/07): captura crua persistente do que a Meta entrega em
       // clique de anúncio — prova o formato real (logs da Vercel truncam/expiram)
       if (refBruto || shareAttachment || postbackIG) {
@@ -617,10 +628,10 @@ async function handleWebhook(body: WebhookPayload) {
       const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
       const referralFunil =
         refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
-          ? refBruto
+          ? refComClique
           : shareTitleAd && !ehPlantaBaixa
             ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrl ?? undefined } }
-            : refBruto;
+            : refComClique;
       waitUntil(
         funilOnInboundMessage(
           { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username, created_at: conversation.created_at },
@@ -979,14 +990,14 @@ async function handleWebhook(body: WebhookPayload) {
     // ── Fetch profile ────────────────────────────────────────────────────
     try {
       const profile = await fetchInstagramProfile(senderIgsid);
-      const referral = messaging.referral;
+      // MISSÃO REFERRAL 28/07: as colunas ad_id/ad_title/creative_url NÃO
+      // EXISTEM em instagram_conversations — incluí-las fazia o update INTEIRO
+      // falhar silencioso, perdendo nome/username justamente dos leads de
+      // anúncio. A atribuição persiste via funil_adx_/funil_ad_ (lib/funil).
       const updateData: Record<string, unknown> = {
         ...profile,
         updated_at: new Date().toISOString(),
       };
-      if (referral?.ads_context_data?.photo_url) updateData.creative_url = referral.ads_context_data.photo_url;
-      if (referral?.ad_id) updateData.ad_id = referral.ad_id;
-      if (referral?.ads_context_data?.ad_title) updateData.ad_title = referral.ads_context_data.ad_title;
       await supabaseAdmin.from("instagram_conversations").update(updateData).eq("igsid", senderIgsid);
     } catch (err) {
       console.warn("Profile fetch failed:", err);
@@ -1156,8 +1167,9 @@ async function handleWebhook(body: WebhookPayload) {
           }
           if (resolved) {
             adType = resolved;
-            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
-            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conversation.id);
+            // só em memória: a coluna ad_title não existe no banco (o update
+            // antigo falhava silencioso — missão referral 28/07)
+            Object.assign(convAny, { ad_title: `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim() });
           }
         }
         if (adType) {
@@ -1473,7 +1485,13 @@ export async function POST(req: NextRequest) {
   const sig = req.headers.get("x-hub-signature-256");
   console.log("[IG webhook] POST received | size:", rawBody.length, "| sig present:", !!sig);
 
-  if (!verifyMetaSignature(rawBody, sig)) {
+  const sigOk = verifyMetaSignature(rawBody, sig);
+  // CAIXA-PRETA (missão referral 28/07): grava o body BRUTO de TODO POST antes
+  // de qualquer parsing/filtro/return — echo/delivery/assinatura inválida
+  // inclusos. Retenção 7 dias. É a prova do que a Meta entrega (ou não).
+  waitUntil(capturarWebhookRaw("ig", rawBody, { sigOk }));
+
+  if (!sigOk) {
     console.warn("[IG webhook] Signature verification FAILED — returning 403");
     return new NextResponse("Forbidden", { status: 403 });
   }

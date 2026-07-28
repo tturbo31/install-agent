@@ -18,7 +18,7 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
-import { capturarRawFunil } from "@/lib/funil-raw";
+import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply } from "@/lib/quote-reply";
 
@@ -255,7 +255,7 @@ async function processCancelCommand(
 // $5 pitch. Returns null when there is no ad context (a normal organic message).
 function extractWaAdReferral(
   body: Record<string, unknown>
-): { adId?: string; adTitle?: string; adImage?: string; sourceUrl?: string; ctwaClid?: string } | null {
+): { adId?: string; adTitle?: string; adImage?: string; adVideo?: string; sourceUrl?: string; sourceType?: string; ctwaClid?: string } | null {
   const asObj = (v: unknown): Record<string, unknown> | null =>
     v && typeof v === "object" ? (v as Record<string, unknown>) : null;
   const candidates = [
@@ -276,13 +276,16 @@ function extractWaAdReferral(
     const headline = get("headline", "title", "ad_title", "adTitle");
     const bodyTxt = get("body", "sourceBody", "description", "caption");
     const sourceUrl = get("source_url", "sourceUrl", "url");
+    // source_type oficial da Meta: "ad" | "post" (Z-API pode renomear)
+    const sourceType = get("source_type", "sourceType", "source");
     const adImage = get("image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "media_url", "mediaUrl", "thumbnail");
+    const adVideo = get("video_url", "videoUrl");
     // ctwa_clid: id do clique CTWA (Cloud API oficial) — necessário p/ Conversions
     // API business_messaging; a Z-API pode repassar com nome próprio, então
     // cobrimos as variantes prováveis (auditoria 28/07).
     const ctwaClid = get("ctwa_clid", "ctwaClid", "ctwa_click_id", "ctwaClickId", "click_id", "clickId");
     const adTitle = [headline, bodyTxt].filter(Boolean).join(" ") || undefined;
-    if (adId || adTitle || adImage || sourceUrl || ctwaClid) return { adId, adTitle, adImage, sourceUrl, ctwaClid };
+    if (adId || adTitle || adImage || adVideo || sourceUrl || ctwaClid) return { adId, adTitle, adImage, adVideo, sourceUrl, sourceType, ctwaClid };
   }
   return null;
 }
@@ -467,9 +470,12 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const adRefFunil = extractWaAdReferral(body);
     const referralFunilWa = adRefFunil
       ? {
-          ad_id: adRefFunil.adId,
+          ad_id: adRefFunil.adId, // source_id do WhatsApp = ad_id do contrato
           ctwa_clid: adRefFunil.ctwaClid,
-          ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage },
+          source: adRefFunil.sourceType, // source_type ("ad"/"post") → ad_source_type
+          // clicked_at = momment do callback Z-API (ms) — proxy do clique CTWA
+          clicked_at: new Date(Number(body.momment) || Date.now()).toISOString(),
+          ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage, video_url: adRefFunil.adVideo },
         }
       : undefined;
     if (adRefFunil) {
@@ -1251,15 +1257,22 @@ async function handleWaMessage(body: Record<string, unknown>) {
 
 // ─── POST handler ─────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
+  // CAIXA-PRETA (missão referral 28/07): body BRUTO de TODO POST gravado antes
+  // de qualquer parsing/filtro/return (token inválido, JSON quebrado, delivery
+  // — tudo fica registrado, com flag de autenticidade). Retenção 7 dias.
+  const rawBody = await req.text();
+
   const zapiToken = process.env.ZAPI_WEBHOOK_TOKEN;
+  let tokenOk = true;
   if (zapiToken) {
     const provided = req.headers.get("x-webhook-token") ?? req.nextUrl.searchParams.get("token");
-    if (provided !== zapiToken) {
-      return new NextResponse("Forbidden", { status: 403 });
-    }
+    tokenOk = provided === zapiToken;
   }
+  waitUntil(capturarWebhookRaw("wa", rawBody, { sigOk: tokenOk }));
+  if (!tokenOk) return new NextResponse("Forbidden", { status: 403 });
 
-  const body = await req.json().catch(() => null);
+  let body: Record<string, unknown> | null = null;
+  try { body = JSON.parse(rawBody); } catch { body = null; }
   if (!body) return NextResponse.json({ status: "ignored" }, { status: 200 });
 
   // Defense-in-depth authenticity check (needs NO Z-API dashboard change): a
