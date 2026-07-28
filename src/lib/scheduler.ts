@@ -86,15 +86,18 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
 
     const today = easternTodayStr();
 
-    // Guard: if this client already has an upcoming booking, block the duplicate
+    // Guard: if this client already has an upcoming booking, block the duplicate.
+    // Time-aware like the snapshot: a visit that already happened earlier TODAY
+    // must not block a returning client from booking a NEW visit tonight.
     if (req.igsid) {
       const { data: existing } = await db
         .from("bookings")
-        .select("id")
+        .select("id, booking_date, booking_time")
         .like("email", `ia-${req.igsid}@%`)
-        .gte("booking_date", today)
-        .limit(1);
-      if (existing && existing.length > 0) {
+        .gte("booking_date", today);
+      const { hour, minute } = easternNowHM();
+      const nowMinutes = hour * 60 + minute;
+      if ((existing ?? []).some((b) => visitStillUpcoming(b.booking_date, b.booking_time, today, nowMinutes))) {
         console.warn(`[createBooking] Duplicate blocked — ${req.igsid} already has an upcoming booking`);
         return { success: false, error: "already_booked" };
       }
@@ -782,9 +785,24 @@ export async function slotConflictRecoveryMessage(lang: "es" | "en"): Promise<st
 // silence only while a visit is actually upcoming, and (b) answer "are you
 // coming at 3?" style questions with the real booked date/time.
 export type ClientBookingSnapshot = {
-  upcoming: { date: string; time: string } | null; // earliest visit today or later
+  upcoming: { date: string; time: string } | null; // earliest visit still ahead (incl. grace window)
   lastPast: { date: string; time: string } | null; // most recent visit already behind us
 };
+
+// A visit TODAY only counts as "upcoming" until this long after its start time.
+// Date-only comparison kept a 1pm client silenced until MIDNIGHT: she came back
+// at 6:30pm the same day asking about the materials package (post-visit
+// shopping question, re-tapped the ad 3x) and hit the silent post-booking path
+// (Lisa, Deerfield Beach, 2026-07-27). The grace window keeps the bot out of
+// the way while Ozzi may still be en route or on site running late.
+export const VISIT_UPCOMING_GRACE_MIN = 120;
+export function visitStillUpcoming(dateStr: string, timeStr: string | null | undefined, todayStr: string, nowMinutes: number): boolean {
+  if (dateStr > todayStr) return true;
+  if (dateStr < todayStr) return false;
+  const m = /^(\d{1,2}):(\d{2})/.exec((timeStr ?? "").trim());
+  if (!m) return true; // no parseable start time: stay quiet for the rest of the day (fail safe, never fail chatty)
+  return nowMinutes < parseInt(m[1], 10) * 60 + parseInt(m[2], 10) + VISIT_UPCOMING_GRACE_MIN;
+}
 
 export async function getClientBookingSnapshot(igsid: string): Promise<ClientBookingSnapshot | null> {
   try {
@@ -800,12 +818,14 @@ export async function getClientBookingSnapshot(igsid: string): Promise<ClientBoo
       return null; // caller keeps the legacy behavior on lookup failure
     }
     const today = easternTodayStr();
+    const { hour, minute } = easternNowHM();
+    const nowMinutes = hour * 60 + minute;
     let upcoming: ClientBookingSnapshot["upcoming"] = null;
     let lastPast: ClientBookingSnapshot["lastPast"] = null;
     for (const b of data ?? []) {
       if (!b.booking_date) continue;
-      if (b.booking_date >= today) {
-        // rows come newest-first, so the LAST >= today row is the earliest upcoming
+      if (visitStillUpcoming(b.booking_date, b.booking_time, today, nowMinutes)) {
+        // rows come newest-first, so the LAST still-upcoming row is the earliest upcoming
         upcoming = { date: b.booking_date, time: b.booking_time ?? "" };
       } else if (!lastPast) {
         lastPast = { date: b.booking_date, time: b.booking_time ?? "" };

@@ -25,7 +25,7 @@ import {
   stripLargeLeadPrices,
   isPureClosing,
 } from "../lib/ai";
-import { visitDetailsMessage } from "../lib/scheduler";
+import { visitDetailsMessage, visitStillUpcoming, VISIT_UPCOMING_GRACE_MIN } from "../lib/scheduler";
 
 const c = {
   green: (s: string) => `\x1b[32m${s}\x1b[0m`,
@@ -154,6 +154,21 @@ for (const [name, file] of [
 console.log(c.bold("\n[8] Fechamentos continuam silenciosos"));
 ck('"Ok thank you" segue sendo fechamento puro', isPureClosing("Ok thank you"));
 ck('"Thanks, see you then!" segue sendo fechamento puro', isPureClosing("Thanks, see you then!"));
+
+// ── 9. Visita de HOJE expira depois do horário + graça (caso Lisa 27/07) ────
+// Comparação só por data mantinha a cliente da visita de 1pm silenciada até
+// MEIA-NOITE: ela voltou 6:30pm perguntando do pacote de materiais (re-tap do
+// anúncio 3x) e caiu no caminho silencioso pós-booking.
+console.log(c.bold("\n[9] visitStillUpcoming — visita de hoje expira com o horário"));
+const T = "2026-07-27";
+const min = (h: number, m = 0) => h * 60 + m;
+ck("data futura → upcoming", visitStillUpcoming("2026-07-28", "09:00", T, min(23)));
+ck("data passada → past", !visitStillUpcoming("2026-07-26", "19:00", T, min(0, 5)));
+ck("hoje, antes da visita → upcoming (silêncio mantido)", visitStillUpcoming(T, "13:00", T, min(10)));
+ck("hoje, durante a graça (visita 1pm, agora 2:30pm) → upcoming", visitStillUpcoming(T, "13:00", T, min(14, 30)));
+ck("hoje, graça vencida (visita 1pm, agora 6:30pm) → past (caso Lisa)", !visitStillUpcoming(T, "13:00", T, min(18, 30)));
+ck("hora ilegível → upcoming o dia todo (fail safe, nunca fail chatty)", visitStillUpcoming(T, "afternoon", T, min(23, 59)) && visitStillUpcoming(T, null, T, min(23, 59)));
+ck("graça é ampla o bastante p/ visita atrasada (>=90min)", VISIT_UPCOMING_GRACE_MIN >= 90);
 
 console.log("\n" + "─".repeat(60));
 if (failures === 0) {

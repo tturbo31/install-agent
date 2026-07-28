@@ -2,7 +2,9 @@
 //  A. Re-tap de anúncio: cliente que só re-tocou o anúncio (nunca digitou nada)
 //     recebia silêncio porque o modelo regenerava o opener idêntico e a guarda
 //     anti-repetição o suprimia (3 leads IG mortos, 18–21/07). Agora sai um
-//     nudge com fraseado diferente, no máximo uma vez por conversa.
+//     nudge com fraseado diferente em TODO re-tap (variantes rotativas — o
+//     "1x por conversa" deixou o 4º tap do Cleverson no vácuo, 27/07), com
+//     teto duro contra tempestade de webhook.
 //  B. Quote-reply "reenvia o orçamento": cliente pedindo o orçamento de novo
 //     recebia só promessa ("Ozzi will resend") em loop (caso Salatheia, 3 dias
 //     no vácuo). Agora o total sai na hora quando está no contexto.
@@ -66,6 +68,9 @@ async function main() {
     { role: "assistant", content: "Vinyl runs $5/sqft..." },
     { role: "user", content: PH },
   ]) === null);
+  // Rotação: cada re-tap novo recebe um fraseado DIFERENTE do anterior — o
+  // contrato antigo ("1x por conversa") deixou o 4º tap do Cleverson mudo
+  // (27/07): o modelo regenerou algo que a guarda de duplicata engoliu.
   const jaNudgado: ChatMessage[] = [
     { role: "user", content: PH },
     { role: "assistant", content: OPENER_EN },
@@ -73,7 +78,22 @@ async function main() {
     { role: "assistant", content: adRetapNudge(retap)! },
     { role: "user", content: PH },
   ];
-  ck("nudge já enviado → null (uma vez por conversa, nunca loop)", adRetapNudge(jaNudgado) === null);
+  const nudge2 = adRetapNudge(jaNudgado);
+  ck("3º tap → nudge de novo, com fraseado DIFERENTE (nunca vácuo)", nudge2 !== null && nudge2 !== nudge);
+  ck("nudge rotacionado não é duplicata consecutiva", !!nudge2 && !isConsecutiveDuplicate(jaNudgado, nudge2));
+  // Esgotar as variantes: continua respondendo (alterna), nunca repete a msg
+  // imediatamente anterior, e para no teto (backstop de tempestade de webhook).
+  let hist: ChatMessage[] = [{ role: "user", content: PH }, { role: "assistant", content: OPENER_EN }];
+  let taps = 0;
+  for (; taps < 12; taps++) {
+    hist = [...hist, { role: "user", content: PH }];
+    const n = adRetapNudge(hist);
+    if (n === null) break;
+    if (isConsecutiveDuplicate(hist, n)) { ck("variante nunca é duplicata da msg anterior", false, n); break; }
+    hist = [...hist, { role: "assistant", content: n }];
+  }
+  ck("responde a vários taps seguidos (>=5) antes do teto", taps >= 5);
+  ck("teto duro existe (para de nudgear em tempestade, <=8 taps)", taps < 9);
   ck("variante 'shared a post/reel' também conta como placeholder", adRetapNudge([
     { role: "user", content: '[Client shared a post/reel from our ad: "Promo"]' },
     { role: "assistant", content: OPENER_EN },

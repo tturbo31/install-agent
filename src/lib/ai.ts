@@ -683,14 +683,26 @@ export function isConsecutiveDuplicate(history: ChatMessage[], candidate: string
 // dead air for a returning lead (three real IG leads went silent this way,
 // 2026-07-18/21). When the whole client side of the history is ad placeholders
 // — the client has NEVER typed real text — the webhooks skip the model and send
-// this differently-worded nudge deterministically, at most once per
-// conversation. The webhook appends "\n\n[SYSTEM: ...]" context to the latest
-// user message BEFORE this check runs, so the suffix is stripped per message.
+// a differently-worded nudge deterministically. "At most once per conversation"
+// still left dead air: a client tapped the ad a 4th time and the model's answer
+// was swallowed by the duplicate guard again (Cleverson, 2026-07-27). Every tap
+// is an explicit client action, so every tap gets a reply — the variants rotate
+// so the consecutive-duplicate guard can never eat one, with a hard cap as a
+// webhook-storm backstop. The webhook appends "\n\n[SYSTEM: ...]" context to
+// the latest user message BEFORE this check runs, so the suffix is stripped
+// per message.
 const AD_PLACEHOLDER_RE = /^\[Client (?:replied to|shared a post\/reel from) our ad[^\]]*\]$/i;
-const AD_RETAP_NUDGE_EN =
-  "Hi again! Just reply with the word tile, vinyl, or hardwood and I'll send you the current promotion for it. I'm here whenever you're ready.";
-const AD_RETAP_NUDGE_ES =
-  "Hola de nuevo! Solo respondeme con la palabra tile, vinyl o hardwood y te mando la promocion actual de ese piso. Aqui estoy cuando gustes.";
+const AD_RETAP_NUDGES_EN = [
+  "Hi again! Just reply with the word tile, vinyl, or hardwood and I'll send you the current promotion for it. I'm here whenever you're ready.",
+  "No rush at all! Whenever you get a chance, just type tile, vinyl, or hardwood and I'll send over that promotion.",
+  "I'm still here! One word is all I need, tile, vinyl, or hardwood, and you'll get the current promo right away.",
+];
+const AD_RETAP_NUDGES_ES = [
+  "Hola de nuevo! Solo respondeme con la palabra tile, vinyl o hardwood y te mando la promocion actual de ese piso. Aqui estoy cuando gustes.",
+  "Sin apuro! Cuando puedas, escribeme tile, vinyl o hardwood y te mando la promocion de ese piso.",
+  "Sigo por aqui! Con una sola palabra, tile, vinyl o hardwood, te mando la promo actual al momento.",
+];
+const AD_RETAP_NUDGE_CAP = 6;
 export function adRetapNudge(history: ChatMessage[]): string | null {
   const users = history.filter((m) => m.role === "user");
   if (users.length < 2) return null;
@@ -700,12 +712,19 @@ export function adRetapNudge(history: ChatMessage[]): string | null {
   if (!users.every((m) => AD_PLACEHOLDER_RE.test(clientPart(m.content)))) return null;
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
   if (!lastAssistant) return null;
-  const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n)\b/i.test(lastAssistant.content);
-  const nudge = isEs ? AD_RETAP_NUDGE_ES : AD_RETAP_NUDGE_EN;
-  // Once is enough — never build a nudge loop.
+  // Language from the WHOLE assistant side, not just the last message — a
+  // rotated ES variant without the keyword set must not flip the next one to EN.
+  const assistantText = history.filter((m) => m.role === "assistant").map((m) => m.content).join(" ");
+  const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n|apuro|escribeme|gustes)\b/i.test(assistantText);
+  const variants = isEs ? AD_RETAP_NUDGES_ES : AD_RETAP_NUDGES_EN;
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-  if (history.some((m) => m.role === "assistant" && norm(m.content) === norm(nudge))) return null;
-  return nudge;
+  const isVariant = (s: string) => variants.some((v) => norm(v) === norm(s));
+  const sent = history.filter((m) => m.role === "assistant" && isVariant(m.content)).length;
+  if (sent >= AD_RETAP_NUDGE_CAP) return null; // storm backstop; model decides from here
+  // Prefer a wording the client has never seen; once all are used, any variant
+  // that isn't the message directly above (so the duplicate guard stays happy).
+  const unsent = variants.find((v) => !history.some((m) => m.role === "assistant" && norm(m.content) === norm(v)));
+  return unsent ?? variants.find((v) => norm(v) !== norm(lastAssistant.content)) ?? null;
 }
 
 // Phone keyboards send smart punctuation: U+2019 for the apostrophe ("Let’s")
