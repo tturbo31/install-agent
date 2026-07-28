@@ -4,6 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { capturarRawFunil } from "@/lib/funil-raw";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -453,6 +454,11 @@ async function handleWebhook(body: WebhookPayload) {
 
     let rawText = messaging.message?.text ?? "";
 
+    // Postback (icebreaker/CTA do anúncio): chega SEM message.mid e pode trazer
+    // o referral DENTRO do postback (auditoria 28/07 — antes era descartado).
+    const postbackIG = messaging.postback;
+    if (!rawText && postbackIG?.title) rawText = postbackIG.title;
+
     // Ignore emoji-only messages (end-of-conversation reactions like 👍 ❤️)
     if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
 
@@ -465,7 +471,7 @@ async function handleWebhook(body: WebhookPayload) {
     // (video / ig_reel / story), often with NO text in this event. That used to fall
     // through to `if (!rawText) return` below — creating an empty conversation with no
     // reply (exactly the "No messages yet" + raw IGSID we saw). Treat it as a hot lead.
-    const isAdReferral = !!messaging.referral;
+    const isAdReferral = !!(messaging.referral ?? postbackIG?.referral);
     const hasAnyAttachment = attachments.length > 0;
 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
@@ -594,7 +600,19 @@ async function handleWebhook(body: WebhookPayload) {
       if (messaging.referral) {
         console.log("[FUNIL] referral cru:", JSON.stringify(messaging.referral).slice(0, 500));
       }
-      const refBruto = messaging.referral ?? null;
+      // referral pode vir embutido na mensagem OU dentro do postback
+      const refBruto = messaging.referral ?? postbackIG?.referral ?? null;
+      // P0 (auditoria 28/07): captura crua persistente do que a Meta entrega em
+      // clique de anúncio — prova o formato real (logs da Vercel truncam/expiram)
+      if (refBruto || shareAttachment || postbackIG) {
+        waitUntil(
+          capturarRawFunil("ig", {
+            referral: refBruto,
+            postback: postbackIG ? { title: postbackIG.title ?? null, payload: postbackIG.payload ?? null } : null,
+            anexos: attachments.map((a) => ({ tipo: a.type, titulo: a.payload?.title ?? null, url: (a.payload?.url ?? "").slice(0, 200) })),
+          })
+        );
+      }
       const shareTitleAd = (shareAttachment?.payload as Record<string, unknown> | undefined)?.title as string | undefined;
       const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
       const referralFunil =

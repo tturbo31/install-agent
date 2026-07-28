@@ -18,7 +18,8 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
+import { capturarRawFunil } from "@/lib/funil-raw";
 
 export const maxDuration = 60;
 
@@ -339,7 +340,54 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     const msg = messaging.message as Record<string, unknown>;
     const msgId = msg?.mid as string;
-    if (!msgId) return;
+    if (!msgId) {
+      // P2 (auditoria 28/07): clique em anúncio CTM dispara eventos SEM
+      // message.mid — referral standalone (campo messaging_referrals) e
+      // postback com referral embutido. Antes eram DESCARTADOS aqui, perdendo
+      // o ad_id. Persistimos a atribuição na conversa (funil_ad_) e capturamos
+      // o payload cru; a resposta ao cliente continua vindo do evento de
+      // mensagem normal que chega em seguida.
+      type RefFb = { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } };
+      const postbackFb = messaging.postback as { title?: string; payload?: string; referral?: RefFb } | undefined;
+      const refSolo = (messaging.referral as RefFb | undefined) ?? postbackFb?.referral;
+      if (refSolo || postbackFb) {
+        console.log("[FUNIL] referral cru (fb standalone):", JSON.stringify(refSolo ?? postbackFb).slice(0, 500));
+        waitUntil(
+          capturarRawFunil("fb", {
+            origem: postbackFb ? "postback" : "referral_standalone",
+            referral: refSolo ?? null,
+            postback: postbackFb ? { title: postbackFb.title ?? null, payload: postbackFb.payload ?? null } : null,
+          })
+        );
+        if (refSolo?.ad_id || refSolo?.ads_context_data?.ad_title) {
+          const fbIgsidRef = `fb_${psid}`;
+          let { data: convRef } = await supabaseAdmin
+            .from("instagram_conversations")
+            .select("id")
+            .eq("igsid", fbIgsidRef)
+            .maybeSingle();
+          if (!convRef) {
+            const { data: nova } = await supabaseAdmin
+              .from("instagram_conversations")
+              .insert({ igsid: fbIgsidRef, mode: "agent" })
+              .select("id")
+              .single();
+            convRef = nova ?? null;
+            if (!convRef) {
+              // corrida com o evento de mensagem: recupera a linha existente
+              const { data: existente } = await supabaseAdmin
+                .from("instagram_conversations")
+                .select("id")
+                .eq("igsid", fbIgsidRef)
+                .maybeSingle();
+              convRef = existente ?? null;
+            }
+          }
+          if (convRef?.id) await persistirAnuncioDaConversa(convRef.id, refSolo);
+        }
+      }
+      return;
+    }
 
     // Deduplicate
     const { data: already } = await supabaseAdmin
@@ -451,6 +499,20 @@ async function handleFbMessage(body: Record<string, unknown>) {
       const sharePayload = shareAtt?.payload as Record<string, unknown> | undefined;
       const shareTitleAd = (sharePayload?.title as string) ?? undefined;
       const shareUrlAd = (sharePayload?.url as string) ?? undefined;
+      // P0 (auditoria 28/07): captura crua persistente p/ provar o formato real
+      if (refBruto || shareAtt) {
+        waitUntil(
+          capturarRawFunil("fb", {
+            origem: "mensagem",
+            referral: refBruto,
+            anexos: attachments.map((a) => ({
+              tipo: a.type,
+              titulo: ((a.payload as Record<string, unknown> | undefined)?.title as string) ?? null,
+              url: (((a.payload as Record<string, unknown> | undefined)?.url as string) ?? "").slice(0, 200),
+            })),
+          })
+        );
+      }
       const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
       const referralFunil =
         refBruto?.ad_id || refBruto?.ads_context_data?.ad_title

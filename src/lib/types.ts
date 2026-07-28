@@ -43,7 +43,7 @@ export interface WebhookPayload {
       sender: { id: string };
       recipient: { id: string };
       timestamp: number;
-      message: {
+      message?: {
         mid: string;
         text?: string;
         is_echo?: boolean;
@@ -62,6 +62,24 @@ export interface WebhookPayload {
           photo_url?: string;
           video_url?: string;
           post_id?: string;
+        };
+      };
+      // Clique em anúncio/icebreaker pode chegar como POSTBACK (sem message.mid),
+      // com o referral DENTRO do postback — antes era descartado (auditoria 28/07).
+      postback?: {
+        title?: string;
+        payload?: string;
+        referral?: {
+          ref?: string;
+          source?: string;
+          type?: string;
+          ad_id?: string;
+          ads_context_data?: {
+            ad_title?: string;
+            photo_url?: string;
+            video_url?: string;
+            post_id?: string;
+          };
         };
       };
     }>;

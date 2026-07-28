@@ -17,7 +17,8 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
+import { capturarRawFunil } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply } from "@/lib/quote-reply";
 
@@ -254,7 +255,7 @@ async function processCancelCommand(
 // $5 pitch. Returns null when there is no ad context (a normal organic message).
 function extractWaAdReferral(
   body: Record<string, unknown>
-): { adId?: string; adTitle?: string; adImage?: string; sourceUrl?: string } | null {
+): { adId?: string; adTitle?: string; adImage?: string; sourceUrl?: string; ctwaClid?: string } | null {
   const asObj = (v: unknown): Record<string, unknown> | null =>
     v && typeof v === "object" ? (v as Record<string, unknown>) : null;
   const candidates = [
@@ -276,8 +277,12 @@ function extractWaAdReferral(
     const bodyTxt = get("body", "sourceBody", "description", "caption");
     const sourceUrl = get("source_url", "sourceUrl", "url");
     const adImage = get("image_url", "imageUrl", "thumbnail_url", "thumbnailUrl", "media_url", "mediaUrl", "thumbnail");
+    // ctwa_clid: id do clique CTWA (Cloud API oficial) — necessário p/ Conversions
+    // API business_messaging; a Z-API pode repassar com nome próprio, então
+    // cobrimos as variantes prováveis (auditoria 28/07).
+    const ctwaClid = get("ctwa_clid", "ctwaClid", "ctwa_click_id", "ctwaClickId", "click_id", "clickId");
     const adTitle = [headline, bodyTxt].filter(Boolean).join(" ") || undefined;
-    if (adId || adTitle || adImage || sourceUrl) return { adId, adTitle, adImage, sourceUrl };
+    if (adId || adTitle || adImage || sourceUrl || ctwaClid) return { adId, adTitle, adImage, sourceUrl, ctwaClid };
   }
   return null;
 }
@@ -457,12 +462,28 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // conversando (1ª resposta real) e retomou_conversa. Antes do gate
     // mode=human de propósito: a resposta do cliente conta para o funil mesmo
     // com o dono no controle. Só quando ESTA instância inseriu a mensagem.
+    // ATRIBUIÇÃO (auditoria 28/07): o referral do anúncio CTWA agora VAI JUNTO
+    // — antes era extraído mais abaixo e nunca chegava ao lead da plataforma.
+    const adRefFunil = extractWaAdReferral(body);
+    const referralFunilWa = adRefFunil
+      ? {
+          ad_id: adRefFunil.adId,
+          ctwa_clid: adRefFunil.ctwaClid,
+          ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage },
+        }
+      : undefined;
+    if (adRefFunil) {
+      console.log("[FUNIL] referral cru (wa):", JSON.stringify(adRefFunil).slice(0, 400));
+      // P0: captura crua persistente (só os objetos de referral, sem texto do cliente)
+      waitUntil(capturarRawFunil("wa", { extraido: adRefFunil, chaves_do_body: Object.keys(body).slice(0, 40) }));
+    }
     if (insertedMsg?.id) {
       waitUntil(
         funilOnInboundMessage(
           { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },
           rawText,
-          insertedMsg.created_at ?? new Date().toISOString()
+          insertedMsg.created_at ?? new Date().toISOString(),
+          referralFunilWa
         )
       );
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
@@ -816,20 +837,20 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     // Capture Click-to-WhatsApp ad context so the type-first logic below knows the
-    // ad's flooring type (a TILE ad must never get the vinyl $5 pitch). Defensive:
-    // stores only what Z-API actually provides; absence is fine (we then ask).
-    const adRef = extractWaAdReferral(body);
+    // ad's flooring type (a TILE ad must never get the vinyl $5 pitch).
+    // AUDITORIA 28/07: as colunas ad_id/ad_title/creative_url NÃO EXISTEM em
+    // instagram_conversations (update falhava silencioso desde sempre) — a
+    // persistência real é a chave funil_ad_ (mesmo canal usado pelo IG/FB);
+    // o Object.assign local continua para a lógica type-first desta request.
+    const adRef = adRefFunil;
     if (adRef) {
-      console.log("[WA AD] referral detected:", JSON.stringify(adRef).slice(0, 300));
       const c = conv as Record<string, unknown>;
       const upd: Record<string, unknown> = {};
       if (adRef.adId && !c.ad_id) upd.ad_id = adRef.adId;
       if (adRef.adTitle && !c.ad_title) upd.ad_title = adRef.adTitle;
       if (adRef.adImage && !c.creative_url) upd.creative_url = adRef.adImage;
-      if (Object.keys(upd).length) {
-        await supabaseAdmin.from("instagram_conversations").update(upd).eq("id", conv.id);
-        Object.assign(c, upd);
-      }
+      if (Object.keys(upd).length) Object.assign(c, upd);
+      waitUntil(persistirAnuncioDaConversa(conv.id, referralFunilWa ?? null));
     }
 
     // Robust type capture from the FIRST message's raw payload: the ad's own text
@@ -842,9 +863,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
       collectStrings(body, strings);
       const scannedType = detectAdFlooringType(strings.join(" "));
       if (scannedType) {
-        const persisted = `[${scannedType}]`;
-        await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
-        Object.assign(conv as Record<string, unknown>, { ad_title: persisted });
+        // só em memória: a coluna ad_title não existe no banco (o update antigo
+        // falhava silencioso) e o marcador [TIPO] não é nome de criativo
+        Object.assign(conv as Record<string, unknown>, { ad_title: `[${scannedType}]` });
         console.log("[WA AD] flooring type from payload scan:", scannedType);
       }
     }
@@ -984,8 +1005,8 @@ async function handleWaMessage(body: Record<string, unknown>) {
           }
           if (resolved) {
             adType = resolved;
-            const persisted = `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim();
-            await supabaseAdmin.from("instagram_conversations").update({ ad_title: persisted }).eq("id", conv.id);
+            // só em memória: a coluna ad_title não existe (update falhava silencioso)
+            Object.assign(convAny, { ad_title: `[${resolved}] ${(convAny.ad_title as string) ?? ""}`.trim() });
           }
         }
         if (adType) {

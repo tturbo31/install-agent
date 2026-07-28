@@ -29,7 +29,13 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { enviarEventoFunil, type EnvioResultado } from "@/lib/plataforma";
 
 export type ConvFunil = { id: string; igsid: string; name?: string | null; username?: string | null; created_at?: string | null };
-export type ReferralIG = { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | null;
+export type ReferralIG = {
+  ad_id?: string;
+  // WhatsApp (CTWA): id de clique usado pela Conversions API business_messaging;
+  // vai junto no lead_criado (fica no lead_eventos.detalhe da plataforma).
+  ctwa_clid?: string;
+  ads_context_data?: { ad_title?: string; photo_url?: string };
+} | null;
 type MsgRow = { role: string; content: string; created_at: string };
 
 const H = 3600_000;
@@ -263,6 +269,7 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
         ad_id: ad.ad_id ?? undefined,
         ad_name: ad.ad_name ?? undefined,
         campanha: ad.campanha ?? undefined,
+        ctwa_clid: referral?.ctwa_clid ?? undefined,
       });
       return;
     }
