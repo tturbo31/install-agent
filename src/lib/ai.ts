@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES } from "@/lib/system-prompt";
+import { clientConfirmedSlot } from "@/lib/scheduler";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -534,23 +535,42 @@ export function containsSchedulingOffer(text: string): boolean {
 // you get off at 5:30." Drop it instead.
 const LEADING_CONNECTOR = /^(?:since|because|so|as|when|if|while|after|before|once|and|but|or|plus|also|that\s+way|so\s+that|which\s+is\s+why|therefore|then)\b/i;
 
+// A sentence that asks for the client's contact/booking data (name, phone,
+// address) is DATA COLLECTION, not scheduling pressure — it must survive the
+// anti-pressure strip even when it also carries a clock time ("…to confirm
+// Friday at 5pm?"). Without this, the bot's ask for the missing phone+name
+// after the client sent only the address was deleted and the funnel stalled
+// until the owner stepped in (Emanuel, Boynton Beach, 2026-07-28).
+const CONTACT_ASK = /\b(?:your|full|first|last)\s+name\b|\bname\s+(?:for|to|under|should)\b|\bphone\b|\b(?:best|contact)\s+number\b|\bnumber\s+to\s+(?:reach|confirm|call|text)\b|\b(?:property\s+)?address\b|\btel[eé]fono\b|\bn[uú]mero\b|\bnombre\b|\bdirecci[oó]n\b/i;
+
 // Remove every scheduling push (in any position) so the bot never pushes the
 // appointment two messages in a row (the "stop pressuring the client" rule).
-// Sentences carrying a tag ([NOTIFY_OWNER], [BOOK:...], etc.) are always kept.
-function stripSchedulingPush(text: string): string {
+// Sentences carrying a tag ([NOTIFY_OWNER], [BOOK:...], etc.) or a contact-data
+// ask are always kept. Exported for the conversion-fixes eval guard.
+export function stripSchedulingPush(text: string): string {
   const sentences = text.split(/(?<=[.!?])\s+/);
   const kept: string[] = [];
   for (const s of sentences) {
-    if (s.includes("[") || !isSchedulingPush(s)) {
+    if (s.includes("[") || CONTACT_ASK.test(s) || !isSchedulingPush(s)) {
       kept.push(s);
       continue;
     }
     // Sentence contains a push: salvage the non-push comma clauses (the info).
-    const clauses = s.split(/,\s*/).filter((cl) => cl.includes("[") || !isSchedulingPush(cl));
-    // If the only thing left is a single leading-connector clause, it is a
-    // dangling lead-in to the removed scheduling clause, not a real sentence.
-    // Drop it so we never send a fragment like "Since you get off at 5:30."
-    if (clauses.length === 1 && LEADING_CONNECTOR.test(clauses[0].trim())) continue;
+    // Split on comma+SPACE only — the thousands separator inside "1,500 sqft"
+    // has no space after it and must never be treated as a clause boundary
+    // (a "1, 500 sqft" mangle shipped to a real client, 2026-07-28).
+    const clauses = s.split(/,\s+/).filter((cl) => cl.includes("[") || CONTACT_ASK.test(cl) || !isSchedulingPush(cl));
+    // If the only thing left is a single leading-connector clause, it is
+    // usually a dangling lead-in to the removed scheduling clause. Drop it when
+    // SHORT ("Since you get off at 5:30.") — but a substantive clause is the
+    // actual info answer and must be healed instead: strip the connector and
+    // re-capitalize ("and for the living room at 1,500 sqft I can measure…"
+    // was the whole answer, Emanuel 2026-07-28).
+    if (clauses.length === 1 && LEADING_CONNECTOR.test(clauses[0].trim())) {
+      const healed = clauses[0].trim().replace(LEADING_CONNECTOR, "").replace(/^[\s,]+/, "");
+      if (healed.length < 40) continue;
+      clauses[0] = healed.charAt(0).toUpperCase() + healed.slice(1);
+    }
     const rebuilt = clauses.join(", ").trim().replace(/[,\s]+$/, "");
     if (rebuilt) kept.push(/[.!?]$/.test(rebuilt) ? rebuilt : rebuilt + ".");
   }
@@ -572,6 +592,32 @@ export function clientEngagedScheduling(userText: string): boolean {
   // ARE the client engaging scheduling, so the anti-pressure guard must not fire
   // and mangle the bot's slot reply into a dangling fragment.
   return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\bduring\s+the\s+week\b|\bweek\s*days?\b|\bweekends?\b|\bi\s+work\b|\bwork(?:ing)?\s+(?:all\s+)?(?:day|days|week)\b|\bonly\s+(?:on\s+)?(?:weekends?|saturdays?|sundays?|evenings?|nights?|mornings?)\b|\bdays?\s+off\b|\bfin(?:es)?\s+de\s+semana\b|\bentre\s+semana\b|\bd[ií]as?\s+de\s+semana\b/i.test(clientText);
+}
+
+// Decides whether the anti-pressure strip may run at all. It fires only when
+// (a) a recent assistant turn already pushed scheduling, (b) the client's last
+// message did NOT engage scheduling, and (c) the client has NOT yet picked a
+// slot. (c) is the Emanuel/Boynton case (2026-07-28): after "Friday at 5" the
+// conversation is in the booking DATA-COLLECTION phase — the bot re-asking for
+// the missing name/phone (often citing "Friday at 5pm") is not pressure, and
+// stripping it left the client unanswered until the owner stepped in manually.
+// Exported for the conversion-fixes eval guard.
+export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
+  // Look back over the last few assistant turns: once the visit/scheduling
+  // was already pushed, the client may ask several info questions in a row,
+  // and we must not re-push on any of them. The push is often not the most
+  // recent assistant message (that may be an info answer), so scan a window.
+  const recentAssistantPushed = [...messages]
+    .filter((m) => m.role === "assistant")
+    .slice(-3)
+    .some((m) => isSchedulingPush(m.content));
+  const lastMsg = messages[messages.length - 1];
+  return (
+    recentAssistantPushed &&
+    lastMsg?.role === "user" &&
+    !clientEngagedScheduling(lastMsg.content) &&
+    !clientConfirmedSlot(messages)
+  );
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
@@ -1531,34 +1577,20 @@ export async function getAIResponse(
     // still strip the time ("a las 3pm"), leaving a dangling fragment like
     // "cuál te queda mejor?". So skip the whole mechanism for Spanish replies.
     const looksSpanish = /[ñáéíóú¿¡]|\b(?:tengo|mañana|hoy|hora|funciona|queda|puedo|disponible|sábado|domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|gracias|para|esta|este|qu[eé]|cu[aá]l|cu[aá]ndo|d[ií]a|cita|piso|precio)\b/i.test(cleaned);
-    if (!looksSpanish && !/\[BOOK:/i.test(cleaned)) {
-      // Look back over the last few assistant turns: once the visit/scheduling
-      // was already pushed, the client may ask several info questions in a row,
-      // and we must not re-push on any of them. The push is often not the most
-      // recent assistant message (that may be an info answer), so scan a window.
-      const recentAssistantPushed = [...messages]
-        .filter((m) => m.role === "assistant")
-        .slice(-3)
-        .some((m) => isSchedulingPush(m.content));
-      const lastMsg = messages[messages.length - 1];
-      if (
-        recentAssistantPushed &&
-        lastMsg?.role === "user" && !clientEngagedScheduling(lastMsg.content)
-      ) {
-        const stripped = stripSchedulingPush(cleaned);
-        // Only apply the strip when something SUBSTANTIVE remains (>= 40 chars
-        // of real text). If the whole reply was a scheduling push, KEEP the
-        // original — sending a generic non-answer was worse than letting the
-        // scheduling answer through. The 40-char floor exists because a client
-        // said "I cant during the week, i work", the model correctly offered
-        // weekend slots, and the strip reduced the reply to a dead-end
-        // "No problem." (2026-07-08 review) — a mangled two-word reply is
-        // always worse than an extra slot offer.
-        const substance = stripped.replace(/\[[^\]]*\]/g, "").trim();
-        if (stripped && stripped !== cleaned && substance.length >= 40) {
-          cleaned = stripped;
-          console.log("[AI] anti-pressure: stripped repeated scheduling push");
-        }
+    if (!looksSpanish && !/\[BOOK:/i.test(cleaned) && antiPressureShouldFire(messages)) {
+      const stripped = stripSchedulingPush(cleaned);
+      // Only apply the strip when something SUBSTANTIVE remains (>= 40 chars
+      // of real text). If the whole reply was a scheduling push, KEEP the
+      // original — sending a generic non-answer was worse than letting the
+      // scheduling answer through. The 40-char floor exists because a client
+      // said "I cant during the week, i work", the model correctly offered
+      // weekend slots, and the strip reduced the reply to a dead-end
+      // "No problem." (2026-07-08 review) — a mangled two-word reply is
+      // always worse than an extra slot offer.
+      const substance = stripped.replace(/\[[^\]]*\]/g, "").trim();
+      if (stripped && stripped !== cleaned && substance.length >= 40) {
+        cleaned = stripped;
+        console.log("[AI] anti-pressure: stripped repeated scheduling push");
       }
     }
 

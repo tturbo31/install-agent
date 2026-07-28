@@ -17,6 +17,8 @@ import {
   isJobSeeker,
   containsBookingInfo,
   clientEngagedScheduling,
+  antiPressureShouldFire,
+  stripSchedulingPush,
   getAIResponse,
   type ChatMessage,
 } from "@/lib/ai";
@@ -173,6 +175,49 @@ check(
   "Customer asking US to install is NOT a job seeker",
   !isJobSeeker("Do you install vinyl floors in Miami? I need my house done"),
 );
+
+console.log("\n── 9. Coleta de dados pós-slot nunca é 'pressão' (caso Emanuel/Boynton, 2026-07-28) ──");
+// O cliente escolheu "Friday at 5", o bot pediu nome+endereço+telefone, o
+// cliente mandou SÓ o endereço (+ um sqft novo). O guard anti-pressão viu
+// "5pm" na resposta e DELETOU a frase que re-pedia telefone/nome — o funil
+// travou até o dono intervir. Pós-slot o guard não pode disparar.
+const emanuel: ChatMessage[] = [
+  { role: "user", content: "Yes tomorrow" },
+  { role: "assistant", content: "Tomorrow is fully booked, but I have Friday at 5pm or 7pm, and Sunday at 9am or 11am. What works best for you?" },
+  { role: "user", content: "Friday at 5" },
+  { role: "assistant", content: "Perfect! Can I get your name, the property address, and the best phone number to confirm your visit?" },
+  { role: "user", content: "7820 dorchester road Boynton beach fl 33472 and I am considering doing house 1500 square foot living room" },
+];
+check("Slot já escolhido → guard anti-pressão NÃO dispara", !antiPressureShouldFire(emanuel));
+check(
+  "Sem slot escolhido + pergunta de info → guard AINDA dispara (comportamento original)",
+  antiPressureShouldFire([
+    { role: "user", content: "I need new floors" },
+    { role: "assistant", content: "I have Sunday at 3pm or 5pm, what works best for you?" },
+    { role: "user", content: "What is the wear layer thickness?" },
+  ]),
+);
+check(
+  "Cliente engajando agendamento → guard não dispara (regra 2026-07-08 preservada)",
+  !antiPressureShouldFire([
+    { role: "user", content: "I need new floors" },
+    { role: "assistant", content: "I have Sunday at 3pm or 5pm, what works best for you?" },
+    { role: "user", content: "I cant during the week, i work" },
+  ]),
+);
+const s1 = stripSchedulingPush(
+  "Great, Boynton Beach is covered! and for the living room at 1,500 sqft I can measure that at the same visit and give you the best price on the spot, does Friday at 5pm still work for you?"
+);
+check("'1,500 sqft' nunca é mutilado para '1, 500' pelo strip", !/1,\s500/.test(s1) && /1,500 sqft/.test(s1), s1);
+check("A re-confirmação do slot ('Friday at 5pm...?') é removida", !/5pm/.test(s1), s1);
+const s2 = stripSchedulingPush(
+  "Boynton Beach is covered! Can I get your name and the best phone number to confirm your visit Friday at 5pm?"
+);
+check("Pedido de nome/telefone sobrevive mesmo citando '5pm'", /name and the best phone number/.test(s2), s2);
+const s3 = stripSchedulingPush(
+  "The wear layer is 20 mil, very durable. I have Sunday at 3pm or 5pm, what works best for you?"
+);
+check("Push genuíno repetido ainda é removido", !/Sunday at 3pm/.test(s3) && /20 mil/.test(s3), s3);
 
 async function priceNegotiationChecks() {
   console.log("\n── 8. Price negotiation → notify owners, never commit (owner rule 2026-07-08) ──");
