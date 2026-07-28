@@ -52,6 +52,12 @@ ck('"I cannot Friday"', isRescheduleRequest("I cannot Friday"));
 ck('"can we reschedule?" (regressão)', isRescheduleRequest("can we reschedule?"));
 ck('"I need to cancel the appointment" (regressão)', isRescheduleRequest("I need to cancel the appointment"));
 ck('"no puedo mañana" (regressão)', isRescheduleRequest("no puedo mañana"));
+// "Cansela" (2026-07-27, FB): "cancela" digitado com s ficou mudo — a família
+// de typos s/z tem que casar, e o burst inteiro ("Candela tube q salir de
+// viaje" + "Cansela") também.
+ck('"Cansela" (typo real 27/07) é cancel', isRescheduleRequest("Cansela"));
+ck('"canzelar" (typo z) é cancel', isRescheduleRequest("quiero canzelar la cita"));
+ck('"Candela tube q salir de viaje\\nCansela" (burst real) é cancel', isRescheduleRequest("Candela tube q salir de viaje\nCansela"));
 // Must NOT over-fire on plain closings / bare day-time
 ck('"Thank you." NÃO é reschedule', !isRescheduleRequest("Thank you."));
 ck('"Perfect sounds good Thank you" NÃO é reschedule', !isRescheduleRequest("Perfect sounds good Thank you"));

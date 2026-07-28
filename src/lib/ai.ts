@@ -940,7 +940,10 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
   // cancellation. The visit stayed booked (wasted trip) and the replacement time
   // was never picked up. A cancellation IS the reschedule family: engage and let
   // the model run [CANCEL_BOOKING] / [RESCHEDULE] per its existing rules.
-  /\b(cancel(l?(ed|ing|ation))?|cancelar?|cancelo|cancelen?|desmarcar?|anular?)\b/i,
+  // "Cansela" (2026-07-27, FB): booked client typed the Spanish "cancela" with
+  // an s ("Candela tube q salir de viaje" / "Cansela") and the cancel intent
+  // slipped through — tolerate the common s/z misspelling family too.
+  /\b(cancel(l?(ed|ing|ation))?|cancelar?|cancelo|cancelen?|can[sz]el\w*|desmarcar?|anular?)\b/i,
   // "I can't make it (tomorrow / Monday / at 3pm)" with no explicit "move/change"
   // verb is still a booked client telling us the visit will not happen — engage.
   /\bcan'?t\s+(?:make|do)\s+(?:it|the\s+(?:visit|appointment))\b/i,
