@@ -63,6 +63,10 @@ async function main() {
   ck("WA: extrai video_url", /"video_url", "videoUrl"/.test(wa), "");
   ck("WA: clicked_at do momment", /clicked_at: new Date\(Number\(body\.momment\)/.test(wa), "");
   ck("WA: source_id vira ad_id do contrato", /ad_id: adRefFunil\.adId/.test(wa), "");
+  // Formato REAL da Z-API (missão 28/07, 2ª rodada): externalAdReply na raiz.
+  ck("WA: lê externalAdReply no nível raiz (formato Z-API)", /asObj\(body\.externalAdReply\)/.test(wa), "");
+  ck("WA: externalAdReply só vira anúncio com sourceType=ad ou sourceId/ctwaClid", /sourceType === "ad" \|\| adId \|\| ctwaClid/.test(wa), "");
+  ck("WA: sourceUrl vira ad_ref do contrato", /ref: adRefFunil\.sourceUrl/.test(wa), "");
 
   console.log("\n[A3 colunas-fantasma banidas]");
   ck("IG: profile update sem ad_id/ad_title/creative_url", !/updateData\.(ad_id|ad_title|creative_url)/.test(ig), "gravação fantasma voltou");

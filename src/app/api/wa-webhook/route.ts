@@ -258,6 +258,35 @@ function extractWaAdReferral(
 ): { adId?: string; adTitle?: string; adImage?: string; adVideo?: string; sourceUrl?: string; sourceType?: string; ctwaClid?: string } | null {
   const asObj = (v: unknown): Record<string, unknown> | null =>
     v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+
+  // FORMATO REAL DA Z-API (confirmado na caixa-preta em 28/07 e documentado em
+  // developer.z-api.io/webhooks/on-message-received-examples): o clique num
+  // anúncio CTWA chega como objeto "externalAdReply" no NÍVEL RAIZ do webhook
+  // "Ao receber" — nunca como "referral" da Cloud API. O mesmo objeto também
+  // aparece em compartilhamentos de link comuns, então só conta como ANÚNCIO
+  // quando sourceType é "ad" ou quando há sourceId/ctwaClid.
+  const ear = asObj(body.externalAdReply);
+  if (ear) {
+    const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    const sourceType = s(ear.sourceType)?.toLowerCase();
+    const adId = s(ear.sourceId);
+    const ctwaClid = s(ear.ctwaClid);
+    if (sourceType === "ad" || adId || ctwaClid) {
+      return {
+        adId,
+        adTitle: [s(ear.title), s(ear.body)].filter(Boolean).join(" ") || undefined,
+        // thumbnailUrl = imagem do criativo pronta (mesmo em anúncio de VÍDEO)
+        adImage: s(ear.thumbnailUrl) ?? s(ear.originalImageUrl),
+        adVideo: undefined,
+        sourceUrl: s(ear.sourceUrl),
+        sourceType,
+        ctwaClid,
+      };
+    }
+    // externalAdReply de link comum (compartilhamento): NUNCA vira atribuição
+    // — segue para os formatos legados, que não conhecem essa chave.
+  }
+
   const candidates = [
     body.referral, body.referralMessage, body.adReferral, body.conversionSource, body.ctwaContext,
     asObj(body.message)?.referral, asObj(body.text)?.referral, asObj(body.notification)?.referral,
@@ -470,9 +499,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const adRefFunil = extractWaAdReferral(body);
     const referralFunilWa = adRefFunil
       ? {
-          ad_id: adRefFunil.adId, // source_id do WhatsApp = ad_id do contrato
+          ad_id: adRefFunil.adId, // sourceId/source_id do WhatsApp = ad_id do contrato
           ctwa_clid: adRefFunil.ctwaClid,
-          source: adRefFunil.sourceType, // source_type ("ad"/"post") → ad_source_type
+          source: adRefFunil.sourceType, // sourceType ("ad"/"post") → ad_source_type
+          ref: adRefFunil.sourceUrl, // sourceUrl (fb.me/…) → ad_ref do contrato
           // clicked_at = momment do callback Z-API (ms) — proxy do clique CTWA
           clicked_at: new Date(Number(body.momment) || Date.now()).toISOString(),
           ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage, video_url: adRefFunil.adVideo },

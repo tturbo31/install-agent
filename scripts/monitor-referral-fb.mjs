@@ -53,6 +53,31 @@ const refs = [];
 for (const c of capturas) {
   cont[c.canal] = cont[c.canal] ?? { t: 0, ref: 0 };
   cont[c.canal].t++;
+
+  // WA (Z-API): o clique de anúncio chega como "externalAdReply" no NÍVEL RAIZ
+  // (formato suportado desde 28/07, 2ª rodada) — só conta como anúncio quando
+  // sourceType é "ad" ou há sourceId/ctwaClid (link comum também traz o objeto).
+  let j = null;
+  try { j = JSON.parse(c.corpo); } catch { /* body não-JSON */ }
+  let ear = j?.externalAdReply;
+  if (!ear) {
+    // Payload real TRUNCADO pela captura (o adContext com Buffer serializado
+    // estoura o teto de ~12,8KB e corta o fim do JSON — caso real 28/07): o
+    // externalAdReply é flat e vem antes do corte, então regex recupera.
+    const m = c.corpo.match(/"externalAdReply":(\{[^{}]*\})/);
+    if (m) { try { ear = JSON.parse(m[1]); } catch { /* ilegível */ } }
+  }
+  if (ear && typeof ear === "object" && (ear.sourceType === "ad" || ear.sourceId || ear.ctwaClid)) {
+    cont[c.canal].ref++;
+    refs.push({
+      canal: c.canal, quando: new Date(c.epoch).toISOString(),
+      ad_id: ear.sourceId ?? null, titulo: String(ear.title ?? "").slice(0, 80) || null,
+      ctwa: ear.ctwaClid ? `${String(ear.ctwaClid).slice(0, 12)}…` : null,
+      source: ear.sourceType ?? null, posFix: c.epoch > MARCO_FIX,
+    });
+    continue;
+  }
+
   if (!/"referral"/.test(c.corpo)) continue;
   cont[c.canal].ref++;
   const ad_id = c.corpo.match(/"ad_id":"?(\d+)/)?.[1] ?? null;
@@ -76,5 +101,8 @@ if (fbPos > 0) {
 } else {
   console.log(`⏳ FB: nenhum referral de Messenger após a correção ainda — precisa de um CLIQUE em anúncio indo ao Messenger (teste: "TESTE CRIATIVO FB"). Sem clique, nada aparece mesmo com tudo certo.`);
 }
-if (cont.wa.ref > 0) console.log(`⚠️ WA: referral apareceu via Z-API (inesperado — ótimo sinal, avisar).`);
-else console.log(`WA: 0 referral — esperado: Z-API (não-oficial) não repassa referral/ctwa_clid; ver DIAGNOSTICO_FB_WA.md.`);
+if (cont.wa.ref > 0) {
+  console.log(`✅ WA: ${cont.wa.ref} clique(s) de anúncio via externalAdReply — formato Z-API SUPORTADO (extração + repasse ativos desde 28/07).`);
+} else {
+  console.log(`⏳ WA: nenhum externalAdReply de anúncio nas últimas ${HORAS}h — o formato Z-API é SUPORTADO; precisa de um CLIQUE em anúncio de WhatsApp (teste: "TESTE CRIATIVO WA"). Se um clique de teste não aparecer aqui, conferir no painel da Z-API se o webhook "Ao receber" está na versão que envia externalAdReply.`);
+}

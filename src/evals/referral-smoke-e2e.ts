@@ -84,7 +84,9 @@ async function main() {
   const IG_ORG_ID = `98${Date.now()}`.slice(0, 16);
   const FB_PSID = `55${Date.now()}`.slice(0, 16);
   const WA_FONE = `1555010${String(Date.now()).slice(-4)}`;
-  const igsids = [IG_ID, IG_ORG_ID, `fb_${FB_PSID}`, `wa_${WA_FONE}`];
+  const WA_FONE_LINK = `1555011${String(Date.now()).slice(-4)}`; // externalAdReply de link comum
+  const WA_FONE_ORG = `1555012${String(Date.now()).slice(-4)}`; // sem externalAdReply
+  const igsids = [IG_ID, IG_ORG_ID, `fb_${FB_PSID}`, `wa_${WA_FONE}`, `wa_${WA_FONE_LINK}`, `wa_${WA_FONE_ORG}`];
 
   console.log(`═══ SMOKE E2E REFERRAL — tag ${TAG} | dev :${DEV_PORT} | sink :${SINK_PORT} ═══`);
 
@@ -199,31 +201,75 @@ async function main() {
       ck("FB: canal=facebook", evFb.canal === "facebook", String(evFb.canal));
     }
 
-    // ── 3) WHATSAPP: referral CTWA no callback Z-API ──
-    console.log("\n[3/4] WA com referral CTWA (source_id/ctwa_clid)");
+    // ── 3) WHATSAPP: clique de anúncio CTWA no formato REAL da Z-API ──
+    // externalAdReply no NÍVEL RAIZ (developer.z-api.io/webhooks/
+    // on-message-received-examples + payload real da caixa-preta 28/07).
+    console.log("\n[3/6] WA com externalAdReply de ANÚNCIO (formato Z-API)");
     const waBody = JSON.stringify({
       type: "ReceivedCallback",
       instanceId: process.env.ZAPI_INSTANCE_ID ?? undefined,
       phone: WA_FONE, fromMe: false, momment: agora, messageId: `mid_${TAG}_wa`,
       text: { message: "Hi, I saw your ad" },
-      referral: { source_id: "120200000000000003", source_type: "ad", source_url: "https://fb.com/ads/smoke",
-        headline: `TILE 1000 sqft ${TAG}`, body: "Installation special", media_type: "image",
-        image_url: "https://example.com/smoke-wa.jpg", ctwa_clid: `clid_${TAG}` },
+      externalAdReply: {
+        title: `TILE 1000 sqft ${TAG}`, body: "Installation special", mediaType: "VIDEO",
+        thumbnailUrl: "https://example.com/smoke-wa.jpg",
+        mediaUrl: "https://www.facebook.com/story.php?story_fbid=1",
+        sourceType: "ad", sourceId: "120200000000000003", sourceUrl: "https://fb.me/smokewa",
+        ctwaClid: `clid_${TAG}`, showAdAttribution: true,
+      },
     });
     const waToken = process.env.ZAPI_WEBHOOK_TOKEN;
-    r = await fetch(`http://127.0.0.1:${DEV_PORT}/api/wa-webhook${waToken ? `?token=${encodeURIComponent(waToken)}` : ""}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: waBody,
-    });
+    const waUrl = `http://127.0.0.1:${DEV_PORT}/api/wa-webhook${waToken ? `?token=${encodeURIComponent(waToken)}` : ""}`;
+    r = await fetch(waUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: waBody });
     ck("WA: webhook aceitou (200)", r.status === 200, `HTTP ${r.status}`);
     const evWa = await esperarEvento((e) => e.evento === "lead_criado" && typeof e.telefone === "string" && (e.telefone as string).includes(WA_FONE));
     ck("WA: lead_criado chegou ao sink", !!evWa, "");
     if (evWa) {
-      ck("WA: contrato (source_id→ad_id, ctwa_clid, source_type, headline+body→title)", evWa.ad_id === "120200000000000003" && evWa.ctwa_clid === `clid_${TAG}` && evWa.ad_source_type === "ad" && evWa.ad_title === `TILE 1000 sqft ${TAG} Installation special` && evWa.ad_media_url === "https://example.com/smoke-wa.jpg" && typeof evWa.ad_clicked_at === "string", JSON.stringify(evWa));
+      ck("WA: contrato (sourceId→ad_id, ctwaClid, sourceType, title+body→ad_title, thumbnailUrl→media, sourceUrl→ad_ref)", evWa.ad_id === "120200000000000003" && evWa.ctwa_clid === `clid_${TAG}` && evWa.ad_source_type === "ad" && evWa.ad_title === `TILE 1000 sqft ${TAG} Installation special` && evWa.ad_media_url === "https://example.com/smoke-wa.jpg" && evWa.ad_ref === "https://fb.me/smokewa" && typeof evWa.ad_clicked_at === "string", JSON.stringify(evWa));
       ck("WA: canal=whatsapp", evWa.canal === "whatsapp", String(evWa.canal));
     }
 
+    // ── 3b) WHATSAPP: externalAdReply de LINK COMUM (compartilhamento) ──
+    // sourceType ausente e sem sourceId/ctwaClid → NUNCA vira atribuição.
+    console.log("\n[4/6] WA com externalAdReply de link comum (não-anúncio)");
+    const waLinkBody = JSON.stringify({
+      type: "ReceivedCallback",
+      instanceId: process.env.ZAPI_INSTANCE_ID ?? undefined,
+      phone: WA_FONE_LINK, fromMe: false, momment: agora, messageId: `mid_${TAG}_walink`,
+      text: { message: "Look at this article" },
+      externalAdReply: {
+        title: "Some news article", body: "Shared link preview", mediaType: 1,
+        thumbnailUrl: "https://example.com/article.jpg", sourceUrl: "https://news.example.com/post",
+      },
+    });
+    r = await fetch(waUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: waLinkBody });
+    ck("WA-LINK: webhook aceitou (200)", r.status === 200, `HTTP ${r.status}`);
+    const evWaLink = await esperarEvento((e) => e.evento === "lead_criado" && typeof e.telefone === "string" && (e.telefone as string).includes(WA_FONE_LINK));
+    ck("WA-LINK: lead_criado chegou ao sink", !!evWaLink, "");
+    if (evWaLink) {
+      const semAdLink = ["ad_id", "ctwa_clid", "ad_source_type", "ad_title", "ad_media_url", "ad_post_id", "ad_ref", "ad_clicked_at", "ad_name"].every((k) => !(k in evWaLink));
+      ck("WA-LINK: payload SEM campos ad_* (sem falsa atribuição)", semAdLink, JSON.stringify(evWaLink));
+    }
+
+    // ── 3c) WHATSAPP: mensagem comum, sem externalAdReply ──
+    console.log("\n[5/6] WA sem externalAdReply (orgânico)");
+    const waOrgBody = JSON.stringify({
+      type: "ReceivedCallback",
+      instanceId: process.env.ZAPI_INSTANCE_ID ?? undefined,
+      phone: WA_FONE_ORG, fromMe: false, momment: agora, messageId: `mid_${TAG}_waorg`,
+      text: { message: "Do you install baseboards?" },
+    });
+    r = await fetch(waUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: waOrgBody });
+    ck("WA-ORG: webhook aceitou (200)", r.status === 200, `HTTP ${r.status}`);
+    const evWaOrg = await esperarEvento((e) => e.evento === "lead_criado" && typeof e.telefone === "string" && (e.telefone as string).includes(WA_FONE_ORG));
+    ck("WA-ORG: lead_criado chegou ao sink", !!evWaOrg, "");
+    if (evWaOrg) {
+      const semAdOrg = ["ad_id", "ctwa_clid", "ad_source_type", "ad_title", "ad_media_url", "ad_post_id", "ad_ref", "ad_clicked_at", "ad_name"].every((k) => !(k in evWaOrg));
+      ck("WA-ORG: payload SEM campos ad_*", semAdOrg, JSON.stringify(evWaOrg));
+    }
+
     // ── 4) SEM referral: nada quebra, nada de ad_* no payload ──
-    console.log("\n[4/4] IG orgânico (sem referral)");
+    console.log("\n[6/6] IG orgânico (sem referral)");
     const orgBody = JSON.stringify({
       object: "instagram",
       entry: [{ id: "17841400000000000", time: agora, messaging: [{
@@ -258,6 +304,10 @@ async function main() {
     }
     const { data: orgAdx } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", `funil_adx_${convIds[IG_ORG_ID]}%`).limit(1);
     ck("ORG: NENHUM funil_adx_ criado", !orgAdx || orgAdx.length === 0, orgAdx?.[0]?.platform ?? "");
+    for (const [rotulo, igsid] of [["WA-LINK", `wa_${WA_FONE_LINK}`], ["WA-ORG", `wa_${WA_FONE_ORG}`]] as const) {
+      const { data: adx } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", `funil_adx_${convIds[igsid]}%`).limit(1);
+      ck(`${rotulo}: NENHUM funil_adx_ criado`, !adx || adx.length === 0, adx?.[0]?.platform ?? "");
+    }
     for (const canal of ["ig", "fb", "wa"] as const) {
       const { data } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", `funil_raw_${canal}_%${TAG}%`).limit(5);
       ck(`${canal}: captura RAW do body completo no banco`, (data ?? []).length > 0, "nenhuma linha funil_raw_ com o TAG");
