@@ -116,7 +116,9 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /(foto|imagem|amostra|cat[aá]logo)\s+dos?\s+(pisos?|chão|ch[aã]o|op[cç])/i,
     ],
     id: "see_options_pt",
-    response: "Para isso é melhor falar direto com a nossa equipe pelo WhatsApp no (561) 674-8334, que a gente te ajuda a encontrar o piso ideal![NOTIFY_OWNER]",
+    // Regra do dono (2026-07-27): pedido de amostras/fotos → manda o LINK DO
+    // SITE direto (antes era redirect pro WhatsApp da equipe).
+    response: "Claro! Você pode ver nossos pisos em https://www.ozzifloors.com, e eu também levo todas as amostras na visita grátis para você comparar direto no seu piso. É só uma área ou a casa toda?",
     skipIfSubstantive: true,
   },
   {
@@ -146,7 +148,9 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /what\s+(?:do\s+you\s+(?:have|carry|sell|offer|got)|(?:kinds?|types?|colou?rs?|styles?|options?|designs?|finishes?)\s+(?:do\s+you|are\s+(?:available|there)))/i,
     ],
     id: "see_options_en",
-    response: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor![NOTIFY_OWNER]",
+    // Owner rule (2026-07-27): samples/photos requests get the WEBSITE link
+    // directly (was: redirect to the team's WhatsApp).
+    response: "Of course! You can see our floors at https://www.ozzifloors.com, and I also bring all the samples to your free visit so you can compare them right on your floor. Is it just one area or the whole house?",
     skipIfSubstantive: true,
   },
   {
@@ -260,19 +264,13 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   // vinyl description; tile questions get the Floor & Decor answer. All three
   // must bypass the "redirect to WhatsApp" options deflection.
   const skipDeflection = SUBSTANTIVE_PRODUCT_Q.test(text) || PRODUCT_TYPE_Q.test(text) || /\b(tile|porcelain|ceramic)\b/i.test(text);
-  // The client is ALREADY talking to us on WhatsApp (the wa-webhook injects the
-  // [WHATSAPP CHANNEL ...] note): telling them to "message our team on WhatsApp"
-  // reads broken and killed threads (2026-07-15 review, 4 conversations). Same
-  // handoff, channel-appropriate wording: the team follows up right here.
-  const onWhatsApp = messages.some((m) => /\[WHATSAPP CHANNEL/i.test(m.content));
+  // (2026-07-27) The see_options responses now send the WEBSITE link, which
+  // reads fine on every channel — the old [WHATSAPP CHANNEL] special wording
+  // ("team follows up right here") is no longer needed.
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
       if (rule.id === "price_negotiation") return priceNegotiationHandoff(text);
-      if (onWhatsApp && rule.id === "see_options_en")
-        return "I'll have our team send you some photos of the options right here![NOTIFY_OWNER]";
-      if (onWhatsApp && rule.id === "see_options_pt")
-        return "Vou pedir para a nossa equipe te mandar fotos das opções por aqui mesmo![NOTIFY_OWNER]";
       if (rule.id === "what_included") {
         // Known type → its exact inclusions.
         if (adType) return whatIsIncludedResponseFor(adType);

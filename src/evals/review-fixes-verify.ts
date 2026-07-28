@@ -106,12 +106,12 @@ async function main() {
   ck("job seeker 1st contact → [REACT_ONLY], zero tokens", jobseeker.text === "[REACT_ONLY]" && jobseeker.inputTokens === 0, jobseeker.text);
   ck("openerLang: 'Quw material de loza es ese' → es", openerLang("Quw material de loza es ese") === "es");
 
-  console.log("\n[E] Photo/catalog request INSIDE WhatsApp → no 'message us on WhatsApp'");
+  console.log("\n[E] Photo/samples request → link do site (regra do dono 27/07), nunca redirect de WhatsApp");
   const waNote = "\n\n[SYSTEM: TODAY: Wednesday, July 15, 2026 [2026-07-15].\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Generate [BOOK:...] using \"13055551234\" as the phone.]]";
   const waPhotos = await getAIResponse([U("Can you send me photos of your floors?" + waNote)], null, null, null, false);
-  ck("WA photo request → 'right here' handoff, not a WhatsApp redirect", /right here/i.test(waPhotos.text) && !/message our team directly on whatsapp/i.test(waPhotos.text) && waPhotos.text.includes("[NOTIFY_OWNER]"), waPhotos.text);
+  ck("WA photo request → link ozzifloors.com, sem redirect de WhatsApp", /ozzifloors\.com/i.test(waPhotos.text) && !/message our team directly on whatsapp/i.test(waPhotos.text), waPhotos.text);
   const igPhotos = await getAIResponse([U("Can you send me photos of your floors?" + NOTE)], null, null, null, false);
-  ck("IG/FB photo request → WhatsApp redirect UNCHANGED", /message our team directly on whatsapp at \(561\) 674-8334/i.test(igPhotos.text), igPhotos.text);
+  ck("IG/FB photo request → link ozzifloors.com, sem redirect de WhatsApp", /ozzifloors\.com/i.test(igPhotos.text) && !/message our team directly on whatsapp/i.test(igPhotos.text), igPhotos.text);
 
   console.log(`\n========== REVIEW-FIXES-VERIFY: ${passed} passed, ${failed} failed ==========`);
   if (fails.length) for (const f of fails) console.log(`  ✗ ${f}`);

@@ -245,17 +245,17 @@ check(17, "'Is labor included': hardcoded response", r, {
   notContains: [/\$5|\$4\.50/i],
 });
 
-// T18 — "Can you send me photos?" → redirect to team WhatsApp, NO [SEND_IMAGES] tag
+// T18 — "Can you send me photos?" → website link (owner rule 2026-07-27), NO [SEND_IMAGES] tag
 r = await ask([{ role: "user", content: "Can you send me photos of the floors?" }]);
-check(18, "'Send photos': redirect to WhatsApp, no [SEND_IMAGES]", r, {
-  contains: [/674[-\s]?8334/],
+check(18, "'Send photos': website link, no [SEND_IMAGES]", r, {
+  contains: [/ozzifloors\.com/i],
   notContains: [/\[SEND_IMAGES/i],
 });
 
-// T19 — "Do you have any samples?" → redirect to team WhatsApp
+// T19 — "Do you have any samples?" → website link (owner rule 2026-07-27)
 r = await ask([{ role: "user", content: "Do you have any samples available?" }]);
-check(19, "'Samples available': redirect to WhatsApp", r, {
-  contains: [/674[-\s]?8334/],
+check(19, "'Samples available': website link", r, {
+  contains: [/ozzifloors\.com/i],
   notContains: [/\[SEND_IMAGES/i],
 });
 

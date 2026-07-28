@@ -191,6 +191,18 @@ const GRADERS = {
     label: 'Redirects to team WhatsApp (561) 674-8334, no website',
     check: (t: string) => /674[-\s]?8334/.test(t) && !/ozzifloors\.com|@ozzi\.floors/i.test(t),
   },
+  sendsWebsite: {
+    label: 'Sends the website link ozzifloors.com (owner rule 2026-07-27: samples/photos/colors → site)',
+    check: (t: string) => /ozzifloors\.com/i.test(t),
+  },
+  cantSeeAdListsFloors: {
+    label: "Says it can't see/verify their ad + names vinyl (marble/wood finish) offering",
+    check: (t: string) =>
+      /can'?t\s+(?:see|verify|check|tell)|cannot\s+(?:see|verify|check|tell)|no\s+puedo\s+(?:ver|verificar)|unable\s+to\s+(?:see|verify)|don'?t\s+have\s+(?:a\s+way|access)/i.test(t) &&
+      /vinyl|vinil/i.test(t) &&
+      /marble|m[áa]rmol|marmore/i.test(t) &&
+      /wood|madera|madeira/i.test(t),
+  },
   noSchedulingPush: {
     label: 'No scheduling pressure (no clock time, no "what time/which works", no slot-menu re-offer)',
     check: (t: string) => {
@@ -392,10 +404,20 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "hasWhatIsIncluded", "noOldVerboseIncluded"],
   },
   {
-    // Regression: AI was generating [SEND_IMAGES] and sending image links
-    name: 'Photo request → redirect to WhatsApp, no [SEND_IMAGES], no website',
+    // Regression: AI was generating [SEND_IMAGES] and sending image links.
+    // Owner rule 2026-07-27: samples/photos requests now get the WEBSITE link
+    // (https://www.ozzifloors.com), not the WhatsApp redirect.
+    name: 'Photo request → send website link, no [SEND_IMAGES]',
     messages: [{ role: "user", content: "Can you send me photos of your floors?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "redirectsToWhatsApp"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "sendsWebsite"],
+  },
+  {
+    // Owner rule 2026-07-27: asked which floor the AD showed → the bot cannot
+    // see the ad from any channel; say so and present what we install and what
+    // we sell (luxury vinyl in marble or wood finish). Never guess the ad type.
+    name: '[NEW] "Which floor is in the ad?" → cannot verify + lists what we install/sell',
+    messages: [{ role: "user", content: "Which type of floor is the one in your ad I saw?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "cantSeeAdListsFloors"],
   },
   {
     // New opener: we advertise tile/vinyl/hardwood at different rates and can't
@@ -472,10 +494,11 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noConflictingSlot"],
   },
 
-  // ── MATERIAL OPTIONS / SPECIFIC FLOOR → redirect to WhatsApp ──────────────
-  // Owner rule: questions about which floors/colors/options we have, or a
-  // specific floor, must redirect to our WhatsApp — no website, no photos, no
-  // color names, no answer. (Capability questions are answered; tile → F&D.)
+  // ── MATERIAL OPTIONS / SPECIFIC FLOOR ─────────────────────────────────────
+  // Owner rule 2026-07-27: explicit "show me / send samples / photos / colors"
+  // requests now get the WEBSITE link (https://www.ozzifloors.com); the bot
+  // still never lists color/product names itself. (Capability questions are
+  // answered; tile → F&D.)
   // Owner correction (2026-06-06): "what is the material / what kind of materials
   // / material allowance / what options" are PRODUCT-TYPE questions → describe the
   // luxury vinyl, send NO link. Only explicit "show me / photos / colors" requests
@@ -512,16 +535,17 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsVinyl"],
   },
   {
-    // The "see" case still redirects — explicit photo request → WhatsApp.
-    name: '[KEEP] "Can you send photos of your floors?" → redirect to WhatsApp (explicit see request)',
+    // The "see" case now gets the WEBSITE (owner rule 2026-07-27), still no
+    // color/product names listed by the bot itself.
+    name: '"Can you send photos of your floors?" → website link (explicit see request)',
     messages: [{ role: "user", content: "Can you send me photos of your floors?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "redirectsToWhatsApp"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "sendsWebsite"],
   },
   {
-    // Color/style request is a "see" request → still redirects.
-    name: '[KEEP] "What colors do you have?" → redirect to WhatsApp (color = see request)',
+    // Color/style request is a "see" request → website link too.
+    name: '"What colors do you have?" → website link (color = see request)',
     messages: [{ role: "user", content: "What colors do you have?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "redirectsToWhatsApp"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noColorNames", "sendsWebsite"],
   },
 
   // ── NO-PRESSURE REGRESSION TESTS ─────────────────────────────────────────
