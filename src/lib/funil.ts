@@ -67,7 +67,9 @@ export function contratoAnuncio(r: ReferralIG): ContratoAnuncio {
     ctwa_clid: limpo(r.ctwa_clid, 200),
     ad_source_type: limpo(r.source, 40) ?? limpo(r.type, 40),
     ad_title: limpo(r.ads_context_data?.ad_title),
-    ad_media_url: limpo(r.ads_context_data?.photo_url, 500) ?? limpo(r.ads_context_data?.video_url, 500),
+    // 1000: URLs do fbcdn passam de 500 chars (caso real 28/07: video_url de
+    // ~590 no FB) — truncar quebra a imagem (o hash oh= fica cortado).
+    ad_media_url: limpo(r.ads_context_data?.photo_url, 1000) ?? limpo(r.ads_context_data?.video_url, 1000),
     ad_post_id: limpo(r.ads_context_data?.post_id, 80),
     ad_ref: limpo(r.ref, 200),
     ad_clicked_at: limpo(r.clicked_at, 40),
