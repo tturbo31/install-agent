@@ -386,6 +386,24 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
       return;
     }
 
+    // 1b) REFERRAL TARDIO (caso real paisirma 28/07 21:02): a Meta às vezes
+    // entrega o 1º webhook SEM referral (icebreaker) e o referral chega na
+    // mensagem seguinte — o lead_criado já saiu sem atribuição. Re-envia
+    // lead_criado só com identidade + contrato: a plataforma faz merge
+    // fill-if-empty (nunca sobrescreve, não mexe em estágio, não duplica).
+    if (referral) {
+      const ad = await dadosDeAnuncioDaConversa(conv.id, referral);
+      if (contratoTemDados(ad.contrato)) {
+        await enviarEventoFunil("lead_criado", {
+          ...base,
+          canal: canalDe(conv.igsid),
+          ...ad.contrato,
+          ad_name: ad.ad_name ?? undefined,
+          campanha: ad.campanha ?? undefined,
+        });
+      }
+    }
+
     // 2) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
     // flag envia; nas demais instâncias/mensagens vira no-op.
     if ((await estaSumido(conv.id)) && (await limparSumido(conv.id))) {
