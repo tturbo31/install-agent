@@ -112,7 +112,7 @@ async function processBookingCommand(
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
         // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
         waitUntil(funilOnBookingConfirmed(conversationId, `fb_${psid}`, {
-          date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+          date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name, address: bookingData.address,
         }));
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
@@ -176,7 +176,7 @@ async function processBookingCommand(
         .eq("id", conversationId);
       // FUNIL: visita confirmada → agendamento_marcado (data_visita em ISO).
       waitUntil(funilOnBookingConfirmed(conversationId, `fb_${psid}`, {
-        date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+        date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name, address: bookingData.address,
       }));
       return { response: bookingSuccessMessage(lang), booked: true };
     } else if (result.error === "already_booked") {

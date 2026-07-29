@@ -145,7 +145,7 @@ async function processBookingCommand(
           .eq("id", conversationId);
         // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
         waitUntil(funilOnBookingConfirmed(conversationId, senderIgsid, {
-          date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+          date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name, address: bookingData.address,
         }));
         return { response: rescheduleSuccessMessage(lang), booked: true };
       }
@@ -229,7 +229,7 @@ async function processBookingCommand(
       // FUNIL: visita confirmada → agendamento_marcado (data_visita em ISO com
       // o horário combinado). Fire-and-forget: nunca atrasa a confirmação.
       waitUntil(funilOnBookingConfirmed(conversationId, senderIgsid, {
-        date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name,
+        date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name, address: bookingData.address,
       }));
       return {
         response: bookingSuccessMessage(lang),

@@ -432,7 +432,7 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
 export async function funilOnBookingConfirmed(
   conversationId: string,
   igsid: string,
-  booking: { date?: string; time?: string; phone?: string; name?: string }
+  booking: { date?: string; time?: string; phone?: string; name?: string; address?: string }
 ): Promise<void> {
   try {
     const { data: convRow } = await supabaseAdmin
@@ -466,9 +466,12 @@ export async function funilOnBookingConfirmed(
 
     if (!booking.date || !booking.time) return;
     await limparSumido(conversationId); // agendou = não está sumido (sem evento)
+    const endereco = booking.address?.trim().slice(0, 300);
     await enviarEventoFunil("agendamento_marcado", {
       ...base,
       data_visita: dataVisitaIso(booking.date, booking.time),
+      // endereço coletado no agendamento (a plataforma mostra na agenda)
+      ...(endereco ? { endereco } : {}),
     });
   } catch (err) {
     console.warn("[FUNIL] funilOnBookingConfirmed falhou (atendimento intacto):", String(err).slice(0, 200));
