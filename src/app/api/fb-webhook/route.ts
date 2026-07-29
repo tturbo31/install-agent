@@ -493,10 +493,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // mode=human de propósito: a resposta do cliente conta para o funil mesmo
     // com o dono no controle. Só quando ESTA instância inseriu a mensagem.
     if (insertedMsg?.id) {
-      // ── Atribuição de CRIATIVO (caso real 2026-07-27: 0 leads com anúncio) ──
-      // Igual ao IG: referral de engajamento vem sem ad_id; o clique entrega o
-      // criativo como attachment (share/template/video) e o TÍTULO identifica o
-      // criativo. Referral com ad_id/título (CTM) segue como fonte primária.
+      // ── Atribuição de CRIATIVO ──
+      // Fonte ÚNICA: o referral real da Meta (com ad_id/ads_context_data), que
+      // chega nos 3 canais desde 28/07. Share NÃO atribui (post orgânico
+      // compartilhado virava criativo falso). Referral cru vai pro log.
       if (messaging.referral) {
         console.log("[FUNIL] referral cru (fb):", JSON.stringify(messaging.referral).slice(0, 500));
       }
@@ -510,9 +510,6 @@ async function handleFbMessage(body: Record<string, unknown>) {
         ? { ...refBruto, clicked_at: new Date(tsMsg < 1e12 ? tsMsg * 1000 : tsMsg).toISOString() }
         : null;
       const shareAtt = attachments.find((a) => a.type !== "image" && a.type !== "audio");
-      const sharePayload = shareAtt?.payload as Record<string, unknown> | undefined;
-      const shareTitleAd = (sharePayload?.title as string) ?? undefined;
-      const shareUrlAd = (sharePayload?.url as string) ?? undefined;
       // P0 (auditoria 28/07): captura crua persistente p/ provar o formato real
       if (refBruto || shareAtt) {
         waitUntil(
@@ -527,13 +524,11 @@ async function handleFbMessage(body: Record<string, unknown>) {
           })
         );
       }
-      const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
-      const referralFunil =
-        refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
-          ? refComClique
-          : shareTitleAd && !ehPlantaBaixa
-            ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrlAd } }
-            : refComClique;
+      // 29/07: o fallback de título de share FOI REMOVIDO da atribuição — o
+      // referral real da Meta chega nos 3 canais (provado 14/14 em 29/07) e o
+      // share de post ORGÂNICO virava criativo falso (casos "Amen🙏" e
+      // "Have a blessed Wednesday"). Share segue capturado no raw p/ diagnóstico.
+      const referralFunil = refComClique;
       waitUntil(
         funilOnInboundMessage(
           { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },

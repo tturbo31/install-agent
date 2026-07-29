@@ -596,12 +596,10 @@ async function handleWebhook(body: WebhookPayload) {
     // propósito: a resposta do cliente conta para o funil mesmo com o dono no
     // controle da conversa.
     if (insertedMsg?.id) {
-      // ── Atribuição de CRIATIVO (caso real 2026-07-27: 0 leads com anúncio) ──
-      // O referral dos anúncios de engajamento chega SEM ad_id/ads_context_data
-      // (só CTM/CTWA trazem) — mas o clique no anúncio entrega o próprio criativo
-      // como SHARE na 1ª mensagem, e o TÍTULO do share identifica o criativo.
-      // Referral com ad_id/título continua sendo a fonte primária; o share é o
-      // fallback. Referral cru vai pro log para diagnosticarmos formatos novos.
+      // ── Atribuição de CRIATIVO ──
+      // Fonte ÚNICA: o referral real da Meta (com ad_id/ads_context_data), que
+      // chega nos 3 canais desde 28/07. Share NÃO atribui (post orgânico
+      // compartilhado virava criativo falso). Referral cru vai pro log.
       if (messaging.referral) {
         console.log("[FUNIL] referral cru:", JSON.stringify(messaging.referral).slice(0, 500));
       }
@@ -626,14 +624,11 @@ async function handleWebhook(body: WebhookPayload) {
           })
         );
       }
-      const shareTitleAd = (shareAttachment?.payload as Record<string, unknown> | undefined)?.title as string | undefined;
-      const ehPlantaBaixa = shareTitleAd ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitleAd) : false;
-      const referralFunil =
-        refBruto?.ad_id || refBruto?.ads_context_data?.ad_title
-          ? refComClique
-          : shareTitleAd && !ehPlantaBaixa
-            ? { ads_context_data: { ad_title: shareTitleAd, photo_url: shareUrl ?? undefined } }
-            : refComClique;
+      // 29/07: o fallback de título de share FOI REMOVIDO da atribuição — o
+      // referral real da Meta chega nos 3 canais (provado 14/14 em 29/07) e o
+      // share de post ORGÂNICO virava criativo falso (casos "Amen🙏" e
+      // "Have a blessed Wednesday"). Share segue capturado no raw p/ diagnóstico.
+      const referralFunil = refComClique;
       waitUntil(
         funilOnInboundMessage(
           { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username, created_at: conversation.created_at },
