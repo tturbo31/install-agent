@@ -56,7 +56,7 @@ async function main() {
 
   console.log("\n[A2 extração — 3 lugares do referral]");
   ck("IG: lê message.referral + messaging.referral + postback.referral", /messaging\.message\?\.referral \?\? messaging\.referral \?\? postbackIG\?\.referral/.test(ig), "");
-  ck("IG: clicked_at do timestamp do evento", /clicked_at: new Date\(messaging\.timestamp/.test(ig), "");
+  ck("IG: clicked_at do timestamp do evento (normalizado s→ms)", /tsRef = messaging\.timestamp/.test(ig) && /clicked_at: new Date\(tsRef < 1e12 \? tsRef \* 1000 : tsRef\)/.test(ig), "");
   ck("FB: lê msg.referral + messaging.referral", /msg\?\.referral as RefFbMsg \| undefined\) \?\? \(messaging\.referral/.test(fb), "");
   ck("FB: standalone (sem mid) enriquecido com clicked_at", /refSoloBruto[\s\S]{0,200}clicked_at/.test(fb), "");
   ck("WA: extrai source_type", /"source_type", "sourceType"/.test(wa), "");

@@ -610,8 +610,10 @@ async function handleWebhook(body: WebhookPayload) {
       const refBruto = messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral ?? null;
       // Timestamp do clique = timestamp do evento que trouxe o referral (a Meta
       // não manda o instante do clique em si; este é o melhor proxy).
+      // (timestamp em segundos — caso do evento standalone no FB — é normalizado)
+      const tsRef = messaging.timestamp || Date.now();
       const refComClique = refBruto
-        ? { ...refBruto, clicked_at: new Date(messaging.timestamp || Date.now()).toISOString() }
+        ? { ...refBruto, clicked_at: new Date(tsRef < 1e12 ? tsRef * 1000 : tsRef).toISOString() }
         : null;
       // P0 (auditoria 28/07): captura crua persistente do que a Meta entrega em
       // clique de anúncio — prova o formato real (logs da Vercel truncam/expiram)

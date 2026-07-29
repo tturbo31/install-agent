@@ -350,9 +350,12 @@ async function handleFbMessage(body: Record<string, unknown>) {
       type RefFb = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
       const postbackFb = messaging.postback as { title?: string; payload?: string; referral?: RefFb } | undefined;
       const refSoloBruto = (messaging.referral as RefFb | undefined) ?? postbackFb?.referral;
-      // clicked_at = timestamp do evento que trouxe o referral (proxy do clique)
+      // clicked_at = timestamp do evento que trouxe o referral (proxy do clique).
+      // O evento standalone messaging_referrals chega com timestamp em SEGUNDOS
+      // (a mensagem chega em ms) — normalizar antes de converter.
+      const tsSolo = (messaging.timestamp as number) || Date.now();
       const refSolo = refSoloBruto
-        ? { ...refSoloBruto, clicked_at: new Date((messaging.timestamp as number) || Date.now()).toISOString() }
+        ? { ...refSoloBruto, clicked_at: new Date(tsSolo < 1e12 ? tsSolo * 1000 : tsSolo).toISOString() }
         : undefined;
       if (refSolo || postbackFb) {
         console.log("[FUNIL] referral cru (fb standalone):", JSON.stringify(refSolo ?? postbackFb).slice(0, 500));
@@ -502,8 +505,9 @@ async function handleFbMessage(body: Record<string, unknown>) {
       type RefFbMsg = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
       const refBruto =
         ((msg?.referral as RefFbMsg | undefined) ?? (messaging.referral as RefFbMsg | undefined)) ?? null;
+      const tsMsg = (messaging.timestamp as number) || Date.now();
       const refComClique = refBruto
-        ? { ...refBruto, clicked_at: new Date((messaging.timestamp as number) || Date.now()).toISOString() }
+        ? { ...refBruto, clicked_at: new Date(tsMsg < 1e12 ? tsMsg * 1000 : tsMsg).toISOString() }
         : null;
       const shareAtt = attachments.find((a) => a.type !== "image" && a.type !== "audio");
       const sharePayload = shareAtt?.payload as Record<string, unknown> | undefined;
