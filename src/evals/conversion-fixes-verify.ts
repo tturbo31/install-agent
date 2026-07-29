@@ -22,7 +22,7 @@ import {
   getAIResponse,
   type ChatMessage,
 } from "@/lib/ai";
-import { OPENER_ES, OPENER_EN } from "@/lib/system-prompt";
+import { OPENER_ES, OPENER_EN, OPENER_LOCATION_EN, OPENER_LOCATION_ES } from "@/lib/system-prompt";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -308,6 +308,98 @@ async function repeatInterceptChecks() {
     "…e a resposta engaja o agendamento da visita",
     /visit|schedule|come by|stop by|day|time|week/i.test(burstWithSchedule.text),
     burstWithSchedule.text.slice(0, 100)
+  );
+
+  // ── Caso Tom Kiper (2026-07-29): "Where are you located" ──────────────────
+  console.log("\n── 5b. Location question + repeat after type-ask opener (Tom Kiper) ──");
+  // First contact: the location question gets the deterministic location
+  // opener (answer + type-ask), zero tokens — never the generic opener.
+  const locFirst = await getAIResponse(
+    [{ role: "user", content: "Where are you located" }],
+    null, null, null, false
+  );
+  check(
+    "1º contato 'Where are you located' → opener de localização, zero tokens",
+    locFirst.text === OPENER_LOCATION_EN && locFirst.inputTokens === 0,
+    locFirst.text.slice(0, 80)
+  );
+  const locFirstEs = await getAIResponse(
+    [{ role: "user", content: "Hola, dónde están ubicados?" }],
+    null, null, null, false
+  );
+  check(
+    "1º contato ES 'dónde están ubicados' → opener ES de localização",
+    locFirstEs.text === OPENER_LOCATION_ES && locFirstEs.inputTokens === 0,
+    locFirstEs.text.slice(0, 80)
+  );
+
+  // The EXACT production failure: generic opener steamrolled the question,
+  // client re-sent it 1 minute later — the intercept must NOT silence it.
+  const tomKiper = await getAIResponse(
+    [
+      { role: "user", content: "Where are you located", at: "2026-07-29T21:42:16Z" },
+      { role: "assistant", content: OPENER_EN, at: "2026-07-29T21:42:30Z" },
+      { role: "user", content: "Where are you located", at: "2026-07-29T21:43:26Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Repetição 1min após opener genérico → resposta de verdade (caso Tom Kiper)",
+    tomKiper.text !== "[REACT_ONLY]" && tomKiper.text.trim().length > 20,
+    tomKiper.text.slice(0, 100)
+  );
+  check(
+    "…e a resposta fala da localização (Miami / South Florida)",
+    /miami|florida/i.test(tomKiper.text),
+    tomKiper.text.slice(0, 100)
+  );
+
+  // Counter-case: after the LOCATION opener (which DID answer), the same
+  // repeat IS a double-tap — stays suppressed, zero tokens.
+  const locDoubleTap = await getAIResponse(
+    [
+      { role: "user", content: "Where are you located", at: "2026-07-29T21:42:16Z" },
+      { role: "assistant", content: OPENER_LOCATION_EN, at: "2026-07-29T21:42:30Z" },
+      { role: "user", content: "Where are you located", at: "2026-07-29T21:43:26Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Repetição 1min após opener DE LOCALIZAÇÃO (já respondeu) → [REACT_ONLY], zero tokens",
+    locDoubleTap.text === "[REACT_ONLY]" && locDoubleTap.inputTokens === 0,
+    locDoubleTap.text.slice(0, 80)
+  );
+
+  // Counter-case: process FAQ re-tapped after the process-aware opener (which
+  // answered it AND asked the type) — still a double-tap, still suppressed.
+  const processRetap = await getAIResponse(
+    [
+      { role: "user", content: "What is the installation process?", at: "2026-07-29T18:00:00Z" },
+      { role: "assistant", content: "Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?", at: "2026-07-29T18:00:15Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-29T18:02:00Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Re-tap do FAQ de processo após opener FAQ-aware → [REACT_ONLY], zero tokens",
+    processRetap.text === "[REACT_ONLY]" && processRetap.inputTokens === 0,
+    processRetap.text.slice(0, 80)
+  );
+
+  // A question the type-ask opener plainly did NOT answer ("do you finance?")
+  // repeated 2 min later must also get a real answer, never silence.
+  const financeRepeat = await getAIResponse(
+    [
+      { role: "user", content: "Do you offer any financing options?", at: "2026-07-29T18:00:00Z" },
+      { role: "assistant", content: OPENER_EN, at: "2026-07-29T18:00:15Z" },
+      { role: "user", content: "Do you offer any financing options?", at: "2026-07-29T18:02:00Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Pergunta ignorada pelo opener repetida 2min depois → resposta de verdade",
+    financeRepeat.text !== "[REACT_ONLY]" && financeRepeat.text.trim().length > 20,
+    financeRepeat.text.slice(0, 100)
   );
 }
 

@@ -39,6 +39,16 @@ export const OPENER_PROCESS_ES = "Buena pregunta, movemos todos los muebles, ins
 export const OPENER_DISCOUNT_EN = "Yes, larger spaces get our best pricing, and the estimate visit is completely free. Which flooring are you thinking about, tile, vinyl, or hardwood?";
 export const OPENER_DISCOUNT_ES = "Sí, los espacios grandes tienen nuestro mejor precio, y la visita para el estimado es totalmente gratis. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
 
+// "Where are you located?" as a typed first message (not a Meta button). The
+// generic opener used to steamroll it, and when the client re-sent the exact
+// same question a minute later the repeated-message intercept silenced the
+// re-ask (Tom Kiper, 2026-07-29) — answer the location AND ask the type in the
+// same deterministic message. They name tile + hardwood so
+// assistantAlreadyAskedType() counts them as the one allowed type-ask.
+export const OPENER_LOCATION_EN = "We are based in Miami and serve all of South Florida, from Homestead to Jupiter. Which flooring are you thinking about, tile, vinyl, or hardwood?";
+export const OPENER_LOCATION_ES = "Estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+export const OPENER_LOCATION_PT = "Estamos em Miami e atendemos todo o sul da Flórida, de Homestead até Jupiter. Qual piso você prefere, tile, vinyl ou hardwood?";
+
 // Injected by the Instagram/Facebook webhooks ONLY when the client replied to an
 // ad. The ad advertises three flooring types at different per-sqft rates, so the
 // bot must FIRST ask which type before quoting. Kept here as the single source of
@@ -74,6 +84,7 @@ HIGHEST PRIORITY, RECOGNIZE A STATED TYPE, NEVER RE-ASK IT: If the client's mess
 
 OPENER — ASK THE FLOORING TYPE FIRST ONLY WHEN IT IS GENUINELY UNKNOWN: We advertise THREE different flooring types at different per-sqft rates (tile, vinyl, hardwood), and Instagram/Facebook does NOT reliably tell us which ad or type the client came from. So when the type is NOT yet known from anything the client said, you must NEVER assume vinyl and NEVER send a generic package opener with a price. Your FIRST message to such a lead is ONE short, friendly question asking which type of flooring they want: tile, vinyl, or hardwood, with NO price. NEVER mention the $5 package or any price before the client tells you the type: the $5 package is VINYL ONLY (it includes the material), while TILE is labor only at $4.50/sqft and HARDWOOD is labor only at $3.20/sqft. A client who clicked a TILE ad and gets the vinyl $5 package answer is the worst error. Example wording (this is NOT a script to copy verbatim, vary it so it sounds natural and human, never canned): "Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?"
 If the client asks something you cannot answer without knowing the type (like "how much per sqft" or "is labor extra") and has NOT named a type, acknowledge briefly and ask the type in the SAME short message.
+If the client's first message asks something you CAN answer without knowing the type (like "where are you located", the service area, or how the visit works), ANSWER it briefly first and ask the type in the SAME short message. NEVER reply with only the type question when their message contains a direct question, ignoring what they asked is how we lose leads.
 
 ONCE YOU KNOW THE FLOORING TYPE — state that type's promo OUT LOUD with the dollar rate (never a price-less answer):
 - VINYL or LAMINATE: our promo is $5 per sqft and that already includes the flooring, the installation labor, and the quarter round (this is the ONLY option where the material is included). Then offer the free quote and ask one area or whole house.

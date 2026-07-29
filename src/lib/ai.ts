@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT } from "@/lib/system-prompt";
 import { clientConfirmedSlot } from "@/lib/scheduler";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -866,6 +866,14 @@ export function openerMessage(text: string): string {
 // went silent right after the generic opener ignored their tapped FAQ).
 const AD_FAQ_PROCESS = /\bwhat(?:'?s| is)?\s+the\s+installation\s+process\b|\bhow\s+does\s+the\s+installation\s+work\b|\bc[oó]mo\s+es\s+el\s+proceso\b|proceso\s+de\s+instalaci[oó]n/i;
 const AD_FAQ_DISCOUNT = /\bdiscounts?\b[^.!?\n]{0,40}\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?|jobs?)\b|\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?)\b[^.!?\n]{0,20}\bdiscounts?\b|\bdescuentos?\b[^.!?\n]{0,40}\b(?:espacios?|[aá]reas?|proyectos?)\s+(?:m[aá]s\s+)?grandes?\b/i;
+// "Where are you located?" typed as the first message — a direct question the
+// generic opener used to steamroll (Tom Kiper, 2026-07-29: asked twice, got the
+// type-ask opener once and then dead air). Answer + type-ask, zero-token.
+const AD_FAQ_LOCATION = /\bwhere\b[^.!?\n]{0,40}\b(?:located|based|location)\b|\bwhat(?:'?s| is)\s+your\s+location\b|\bwhat\s+areas?\s+do\s+you\s+(?:serve|cover|service)\b|\bd[oó]nde\s+(?:est[aá]n|se\s+ubican|se\s+encuentran|quedan)\b|\bonde\s+(?:voc[eê]s?\s+)?(?:ficam?|est[aã]o|atendem)\b/i;
+// Inclusions-family Meta FAQ buttons (shared by the first-contact opener router
+// AND the repeated-message intercept, so both agree on what the ask-type
+// inclusions line actually answered).
+const AD_FAQ_INCLUSIONS = /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i;
 
 // OPENER EXCEPTION backstop (2026-07-15 review): a FIRST message that already
 // declares 500+ sqft ("I have about 2500sf how much can you do it for…") must
@@ -1320,6 +1328,26 @@ export async function getAIResponse(
             console.log("[AI] double-tap folded into a burst with new content — answering the full burst");
             break;
           }
+          // NOT a double-tap when our reply to the FIRST send was only the
+          // type-ask opener (it names tile + hardwood and asks which one) and
+          // the repeated text is NOT one of the FAQs those openers already
+          // answer: the client is repeating because their question was IGNORED
+          // ("Where are you located" twice, 1 min apart — the opener steamrolled
+          // the question and this intercept then silenced the re-ask; Tom
+          // Kiper, 2026-07-29). Answering twice beats ignoring a client.
+          const betweenReply = messages[i].content;
+          const typeAskOpener = /\btile\b/i.test(betweenReply) && /\bhardwood\b/i.test(betweenReply);
+          // "Answered" = the reply carries that FAQ's actual answer content
+          // (the FAQ-aware openers do; the GENERIC opener never does).
+          const openerAnsweredIt =
+            (AD_FAQ_PROCESS.test(lastText) && /furniture|muebles/i.test(betweenReply)) ||
+            (AD_FAQ_DISCOUNT.test(lastText) && /pricing|precio/i.test(betweenReply)) ||
+            (AD_FAQ_LOCATION.test(lastText) && /miami|florida/i.test(betweenReply)) ||
+            (AD_FAQ_INCLUSIONS.test(lastText) && /includ|incluid/i.test(betweenReply));
+          if (typeAskOpener && !openerAnsweredIt) {
+            console.log("[AI] repeat right after a type-ask opener that ignored the question — answering it fresh");
+            break;
+          }
           const prevAt = messages[i - 1].at ? Date.parse(messages[i - 1].at as string) : NaN;
           const nowAt = repeatCandidate.at ? Date.parse(repeatCandidate.at as string) : NaN;
           const gapMin = (nowAt - prevAt) / 60000;
@@ -1389,15 +1417,21 @@ export async function getAIResponse(
         console.log("[AI] First contact, ad-FAQ (larger-space discounts) — answering + asking the type");
         return { text: opener, inputTokens: 0, outputTokens: 0 };
       }
+      // "Where are you located?" — answer the service area AND ask the type in
+      // the same deterministic message (the generic opener used to ignore the
+      // question entirely; Tom Kiper, 2026-07-29).
+      if (AD_FAQ_LOCATION.test(burst)) {
+        const opener = lang === "pt" ? OPENER_LOCATION_PT : lang === "es" ? OPENER_LOCATION_ES : OPENER_LOCATION_EN;
+        console.log("[AI] First contact, location question — answering the service area + asking the type");
+        return { text: opener, inputTokens: 0, outputTokens: 0 };
+      }
       // Inclusions-family quick-replies (all real Meta FAQ buttons seen in
       // production): "Is installation labor cost extra?", "Is labor cost also
       // $4,500?", "Is installation cost included in the price?", "What type of
       // materials are included?" — the ask-type inclusions line acknowledges
       // them properly instead of the generic opener steamrolling the question
       // (8 leads hit the two unmapped variants in the 3-day review).
-      if (
-        /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i.test(burst)
-      ) {
+      if (AD_FAQ_INCLUSIONS.test(burst)) {
         console.log("[AI] First contact, ad-FAQ (inclusions) — inclusions ask-type line");
         return { text: WHAT_IS_INCLUDED_ASK_TYPE, inputTokens: 0, outputTokens: 0 };
       }
