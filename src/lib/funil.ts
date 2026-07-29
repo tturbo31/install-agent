@@ -452,8 +452,8 @@ export async function funilOnBookingConfirmed(
 
     // Lead antigo (pré-funil) agendou → backfill do lead_criado primeiro, para
     // a plataforma ter o cadastro completo antes do agendamento.
+    const ad = await dadosDeAnuncioDaConversa(conversationId);
     if (!convNoFunil(conv)) {
-      const ad = await dadosDeAnuncioDaConversa(conversationId);
       await enviarEventoFunil("lead_criado", {
         ...base,
         nome: booking.name ?? conv.name ?? conv.username ?? undefined,
@@ -467,9 +467,16 @@ export async function funilOnBookingConfirmed(
     if (!booking.date || !booking.time) return;
     await limparSumido(conversationId); // agendou = não está sumido (sem evento)
     const endereco = booking.address?.trim().slice(0, 300);
+    // O contrato de atribuição vai TAMBÉM no agendamento: se o lead da
+    // plataforma nasceu antes do rastreio (sem criativo), a visita é a chance
+    // de completar — a plataforma só preenche campo vazio, nunca sobrescreve.
     await enviarEventoFunil("agendamento_marcado", {
       ...base,
+      canal: canalDe(igsid),
       data_visita: dataVisitaIso(booking.date, booking.time),
+      ...ad.contrato,
+      ad_name: ad.ad_name ?? undefined,
+      campanha: ad.campanha ?? undefined,
       // endereço coletado no agendamento (a plataforma mostra na agenda)
       ...(endereco ? { endereco } : {}),
     });
