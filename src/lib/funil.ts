@@ -353,6 +353,19 @@ function convNoFunil(conv: ConvFunil): boolean {
   return !!conv.created_at && conv.created_at >= funilDesde();
 }
 
+// Código da landing page do GOOGLE (go.ozzifloors.com): o botão de WhatsApp da
+// LP abre a conversa com "...free flooring estimate [G-7K2M4P]". Esse código
+// existe SÓ lá, e a plataforma o troca pelo clique real em lp_clicks
+// (gclid + campanha + termo pesquisado). Sem isso, quem clica no anúncio do
+// Google e cai no WhatsApp vira lead "whatsapp" sem nenhuma atribuição do
+// Google — foi o furo achado em 30/07/2026 (1 clique real perdido em 24/07).
+const CODIGO_LP = /\[\s*(G-[A-Z0-9]{4,10})\s*\]/i;
+
+export function codigoLpDaMensagem(texto: string): string | undefined {
+  const m = CODIGO_LP.exec(texto ?? "");
+  return m ? m[1].toUpperCase() : undefined;
+}
+
 // ─── EVENTOS DE ENTRADA (toda mensagem do cliente, nos 3 canais) ─────────────
 // Dispara conforme o caso: lead_criado (1ª mensagem de contato novo, com
 // atribuição de anúncio), retomou_conversa (sumido voltou), conversando
@@ -375,6 +388,9 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
         ...base,
         nome: conv.name ?? conv.username ?? undefined,
         canal: canalDe(conv.igsid),
+        // clique no botão de WhatsApp da LP do Google (código G-XXXXXX na 1ª
+        // mensagem) — a plataforma resolve para gclid/campanha/termo
+        lp_codigo: codigoLpDaMensagem(rawText),
         // Contrato de atribuição (missão referral 28/07) — nomes exatos:
         // ad_id, ctwa_clid, ad_source_type, ad_title, ad_media_url,
         // ad_post_id, ad_ref, ad_clicked_at. Plataforma antiga ignora extras.
@@ -402,6 +418,15 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
           campanha: ad.campanha ?? undefined,
         });
       }
+    }
+
+    // 1c) CÓDIGO DA LP DO GOOGLE TARDIO: a pessoa já falava com a gente e só
+    // depois voltou pelo botão de WhatsApp da landing page (a mensagem chega
+    // com [G-XXXXXX]). Mesmo caminho do referral tardio — a plataforma faz
+    // merge fill-if-empty e resolve o código para gclid/campanha/termo.
+    const codigoTardio = codigoLpDaMensagem(rawText);
+    if (codigoTardio) {
+      await enviarEventoFunil("lead_criado", { ...base, lp_codigo: codigoTardio });
     }
 
     // 2) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
