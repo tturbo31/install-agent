@@ -61,6 +61,23 @@ export function parseQuoteCtxMarker(content: string, createdAt: string): QuoteRe
   }
 }
 
+// ─── Recusa explícita do cliente (2026-07-30) ────────────────────────────────
+// Quando a resposta ao follow-up de orçamento é uma RECUSA clara ("not
+// interested", "stop texting me", "already hired someone else", "no me
+// interesa"), o webhook manda followup_respondeu com recusou=true: além de
+// encerrar a cadência (qualquer resposta já encerra), a plataforma marca a
+// etapa como 'recusou' e o telefone NUNCA mais entra no follow-up automático
+// nem na lista de sugestões do painel. Deliberadamente ESTREITO: adiar ("te
+// aviso", "next month", "vou pensar") NÃO é recusa — só o não explícito, o
+// pare-de-mandar e o já-fechei-com-outro. Falso positivo aqui silencia um
+// cliente para sempre; na dúvida, NÃO é recusa.
+const QUOTE_REFUSAL =
+  /\b(?:not?\s+(?:longer\s+)?interested|no\s+interest|lost\s+interest|unsubscribe|stop\s+(?:texting|messaging|writing|calling|contacting|sending)|don'?t\s+(?:text|message|call|contact|write)\s+(?:me|us)|(?:take|remove)\s+(?:me|my\s+number)\s+(?:off|from)|leave\s+(?:me|us)\s+alone|wrong\s+(?:number|person)|(?:hired|found|went\s+with|chose|signed\s+with)\s+(?:someone|somebody)\s+else|with\s+another\s+(?:company|contractor)|went\s+(?:in\s+)?another\s+(?:direction|route)|no\s+(?:me|nos)\s+interesa|no\s+est(?:oy|amos)\s+interesad\w*|ya\s+no\s+(?:me\s+interesa|quiero|queremos)|no\s+(?:me|nos)\s+(?:escriba[sn]?|manden?|env[ií]en?|llamen?|molesten?)|dej[ae]\s+de\s+(?:escribir|mandar|llamar)|ya\s+contrat(?:e|é|amos)\s+(?:a\s+)?otr\w*|con\s+otra\s+(?:empresa|persona|compa[nñ][ií]a)|n[uú]mero\s+equivocado|(?:qu[ií]t[ae]|b[oó]rr[ae])(?:me|nos)\s+de\s+la\s+lista|n[aã]o\s+(?:tenho|temos)\s+interesse|sem\s+interesse|n[aã]o\s+quero\s+mais|j[aá]\s+(?:contratei|contratamos|fechei|fechamos)\s+(?:com\s+)?outr\w*|par[ae]\s+de\s+(?:me\s+)?(?:mandar|enviar|escrever)|n[uú]mero\s+errado)\b|^\s*(?:please\s+)?stop\s*[.!]*\s*$/i;
+
+export function isQuoteRefusal(text: string): boolean {
+  return QUOTE_REFUSAL.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
+}
+
 const QUOTE_MODE_MAX_AGE_DAYS = 60;
 
 // Latest quote-follow-up marker in this conversation (≤60 days old), or null.

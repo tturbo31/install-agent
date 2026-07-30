@@ -20,7 +20,7 @@ import { trackConversationMetrics } from "@/lib/metrics";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
-import { findQuoteFollowupContext, composeQuoteReply } from "@/lib/quote-reply";
+import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal } from "@/lib/quote-reply";
 
 export const maxDuration = 60;
 
@@ -541,7 +541,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
       waitUntil(
         (async () => {
           const quoteCtx = await findQuoteFollowupContext(conv.id);
-          if (quoteCtx) await enviarEventoFunil("followup_respondeu", { telefone: phone });
+          // recusou=true ("not interested", "stop") → a plataforma marca o
+          // telefone para NUNCA mais receber follow-up (nem manual).
+          if (quoteCtx)
+            await enviarEventoFunil(
+              "followup_respondeu",
+              isQuoteRefusal(rawText) ? { telefone: phone, recusou: true } : { telefone: phone }
+            );
         })().catch((e) => console.error("[WA] followup_respondeu (human mode) error:", e))
       );
       // Paused conversation black hole: ping the owner (throttled) if the
@@ -682,7 +688,12 @@ async function handleWaMessage(body: Record<string, unknown>) {
           // para ENCERRAR a cadência automática deste telefone na hora — a
           // conversa agora é conduzida aqui/pelo Ozzi, nunca mais por drip.
           // (Caso real 2026-07-19: "I pay full" e o D7 continuava agendado.)
-          await enviarEventoFunil("followup_respondeu", { telefone: phone });
+          // Recusa explícita ("not interested", "stop") ganha recusou=true: a
+          // plataforma marca o telefone para nunca mais sugerir/enviar nada.
+          await enviarEventoFunil(
+            "followup_respondeu",
+            isQuoteRefusal(rawText) ? { telefone: phone, recusou: true } : { telefone: phone }
+          );
           if (isPureClosing(rawText)) {
             console.log("[WA] quote-reply: fechamento puro, ficando em silêncio");
             return;
