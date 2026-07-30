@@ -565,6 +565,66 @@ export function needSlotConfirmationMessage(lang: "es" | "en"): string {
     : "Perfect! I just need to confirm the day and time, which works best for you for the visit?";
 }
 
+// ─── Time-invention guard: never book an HOUR nobody ever mentioned ─────────
+// THE BUG (2026-07-30, AXEL GONZALEZ, Messenger): the bot offered "el miércoles
+// 29 a las 3pm o el jueves 30?" — Thursday carried NO times. The client answered
+// "Jueves 30 me parece bien" (a valid day pick, so clientConfirmedSlot passed),
+// and the model booked Thursday at 9am — an hour that never appeared anywhere in
+// the conversation. The seller drove an hour to a 9am visit; the client had
+// assumed 3pm. A [BOOK] time is only trustworthy when that clock hour was
+// actually on the table: offered by the bot or typed by the client. Otherwise
+// the model invented it.
+export function bookedTimeSeenInConversation(
+  history: Array<{ role: string; content: string }>,
+  timeHHMM: string
+): boolean {
+  const m = /^(\d{1,2}):(\d{2})/.exec((timeHHMM ?? "").trim());
+  if (!m) return true; // unparseable time → let the scheduler's own validation decide
+  const h12 = parseInt(m[1], 10) % 12;
+  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+  for (const msg of history ?? []) {
+    const t = strip(msg.content);
+    // "9am", "3 pm", "9:00am" — and bare "9:00" (colon keeps street numbers out)
+    for (const tok of t.matchAll(/\b(\d{1,2})(?::\d{2})?\s*(?:am|pm)\b|\b(\d{1,2}):\d{2}\b/gi)) {
+      if (parseInt(tok[1] ?? tok[2], 10) % 12 === h12) return true;
+    }
+    // "a las 9" / "às 9" (ES/PT) and "9 o'clock". (?:^|\W) instead of \b: JS
+    // word boundaries are ASCII-only, so \b never matches before "às".
+    for (const tok of t.matchAll(/(?:^|\W)(?:a\s+las?|[àa]s)\s+(\d{1,2})\b|\b(\d{1,2})\s*o'?clock\b/gi)) {
+      if (parseInt(tok[1] ?? tok[2], 10) % 12 === h12) return true;
+    }
+    if (h12 === 0 && /\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i.test(t)) return true;
+  }
+  return false;
+}
+
+// Sent when the client picked a day but the [BOOK] hour was never shown to them:
+// re-offer with that day's REAL open times so the pick that follows is explicit.
+export async function needTimeChoiceMessage(lang: "es" | "en", dateStr: string): Promise<string> {
+  try {
+    let slots = await getAvailableSlots(dateStr);
+    if (dateStr === easternTodayStr()) {
+      const nowET = easternNowHM();
+      const cutoff = nowET.hour * 60 + nowET.minute + 30;
+      slots = slots.filter((s) => {
+        const [h, min] = s.split(":").map(Number);
+        return h * 60 + min >= cutoff;
+      });
+    }
+    const times = slots.slice(0, 4).map(fmt12);
+    if (times.length > 0) {
+      const sep = lang === "es" ? " o " : " or ";
+      const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
+      return lang === "es"
+        ? `¡Perfecto! Para ese día tengo disponible ${list}, ¿a qué hora te queda mejor?`
+        : `Perfect! For that day I have ${list} available, which time works best for you?`;
+    }
+  } catch (err) {
+    console.error("needTimeChoiceMessage error:", err);
+  }
+  return needSlotConfirmationMessage(lang);
+}
+
 // Date context injected into the AI prompt — always Eastern, never UTC.
 export function getEasternDateContext(): string {
   const todayStr = easternTodayStr();
@@ -675,6 +735,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
+        "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 3pm, or Thursday at 9am or 11am — which works?'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
         "\n- If the same weekday appears on more than one line (e.g. two Tuesdays), use the SOONEST one, UNLESS the client says 'next week' or names a specific date, then use that line instead." +
         "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
         "\n- NEVER tell a client a time was 'just taken', is 'no longer available', or ask them to 'pick another time'. If a time is not listed, simply offer a different time that IS listed, naturally." +
