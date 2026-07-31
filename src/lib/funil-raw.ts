@@ -104,27 +104,35 @@ export async function limparCapturasAntigas(agoraMs?: number): Promise<number> {
   try {
     await supabaseAdmin.from("funil_capturas").delete().lt("recebido_em", new Date(corte).toISOString());
   } catch { /* tabela pode não existir */ }
-  // Fallback em platform_settings: epoch embutido na chave
+  // Fallback em platform_settings: epoch embutido na chave.
+  //
+  // VARRE A TABELA INTEIRA antes de apagar (bug achado em 31/07/2026): a versão
+  // anterior pedia `limit(1000)` sem ordenação e PARAVA na primeira página sem
+  // captura velha. Assim que o volume passou de 1000 linhas `funil_raw_` (hoje
+  // 2177, com o tráfego triplicado), a 1ª página só trazia capturas novas e o GC
+  // morria calado — a caixa-preta crescia para sempre. Agora pagina com ordem
+  // estável, junta TODAS as velhas e só então apaga (deletar durante a varredura
+  // deslocaria o offset e puliria linhas).
   try {
-    for (let pagina = 0; pagina < 20; pagina++) {
+    const velhas: string[] = [];
+    for (let pagina = 0; pagina < 50; pagina++) {
       const { data } = await supabaseAdmin
         .from("platform_settings")
         .select("platform")
         .like("platform", "funil_raw_%")
-        .limit(1000);
-      const velhas = (data ?? [])
-        .map((r) => r.platform as string)
-        .filter((k) => {
-          const m = k.match(/^funil_raw_(?:ig|fb|wa)_(\d{10,})/);
-          return m ? Number(m[1]) < corte : false;
-        });
-      if (!velhas.length) break;
-      for (let i = 0; i < velhas.length; i += 100) {
-        await supabaseAdmin.from("platform_settings").delete().in("platform", velhas.slice(i, i + 100));
+        .order("platform", { ascending: true })
+        .range(pagina * 1000, pagina * 1000 + 999);
+      for (const r of data ?? []) {
+        const k = r.platform as string;
+        const m = k.match(/^funil_raw_(?:ig|fb|wa)_(\d{10,})/);
+        if (m && Number(m[1]) < corte) velhas.push(k);
       }
-      apagadas += velhas.length;
       if ((data ?? []).length < 1000) break;
     }
+    for (let i = 0; i < velhas.length; i += 100) {
+      await supabaseAdmin.from("platform_settings").delete().in("platform", velhas.slice(i, i + 100));
+    }
+    apagadas = velhas.length;
     if (apagadas) console.log(`[FUNIL] GC capturas raw: ${apagadas} linhas com mais de 7 dias apagadas`);
   } catch (err) {
     console.warn("[FUNIL] GC capturas raw falhou:", String(err).slice(0, 150));

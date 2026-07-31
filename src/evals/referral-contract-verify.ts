@@ -79,6 +79,17 @@ async function main() {
   ck("lead_criado espalha ...ad.contrato", /\.\.\.ad\.contrato/.test(funil), "");
   ck("legado ad_name/campanha mantidos no lead_criado", /ad_name: ad\.ad_name \?\? undefined,\s*\n\s*campanha: ad\.campanha \?\? undefined/.test(funil), "");
 
+  // Clique de anúncio em conversa PRÉ-MARCO (31/07/2026): o gate do marco zero
+  // segurava o lead_criado mesmo quando o clique era de hoje — 13 de 221
+  // contratos ficaram presos e a visita dessas pessoas nasceria sem criativo.
+  console.log("\n[A5 clique novo em conversa antiga não pode ficar preso no marco zero]");
+  ck("pré-marco com referral dispara lead_criado", /if \(!convNoFunil\(conv\)\) \{[\s\S]{0,900}if \(referral\) await enviarLeadCriadoDeCliqueAntigo\(conv, rawText\);/.test(funil), "gate do marco zero engole o clique novo");
+  ck("só dispara com contrato de verdade (nunca reabre histórico sozinho)", /async function enviarLeadCriadoDeCliqueAntigo[\s\S]{0,400}if \(!contratoTemDados\(ad\.contrato\)\) return;/.test(funil), "falta a guarda contratoTemDados");
+  ck("o clique antigo leva o contrato completo", /enviarLeadCriadoDeCliqueAntigo[\s\S]{0,700}\.\.\.ad\.contrato/.test(funil), "");
+  // GC da caixa-preta: varre a tabela INTEIRA (o `limit(1000)` sem ordem parava
+  // na 1ª página sem captura velha e o GC morria calado acima de 1000 linhas).
+  ck("GC da caixa-preta pagina com ordem estável (não para na 1ª página)", /\.order\("platform", \{ ascending: true \}\)\s*\n\s*\.range\(pagina \* 1000/.test(raw), "GC volta a parar na primeira página");
+
   // ── Parte B: funcional (banco real; sem AI, sem plataforma) ────────────────
   const { supabaseAdmin } = await import("@/lib/supabase");
   const { contratoAnuncio, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } = await import("@/lib/funil");

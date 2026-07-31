@@ -366,6 +366,25 @@ export function codigoLpDaMensagem(texto: string): string | undefined {
   return m ? m[1].toUpperCase() : undefined;
 }
 
+// CLIQUE DE ANÚNCIO EM CONVERSA PRÉ-FUNIL (31/07/2026): a conversa é anterior
+// ao marco zero (nunca teve lead_criado), mas a pessoa acabou de clicar num
+// anúncio. O clique é de HOJE — vale um lead_criado com identidade + contrato.
+// A plataforma cria o lead se não existir e faz merge fill-if-empty se existir.
+// Silencioso quando o referral não trouxe nada de útil.
+async function enviarLeadCriadoDeCliqueAntigo(conv: ConvFunil, rawText: string): Promise<void> {
+  const ad = await dadosDeAnuncioDaConversa(conv.id);
+  if (!contratoTemDados(ad.contrato)) return;
+  const msgs = await mensagensDaConversa(conv.id);
+  await enviarEventoFunil("lead_criado", {
+    ...identidade(conv, msgs, rawText),
+    nome: conv.name ?? conv.username ?? undefined,
+    canal: canalDe(conv.igsid),
+    ...ad.contrato,
+    ad_name: ad.ad_name ?? undefined,
+    campanha: ad.campanha ?? undefined,
+  });
+}
+
 // ─── EVENTOS DE ENTRADA (toda mensagem do cliente, nos 3 canais) ─────────────
 // Dispara conforme o caso: lead_criado (1ª mensagem de contato novo, com
 // atribuição de anúncio), retomou_conversa (sumido voltou), conversando
@@ -374,7 +393,18 @@ export function codigoLpDaMensagem(texto: string): string | undefined {
 export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, msgCreatedAt: string, referral?: ReferralIG): Promise<void> {
   try {
     if (referral) await persistirAnuncioDaConversa(conv.id, referral);
-    if (!convNoFunil(conv)) return; // lead antigo (pré-funil): backfill só no agendamento
+    if (!convNoFunil(conv)) {
+      // Lead antigo (pré-funil): nenhum evento de conversa dispara — MENOS o
+      // clique de anúncio de AGORA. Uma conversa de junho que hoje clica num
+      // anúncio é um clique NOVO, e sem isto ele morria no contrato do agente:
+      // o funil_adx_ nascia, o lead da plataforma nunca ficava sabendo, e uma
+      // visita dessa pessoa aparecia sem criativo. Medido em 31/07/2026:
+      // 13 de 221 contratos (5,9%) presos nesta porta, 12 deles no Messenger.
+      // Só dispara com referral REAL nesta mensagem (contratoTemDados) — nunca
+      // reabre histórico por conta própria.
+      if (referral) await enviarLeadCriadoDeCliqueAntigo(conv, rawText);
+      return;
+    }
 
     const msgs = await mensagensDaConversa(conv.id);
     const anteriores = msgs.filter((m) => m.created_at < msgCreatedAt);
