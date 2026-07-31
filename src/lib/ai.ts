@@ -222,6 +222,28 @@ function assistantAlreadyAskedType(messages: ChatMessage[]): boolean {
     .some((m) => /\btile\b/i.test(m.content) && /\bhardwood\b/i.test(m.content));
 }
 
+// CARPET (owner rule 2026-07-30): we DO install carpet, $2.20/sqft LABOR ONLY
+// (the client buys the carpet). Carpet is NOT one of the three ADVERTISED types,
+// so detectAdFlooringType() returns null for it — and without this guard a lead
+// who opens with "how much do you charge to install carpet?" trips the
+// vinyl-prone branch below and gets the canned "tile, vinyl, or hardwood?"
+// opener, which ignores their question AND implicitly denies carpet (the bot
+// literally told a client we don't install carpet). When carpet is the only type
+// on the table we skip every canned type-ask line and let the full-context model
+// answer with the CARPET INSTALLATION rules. A mixed message that also names a
+// real ad type ("remove my carpet and install vinyl") is unaffected: adType is
+// then vinyl/tile/hardwood and these branches never run.
+// NOT "carpeta"/"carpetas": that is Spanish for a folder, never a floor.
+const CARPET_MENTION = /\b(carpets?|carpetes?|carpeting|alfombras?|moquetas?|alcatifas?)\b/i;
+
+export function mentionsCarpet(text: string): boolean {
+  return CARPET_MENTION.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
+}
+
+function conversationMentionsCarpet(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.role === "user" && mentionsCarpet(m.content));
+}
+
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "user") return null;
@@ -235,6 +257,9 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   // the client named). Used so "what's included" answers per type and never
   // assumes the vinyl package when the type is still unknown.
   const adType = conversationFlooringType(messages);
+  // Carpet is a type we install but do NOT advertise, so it never sets adType.
+  // Treat it as a KNOWN type for every canned type-ask below.
+  const carpetLead = !adType && conversationMentionsCarpet(messages);
   // TYPE FIRST (any turn, the audit's core fix): while the type is still unknown,
   // a material/product-type question ("what material/options do you use?", "is it
   // vinyl?"), a "how does it work? / how much?", or a generic pricing/promo
@@ -245,7 +270,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   // A capability/suitability question (waterproof, humid climate, can-it-be-used,
   // over tile) is ANSWERED, never converted to a type-ask — even if it also says
   // "flooring options" or "material".
-  if (!adType && !SUBSTANTIVE_PRODUCT_Q.test(text)) {
+  if (!adType && !carpetLead && !SUBSTANTIVE_PRODUCT_Q.test(text)) {
     const vinylProne =
       PRODUCT_TYPE_Q.test(text) ||
       /\bhow\s+(?:much|does\s+(?:it|this|that|your|the)|do\s+you\s+(?:charge|price|work))\b/i.test(text) ||
@@ -280,7 +305,9 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
         // type, hand the repeat to the full-context model so it never resends the
         // identical canned ask-type line ("what's included?" x3 → same line x3
         // was the loop). First time through, the deterministic ask is safe.
-        if (assistantAlreadyAskedType(messages)) return null;
+        // Carpet lead: the canned ask-type line names only tile/vinyl/hardwood,
+        // which reads as "we don't do carpet". Let the model answer instead.
+        if (carpetLead || assistantAlreadyAskedType(messages)) return null;
         return WHAT_IS_INCLUDED_ASK_TYPE;
       }
       return rule.response;
@@ -935,7 +962,7 @@ const HOW_WORK = /how\s+(?:much|does\s+(?:it|this|that|your|the)\s+\w*\s*work|do
 // Mirrors the AD_* stems (same inflected forms) so "the client already named a
 // type, skip the opener" agrees with detectAdFlooringType and the bot never
 // re-asks a plural/misspelled/shorthand type the client already gave.
-const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|oak(?![\s-]?look)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpet|carpete|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
+const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|oak(?![\s-]?look)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpets?|carpetes?|carpeting|alfombras?|moquetas?|alcatifas?|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
 const SEE_OR_COLOR = /\b(photo|picture|image|catalog|colou?r|grey|gray|style|sample|show me|wood.?look|stone.?look|tile.?look|marble.?look|website|instagram)\b/i;
 const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego|baseboards?|quarter\s*round|rodap[ée]s?|z[oó]calos?)\b/i;
 
@@ -1402,10 +1429,17 @@ export async function getAIResponse(
     // message → NEVER the canned type-ask; the model acknowledges the size and
     // proposes the free visit per the prompt's OPENER EXCEPTION.
     const largeFirstMessage = mentionsLargeSqft(burst);
+    // CARPET backstop (owner rule 2026-07-30): every canned opener below names
+    // only tile, vinyl, and hardwood, so firing one at a lead who asked about
+    // carpet reads as "we don't install carpet" — which is false and is exactly
+    // what a client was told. Carpet is not an advertised type, so it never sets
+    // conversationFlooringType; skip the canned lines and let the model answer
+    // with the CARPET INSTALLATION rules ($2.20/sqft labor only).
+    const carpetFirstMessage = mentionsCarpet(burst);
     // AD-FAQ AWARE OPENERS: the tapped quick-reply question gets its one-line
     // answer folded into the SAME deterministic type-ask (still zero-token).
     // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
-    if (!largeFirstMessage) {
+    if (!largeFirstMessage && !carpetFirstMessage) {
       const lang = openerLang(burst);
       if (AD_FAQ_PROCESS.test(burst)) {
         const opener = lang === "es" ? OPENER_PROCESS_ES : OPENER_PROCESS_EN;
@@ -1445,7 +1479,7 @@ export async function getAIResponse(
     const excludedTopic =
       SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
       OTHER_TOPIC.test(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
-    if (!largeFirstMessage && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    if (!largeFirstMessage && !carpetFirstMessage && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(lastMsg.content);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };

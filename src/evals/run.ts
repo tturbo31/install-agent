@@ -319,22 +319,42 @@ const GRADERS = {
     check: (t: string) =>
       /installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:small\s+)?repair|do not do (?:small )?repair|only.*install/i.test(t),
   },
-  steersAwayFromCarpet: {
-    // Bug (2026-07-05, Melanie): a lead choosing between "carpet, vinyl, or
-    // hardwood" asked "do you also install carpet?" and got no clear answer.
-    // We do NOT install carpet (vinyl/tile/hardwood only), so the bot must say
-    // so and steer to a product we DO sell — never claim we install carpet, and
-    // never quote a carpet install price. Carpet REMOVAL prep is separate.
-    label: 'Says we do NOT install carpet and steers to vinyl/tile/hardwood',
+  neverDeniesCarpet: {
+    // OWNER RULE (2026-07-30): WE DO INSTALL CARPET. The bot told a real client
+    // the opposite ("we don't install carpet"), which is a lie and kills the
+    // lead. It must never deny carpet or steer the client off it. (The old
+    // steersAwayFromCarpet grader enforced the WRONG behavior and is deleted.)
+    // Deliberately does NOT require the word "carpet" in the reply: a correct
+    // large-lead answer ("For that size I need to measure in person...") never
+    // repeats the product, and failing that would be a false positive.
+    label: 'Never denies carpet (no "we don\'t do carpet", no vinyl/tile/hardwood-only claim)',
+    check: (t: string) =>
+      !/\b(?:don'?t|do\s+not|cannot|can'?t|won'?t|neither|unfortunately)\b[^.!?\n]{0,40}carpet/i.test(t) &&
+      !/carpet[^.!?\n]{0,40}\b(?:not\s+something|isn'?t\s+something|we\s+don'?t|we\s+do\s+not|not\s+a\s+service)\b/i.test(t) &&
+      !/\bonly\s+(?:do|install|offer|work\s+with)\b[^.!?\n]{0,40}\b(?:vinyl|tile|hardwood)\b/i.test(t),
+  },
+  carpetRateLaborOnly: {
+    // $2.20/sqft is LABOR ONLY — we do not sell the carpet material. A bare
+    // "$2.20 per sqft" with no labor-only clarification reads as material
+    // included (that is the vinyl offer) and would be quoted wrong on site.
+    label: 'Gives $2.20/sqft AND says it is labor only / client provides the carpet',
     check: (t: string) => {
-      const mentionsCarpet = /carpet/i.test(t);
-      const affirmsCarpet = /\b(?:yes|we\s+(?:do|install|offer|can\s+(?:do|install)))\b[^.!?\n]{0,25}carpet/i.test(t);
-      const negatesCarpet =
-        /\b(?:don'?t|do\s+not|not|no|neither|unfortunately|aren'?t|isn'?t)\b[^.!?\n]{0,30}carpet/i.test(t) ||
-        /carpet[^.!?\n]{0,30}\b(?:not|isn'?t|aren'?t|don'?t|do\s+not|something\s+we)\b/i.test(t);
-      const steers = /vinyl|tile|hardwood/i.test(t);
-      return mentionsCarpet && negatesCarpet && !affirmsCarpet && steers;
+      const rate = /\$\s?2[.,]20\b/.test(t);
+      const laborOnly =
+        /\b(?:labor|labour)\b/i.test(t) ||
+        /\byou\s+(?:provide|buy|supply|purchase|get)\b/i.test(t) ||
+        /\byour\s+own\s+carpet\b/i.test(t) ||
+        /\binstallation\s+only\b/i.test(t);
+      const claimsMaterialIncluded = /carpet[^.!?\n]{0,30}\bincluded\b|\bincludes?\b[^.!?\n]{0,30}\bcarpet\b/i.test(t);
+      return rate && laborOnly && !claimsMaterialIncluded;
     },
+  },
+  carpetSmallJobTotal: {
+    // Under 500 sqft the client gets the number right here on the platform they
+    // wrote from. Carpet is a CLEAN multiplication: 300 x $2.20 = $660. The
+    // +$500 LVP small-job add-on must NEVER be applied (that would be $1,160).
+    label: 'Quotes the carpet total by DM: 300 sqft = $660 (no +$500 add-on)',
+    check: (t: string) => /\$\s?660\b/.test(t) && !/\$\s?1[.,]?160\b/.test(t),
   },
 } satisfies Record<string, { label: string; check: (t: string) => boolean }>;
 
@@ -718,14 +738,25 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesRepair"],
   },
 
-  // ── CARPET (new clarification) ───────────────────────────────────────────
-  // Bug (2026-07-05, Melanie): a lead deciding between "carpet, vinyl, or
-  // hardwood" asked "do you also install carpet?" and drifted with no clear
-  // steer. We do NOT install carpet — say so and pivot to a product we sell.
+  // ── CARPET (owner rule 2026-07-30) ───────────────────────────────────────
+  // The bot told a real client we do NOT install carpet. We DO: $2.20/sqft for
+  // the installation LABOR ONLY (the client buys the carpet, we never sell the
+  // material). Under 500 sqft it is quoted right here on the platform; 500+ goes
+  // to the free in-person visit like every other floor.
   {
-    name: '[CARPET] "Do you also install carpet? (deciding carpet vs vinyl vs hardwood)" → we don\'t do carpet, steer to vinyl/hardwood',
+    name: '[CARPET] "Do you also install carpet? (deciding carpet vs vinyl vs hardwood)" → YES, $2.20/sqft labor only',
     messages: [{ role: "user", content: "Do you also install carpet? We are going back and forth between carpet, vinyl, or hardwood." }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "steersAwayFromCarpet"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "carpetRateLaborOnly"],
+  },
+  {
+    name: '[CARPET] "carpet in 2 bedrooms, about 300 sqft" → quotes $660 by DM (labor only, no +$500)',
+    messages: [{ role: "user", content: "I need carpet installed in 2 bedrooms, about 300 square feet total. How much?" }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "carpetSmallJobTotal"],
+  },
+  {
+    name: '[CARPET] "carpet for the whole house, 1500 sqft" → no DM total, proposes the free visit',
+    messages: [{ role: "user", content: "How much would carpet be for my whole house? It's about 1500 square feet." }],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "noDMPriceForLargeProject", "proposesVisitBilingual"],
   },
   {
     name: '[CARPET-REGRESSION] "remove my old carpet and install vinyl" → does NOT wrongly decline (carpet removal is prep we do)',
