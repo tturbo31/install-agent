@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import {
   getAIResponse,
@@ -407,6 +407,70 @@ async function handleWebhook(body: WebhookPayload) {
     }
 
     const senderIgsid = messaging.sender.id;
+
+    // ── REFERRAL AVULSO DO INSTAGRAM (campo messaging_referral, 31/07/2026) ──
+    // Espelho exato do bloco que o fb-webhook tem desde 28/07. A conta do
+    // Instagram estava assinada em `messages, messaging_postbacks,
+    // messaging_optins, message_reactions, agent_messages` — SEM
+    // `messaging_referral`. Era o mesmo defeito que deixou o Facebook em zero
+    // referral até 28/07, e aqui manteve o Instagram em 47% de leads com
+    // anúncio enquanto o Messenger, já corrigido, ficou em 100%.
+    //
+    // O evento de referral chega SEM `message.mid`: a pessoa clica no anúncio,
+    // a thread abre e a Meta avisa ANTES de qualquer texto. Sem este bloco ele
+    // cairia no caminho normal, que sintetiza um mid, grava "[Client replied to
+    // our ad]" como mensagem DO CLIENTE e faz a IA responder — ou seja, o
+    // agente passaria a abordar sozinho quem só clicou e não escreveu nada.
+    // Aqui a gente faz o que o Facebook faz: guarda a ATRIBUIÇÃO na conversa e
+    // sai. Quem responde ao cliente continua sendo o evento de mensagem real
+    // que vem depois, e clique sem mensagem segue NÃO sendo lead.
+    if (!messaging.message?.mid) {
+      type RefIg = {
+        ref?: string;
+        source?: string;
+        type?: string;
+        ad_id?: string;
+        ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string };
+      };
+      const postbackSolo = messaging.postback as { title?: string; payload?: string; referral?: RefIg } | undefined;
+      const refSoloBruto = (messaging.referral as RefIg | undefined) ?? postbackSolo?.referral;
+      if (refSoloBruto?.ad_id || refSoloBruto?.ads_context_data?.ad_title) {
+        // clicked_at = timestamp do evento que trouxe o referral. O evento
+        // standalone chega com timestamp em SEGUNDOS (a mensagem chega em ms).
+        const tsSolo = (messaging.timestamp as number) || Date.now();
+        const refSolo = { ...refSoloBruto, clicked_at: new Date(tsSolo < 1e12 ? tsSolo * 1000 : tsSolo).toISOString() };
+        console.log("[FUNIL] referral cru (ig standalone):", JSON.stringify(refSolo).slice(0, 500));
+        waitUntil(capturarRawFunil("ig", { origem: postbackSolo ? "postback" : "referral_standalone", referral: refSolo }));
+
+        let { data: convRef } = await supabaseAdmin
+          .from("instagram_conversations")
+          .select("id")
+          .eq("igsid", senderIgsid)
+          .maybeSingle();
+        if (!convRef) {
+          const { data: nova } = await supabaseAdmin
+            .from("instagram_conversations")
+            .insert({ igsid: senderIgsid, mode: "agent" })
+            .select("id")
+            .single();
+          convRef = nova ?? null;
+          if (!convRef) {
+            // corrida com o evento de mensagem, que chega quase junto
+            const { data: existente } = await supabaseAdmin
+              .from("instagram_conversations")
+              .select("id")
+              .eq("igsid", senderIgsid)
+              .maybeSingle();
+            convRef = existente ?? null;
+          }
+        }
+        if (convRef?.id) await persistirAnuncioDaConversa(convRef.id, refSolo);
+        return;
+      }
+      // sem referral aproveitável: segue o caminho normal (postback de
+      // icebreaker com título, anexo sem mid etc.), que já era tratado
+    }
+
     // Ad-click / referral events can arrive without a normal message.mid. Never let
     // a missing mid throw (the outer try/catch would silently drop the whole message,
     // which is why ad replies often went unanswered). Synthesize a unique id so dedup,
