@@ -42,6 +42,32 @@ export type FuroConciliacao = {
   motivo: string;
 };
 
+// RITMO DA CAPTURA por faixa horária (31/07/2026). Um teto fixo de silêncio
+// serve mal aos 3 canais: o Instagram faz ~8 webhooks/hora e 4h calado já é
+// estranho, enquanto no WhatsApp uma madrugada inteira sem nada é rotina. Quem
+// sabe o ritmo de cada canal é este banco — então ele manda a estatística junto,
+// e a plataforma calcula o teto de cada um.
+//
+// ATENÇÃO à escolha da estatística: a MEDIANA do intervalo entre capturas é de
+// ~0,3 min nos 3 canais, porque uma única conversa dispara uma RAJADA de
+// webhooks (mensagem + echo + recibo de leitura). Teto baseado em mediana
+// alarmaria a cada 3 minutos. O que descreve "silêncio normal" é a cauda: p99 e
+// o MAIOR silêncio realmente observado na faixa.
+export type RitmoFaixa = {
+  n: number; // quantos intervalos entraram na conta
+  medianaMin: number | null; // documentada, mas NÃO serve de base (ver acima)
+  p99Min: number | null;
+  maiorMin: number | null; // maior silêncio real observado na faixa
+};
+
+export type CapturaCanal = {
+  canal: "ig" | "fb" | "wa";
+  ultimaEm: string | null;
+  horasAtras: number | null;
+  total: number; // webhooks na janela da caixa-preta (7 dias)
+  ritmo: { diurno: RitmoFaixa; noturno: RitmoFaixa };
+};
+
 export type ResumoConciliacao = {
   ok: boolean;
   quando: string;
@@ -53,7 +79,7 @@ export type ResumoConciliacao = {
   reparados: number;
   naoReparados: number;
   detalhes: FuroConciliacao[];
-  capturaRaw: { canal: "ig" | "fb" | "wa"; ultimaEm: string | null; horasAtras: number | null }[];
+  capturaRaw: CapturaCanal[];
   gcHorasAtras: number | null;
   erro?: string;
 };
@@ -106,22 +132,72 @@ async function conferirNaPlataforma(
   }
 }
 
-// Última captura raw por canal + idade da marca do GC: a prova de que a
-// caixa-preta está viva. Vai no retorno porque quem vigia (a auditoria da
-// plataforma) não tem acesso a este banco.
+// Faixa horária na Flórida. O corte 8h-22h é a janela comercial do próprio
+// sistema (8h-20h59 para mensagem em massa) mais a cauda de quem responde à
+// noite; fora dela o silêncio é esperado em qualquer canal.
+const DIURNO_INICIO = 8;
+const DIURNO_FIM = 22;
+const faixaDe = (ms: number): "diurno" | "noturno" => {
+  const h = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).format(new Date(ms))
+  );
+  return h >= DIURNO_INICIO && h < DIURNO_FIM ? "diurno" : "noturno";
+};
+
+const percentil = (arr: number[], p: number): number | null => {
+  if (arr.length === 0) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))];
+};
+const mediana = (arr: number[]): number | null => {
+  if (arr.length === 0) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const meio = Math.floor(s.length / 2);
+  return s.length % 2 ? s[meio] : (s[meio - 1] + s[meio]) / 2;
+};
+
+// Última captura raw por canal, RITMO por faixa horária e idade da marca do GC:
+// a prova de que a caixa-preta está viva e a base para o teto de silêncio de
+// cada canal. Vai no retorno porque quem vigia (a plataforma) não tem acesso a
+// este banco.
 async function saudeDaCaptura(): Promise<Pick<ResumoConciliacao, "capturaRaw" | "gcHorasAtras">> {
   const ultimas: Record<"ig" | "fb" | "wa", number> = { ig: 0, fb: 0, wa: 0 };
+  const eventos: Record<"ig" | "fb" | "wa", number[]> = { ig: [], fb: [], wa: [] };
+  const vistos = new Set<string>();
   try {
     for (const chave of await paginar("funil_raw_%")) {
-      const m = chave.match(/^funil_raw_(ig|fb|wa)_(\d{10,})/);
+      // um POST = um grupo de chunks (canal, epoch, rand): contar chunk seria
+      // contar o mesmo webhook várias vezes e encurtar os intervalos
+      const m = chave.match(/^funil_raw_(ig|fb|wa)_(\d{10,})_([a-z0-9]{4})_/);
       if (!m) continue;
+      const id = `${m[1]}_${m[2]}_${m[3]}`;
+      if (vistos.has(id)) continue;
+      vistos.add(id);
       const canal = m[1] as "ig" | "fb" | "wa";
       const epoch = Number(m[2]);
+      eventos[canal].push(epoch);
       if (epoch > ultimas[canal]) ultimas[canal] = epoch;
     }
   } catch {
     /* sem leitura: a auditoria trata null como "não sei" e não alarma falso */
   }
+
+  const ritmoDe = (canal: "ig" | "fb" | "wa") => {
+    const ev = eventos[canal].sort((a, b) => a - b);
+    const gaps: Record<"diurno" | "noturno", number[]> = { diurno: [], noturno: [] };
+    for (let i = 1; i < ev.length; i++) {
+      // o intervalo pertence à faixa em que ele COMEÇOU — é ela que diz se
+      // aquele silêncio era esperado
+      gaps[faixaDe(ev[i - 1])].push((ev[i] - ev[i - 1]) / 60000);
+    }
+    const monta = (g: number[]): RitmoFaixa => ({
+      n: g.length,
+      medianaMin: mediana(g),
+      p99Min: percentil(g, 99),
+      maiorMin: g.length ? Math.max(...g) : null,
+    });
+    return { diurno: monta(gaps.diurno), noturno: monta(gaps.noturno) };
+  };
   let gcHoras: number | null = null;
   try {
     const { data } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", "funil_rawgc_%");
@@ -135,6 +211,8 @@ async function saudeDaCaptura(): Promise<Pick<ResumoConciliacao, "capturaRaw" | 
       canal,
       ultimaEm: ultimas[canal] ? new Date(ultimas[canal]).toISOString() : null,
       horasAtras: ultimas[canal] ? Math.round(((Date.now() - ultimas[canal]) / 3600_000) * 10) / 10 : null,
+      total: eventos[canal].length,
+      ritmo: ritmoDe(canal),
     })),
     gcHorasAtras: gcHoras,
   };
