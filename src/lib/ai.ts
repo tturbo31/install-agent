@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot } from "@/lib/scheduler";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -1041,6 +1041,19 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
   // "Can you make (it) possible for tomorrow in the morning" — a reschedule ask
   // phrased without move/change verbs (same 2026-07-20 silence).
   /\bmake\s+(?:it\s+)?possible\b[^.!?\n]{0,40}\b(?:tomorrow|today|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+  // ASK FOR A NEW APPOINTMENT, no move/change/reschedule verb anywhere: "Could
+  // you please send another appointment so we can meet?" (Msleo, 2026-08-01, IG)
+  // — a booked client stranded abroad asked to be re-booked, then wrote "I will
+  // take the 9am" and "that will be August 5th at 9am", and got TOTAL SILENCE on
+  // all three. "send/set up/book another appointment" carried no matched verb,
+  // so the booked gate never opened and the visit was simply lost.
+  /\b(?:send|set\s*up|setup|book|schedule|give|arrange|make|get|need|want|pick|dar|dame|darme|d[eé]jame|poner|mandar|manda|m[aá]ndame|enviar|env[ií]a|agendar|marcar|remarcar)\b[^.!?\n]{0,24}\b(?:another|a\s+new|a\s+different|different|other|otra|otro|nueva|nuevo|outra|outro)\b[^.!?\n]{0,24}\b(?:appointment|appt|visit|time|date|day|slot|booking|cita|visita|hora|horario|fecha|d[ií]a|agendamento|hor[áa]rio)\b/i,
+  // "I won't be able to make it / to be there / to travel until Monday" — the
+  // same Msleo message. A booked client saying they will not be there is a
+  // reschedule signal even when they never name a replacement day.
+  /\b(?:wo\s?n'?t|will\s+not|would\s+not|wouldn'?t|can'?t|cannot|am\s+not\s+going\s+to|not\s+going\s+to)\b[^.!?\n]{0,28}\b(?:be\s+able\s+to|make\s+it|be\s+(?:there|home|around|available)|travel|attend|come\s+back|get\s+back)\b/i,
+  // "no voy a estar / no estaré / não vou estar (en casa / aquí)" — same idea ES/PT.
+  /\bno\s+(?:voy\s+a\s+)?estar[eé]?\b|\bno\s+estar[eé]\b|\bn[ãa]o\s+(?:vou\s+)?estar\b/i,
 ];
 
 export function isRescheduleRequest(text: string): boolean {
@@ -1065,6 +1078,70 @@ export function unansweredUserBurst(history: Array<{ role: string; content: stri
     if (t) parts.unshift(t);
   }
   return parts.join("\n");
+}
+
+// ─── The question the booking confirmation would swallow ────────────────────
+// THE BUG (5-day review, 2026-08-01): a successful [BOOK] throws the model's
+// whole reply away and sends only the canned "Appointment confirmed..." line.
+// When the client slipped a real question into the SAME burst as their booking
+// details, that question died there — and because booking_confirmed then makes
+// the bot go silent by design, they never got an answer at all. Kenny Abbasi
+// sent his name, address, phone AND "Do you guys do bathrooms too?" (07-31) and
+// Meylan asked "¿Ustedes ponen los rodapiés??" (07-31); both got the confirmation
+// and then dead air, and Meylan wrote back a lone "?".
+//
+// The confirmation itself is the owner's exact wording and must not change, so
+// we send the model's OWN answer first and the confirmation right after. This is
+// deliberately conservative: it fires only when the client actually asked
+// something beyond their booking payload, and it keeps only prose that carries
+// no scheduling, confirmation or data-collection language, so nothing can
+// compete with or contradict the canned confirmation.
+const BOOKING_PAYLOAD_ONLY = /^[\s\d\p{L},.'#/()+-]*$/u;
+// Only the phrases that would DUPLICATE or contradict the canned confirmation.
+// Deliberately narrow: words like "visit" or "appointment" show up in perfectly
+// good answers ("Ozzi can price the bathroom out at the same visit") and an
+// over-broad filter silently threw the whole answer away.
+const CONFIRMATION_LIKE = /\b(confirmed|confirmada|confirmado|locked\s+in|all\s+set|you'?re\s+set|see\s+you|notify\s+you|40\s+minut(?:es|os)|te\s+aviso|my\s+name\s+is\s+ozzi|mi\s+nombre\s+es\s+ozzi|cita\s+confirmada)\b/i;
+// A sentence that is us ASKING for the booking data — already satisfied, so it
+// must never be re-sent alongside the confirmation.
+const DATA_REQUEST_LIKE = /\?/;
+const HAS_CLOCK_OR_DAY = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|today|tomorrow|hoy|ma[ñn]ana)\b/i;
+
+export function questionSwallowedByBooking(
+  aiResponse: string,
+  history: Array<{ role: string; content: string }>
+): string | null {
+  const burst = unansweredUserBurst(history);
+  if (!burst) return null;
+  // A real question, not just the client's name/address/phone (which are all
+  // digits, letters and punctuation) and not a bare "ok/thanks".
+  const asked = burst
+    .split(/\n+/)
+    .map((l) => normalizeSmartPunct(l).trim())
+    .filter((l) => l.length > 8 && /\?/.test(l) && !BOOKING_PAYLOAD_ONLY.test(l) && QUESTION_SIGNALS.test(l));
+  if (!asked.length) return null;
+  // A URL's query string is not a question (a client pasted a Zillow link with
+  // "?utm_campaign=..." and it read as one).
+  if (asked.every((l) => /https?:\/\/\S*\?/.test(l) && !/\?(?!\S)/.test(l.replace(/https?:\/\/\S+/g, "")))) return null;
+
+  const prose = aiResponse.replace(/\[BOOK:[\s\S]*?\]/g, "").replace(/\[[A-Z_]+\]/g, "").trim();
+  if (!prose) return null;
+  const kept = prose
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(
+      (s) =>
+        s.length >= 12 &&
+        !CONFIRMATION_LIKE.test(s) &&
+        !HAS_CLOCK_OR_DAY.test(s) &&
+        // Drop any trailing question: the confirmation ends the turn, so a
+        // "which works better for you?" or a re-ask for the address would leave
+        // the client answering something we already have.
+        !DATA_REQUEST_LIKE.test(s)
+    );
+  const answer = kept.join(" ").trim();
+  if (answer.length < 20) return null;
+  return answer;
 }
 
 // A BOOKED client asking about their own scheduled visit ("Are you coming at
@@ -1441,6 +1518,23 @@ export async function getAIResponse(
     // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
     if (!largeFirstMessage && !carpetFirstMessage) {
       const lang = openerLang(burst);
+      // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
+      // at once, so the single-topic chain below (first match wins) answered one
+      // question and silently dropped the rest — 17 of 24 multi-question bursts
+      // in the 5-day review came back incomplete (2026-08-01). When the burst
+      // carries 2+ distinct topics, answer ALL of them in one message.
+      if (lang !== "pt") {
+        const topics: AdFaqTopic[] = [];
+        if (AD_FAQ_LOCATION.test(burst)) topics.push("location");
+        if (AD_FAQ_PROCESS.test(burst)) topics.push("process");
+        if (AD_FAQ_DISCOUNT.test(burst)) topics.push("discount");
+        if (AD_FAQ_INCLUSIONS.test(burst)) topics.push("inclusions");
+        const combined = composeAdFaqOpener(topics, lang);
+        if (combined) {
+          console.log(`[AI] First contact, ${topics.length} ad-FAQs tapped (${topics.join("+")}) — answering all of them + asking the type`);
+          return { text: combined, inputTokens: 0, outputTokens: 0 };
+        }
+      }
       if (AD_FAQ_PROCESS.test(burst)) {
         const opener = lang === "es" ? OPENER_PROCESS_ES : OPENER_PROCESS_EN;
         console.log("[AI] First contact, ad-FAQ (installation process) — answering + asking the type");

@@ -465,7 +465,13 @@ export function reconcileBookingWeekday(
   const delta = Math.abs(forward) <= Math.abs(forward - 7) ? forward : forward - 7;
   let corrected = addDaysStr(bookingDate, delta);
   // Never book the past: if the nearest match already passed, take next week's.
-  if (corrected < easternTodayStr()) corrected = addDaysStr(corrected, 7);
+  // A single +7 was not enough — a [BOOK] date more than a week stale still
+  // landed in the past and quietly broke the "never books the past" guarantee
+  // this guard advertises (booking-date-verify caught it once the frozen July
+  // dates in its fixtures aged out). Roll until it is genuinely upcoming; the
+  // date strictly increases each pass, so this always terminates.
+  const todayStr = easternTodayStr();
+  while (corrected < todayStr) corrected = addDaysStr(corrected, 7);
 
   return {
     date: corrected,
@@ -474,6 +480,106 @@ export function reconcileBookingWeekday(
     intendedWeekday: intended,
     reason: `client picked ${DAY_NAMES[intended]} but [BOOK] date ${bookingDate} is ${DAY_NAMES[bookedWeekday]}; snapped to ${corrected}`,
   };
+}
+
+// ─── Weekday↔date reconciliation for the OFFER TEXT the client actually reads ─
+// THE BUG (5-day review, 2026-08-01): reconcileBookingWeekday only guards the
+// [BOOK] payload, so a wrong date inside the SENTENCE we send was never checked.
+// Four offers in the window named a weekday paired with someone else's date —
+// "Thursday July 31" (July 31 was a Friday, John Schmidt 07-29), "Sunday
+// August 3" twice (August 3 was a Monday, fcf81ab4 07-29 and Christina Terron
+// 07-30). The client reads the DATE, writes it in their calendar, and shows up
+// on the wrong day — or, as happened here, the bot contradicts itself one
+// message later ("Sunday August 3" then "Sunday August 2").
+//
+// The weekday word is authoritative, exactly as reconcileBookingWeekday already
+// treats it: the model picks the day it means and then miscounts the number.
+// We snap the DAY NUMBER to the nearest date carrying the named weekday, and
+// only when the two genuinely disagree. Anything we cannot parse with full
+// confidence (no month, month spelled oddly, a date more than a week off) is
+// left untouched — a silent no-op is always safer than a rewritten sentence.
+const MONTH_PATTERNS: Array<[number, RegExp]> = [
+  [0, /jan(?:uary|eiro)?|enero/i], [1, /feb(?:ruary|rero)?|fevereiro/i],
+  [2, /mar(?:ch|zo|ço)?/i], [3, /apr(?:il)?|abril/i],
+  [4, /may|mayo|maio/i], [5, /jun(?:e|io|ho)?/i],
+  [6, /jul(?:y|io|ho)?/i], [7, /aug(?:ust)?|agosto/i],
+  [8, /sep(?:t(?:ember)?)?|septiembre|setembro/i], [9, /oct(?:ober)?|octubre|outubro/i],
+  [10, /nov(?:ember|iembre|embro)?/i], [11, /dec(?:ember)?|diciembre|dezembro/i],
+];
+const WEEKDAY_WORDS = "sundays?|domingos?|mondays?|lunes|segundas?|tuesdays?|tues|martes|ter[cç]as?|wednesdays?|wed|mi[eé]rcoles|quartas?|thursdays?|thurs?|jueves|quintas?|fridays?|viernes|sextas?|saturdays?|s[áa]bados?";
+const MONTH_WORDS = "jan(?:uary|eiro)?|enero|feb(?:ruary|rero)?|fevereiro|mar(?:ch|zo|ço)?|apr(?:il)?|abril|may|mayo|maio|jun(?:e|io|ho)?|jul(?:y|io|ho)?|aug(?:ust)?|agosto|sep(?:t(?:ember)?)?|septiembre|setembro|oct(?:ober)?|octubre|outubro|nov(?:ember|iembre|embro)?|dec(?:ember)?|diciembre|dezembro";
+// "Thursday July 31" / "Sunday, August 3rd" / "Friday the 31st of July"
+const OFFER_WD_MONTH_DAY = new RegExp(`\\b(${WEEKDAY_WORDS})\\b([,\\s]+(?:the\\s+)?)(${MONTH_WORDS})(\\s+)(\\d{1,2})(st|nd|rd|th)?\\b`, "gi");
+// "lunes 3 de agosto" / "domingo 2 de agosto"
+const OFFER_WD_DAY_MONTH = new RegExp(`\\b(${WEEKDAY_WORDS})\\b(\\s+)(\\d{1,2})(\\s+de\\s+)(${MONTH_WORDS})\\b`, "gi");
+
+function monthIndexOf(word: string): number | null {
+  for (const [i, re] of MONTH_PATTERNS) if (re.test(word)) return i;
+  return null;
+}
+function weekdayOf(word: string): number | null {
+  for (const [num, re] of WEEKDAY_PATTERNS) if (re.test(word)) return num;
+  return null;
+}
+
+export function reconcileOfferedDates(
+  text: string,
+  todayStr: string = easternTodayStr()
+): { text: string; corrections: string[] } {
+  const corrections: string[] = [];
+  if (!text) return { text, corrections };
+  const year = ymd(todayStr).year;
+
+  // Returns the corrected day-of-month, or null when we should not touch it.
+  const fixDay = (weekdayWord: string, monthWord: string, dayNum: number): number | null => {
+    const wantWeekday = weekdayOf(weekdayWord);
+    const month = monthIndexOf(monthWord);
+    if (wantWeekday === null || month === null) return null;
+    if (dayNum < 1 || dayNum > 31) return null;
+    // The offer window is the next 21 days, so a month far from today means the
+    // year rolls over (December offers reaching into January).
+    const todayMonth = ymd(todayStr).month;
+    const useYear = month < todayMonth - 6 ? year + 1 : month > todayMonth + 6 ? year - 1 : year;
+    const stated = new Date(Date.UTC(useYear, month, dayNum, 12));
+    if (stated.getUTCMonth() !== month) return null; // e.g. "February 31"
+    // ONLY inside the 21-day window we actually offer. Outside it the date is
+    // not ours to fix — it is the client's own proposal being echoed back, and
+    // rewriting it changes what they said: "Lunes 3 de octubre no lo tengo en mi
+    // calendario todavía" (Thaly Blanco 07-27) was the bot correctly telling a
+    // client their October date is out of range, and an unbounded snap turned it
+    // into "Lunes 5 de octubre" — a date nobody had mentioned.
+    const statedStr = stated.toISOString().slice(0, 10);
+    if (statedStr < todayStr || statedStr > addDaysStr(todayStr, 21)) return null;
+    const have = stated.getUTCDay();
+    if (have === wantWeekday) return null; // already consistent — no-op
+    // Snap to the nearest date carrying the named weekday (±3 days max: the
+    // model miscounts by a day or two, it does not pick a different week).
+    const forward = (((wantWeekday - have) % 7) + 7) % 7;
+    const delta = forward <= 3 ? forward : forward - 7;
+    const snapped = new Date(stated.getTime() + delta * 86400000);
+    if (snapped.getUTCMonth() !== month) return null; // would cross the month — leave it
+    if (snapped.toISOString().slice(0, 10) < todayStr) return null; // never point at the past
+    return snapped.getUTCDate();
+  };
+
+  let out = text.replace(OFFER_WD_MONTH_DAY, (whole, wd, sep, mo, gap, day, suffix) => {
+    const fixed = fixDay(wd, mo, Number(day));
+    if (fixed === null) return whole;
+    corrections.push(`${wd} ${mo} ${day} -> ${fixed}`);
+    return `${wd}${sep}${mo}${gap}${fixed}${suffix ? ordinalSuffix(fixed) : ""}`;
+  });
+  out = out.replace(OFFER_WD_DAY_MONTH, (whole, wd, gap, day, mid, mo) => {
+    const fixed = fixDay(wd, mo, Number(day));
+    if (fixed === null) return whole;
+    corrections.push(`${wd} ${day} de ${mo} -> ${fixed}`);
+    return `${wd}${gap}${fixed}${mid}${mo}`;
+  });
+  return { text: out, corrections };
+}
+
+function ordinalSuffix(n: number): string {
+  if (n % 100 >= 11 && n % 100 <= 13) return "th";
+  return ["th", "st", "nd", "rd"][n % 10] ?? "th";
 }
 
 // ─── Slot-confirmation guard: never book a slot the client never picked ─────
@@ -736,9 +842,12 @@ export async function getRealAvailabilityContext(): Promise<string> {
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 3pm, or Thursday at 9am or 11am — which works?'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
+        "\n- A SUMMARY OF availability is not a list of times and is equally FORBIDDEN. Never write 'Sunday with several options', 'Tuesday has plenty of availability', 'Wednesday has full availability from 9am to 7pm', 'both with plenty of times to choose from', or anything similar: a range or a count lets the client answer '10am' or '2pm' — hours that are not on the line and do not exist — and you then have to walk it back. Spell out the actual open times, comma-separated, for every day you name, however many there are." +
         "\n- If the same weekday appears on more than one line (e.g. two Tuesdays), use the SOONEST one, UNLESS the client says 'next week' or names a specific date, then use that line instead." +
         "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
         "\n- NEVER tell a client a time was 'just taken', is 'no longer available', or ask them to 'pick another time'. If a time is not listed, simply offer a different time that IS listed, naturally." +
+        "\n- ONE EXCEPTION, and it is mandatory: if the client is ACCEPTING a day/time YOU offered earlier in this same conversation and that time is no longer on its line above, you must OWN IT in the first clause before anything else — a short apology that it filled up since you offered it — and only then name the real open times. Swapping their accepted slot for a different one with no acknowledgement is the worst thing you can do here: a client who confirmed 'Friday 7pm 👍' and sent his name, address and phone got back 'The soonest I have open is Sunday at 11am or 1pm' and replied 'I thought you said Friday at 7?' (Rolando, 2026-07-29) — the owner had to step in by hand. Say something like 'I'm sorry, that Friday 7pm filled up while we were talking — the closest I have now is Sunday at 11am or 1pm, which works?'. Never pretend the earlier offer did not happen, and never make the client be the one to notice." +
+        "\n- Until the visit is actually confirmed, do NOT tell the client a time is 'locked in', 'all set' or 'confirmed'. Say you are holding it while you collect their name, address and phone. Nine clients in five days were told a slot was theirs and then had it taken away." +
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
 

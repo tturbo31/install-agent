@@ -233,7 +233,15 @@ async function main() {
     ck(`${ch}: detectAdFlooringType + adFlooringTypeNote injected`, src.includes("detectAdFlooringType(") && src.includes("adFlooringTypeNote(adType)"));
     ck(`${ch}: fetches the ad creative from Meta by ad_id (sees the ad)`, src.includes("fetchAdCreative(adId)"));
     ck(`${ch}: vision trusted only for 'tile' (conservative)`, src.includes("classifyAdCreativeType(") && /=== "tile" \? "tile" : null/.test(src));
-    ck(`${ch}: resolved type persisted so follow-up turns keep it`, /\[\$\{resolved\}\] \$\{\(convAny\.ad_title/.test(src) && src.includes("ad_title: persisted"));
+    // The resolved type is carried on the in-memory conversation object ONLY.
+    // It used to be written to instagram_conversations.ad_title, but that column
+    // does not exist, so the update failed silently on every ad lead — removed in
+    // the 2026-07-28 referral mission ("updates fantasma"). This check asserts the
+    // CURRENT design; the old `ad_title: persisted` form must never come back.
+    ck(
+      `${ch}: resolved type carried on the conversation for follow-up turns (in memory, no phantom DB write)`,
+      /Object\.assign\(convAny, \{ ad_title: `\[\$\{resolved\}\]/.test(src) && !src.includes("ad_title: persisted")
+    );
     ck(`${ch}: ad lead of unknown type → AD_REPLY_NOTE (ask the type)`, /else if \(isAdReply\)/.test(src) && src.includes("systemParts.push(AD_REPLY_NOTE)"));
     ck(`${ch}: isAdReply scans history (reshared ad note persists turn 2+)`, /isAdReply = [\s\S]{0,200}messagesForAI\.some\(\(m\) => m\.role === "user"/.test(src));
   }

@@ -60,7 +60,11 @@ async function main() {
   const miami = await ai([
     { role: "user", content: "I want vinyl for my whole house in Miami" + SCHED },
     { role: "assistant", content: "I bring samples and measure for free. I have Tuesday at 9am or Wednesday at 1pm. What works?" },
-    { role: "user", content: "Tuesday at 9am. Address is 800 NW 7th St, Miami FL 33136, phone 305-555-1212" + SCHED },
+    // The name is required since the owner's 2026-07-27 rule (a visit only closes
+    // with a name the CLIENT typed) — without it the model correctly answers
+    // "What name should I put the visit under?" and this regression check was
+    // failing on a stale fixture, not on a real service-area bug.
+    { role: "user", content: "Tuesday at 9am. Carlos Mendez, address is 800 NW 7th St, Miami FL 33136, phone 305-555-1212" + SCHED },
   ]);
   console.log("   AI:", miami.replace(/\s+/g, " ").slice(0, 180));
   ck("Miami booking → generates [BOOK:...] (not blocked)", /\[BOOK:/i.test(miami), miami);

@@ -49,6 +49,58 @@ export const OPENER_LOCATION_EN = "We are based in Miami and serve all of South 
 export const OPENER_LOCATION_ES = "Estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
 export const OPENER_LOCATION_PT = "Estamos em Miami e atendemos todo o sul da Flórida, de Homestead até Jupiter. Qual piso você prefere, tile, vinyl ou hardwood?";
 
+// MULTI-FAQ BURST (2026-08-01 five-day review): Meta's ad quick-replies are
+// BUTTONS, so leads routinely tap two or three of them in the same second
+// ("What is included in the materials package?" + "Is installation labor cost
+// extra?" + "Do you offer any discounts for larger spaces?"). The openers above
+// are a first-match-wins chain, so exactly ONE of those questions got answered
+// and the rest were dropped — 17 of the 24 multi-question bursts in the window
+// came back incomplete, and several clients re-tapped the ignored button and
+// then went quiet. When the burst carries 2+ DISTINCT topics we build the reply
+// out of the same answer fragments and close with the one type-ask, so every
+// tapped button is answered in a single message and it stays zero-token.
+// Order is fixed (location → process → discount → inclusions) so the inclusions
+// clause, which is what leads into "which one", always lands last.
+export type AdFaqTopic = "location" | "process" | "discount" | "inclusions";
+export const AD_FAQ_TOPIC_ORDER: AdFaqTopic[] = ["location", "process", "discount", "inclusions"];
+
+const AD_FAQ_FRAGMENTS: Record<"en" | "es", Record<AdFaqTopic, string>> = {
+  en: {
+    location: "we are based in Miami and serve all of South Florida, from Homestead to Jupiter",
+    process: "we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish",
+    discount: "larger spaces get our best pricing and the estimate visit is completely free",
+    inclusions: "what is included is a little different for each floor",
+  },
+  es: {
+    location: "estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter",
+    process: "movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar",
+    discount: "los espacios grandes tienen nuestro mejor precio y la visita para el estimado es totalmente gratis",
+    inclusions: "lo que viene incluido cambia un poco según el piso",
+  },
+};
+const AD_FAQ_LEAD_IN = { en: "Great questions!", es: "¡Buenas preguntas!" };
+// Names tile + hardwood so assistantAlreadyAskedType() counts it as the one
+// allowed type-ask, exactly like every single-topic opener above.
+const AD_FAQ_TYPE_ASK = {
+  en: "Which one are you interested in, tile, vinyl, or hardwood?",
+  es: "¿Cuál te interesa, tile, vinyl o hardwood?",
+};
+
+// Builds the combined answer. Returns null for fewer than 2 distinct topics so
+// the single-topic openers above keep their exact, already-tested wording.
+export function composeAdFaqOpener(topics: AdFaqTopic[], lang: "en" | "es"): string | null {
+  const wanted = AD_FAQ_TOPIC_ORDER.filter((t) => topics.includes(t));
+  if (wanted.length < 2) return null;
+  const frag = AD_FAQ_FRAGMENTS[lang];
+  const parts = wanted.map((t) => frag[t]);
+  const last = parts.pop() as string;
+  // Build the connector explicitly — a fragment can itself contain " and ", so
+  // string-replacing the joiner afterwards would rewrite the wrong clause.
+  const body = `${parts.join(", ")}, ${lang === "es" ? "y" : "and"} ${last}`;
+  const sentence = body.charAt(0).toUpperCase() + body.slice(1);
+  return `${AD_FAQ_LEAD_IN[lang]} ${sentence}. ${AD_FAQ_TYPE_ASK[lang]}`;
+}
+
 // Injected by the Instagram/Facebook webhooks ONLY when the client replied to an
 // ad. The ad advertises three flooring types at different per-sqft rates, so the
 // bot must FIRST ask which type before quoting. Kept here as the single source of

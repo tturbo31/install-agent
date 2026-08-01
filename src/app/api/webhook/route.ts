@@ -30,12 +30,13 @@ import {
   unansweredUserBurst,
   isVisitDetailQuestion,
   pastVisitSystemNote,
+  questionSwallowedByBooking,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -247,8 +248,13 @@ async function processBookingCommand(
       waitUntil(funilOnBookingConfirmed(conversationId, senderIgsid, {
         date: bookingData.date, time: bookingData.time, phone: bookingData.phone, name: bookingData.name, address: bookingData.address,
       }));
+      // A question asked in the SAME burst as the booking details is answered
+      // first — the canned confirmation used to discard it, and booking_confirmed
+      // then silenced the client for good (5-day review, 2026-08-01).
+      const pending = questionSwallowedByBooking(aiResponse, history);
+      if (pending) console.log("[IG] answering the question sent with the booking details before confirming");
       return {
-        response: bookingSuccessMessage(lang),
+        response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang),
         booked: true,
       };
     } else if (result.error === "already_booked") {
@@ -1400,6 +1406,18 @@ async function handleWebhook(body: WebhookPayload) {
     // present so a real booking is never clobbered.
     if (!/\[BOOK:/i.test(safeAiText)) {
       safeAiText = stripSlotConflictLanguage(safeAiText);
+    }
+
+    // Weekday↔date guard for the SENTENCE the client reads. reconcileBookingWeekday
+    // only ever protected the [BOOK] payload, so "Thursday July 31" (a Friday) went
+    // out to the client unchecked — they write the wrong date down (5-day review,
+    // 2026-08-01). The weekday word wins; the day number is snapped to it.
+    {
+      const fixed = reconcileOfferedDates(safeAiText);
+      if (fixed.corrections.length) {
+        console.warn(`[IG] offered date corrected in outbound text: ${fixed.corrections.join("; ")}`);
+        safeAiText = fixed.text;
+      }
     }
 
     // ── Final pause guard (pre-send) ──────────────────────────────────────

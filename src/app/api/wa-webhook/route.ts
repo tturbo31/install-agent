@@ -4,10 +4,10 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -178,7 +178,12 @@ async function processBookingCommand(
       waitUntil(funilOnBookingConfirmed(conversationId, `wa_${waId}`, {
         date: bookingData.date, time: bookingData.time, phone: clientPhone, name: bookingData.name, address: bookingData.address,
       }));
-      return { response: bookingSuccessMessage(lang), booked: true };
+      // A question asked in the SAME burst as the booking details is answered
+      // first — the canned confirmation used to discard it, and booking_confirmed
+      // then silenced the client for good (Meylan Marrero, 2026-07-31).
+      const pending = questionSwallowedByBooking(aiResponse, history);
+      if (pending) console.log("[WA] answering the question sent with the booking details before confirming");
+      return { response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang), booked: true };
     } else if (result.error === "already_booked") {
       console.warn("[WA] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin
@@ -1185,6 +1190,18 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // another time" in any state. Skip only when a [BOOK] tag is present.
     if (!/\[BOOK:/i.test(safeResponse)) {
       safeResponse = stripSlotConflictLanguage(safeResponse);
+    }
+
+    // Weekday↔date guard for the SENTENCE the client reads. reconcileBookingWeekday
+    // only ever protected the [BOOK] payload, so "Thursday July 31" (a Friday) went
+    // out to the client unchecked — they write the wrong date down (5-day review,
+    // 2026-08-01). The weekday word wins; the day number is snapped to it.
+    {
+      const fixed = reconcileOfferedDates(safeResponse);
+      if (fixed.corrections.length) {
+        console.warn(`[WA] offered date corrected in outbound text: ${fixed.corrections.join("; ")}`);
+        safeResponse = fixed.text;
+      }
     }
 
     // ── Final pause guard (pre-send) ──────────────────────────────────────
