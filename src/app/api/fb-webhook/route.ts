@@ -18,7 +18,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
 export const maxDuration = 60;
@@ -176,14 +176,27 @@ async function processBookingCommand(
       "Facebook Client"
     );
 
+    // O ANÚNCIO VAI JUNTO PARA O CALENDÁRIO (01/08/2026). Até aqui o Messenger
+    // mandava a string fixa "Facebook Messenger" — o Instagram já resolvia o
+    // criativo persistido e o Facebook, que é o canal de maior volume, não.
+    // Resultado na agenda: visita de anúncio do FB sem imagem nem título.
+    const adPersistido = await dadosDeAnuncioDaConversa(conversationId).catch(() => null);
+    const creativeRef =
+      adPersistido?.contrato.ad_title ?? adPersistido?.ad_name ?? adPersistido?.ad_id ?? "Facebook Messenger";
+    const creativeImage = adPersistido?.contrato.ad_media_url ?? undefined;
+
     const result = await createBooking({
       clientName,
       clientPhone: bookingData.phone ?? "",
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
-      notes: (bookingData.notes ?? "") + " | Facebook Messenger",
-      creative: "Facebook Messenger",
+      notes: [bookingData.notes ?? "", "Facebook Messenger", creativeRef !== "Facebook Messenger" ? `Ad: ${creativeRef}` : ""]
+        .filter(Boolean)
+        .join(" | "),
+      creative: creativeRef,
+      creativeImage,
+      channel: "facebook",
       igsid: `fb_${psid}`,
     });
 

@@ -17,7 +17,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal } from "@/lib/quote-reply";
@@ -158,14 +158,25 @@ async function processBookingCommand(
       "WhatsApp Client"
     );
 
+    // O ANÚNCIO VAI JUNTO PARA O CALENDÁRIO (01/08/2026) — mesma correção do
+    // Messenger: só o Instagram resolvia o criativo persistido da conversa.
+    const adPersistido = await dadosDeAnuncioDaConversa(conversationId).catch(() => null);
+    const creativeRef =
+      adPersistido?.contrato.ad_title ?? adPersistido?.ad_name ?? adPersistido?.ad_id ?? "WhatsApp";
+    const creativeImage = adPersistido?.contrato.ad_media_url ?? undefined;
+
     const result = await createBooking({
       clientName,
       clientPhone,
       clientAddress: bookingData.address ?? "",
       bookingDate: bookingData.date,
       bookingTime: bookingData.time,
-      notes: (bookingData.notes ?? "") + " | WhatsApp",
-      creative: "WhatsApp",
+      notes: [bookingData.notes ?? "", "WhatsApp", creativeRef !== "WhatsApp" ? `Ad: ${creativeRef}` : ""]
+        .filter(Boolean)
+        .join(" | "),
+      creative: creativeRef,
+      creativeImage,
+      channel: "whatsapp",
       igsid: `wa_${waId}`,
     });
 

@@ -30,9 +30,23 @@ export interface BookingRequest {
   bookingTime: string;
   notes?: string;
   creative?: string;
+  creativeImage?: string; // imagem do anúncio (ads_context_data.photo_url)
+  channel?: CanalDoBooking; // por onde a pessoa falou — NÃO é o anúncio
   instagramHandle?: string;
   igsid?: string;
 }
+
+// O calendário mostra este texto em "como nos conheceu?". Até 01/08/2026 TODO
+// booking do agente nascia como "Instagram DM", inclusive Messenger e
+// WhatsApp: a plataforma lia esse campo e escrevia "o cliente disse: Instagram"
+// no cartão de quem tinha vindo do Facebook. Cada canal diz o seu.
+export type CanalDoBooking = "instagram" | "facebook" | "whatsapp";
+
+const ROTULO_CANAL: Record<CanalDoBooking, string> = {
+  instagram: "Instagram DM",
+  facebook: "Facebook Messenger",
+  whatsapp: "WhatsApp",
+};
 
 export interface BookingResult {
   success: boolean;
@@ -140,11 +154,13 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
         phone: req.clientPhone.trim().slice(0, 30) || null,
         address: req.clientAddress.trim().slice(0, 300),
         referral_source: req.instagramHandle
-          ? `Instagram DM — ${req.instagramHandle}`
-          : "Instagram DM",
-        source: req.creative ?? "Instagram DM",
+          ? `${ROTULO_CANAL[req.channel ?? "instagram"]} — ${req.instagramHandle}`
+          : ROTULO_CANAL[req.channel ?? "instagram"],
+        source: req.creative ?? ROTULO_CANAL[req.channel ?? "instagram"],
         creative_url: req.creative ?? null,
-        creative_urls: [],
+        // a PEÇA do anúncio, quando a Meta mandou (ads_context_data.photo_url):
+        // é ela que aparece na agenda da plataforma
+        creative_urls: req.creativeImage ? [req.creativeImage] : [],
         scheduled_by: SCHEDULER_ID,
         notes: req.notes?.trim().slice(0, 1000) || null,
         booking_date: req.bookingDate,

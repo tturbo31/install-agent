@@ -233,6 +233,8 @@ async function processBookingCommand(
       bookingTime: bookingData.time,
       notes: noteParts.join(" | "),
       creative: creativeRef,
+      creativeImage: adPersistido?.contrato.ad_media_url ?? undefined,
+      channel: "instagram",
       instagramHandle: convData?.username ?? undefined,
       igsid: senderIgsid,
     });

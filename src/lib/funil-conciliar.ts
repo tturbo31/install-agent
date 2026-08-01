@@ -74,6 +74,7 @@ export type ResumoConciliacao = {
   dry: boolean;
   contratos: number;
   comAtribuicao: number;
+  telefonesCosturados: number; // lead tinha o anúncio e não o telefone da conversa
   cliquesSemMensagem: number;
   furos: number; // contratos sem lead atribuído E com mensagem do cliente
   reparados: number;
@@ -106,7 +107,7 @@ type ConvRow = { id: string; igsid: string; name: string | null; username: strin
 
 async function conferirNaPlataforma(
   identidades: Array<{ chave: string; ig_id?: string; telefone?: string }>
-): Promise<Map<string, { existe: boolean; temAdId: boolean }> | null> {
+): Promise<Map<string, { existe: boolean; temAdId: boolean; temTelefone: boolean }> | null> {
   const base = (process.env.PLATAFORMA_URL || "https://ozzi-plataforma.vercel.app").replace(/\/$/, "");
   const token = process.env.PLATAFORMA_WEBHOOK_TOKEN;
   if (!token) return null;
@@ -124,8 +125,17 @@ async function conferirNaPlataforma(
       console.warn(`[CONCILIA] /api/rastreio/conferir -> HTTP ${res.status}`);
       return null;
     }
-    const json = (await res.json()) as { resultados?: Array<{ chave: string; existe: boolean; temAdId: boolean }> };
-    return new Map((json.resultados ?? []).map((r) => [r.chave, { existe: r.existe, temAdId: r.temAdId }]));
+    const json = (await res.json()) as {
+      resultados?: Array<{ chave: string; existe: boolean; temAdId: boolean; temTelefone?: boolean }>;
+    };
+    return new Map(
+      (json.resultados ?? []).map((r) => [
+        r.chave,
+        // plataforma antiga não manda temTelefone: assumir que TEM evita
+        // reparo em massa desnecessário no dia de um deploy defasado
+        { existe: r.existe, temAdId: r.temAdId, temTelefone: r.temTelefone !== false },
+      ])
+    );
   } catch (err) {
     console.warn("[CONCILIA] conferência falhou:", String(err).slice(0, 150));
     return null;
@@ -226,6 +236,7 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     dry,
     contratos: 0,
     comAtribuicao: 0,
+    telefonesCosturados: 0,
     cliquesSemMensagem: 0,
     furos: 0,
     reparados: 0,
@@ -290,10 +301,6 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     const teto = opcoes?.teto ?? TETO_REPAROS;
     for (const id of ids) {
       const estado = conferido.get(id);
-      if (estado?.temAdId) {
-        out.comAtribuicao++;
-        continue;
-      }
       const conv = convs.get(id);
       const igsid = conv?.igsid ?? "";
       const canal = canalDe(igsid);
@@ -312,7 +319,35 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         continue;
       }
 
-      out.furos++;
+      // O TELEFONE QUE O CLIENTE DIGITOU NA CONVERSA (01/08/2026).
+      // O lead da conversa nasce SEM telefone (a Meta não dá o número) e o
+      // `temAdId` dava a conversa por resolvida ali. Só que a VISITA entra por
+      // outro caminho: quando é o vendedor quem marca no calendário, nasce um
+      // segundo lead — com telefone e sem anúncio — e nada une os dois. A
+      // agenda mostra a visita sem criativo mesmo com o clique rastreado.
+      // Caso real: Rolando Perez (786-367-3787), clique em "New Engagement
+      // Ad10" registrado, visita marcada pelo vendedor em 05/08.
+      // O elo existe e é prova, não palpite: o próprio cliente escreveu o
+      // número no chat. Mandar esse telefone junto fecha a costura.
+      let telefone: string | undefined;
+      if (canal === "whatsapp") telefone = `+${igsid.slice(3).replace(/\D/g, "")}`;
+      else
+        for (const m of doCliente) {
+          const t = extrairTelefone(m.content as string);
+          if (t) {
+            telefone = t;
+            break;
+          }
+        }
+
+      const faltaTelefone = Boolean(telefone) && estado?.temAdId === true && estado?.temTelefone === false;
+      if (estado?.temAdId && !faltaTelefone) {
+        out.comAtribuicao++;
+        continue;
+      }
+      if (faltaTelefone) out.telefonesCosturados++;
+
+      if (!faltaTelefone) out.furos++;
       const furo: FuroConciliacao = {
         conversa: id,
         igsid,
@@ -329,17 +364,6 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         out.detalhes.push(furo);
         continue;
       }
-
-      let telefone: string | undefined;
-      if (canal === "whatsapp") telefone = `+${igsid.slice(3).replace(/\D/g, "")}`;
-      else
-        for (const m of doCliente) {
-          const t = extrairTelefone(m.content as string);
-          if (t) {
-            telefone = t;
-            break;
-          }
-        }
 
       if (dry) {
         furo.motivo = "simulação (nada enviado)";
@@ -359,7 +383,11 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       });
       reparosFeitos++;
       furo.reparado = envio.ok;
-      furo.motivo = envio.ok ? "lead_criado reenviado com identidade + contrato" : `HTTP ${envio.status} ${(envio.body ?? "").slice(0, 80)}`;
+      furo.motivo = envio.ok
+        ? faltaTelefone
+          ? "telefone da conversa costurado ao lead (visita do calendário passa a ter criativo)"
+          : "lead_criado reenviado com identidade + contrato"
+        : `HTTP ${envio.status} ${(envio.body ?? "").slice(0, 80)}`;
       if (envio.ok) out.reparados++;
       else out.naoReparados++;
       out.detalhes.push(furo);

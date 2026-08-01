@@ -459,6 +459,24 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
       await enviarEventoFunil("lead_criado", { ...base, lp_codigo: codigoTardio });
     }
 
+    // 1d) TELEFONE TARDIO (01/08/2026) — o elo que faltava entre a CONVERSA e
+    // a VISITA. O lead_criado sai na 1ª mensagem, quando ninguém deu telefone
+    // ainda, e a Meta nunca manda o número: o lead da conversa (que tem o
+    // anúncio) fica para sempre sem telefone. Se depois é o VENDEDOR quem marca
+    // a visita no calendário, nasce um segundo lead — com telefone e sem
+    // anúncio — e a agenda mostra a visita sem criativo mesmo tendo o clique
+    // rastreado. Caso real: Rolando Perez, clique em "New Engagement Ad10",
+    // visita de 05/08 marcada pelo vendedor.
+    // Dispara UMA vez, na mensagem em que o número aparece pela primeira vez; a
+    // plataforma faz merge fill-if-empty (não duplica, não mexe em estágio).
+    if (canalDe(conv.igsid) !== "whatsapp") {
+      const telAgora = telefoneDoContato(conv.igsid, msgs, rawText);
+      const telAntes = telefoneDoContato(conv.igsid, anteriores);
+      if (telAgora && !telAntes) {
+        await enviarEventoFunil("lead_criado", { ...base, canal: canalDe(conv.igsid) });
+      }
+    }
+
     // 2) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
     // flag envia; nas demais instâncias/mensagens vira no-op.
     if ((await estaSumido(conv.id)) && (await limparSumido(conv.id))) {
