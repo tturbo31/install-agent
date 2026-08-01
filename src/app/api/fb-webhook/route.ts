@@ -10,7 +10,7 @@ import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -136,9 +136,17 @@ async function processBookingCommand(
     // past a bare empty-check and Ozzi got a Sunday visit with nowhere to go.
     // Ask for the address instead of shipping the model's "confirmed" text
     // without an actual booking behind it.
-    if (!isRealAddress(bookingData.address)) {
+    // The address must be COMPLETE: street number + street, not just a city.
+    if (!isRealAddress(bookingData.address) || !addressHasStreetNumber(bookingData.address)) {
       console.warn(`[FB] booking blocked — address not usable (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needAddressMessage(lang), booked: false };
+    }
+    // ZIP guard (owner rule 2026-08-01): the address is only complete with the
+    // ZIP CODE, and it must be one the CLIENT typed — never one the model
+    // inferred from the city. Ask for it instead of booking a guessed route.
+    if (!bookingAddressHasZip(bookingData.address, history)) {
+      console.warn(`[FB] booking blocked — address without a client-given zip (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
+      return { response: needZipMessage(lang), booked: false };
     }
     // Require a REAL phone number — never book with a non-number like "Messenger"
     // (client said "Call me in Messenger"). Re-ask instead of confirming a visit

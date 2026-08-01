@@ -1030,10 +1030,73 @@ export function isRealAddress(address?: string | null): boolean {
 }
 
 // Sent when the slot is confirmed but we still need a usable street address.
+// Asks for the ZIP in the same breath (owner rule 2026-08-01) so the client
+// sends the complete address once instead of being asked twice.
 export function needAddressMessage(lang: "es" | "en"): string {
   return lang === "es"
-    ? "¡Perfecto! ¿Cuál es la dirección completa de la propiedad para la visita?"
-    : "Perfect! What's the full property address for the visit?";
+    ? "¡Perfecto! ¿Cuál es la dirección completa de la propiedad, con el código postal, para la visita?"
+    : "Perfect! What's the full property address, including the zip code, for the visit?";
+}
+
+// Owner rule (2026-08-01): the visit is confirmed only with the client's NAME,
+// the FULL address INCLUDING THE ZIP CODE, and the phone. A street address with
+// no ZIP is ambiguous in South Florida (the same street name repeats across
+// Miami-Dade, Broward and Palm Beach), so the crew ends up routing by guess.
+//
+// Pull the ZIP out of the address string. Two things must never be mistaken for
+// a ZIP: the leading house number ("11417 SW 251st St ..."), and a 5-digit house
+// number sitting mid-string ("Apt 2, 12345 NW 7th St, Miami FL 33125" → 33125).
+const STREET_AFTER_NUMBER = /^[\s,]*(?:[nsew]{1,2}\.?[\s,]|\d+(?:st|nd|rd|th)\b|(?:[a-z'.]+[\s,]+){0,3}(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|calle|avenida)\b)/i;
+export function extractZip(address?: string | null): string | null {
+  const t = (address ?? "").toString();
+  const re = /\b(\d{5})(?:-\d{4})?\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    if (m.index === 0) continue; // leading house number, never a ZIP
+    if (!/[a-z]/i.test(t.slice(0, m.index))) continue; // only digits/punct before it
+    if (STREET_AFTER_NUMBER.test(t.slice(m.index + m[0].length))) continue; // "12345 NW 7th St"
+    return m[1];
+  }
+  return null;
+}
+
+// The address must also carry the STREET NUMBER (owner rule 2026-08-01: "tem
+// que ser o endereço completo"). "Miami FL 33125" passes isRealAddress (it has
+// digits) but is not an address anyone can drive to — the ZIP was the only
+// number in it. Remove the ZIP first, then require a house number followed by
+// the street name/directional.
+export function addressHasStreetNumber(address?: string | null): boolean {
+  let t = (address ?? "").toString();
+  const zip = extractZip(t);
+  if (zip) t = t.replace(new RegExp(`\\b${zip}(?:-\\d{4})?\\b`), " ");
+  return /\b\d{1,6}[a-z]?\b[\s,.-]*[a-z]/i.test(t);
+}
+
+// True only when the [BOOK] address carries a ZIP the CLIENT actually typed in
+// this conversation. Both halves matter: no ZIP at all → ask for it; a ZIP that
+// never appears in any client message → the model inferred it from the city
+// (the same invention failure that once produced a made-up 9am visit), so ask
+// instead of shipping a routed-by-guess address.
+export function bookingAddressHasZip(
+  address: string | null | undefined,
+  history?: Array<{ role: string; content: string }>
+): boolean {
+  const zip = extractZip(address);
+  if (!zip) return false;
+  if (!history || history.length === 0) return true;
+  const seen = new RegExp(`\\b${zip}\\b`);
+  return history.some(
+    (m) => m.role === "user" && seen.test((m.content || "").split(/\n\n?\[SYSTEM:/)[0])
+  );
+}
+
+// Sent when the slot, street address, name and phone are in hand but the ZIP is
+// missing (or was invented by the model). Short and specific: the client only
+// has to send five digits back.
+export function needZipMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Casi listo! ¿Cuál es el código postal de esa dirección?"
+    : "Almost set! What's the zip code for that address?";
 }
 
 // Sent when we have the slot + address but still need a real callback number

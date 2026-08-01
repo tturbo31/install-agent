@@ -77,8 +77,11 @@ async function main() {
   ck("coleta lista o nome como (4) e exige ALL FOUR", /\(4\) the client'?s name/i.test(prompt) && /ALL FOUR/i.test(prompt));
   ck("regra NAME MUST COME FROM THE CLIENT presente", /NAME MUST COME FROM THE CLIENT/.test(prompt));
   ck("proíbe usar nome de perfil/username", /NEVER fill it from the Instagram\/Facebook profile/.test(prompt));
-  ck("Step 3 pede nome, endereço e telefone juntos", /Ask for the client's name, address, and phone ONLY after/.test(prompt));
-  ck("WHATSAPP EXCEPTION pede nome + endereço (sem telefone)", /ask ONLY for the client's name and the property address/.test(prompt));
+  // Redação tolerante: o ZIP CODE entrou no meio da frase em 2026-08-01
+  // (zip-required-verify cobre o ZIP em si), o que importa aqui é que os TRÊS
+  // dados continuam sendo pedidos juntos.
+  ck("Step 3 pede nome, endereço e telefone juntos", /Ask for the client's name, [^.]*address[^.]*, and phone ONLY after/.test(prompt));
+  ck("WHATSAPP EXCEPTION pede nome + endereço (sem telefone)", /ask ONLY for the client's name and the (?:full )?property address/.test(prompt));
 
   console.log("\n[5] Resposta com o nome nunca é silenciada como fechamento");
   const nameAsk = "Last thing! What name should I put the visit under?";

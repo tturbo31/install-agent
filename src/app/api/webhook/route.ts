@@ -35,7 +35,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -167,9 +167,17 @@ async function processBookingCommand(
     // Address must be REAL — the model once wrote the literal "pending" to slip
     // past a bare empty-check (2026-07-17 review). Ask for it instead of
     // shipping a "confirmed" text without an actual booking behind it.
-    if (!isRealAddress(bookingData.address)) {
+    // The address must be COMPLETE: street number + street, not just a city.
+    if (!isRealAddress(bookingData.address) || !addressHasStreetNumber(bookingData.address)) {
       console.warn(`[IG] booking blocked — address not usable (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needAddressMessage(lang), booked: false };
+    }
+    // ZIP guard (owner rule 2026-08-01): the address is only complete with the
+    // ZIP CODE, and it must be one the CLIENT typed — never one the model
+    // inferred from the city. Ask for it instead of booking a guessed route.
+    if (!bookingAddressHasZip(bookingData.address, history)) {
+      console.warn(`[IG] booking blocked — address without a client-given zip (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
+      return { response: needZipMessage(lang), booked: false };
     }
     // Require a REAL phone number. The model sometimes books with a non-number
     // (e.g. client says "Call me in Messenger" and it sets phone="Messenger"),

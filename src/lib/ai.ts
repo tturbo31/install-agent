@@ -568,7 +568,7 @@ const LEADING_CONNECTOR = /^(?:since|because|so|as|when|if|while|after|before|on
 // Friday at 5pm?"). Without this, the bot's ask for the missing phone+name
 // after the client sent only the address was deleted and the funnel stalled
 // until the owner stepped in (Emanuel, Boynton Beach, 2026-07-28).
-const CONTACT_ASK = /\b(?:your|full|first|last)\s+name\b|\bname\s+(?:for|to|under|should)\b|\bphone\b|\b(?:best|contact)\s+number\b|\bnumber\s+to\s+(?:reach|confirm|call|text)\b|\b(?:property\s+)?address\b|\btel[eé]fono\b|\bn[uú]mero\b|\bnombre\b|\bdirecci[oó]n\b/i;
+const CONTACT_ASK = /\b(?:your|full|first|last)\s+name\b|\bname\s+(?:for|to|under|should)\b|\bphone\b|\b(?:best|contact)\s+number\b|\bnumber\s+to\s+(?:reach|confirm|call|text)\b|\b(?:property\s+)?address\b|\bzip(?:\s*code)?\b|\bpostal\s+code\b|\bc[oó]digo\s+postal\b|\btel[eé]fono\b|\bn[uú]mero\b|\bnombre\b|\bdirecci[oó]n\b/i;
 
 // Remove every scheduling push (in any position) so the bot never pushes the
 // appointment two messages in a row (the "stop pressuring the client" rule).
@@ -840,7 +840,7 @@ export function containsBookingInfo(text: string): boolean {
 // fires the re-ask right as the address lands (the screenshot bug) and looks like
 // it ignored what the client just sent. Requires a question so a booking
 // confirmation ("see you then!") never matches.
-const ASKING_BOOKING_INFO = /\b(?:address|property\s+address|phone|phone\s+number|callback\s+number|best\s+(?:number|phone)|name|direcci[oó]n|tel[eé]fono|n[uú]mero(?:\s+de\s+(?:tel[eé]fono|contacto))?|nombre|endere[çc]o|telefone|nome)\b/i;
+const ASKING_BOOKING_INFO = /\b(?:address|property\s+address|phone|phone\s+number|callback\s+number|best\s+(?:number|phone)|name|zip(?:\s*code)?|postal\s+code|c[oó]digo\s+postal|cep|direcci[oó]n|tel[eé]fono|n[uú]mero(?:\s+de\s+(?:tel[eé]fono|contacto))?|nombre|endere[çc]o|telefone|nome)\b/i;
 export function isAskingForBookingInfo(text: string): boolean {
   const t = text || "";
   if (!t.includes("?")) return false;

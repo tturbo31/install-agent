@@ -114,7 +114,9 @@ async function main() {
     ["Facebook", "src/app/api/fb-webhook/route.ts"],
   ] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
-    ck(`${name}: usa isRealAddress + needAddressMessage`, /if \(!isRealAddress\(bookingData\.address\)\)/.test(src) && /needAddressMessage\(lang\)/.test(src), rel);
+    // Desde 2026-08-01 a mesma guarda também exige o número da casa
+    // (addressHasStreetNumber) — por isso o `if` aceita condições extras.
+    ck(`${name}: usa isRealAddress + needAddressMessage`, /if \(!isRealAddress\(bookingData\.address\)[^)]*\)?[^{]*\)\s*\{/.test(src) && /needAddressMessage\(lang\)/.test(src), rel);
   }
 
   console.log("\n[E] Vazamento de raciocínio em ESPANHOL/PORTUGUÊS (pego pelo E2E ao vivo)");
