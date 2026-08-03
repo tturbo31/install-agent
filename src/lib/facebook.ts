@@ -1,10 +1,13 @@
 import { reportSendFailure } from "@/lib/delivery";
 import { stripInternalMarkers } from "@/lib/outbound-text";
+import { getFacebookPageToken } from "@/lib/fb-token";
 
 const FB_API = "https://graph.facebook.com/v24.0";
 
-function getToken(): string {
-  return process.env.FACEBOOK_PAGE_TOKEN!;
+// DB-first (see fb-token.ts): a dead page token can be swapped from the phone
+// via /api/ig-diag?setfbtoken=..., with the env var as the fallback.
+async function getToken(): Promise<string> {
+  return getFacebookPageToken();
 }
 
 export type FbSendResult = { ok: boolean; error?: string };
@@ -19,7 +22,7 @@ export async function sendFacebookMessage(psid: string, text: string): Promise<F
   let lastErr = "not attempted";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const res = await fetch(`${FB_API}/me/messages?access_token=${getToken()}`, {
+      const res = await fetch(`${FB_API}/me/messages?access_token=${await getToken()}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -50,7 +53,7 @@ export async function sendFacebookMessage(psid: string, text: string): Promise<F
 export async function fetchFacebookProfile(psid: string): Promise<{ name?: string; profile_pic?: string }> {
   try {
     const res = await fetch(
-      `${FB_API}/${psid}?fields=name,profile_pic&access_token=${getToken()}`
+      `${FB_API}/${psid}?fields=name,profile_pic&access_token=${await getToken()}`
     );
     if (!res.ok) return {};
     return await res.json();
@@ -70,7 +73,7 @@ export async function fetchAdCreative(adId: string): Promise<{ text: string | nu
   const empty = { text: null as string | null, imageUrl: null as string | null };
   try {
     if (!adId || !/^\d{3,}$/.test(adId)) return empty;
-    const token = process.env.META_ADS_TOKEN || getToken();
+    const token = process.env.META_ADS_TOKEN || (await getToken());
     const fields = "name,creative{name,title,body,image_url,thumbnail_url,link_url,object_story_spec,asset_feed_spec}";
     const res = await fetch(`${FB_API}/${adId}?fields=${encodeURIComponent(fields)}&access_token=${token}`);
     if (!res.ok) return empty;

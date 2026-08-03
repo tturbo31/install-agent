@@ -76,12 +76,25 @@ function main() {
   ck("ig-diag rescue dedupes via igrescue marker", /igrescue\|/.test(diag));
   ck("ig-diag rescue skips owner-takeover convos", /mode === "human"/.test(diag));
 
+  // 2026-08-03: one Facebook password change invalidated BOTH tokens (OAuth 190
+  // subcode 460). IG recovered in minutes via settoken; Messenger was env-only,
+  // so it needed a Vercel edit + redeploy. The page token now has the same
+  // DB-first storage and the same no-deploy swap.
+  const fbTok = read("src/lib/fb-token.ts");
+  ck("FB page token resolver is DB-first with env fallback", /fbtok\|/.test(fbTok) && /FACEBOOK_PAGE_TOKEN \?\? ""/.test(fbTok));
+  ck("FB page token setter keeps only the newest row", /setFacebookPageToken/.test(fbTok) && /rows\.slice\(1\)/.test(fbTok));
+  ck("FB send reads the token from the DB resolver (not raw env)", /getFacebookPageToken/.test(fb) && !/process\.env\.FACEBOOK_PAGE_TOKEN/.test(fb));
+  ck("IG→Messenger bridge uses the DB resolver too", /getFacebookPageToken/.test(ig) && !/process\.env\.FACEBOOK_PAGE_TOKEN/.test(ig));
+  ck("ig-diag validates a new PAGE token before storing", /checkFbToken\(newFbToken\)/.test(diag) && /setFacebookPageToken\(newFbToken\)/.test(diag));
+  ck("ig-diag reports the effective page-token source", /effectiveSource/.test(diag) && /readStoredPageToken/.test(diag));
+
   // ── 4. Failure alert: loud, actionable, throttled ────────────────────────
   console.log("\n[4] owner alert on send failure");
   const del = read("src/lib/delivery.ts");
   ck("alert throttled (1/hour/channel)", /ALERT_EVERY_MS = 60 \* 60 \* 1000/.test(del));
   ck("alert names the channel + tells owner to reply manually", /ENTREGA FALHANDO/.test(del) && /responda os clientes manualmente/.test(del));
   ck("IG token alert points to settoken (fix without deploy)", /settoken/.test(del));
+  ck("FB token alert points to setfbtoken (fix without deploy)", /setfbtoken/.test(del));
   ck("alert goes to both owner phones via WhatsApp", /OWNER_PHONES = \["15616748334", "556294554477"\]/.test(del));
   ck("paused-backlog alert exists + 1h staleness gate", /alertPausedBacklog/.test(del) && /PAUSED_STALE_MS = 60 \* 60 \* 1000/.test(del));
 

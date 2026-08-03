@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 import { isDashboardAuthorized, isStrongAdminSecret } from "@/lib/admin-auth";
 import { getInstagramToken, setInstagramToken, refreshInstagramTokenIfDue } from "@/lib/ig-token";
+import { getFacebookPageToken, setFacebookPageToken, readStoredPageToken } from "@/lib/fb-token";
 import { sendInstagramMessage } from "@/lib/instagram";
 
 export const maxDuration = 300;
@@ -19,6 +20,10 @@ export const maxDuration = 300;
 //   ?settoken=<token>         → STRONG secret. Validate a newly minted token and
 //                               store it in the DB — takes effect in ≤60s, no
 //                               deploy, no Vercel env edit.
+//   ?setfbtoken=<token>       → STRONG secret. Same, for the Facebook PAGE token
+//                               (Messenger). Added 2026-08-03: a password change
+//                               invalidates both tokens at once, and the page
+//                               token used to be env-only = deploy required.
 //   ?rescue=1[&since=ISO][&dry=1] → STRONG secret. Re-send the bot replies that
 //                               were stored but never delivered (phantom
 //                               replies) since the token died. Dedupes via a
@@ -51,6 +56,25 @@ export async function GET(req: NextRequest) {
     }
   };
 
+  const checkFbToken = async (token: string | undefined | null) => {
+    if (!token) return { present: false, valid: false, page: null, error: "absent" };
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v24.0/me?fields=id,name,instagram_business_account{id,username}&access_token=${encodeURIComponent(token)}`
+      );
+      const body = await res.json().catch(() => ({}));
+      return {
+        present: true,
+        valid: !body.error,
+        page: body.name ?? null,
+        instagramLinked: body.instagram_business_account ?? null,
+        error: body.error?.message ?? null,
+      };
+    } catch (e) {
+      return { present: true, valid: false, page: null, error: String(e).slice(0, 200) };
+    }
+  };
+
   // ── settoken (strong gate: token injection is sensitive) ──
   const newToken = q.get("settoken");
   if (newToken) {
@@ -63,6 +87,23 @@ export async function GET(req: NextRequest) {
     }
     await setInstagramToken(newToken);
     return NextResponse.json({ settoken: "OK — stored, effective within 60s", username: check.username });
+  }
+
+  // ── setfbtoken: same escape hatch for the Messenger page token ──
+  // 2026-08-03: a Facebook password change killed the IG token AND the page
+  // token at once. IG was back in minutes (DB-stored); Messenger needed a
+  // Vercel env edit + redeploy. Now both swap from the phone.
+  const newFbToken = q.get("setfbtoken");
+  if (newFbToken) {
+    if (!isStrongAdminSecret(secret)) {
+      return NextResponse.json({ error: "setfbtoken requires the strong ADMIN_SECRET" }, { status: 401 });
+    }
+    const check = await checkFbToken(newFbToken);
+    if (!check.valid) {
+      return NextResponse.json({ setfbtoken: "REJECTED — token is not valid", check }, { status: 400 });
+    }
+    await setFacebookPageToken(newFbToken);
+    return NextResponse.json({ setfbtoken: "OK — stored, effective within 60s", page: check.page });
   }
 
   // ── standard diagnosis ──
@@ -82,22 +123,16 @@ export async function GET(req: NextRequest) {
     dbToken: stored ? { refreshedAt: stored[1], ...(await checkIgToken(stored[2])) } : { present: false },
   };
 
-  const pageTok = process.env.FACEBOOK_PAGE_TOKEN;
-  try {
-    const res = await fetch(
-      `https://graph.facebook.com/v24.0/me?fields=id,name,instagram_business_account{id,username}&access_token=${pageTok}`
-    );
-    const body = await res.json().catch(() => ({}));
-    out.facebook = {
-      valid: !body.error,
-      page: body.name ?? null,
-      instagramLinked: body.instagram_business_account ?? null,
-      bridgeViable: !body.error && !!body.instagram_business_account,
-      error: body.error?.message ?? null,
-    };
-  } catch (e) {
-    out.facebook = { valid: false, error: String(e).slice(0, 200) };
-  }
+  const storedFb = await readStoredPageToken();
+  const effectiveFb = await getFacebookPageToken();
+  const envFb = process.env.FACEBOOK_PAGE_TOKEN ?? "";
+  const fbCheck = await checkFbToken(effectiveFb);
+  out.facebook = {
+    effectiveSource: storedFb && effectiveFb !== envFb ? "db" : "env",
+    storedAt: storedFb?.setAt ?? null,
+    ...fbCheck,
+    bridgeViable: fbCheck.valid && !!(fbCheck as { instagramLinked?: unknown }).instagramLinked,
+  };
 
   if (q.get("refresh") === "1") {
     out.refresh = await refreshInstagramTokenIfDue(true);

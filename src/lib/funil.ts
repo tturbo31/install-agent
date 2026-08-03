@@ -168,7 +168,8 @@ async function buscarDadosAnuncio(adId: string | null | undefined): Promise<{ ad
   if (!adId) return { ad_name: null, campanha: null };
   const memo = campanhaCache.get(adId);
   if (memo) return memo;
-  const token = process.env.META_ADS_TOKEN || process.env.FACEBOOK_PAGE_TOKEN;
+  const { getFacebookPageToken } = await import("@/lib/fb-token");
+  const token = process.env.META_ADS_TOKEN || (await getFacebookPageToken());
   if (!token) return { ad_name: null, campanha: null };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3_000);

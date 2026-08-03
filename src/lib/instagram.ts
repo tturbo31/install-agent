@@ -77,7 +77,8 @@ export async function sendInstagramMessage(
   }
 
   // ── Messenger Platform bridge ──
-  const pageToken = process.env.FACEBOOK_PAGE_TOKEN;
+  const { getFacebookPageToken } = await import("@/lib/fb-token");
+  const pageToken = await getFacebookPageToken();
   if (pageToken) {
     try {
       const res = await fetch(

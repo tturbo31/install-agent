@@ -88,8 +88,10 @@ export async function reportSendFailure(
         `Exemplo de cliente afetado: ${clientId}`,
         ``,
         channel === "instagram"
-          ? `Se o erro fala em token/sessao expirada: gere um token novo no Meta e envie para /api/ig-diag?settoken=... (nao precisa de deploy).`
-          : `Verifique a conexao do canal no painel.`,
+          ? `Se o erro fala em token/sessao expirada (codigo 190): gere um token novo no Meta e envie para /api/ig-diag?secret=...&settoken=... (nao precisa de deploy).`
+          : channel === "facebook"
+            ? `Se o erro fala em token/sessao expirada (codigo 190): gere um token novo da PAGINA no Meta e envie para /api/ig-diag?secret=...&setfbtoken=... (nao precisa de deploy). Trocar a senha do Facebook derruba os dois tokens de uma vez — Instagram e Messenger.`
+            : `Verifique a conexao do canal no painel (Z-API: assinatura em dia e celular conectado).`,
         `O sistema vai reentregar sozinho as respostas que falharem assim que o canal voltar (retry automatico por 48h).`,
         `Ate resolver, responda os clientes manualmente pelo app.`,
       ].join("\n");
