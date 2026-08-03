@@ -228,10 +228,15 @@ async function main() {
   const describesVinyl = /vinyl/i.test(o1) && /water\s?proof|resist|warranty|20.?year/i.test(o1);
   const listsTypes = /vinyl/i.test(o1) && /tile/i.test(o1) && /hardwood/i.test(o1);
   ck("'what flooring options' → describes vinyl OR lists types, NO link", (describesVinyl || listsTypes) && !/674[-\s]?8334|ozzifloors\.com|@ozzi\.floors/i.test(o1) && !/White Knight|Coastal Mist|Grey Shield|Espresso/i.test(o1), o1);
+  // Owner rule (2026-07-27 review): sample/photo requests answer with the
+  // WEBSITE link (ozzifloors.com) and/or samples-at-the-free-visit — the old
+  // "WhatsApp only, never a link" expectation is obsolete. Still forbidden:
+  // inventing specific color/product names.
+  const showsFloors = (t: string) => (/ozzifloors\.com|@ozzi\.floors/i.test(t) || /samples?|muestras/i.test(t)) && !/White Knight|Coastal Mist|Grey Shield|Espresso/i.test(t);
   const o2 = await ai([{role:"user",content:"Can you send me photos of your floors?"}]);
-  ck("'send photos' → WhatsApp, no website", wa(o2), o2);
+  ck("'send photos' → site link or samples at visit, no invented colors", showsFloors(o2), o2);
   const o3 = await ai([{role:"user",content:"do you have grey wood-look floors?"}]);
-  ck("'do you have grey floors' → WhatsApp", wa(o3), o3);
+  ck("'do you have grey floors' → site link or samples, no invented colors", showsFloors(o3), o3);
   const o4 = await ai([{role:"user",content:"is your flooring waterproof?"}]);
   ck("capability question still ANSWERED (not WA redirect)", /waterproof|100%|stone|yes/i.test(o4) && !/674[-\s]?8334/.test(o4), o4);
   const o5 = await ai([{role:"user",content:"do you offer tile that looks like wood?"}]);

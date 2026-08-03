@@ -392,7 +392,11 @@ async function handleWebhook(body: WebhookPayload) {
           // offered Saturday 3pm and the client accepted). RACE GUARD: the
           // echo can arrive BEFORE the bot's history insert commits, so on a
           // miss wait and re-check before declaring this a human reply.
-          const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+          // O conteúdo salvo pode carregar o sufixo interno "\n\n[SYSTEM: …]"
+          // (FOLLOWUP_NUDGE / QUOTE_FOLLOWUP) que nunca vai no envio — sem
+          // removê-lo, o eco do próprio nudge era gravado como [Treino] e a
+          // conversa era pausada (mode=human). Mesmo bug corrigido no fb-webhook.
+          const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
           const matchesRecentBot = async () => {
             const { data: recentBot } = await supabaseAdmin
               .from("instagram_messages")

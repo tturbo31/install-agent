@@ -340,7 +340,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
             // the bot's history insert commits, so on a miss wait and re-check
             // before declaring this a human reply (wrongly pausing on the bot's
             // own echo would silence a live lead).
-            const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+            // O conteúdo salvo pode carregar o sufixo interno "\n\n[SYSTEM: …]"
+            // (FOLLOWUP_NUDGE do followup.ts, QUOTE_FOLLOWUP do /api/enviar) que
+            // NUNCA vai no envio — sem removê-lo aqui, o eco do próprio nudge
+            // não batia com a linha salva e era registrado como [Treino] com a
+            // conversa pausada (mode=human): todo followup do Messenger matava o
+            // lead em silêncio e envenenava as correções do dono (visto em 3
+            // conversas na revisão de 2026-08-03).
+            const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
             const matchesRecentBot = async () => {
               const { data: recentBot } = await supabaseAdmin
                 .from("instagram_messages")

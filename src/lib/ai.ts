@@ -1311,10 +1311,41 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bwait,?\s+let\s+me\b/.source,
     /\blet\s+me\s+(?:redo|recalculate|re-?check|recompute|handle\s+this\s+properly|start\s+over|try\s+(?:this|that)\s+again|give\s+the\s+right\s+answer|fix\s+that)\b/.source,
     /\bscratch\s+that\b/.source,
+    // ENGLISH self-correction leak shipped 2026-08-03 (Stacey Russo, fb_384715…):
+    // "Let me give you the correct number: … Hmm, I need to apply the rules
+    // properly and not narrate my math. 400 sqft of LVT, small job tier (200 to
+    // 400 sqft): 400 x $5 = $2,000, plus $500 small job add-on = $2,500. Demo:
+    // 400 x $1.50 = $600. Total = $3,100. For 400 sqft…" — the model corrected
+    // itself out loud AND revealed the internal small-job pricing (forbidden by
+    // STEP 2A: "never mention any range, band, tier, or the arithmetic").
+    /\bhmm+,?\s+i\s+(?:need|should|have)\s+to\b/.source,
+    /\blet\s+me\s+give\s+(?:you\s+)?the\s+(?:right|correct)\s+(?:number|answer|price|total|quote)\b/.source,
+    /\bapply\s+the\s+rules?\s+properly\b/.source,
+    /\bnarrat(?:e|ing)\b/.source,
+    // Internal small-job pricing must NEVER reach a client: no tier/add-on
+    // labels, no "plus $500", and no narrated arithmetic ("400 x $5 = $2,000",
+    // "Total = $3,100"). A real client-facing total says "comes out to about
+    // $X" with no equation, so these sentence shapes are always internal.
+    /\bsmall[\s-]?job\s+(?:tier|add[\s-]?on|surcharge|fee|pricing)\b/.source,
+    /\bplus\s+(?:a\s+|the\s+)?\$\s?500\b/.source,
+    /\b\d[\d,]*(?:\.\d+)?\s*(?:x|×|\*)\s*\$?\s?\d[\d.,]*\s*=\s*\$?\s?\d/.source,
+    /\btotal\s*=\s*\$?\s?\d/.source,
     /\b(?:i|we)(?:'|’)?ll\s+escalate\b/.source,
     /\bi\s+(?:just\s+)?need\s+to\s+notify\b/.source,
     /\bnotify\s+(?:ozzi|the\s+owner|the\s+team)\s+to\b/.source,
-    /\bthe\s+client\s+(?:accepted|wants|said|asked|is\s+asking|gave|confirmed|has\s+(?:accepted|confirmed|given))\b/.source,
+    /\bthe\s+client\s+(?:accepted|wants|said|asked|is\s+asking|gave|confirmed|sent|replied|responded|chose|picked|selected|has\s+(?:accepted|confirmed|given|sent)|hasn'?t\s+(?:confirmed|chosen|picked|replied|sent|given|answered))\b/.source,
+    // SECOND English leak, 2026-08-01 (conv 810d2f45): the ENTIRE planning
+    // monologue shipped before the real reply — "The client sent their phone
+    // number but hasn't confirmed a specific day and time yet, and I still need
+    // their name and address. The 'following week' from the week of Aug 5 would
+    // be the week of Aug 10. Now they sent their phone number. I should
+    // acknowledge the number and ask which time works…". Third-person "their"
+    // after "I still need", "I should <plan-verb>", and "now they sent" are
+    // never client-facing English.
+    /\bi\s+still\s+need\s+their\b/.source,
+    /\bi\s+should\s+(?:acknowledge|ask|confirm|offer|collect|check|respond|clarify)\b/.source,
+    /\bnow\s+they\s+(?:sent|said|asked|gave|confirmed|replied)\b/.source,
+    /\bfrom\s+the\s+week\s+of\b[^.!?\n]*\bwould\s+be\s+the\s+week\s+of\b/.source,
     /\bthis\s+is\s+a\b[^.!?\n]{0,60}\b(?:job|lead|request)\b[^.!?\n]{0,50}\b(?:quoted|by\s+dm|not\s+a\s+visit)\b/.source,
     // SPANISH/PORTUGUESE leaks — the English-only list let "El cliente eligió el
     // lunes pero no especificó la hora, necesito confirmar cuál de las dos
