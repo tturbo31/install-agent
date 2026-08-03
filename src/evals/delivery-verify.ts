@@ -132,6 +132,34 @@ function main() {
   ck("repeated identical question never gets silence (rule 35)",
     /REPEATED IDENTICAL QUESTION RULE/.test(read("src/lib/ai.ts")));
 
+  // ── 6b. No double sends (2026-08-03: clients got the same reply 2-3x) ──
+  // Every webhook POST on all 3 channels fires retryFailedSends(). The throttle
+  // claimed its slot with a key containing the current instant, so concurrent
+  // sweeps minted different keys, both INSERTs succeeded, and the unique
+  // constraint never fired — N sweeps re-sent the same outbox rows in parallel.
+  console.log("\n[6b] duplicate-send protection");
+  ck("throttle claims a WINDOW bucket, never the raw instant",
+    /Math\.floor\(Date\.now\(\) \/ everyMs\) \* everyMs/.test(del));
+  ck("throttle no longer inserts a per-instant key (the broken lock)",
+    !/insert\(\{ platform: `\$\{prefix\}\$\{new Date\(\)\.toISOString\(\)\}`/.test(del));
+  ck("single-flight claim exists and is exported for every send path",
+    /export async function claimSendOnce/.test(del) && /export async function releaseSendClaim/.test(del));
+  ck("claim is an INSERT on the unique column (the insert IS the lock)",
+    /claimSendOnce[\s\S]{0,400}?insert\(\{ platform: `sentonce\|\$\{messageId\}`/.test(del));
+  ck("retry sweep claims before putting a reply on the wire",
+    /if \(!\(await claimSendOnce\(m\.id\)\)\) \{[\s\S]{0,220}?continue;/.test(del));
+  ck("retry sweep releases the claim when nothing reached the client",
+    /await releaseSendClaim\(m\.id\);\s*console\.log\(`\[DELIVERY\] retry \$\{conv\.igsid\}: still failing/.test(del));
+  ck("retry sweep never releases the claim after a delivered send",
+    !/if \(r\.ok\) \{[\s\S]{0,300}?releaseSendClaim/.test(del));
+  const igd = read("src/app/api/ig-diag/route.ts");
+  ck("manual rescue shares the same claim as the outbox",
+    /claimSendOnce/.test(igd) && /releaseSendClaim/.test(igd));
+  ck("manual rescue stands down when the outbox already sent it",
+    /if \(!\(await claimSendOnce\(last\.id\)\)\)[\s\S]{0,220}?already sent by the outbox/.test(igd));
+  ck("manual rescue frees the claim when its send failed",
+    /if \(!sent\.ok\) await releaseSendClaim\(last\.id\);/.test(igd));
+
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail > 0) {
     console.log("FAILED:", fails.join(" | "));

@@ -4,6 +4,7 @@ import { isDashboardAuthorized, isStrongAdminSecret } from "@/lib/admin-auth";
 import { getInstagramToken, setInstagramToken, refreshInstagramTokenIfDue } from "@/lib/ig-token";
 import { getFacebookPageToken, setFacebookPageToken, readStoredPageToken } from "@/lib/fb-token";
 import { sendInstagramMessage } from "@/lib/instagram";
+import { claimSendOnce, releaseSendClaim } from "@/lib/delivery";
 
 export const maxDuration = 300;
 
@@ -192,7 +193,17 @@ export async function GET(req: NextRequest) {
         results.push({ igsid: c.igsid, name: c.username ?? c.name, wouldResend: clientText.slice(0, 120) });
         continue;
       }
+      // The outbox (retryFailedSends) re-sends undelivered replies on its own
+      // and strips the SEND_FAILED marker on success, so by the time the rescue
+      // looks, a delivered reply is indistinguishable from a phantom one. On
+      // 2026-08-03 that raced and clients got the same message twice. The shared
+      // claim is the arbiter: whoever gets it sends, the other stands down.
+      if (!(await claimSendOnce(last.id))) {
+        results.push({ igsid: c.igsid, name: c.username ?? c.name, skipped: "already sent by the outbox" });
+        continue;
+      }
       const sent = await sendInstagramMessage(c.igsid, clientText);
+      if (!sent.ok) await releaseSendClaim(last.id);
       if (sent.ok) {
         await supabaseAdmin.from("platform_settings").insert({ platform: marker, paused: false });
       }

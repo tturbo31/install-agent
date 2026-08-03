@@ -37,9 +37,19 @@ async function shouldAlert(kind: string, key: string, everyMs: number): Promise<
     if (last && Date.now() - last < everyMs) return false;
     // Claim the slot BEFORE sending (concurrent failures race here; duplicate
     // key insert makes the loser back off).
+    //
+    // The claim key must be the WINDOW, not the instant. With
+    // `new Date().toISOString()` two concurrent callers minted two DIFFERENT
+    // keys, so BOTH inserts succeeded, the unique constraint never fired and
+    // the "throttle" silently allowed N parallel runs. Every webhook POST on
+    // all three channels calls retryFailedSends(), so a channel coming back
+    // online ran many sweeps at once and each one re-sent the same outbox rows
+    // — clients got the identical reply 2-3 times (2026-08-03). Bucketing to
+    // the window makes the losers collide and back off, as always intended.
+    const bucket = new Date(Math.floor(Date.now() / everyMs) * everyMs).toISOString();
     const { error } = await supabaseAdmin
       .from("platform_settings")
-      .insert({ platform: `${prefix}${new Date().toISOString()}`, paused: false });
+      .insert({ platform: `${prefix}${bucket}`, paused: false });
     if (error) return false;
     for (const old of rows) {
       await supabaseAdmin.from("platform_settings").delete().eq("platform", old);
@@ -134,6 +144,35 @@ export async function alertPausedBacklog(params: {
   }
 }
 
+// ─── Single-flight claim on ONE outbound message ────────────────────────────
+// The window throttle above keeps sweeps from starting together, but it cannot
+// cover everything: a sweep that runs long overlaps the next window, and the
+// manual rescue (/api/ig-diag?rescue=1) sends outside the sweep entirely. Both
+// paths re-send the SAME stored reply, so on 2026-08-03 a client could receive
+// it from the outbox AND from the rescue.
+//
+// platform_settings.platform is unique, so the INSERT *is* the lock: whoever
+// wins sends, everyone else backs off. This makes a double send structurally
+// impossible no matter how many workers race, and it is shared by every path
+// that can put a stored reply on the wire.
+export async function claimSendOnce(messageId: string): Promise<boolean> {
+  const { error } = await supabaseAdmin
+    .from("platform_settings")
+    .insert({ platform: `sentonce|${messageId}`, paused: false });
+  return !error;
+}
+
+// Only for a send that did NOT reach the client: hand the message back so a
+// later sweep can retry it. Never call this after a successful send — the claim
+// row is what keeps the reply from going out twice.
+export async function releaseSendClaim(messageId: string): Promise<void> {
+  try {
+    await supabaseAdmin.from("platform_settings").delete().eq("platform", `sentonce|${messageId}`);
+  } catch (err) {
+    console.error("[DELIVERY] release claim failed:", err);
+  }
+}
+
 const RETRY_SWEEP_GAP_MS = 10 * 60 * 1000; // sweep at most every 10 min
 const RETRY_WINDOW_H = 48; // give up after 48h (reply is stale by then)
 const RETRY_BATCH = 10;
@@ -181,7 +220,14 @@ export async function retryFailedSends(): Promise<void> {
         .limit(1);
       if (!text || newerUser?.length || conv.mode === "human") {
         await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
+        await releaseSendClaim(m.id);
         console.log(`[DELIVERY] retry ${conv.igsid}: dropped stale undelivered reply`);
+        continue;
+      }
+      // Last gate before the wire: if anyone else already owns this reply, it is
+      // either in flight or already delivered — never send it a second time.
+      if (!(await claimSendOnce(m.id))) {
+        console.log(`[DELIVERY] retry ${conv.igsid}: already claimed, skipping (no double send)`);
         continue;
       }
       let r: { ok: boolean; error?: string };
@@ -200,9 +246,12 @@ export async function retryFailedSends(): Promise<void> {
       const code = Number((String(r.error ?? "").match(/^(\d+):/) ?? [])[1] ?? NaN);
       if (PER_RECIPIENT_CODES.has(code)) {
         await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
+        await releaseSendClaim(m.id);
         console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${code}) — giving up permanently`);
         continue;
       }
+      // Nothing reached the client, so hand the reply back to the next sweep.
+      await releaseSendClaim(m.id);
       console.log(`[DELIVERY] retry ${conv.igsid}: still failing (${r.error ?? "?"})`);
     }
   } catch (err) {
