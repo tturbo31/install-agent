@@ -18,7 +18,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa, perguntaOrigemPosAgendamento } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
 export const maxDuration = 60;
@@ -214,7 +214,11 @@ async function processBookingCommand(
       // then silenced the client for good (Kenny Abbasi, 2026-07-31).
       const pending = questionSwallowedByBooking(aiResponse, history);
       if (pending) console.log("[FB] answering the question sent with the booking details before confirming");
-      return { response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang), booked: true };
+      // ORIGEM DECLARADA: conversa sem contrato de anúncio pergunta 1x como o
+      // cliente nos conheceu (a resposta vira origem_declarada na plataforma).
+      const perguntaOrigem = await perguntaOrigemPosAgendamento(conversationId, lang).catch(() => "");
+      const confirmacao = perguntaOrigem ? `${bookingSuccessMessage(lang)}\n\n${perguntaOrigem}` : bookingSuccessMessage(lang);
+      return { response: pending ? `${pending}\n\n${confirmacao}` : confirmacao, booked: true };
     } else if (result.error === "already_booked") {
       console.warn("[FB] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin
