@@ -1062,6 +1062,59 @@ export function isRescheduleRequest(text: string): boolean {
   return RESCHEDULE_PATTERNS.some((p) => p.test(t));
 }
 
+// ─── Cliente AFIRMA uma visita que o scheduler não enxerga ───────────────────
+// CASO MSLEO (2026-08-05, IG): o dono remarcou a visita manualmente pelo app do
+// Instagram ("confirmed for Wednesday, August 5th") e o scheduler ficou com a
+// data VELHA. Quando a visita velha passou, a flag booked caiu como "stale", o
+// cliente virou "lead normal" e o bot respondeu ao gate code dela oferecendo
+// OUTROS dias ("August 5th is fully booked") — contradizendo o acordo do dono e
+// perdendo a cliente. A regra: quando a rajada não-respondida AFIRMA que uma
+// visita já existe/foi combinada (gate code, "we had a confirmed appointment",
+// aceite de horário sem oferta nossa em aberto), o bot NUNCA re-engaja o fluxo
+// de vendas — ack neutro + dono. Ele não tem como saber o que foi combinado por
+// fora, então nunca deve afirmar o contrário.
+//
+// Precisão sobre cobertura: um pedido de REMARCAÇÃO ("can we do another day?")
+// ou um orçamento novo semanas depois da visita NÃO casam — esses continuam no
+// re-engajamento normal (a trava de 2026-07-21 contra silêncio eterno).
+const APPOINTMENT_BELIEF_PATTERNS: RegExp[] = [
+  // Código de portão/porta/acesso: só quem espera uma visita manda isso.
+  /\b(?:gate|door|access|entry|garage|building|lock\s*box|lockbox)\s*code\b/i,
+  /\bcode\s+(?:for|to)\s+the\s+(?:gate|door|building|garage|entrance)\b/i,
+  /\bc[oó]digo\s+(?:d[eo]l?\s+|de\s+la\s+|do\s+|da\s+)?(?:port[ãa]o|port[oó]n|puerta|porta|acesso|acceso|entrada|garagem|garaje|pr[eé]dio|edificio)\b/i,
+  // "we had a confirmed appointment (already)" / "I had an appointment"
+  /\b(?:we|i)\s+(?:already\s+)?had\b[^.!?\n]{0,24}\b(?:appointment|appt|cita|agendamento)\b/i,
+  // presente só com "already" (sem ele, "can I have an appointment?" é PEDIDO)
+  /\b(?:we|i)\s+already\s+have\b[^.!?\n]{0,24}\b(?:appointment|appt|cita|agendamento)\b/i,
+  /\b(?:we|i)\s+have\b[^.!?\n]{0,24}\b(?:appointment|appt|cita|agendamento)\b[^.!?\n]{0,16}\balready\b/i,
+  /\b(?:my|our)\s+(?:appointment|appt)\b|\bmi\s+cita\b|\bnuestra\s+cita\b|\bminha\s+visita\b|\bmeu\s+agendamento\b/i,
+  // "the appointment/visit was confirmed", "can you confirm my appointment"
+  /\b(?:appointment|appt|visit|cita|visita|agendamento)\b[^.!?\n]{0,32}\bconfirm/i,
+  /\bconfirm(?:ed|ada|ado)?\b[^.!?\n]{0,32}\b(?:appointment|appt|visit|cita|visita|agendamento)\b/i,
+  /\b(?:i|we)\s+confirmed\s+with\s+you\b|\byou\s+(?:already\s+)?confirmed\b|\bit\s+was\s+confirmed\b/i,
+  /\balready\s+(?:scheduled|booked|confirmed|set|arranged)\b|\bya\s+(?:agendad|confirmad|programad)/i,
+  /\b(?:ya|j[áa])\s+(?:tengo|tenemos|ten[ií]amos|tenho|temos|t[ií]nhamos)\b[^.!?\n]{0,24}\b(?:cita|visita|agendamento|hor[aá]rio)\b/i,
+  // referência a algo que O DONO mandou e o bot não vê ("that is what you sent me")
+  /\byou\s+sent\s+me\b/i,
+  // despedida que pressupõe visita marcada
+  /\bsee\s+you\s+(?:then|today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|on\s+\w|at\s+\d)/i,
+];
+// Aceite de horário ("I will take the 9am", "that will be August 5th at 9 am"):
+// só conta como afirmação de acordo EXTERNO se a última mensagem do bot NÃO era
+// uma oferta de horários em aberto — senão é o fluxo normal de agendamento.
+const SLOT_ACCEPTANCE_PATTERNS: RegExp[] = [
+  /\b(?:i|we)(?:'ll|\s+will)?\s+(?:take|do|go\s+with)\s+(?:the\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i,
+  /\bthat\s+(?:will\s+be|would\s+be|is)\b[^.!?\n]{0,40}\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/i,
+];
+
+export function assertsExistingAppointment(burstText: string, lastAssistantText?: string | null): boolean {
+  const t = normalizeSmartPunct(burstText || "");
+  if (!t.trim()) return false;
+  if (APPOINTMENT_BELIEF_PATTERNS.some((p) => p.test(t))) return true;
+  const liveOffer = !!(lastAssistantText && containsSchedulingOffer(lastAssistantText));
+  return !liveOffer && SLOT_ACCEPTANCE_PATTERNS.some((p) => p.test(t));
+}
+
 // Joined client text of the trailing user bubbles since the last assistant
 // reply. The 10s debounce means only the LAST bubble's handler acts, so any
 // intent spread across a rapid burst is invisible to single-bubble checks

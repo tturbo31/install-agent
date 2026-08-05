@@ -31,12 +31,13 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
+  assertsExistingAppointment,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -832,6 +833,53 @@ async function handleWebhook(body: WebhookPayload) {
     if (isBooked) {
       const snap = await getClientBookingSnapshot(senderIgsid);
       if (snap && !snap.upcoming) {
+        // GUARDA VISITA AFIRMADA (caso Msleo, 2026-08-05): antes de rebaixar o
+        // cliente a "lead normal", olha a rajada não-respondida. Se ela AFIRMA
+        // uma visita já combinada (gate code, "we had a confirmed appointment",
+        // aceite de horário sem oferta nossa em aberto), o acordo pode ter sido
+        // feito pelo dono FORA do bot e o scheduler estar desatualizado — nunca
+        // re-engajar vendas nem afirmar disponibilidade: ack neutro + dono. A
+        // flag NÃO é resetada, então as próximas bolhas continuam protegidas.
+        const { data: staleBurstMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(10);
+        const staleRows = (staleBurstMsgs ?? []).reverse();
+        const staleBurst = unansweredUserBurst(staleRows) || rawText;
+        const staleLastAsst = [...staleRows].reverse().find((m) => m.role === "assistant")?.content ?? null;
+        if (assertsExistingAppointment(staleBurst, staleLastAsst)) {
+          console.log("[IG] stale booked flag BUT client asserts an existing appointment — owner handoff, no re-engage");
+          const handoff = appointmentMismatchHandoffMessage(detectLang(staleBurst));
+          if (!(staleLastAsst && isConsecutiveDuplicate([{ role: "assistant", content: staleLastAsst }], handoff))) {
+            const handoffSent = await sendInstagramMessage(senderIgsid, handoff);
+            if (handoffSent.ok) {
+              await supabaseAdmin.from("instagram_messages").insert({
+                conversation_id: conversation.id,
+                role: "assistant",
+                content: handoff,
+              });
+            }
+          }
+          try {
+            const { data: recentMsgs } = await supabaseAdmin
+              .from("instagram_messages")
+              .select("role, content")
+              .eq("conversation_id", conversation.id)
+              .order("created_at", { ascending: false })
+              .limit(8);
+            await notifyOwners({
+              platform: "Instagram",
+              clientName: conversation.username ?? null,
+              clientId: senderIgsid,
+              recentMessages: (recentMsgs ?? []).reverse(),
+            });
+          } catch (err) {
+            console.error("[IG] appointment-mismatch notify error:", err);
+          }
+          return;
+        }
         console.log("[IG] booked flag is stale (no upcoming visit) — re-engaging as a normal client");
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: false }).eq("id", conversation.id);
         (conversation as Record<string, unknown>).booking_confirmed = false;
@@ -1620,8 +1668,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "ignored" }, { status: 200 });
   }
 
+  // ECOS PASSAM (caso Msleo, 2026-08-05): este return descartava TODO evento
+  // is_echo desde o commit inicial, então a captura de resposta manual do dono
+  // dentro do handleWebhook ([Treino] + mode=human) era código morto no
+  // Instagram — só o Messenger tinha isso vivo. Em 2026-08-01 o dono remarcou
+  // uma visita pelo app do IG ("confirmed for Wednesday, August 5th"), nada foi
+  // gravado, e 4 dias depois o bot contradisse o acordo ("August 5th is fully
+  // booked") para uma cliente que só mandou o gate code. O eco do próprio bot
+  // continua sendo ignorado dentro do handler (match com o histórico recente).
   const messaging = body.entry?.[0]?.messaging?.[0];
-  if (!messaging || messaging.message?.is_echo) {
+  if (!messaging) {
     return NextResponse.json({ status: "skipped" }, { status: 200 });
   }
 

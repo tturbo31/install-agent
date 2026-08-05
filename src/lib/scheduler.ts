@@ -1062,6 +1062,17 @@ export function bookingSuccessMessage(lang: "es" | "en"): string {
     : "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
 }
 
+// Enviada quando um cliente com a flag booked VENCIDA afirma que tem uma visita
+// que o scheduler não mostra (gate code, "we had a confirmed appointment") — o
+// dono pode ter combinado por fora do bot (caso Msleo 2026-08-05: remarcação
+// manual pelo app do IG nunca chegou ao scheduler). Não afirma NADA sobre data
+// ou disponibilidade: reconhece e passa para o Ozzi. Sem traço, sem emoji.
+export function appointmentMismatchHandoffMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "¡Gracias! Ozzi va a revisar personalmente los detalles de tu visita y te confirma todo enseguida."
+    : "Thank you! Let me have Ozzi personally double check your visit details and confirm everything with you shortly.";
+}
+
 // Sent to the client when the booking could NOT be created (slot genuinely
 // unavailable, scheduler error, etc.). Honest, never claims the slot was
 // "just taken", and hands the lead to Ozzi so it is never lost.

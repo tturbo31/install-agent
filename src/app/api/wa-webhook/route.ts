@@ -4,10 +4,10 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -671,6 +671,52 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (isBooked) {
       const snap = await getClientBookingSnapshot(waIgsid);
       if (snap && !snap.upcoming) {
+        // GUARDA VISITA AFIRMADA (caso Msleo, 2026-08-05, IG): se a rajada
+        // não-respondida AFIRMA uma visita já combinada (gate code, "we had a
+        // confirmed appointment", aceite de horário sem oferta em aberto), o
+        // acordo pode ter sido feito pelo dono FORA do bot e o scheduler estar
+        // desatualizado — nunca re-engajar vendas nem afirmar disponibilidade:
+        // ack neutro + dono. A flag NÃO é resetada.
+        const { data: staleBurstMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(10);
+        const staleRows = (staleBurstMsgs ?? []).reverse();
+        const staleBurst = unansweredUserBurst(staleRows) || rawText;
+        const staleLastAsst = [...staleRows].reverse().find((m) => m.role === "assistant")?.content ?? null;
+        if (assertsExistingAppointment(staleBurst, staleLastAsst)) {
+          console.log("[WA] stale booked flag BUT client asserts an existing appointment — owner handoff, no re-engage");
+          const handoff = appointmentMismatchHandoffMessage(detectLang(staleBurst));
+          if (!(staleLastAsst && isConsecutiveDuplicate([{ role: "assistant", content: staleLastAsst }], handoff))) {
+            const handoffSent = await sendWhatsAppMessage(phone, handoff);
+            if (handoffSent.ok) {
+              await supabaseAdmin.from("instagram_messages").insert({
+                conversation_id: conv.id,
+                role: "assistant",
+                content: handoff,
+              });
+            }
+          }
+          try {
+            const { data: recentMsgs } = await supabaseAdmin
+              .from("instagram_messages")
+              .select("role, content")
+              .eq("conversation_id", conv.id)
+              .order("created_at", { ascending: false })
+              .limit(8);
+            await notifyOwners({
+              platform: "WhatsApp",
+              clientName: (conv as Record<string, unknown>).username as string ?? null,
+              clientId: phone,
+              recentMessages: (recentMsgs ?? []).reverse(),
+            });
+          } catch (err) {
+            console.error("[WA] appointment-mismatch notify error:", err);
+          }
+          return;
+        }
         console.log("[WA] booked flag is stale (no upcoming visit) — re-engaging as a normal client");
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: false }).eq("id", conv.id);
         (conv as Record<string, unknown>).booking_confirmed = false;
