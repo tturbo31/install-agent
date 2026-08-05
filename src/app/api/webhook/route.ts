@@ -454,7 +454,10 @@ async function handleWebhook(body: WebhookPayload) {
       };
       const postbackSolo = messaging.postback as { title?: string; payload?: string; referral?: RefIg } | undefined;
       const refSoloBruto = (messaging.referral as RefIg | undefined) ?? postbackSolo?.referral;
-      if (refSoloBruto?.ad_id || refSoloBruto?.ads_context_data?.ad_title) {
+      // AUDITORIA RASTREIO 04/08: um referral só com ref/source (sem ad_id nem
+      // título) também é atribuição — o caminho de mensagem já persistia esses
+      // campos (ad_ref/ad_source_type) e o standalone descartava. Paridade.
+      if (refSoloBruto?.ad_id || refSoloBruto?.ads_context_data?.ad_title || refSoloBruto?.ref || refSoloBruto?.source) {
         // clicked_at = timestamp do evento que trouxe o referral. O evento
         // standalone chega com timestamp em SEGUNDOS (a mensagem chega em ms).
         const tsSolo = (messaging.timestamp as number) || Date.now();
@@ -542,22 +545,44 @@ async function handleWebhook(body: WebhookPayload) {
     const attachments = messaging.message?.attachments ?? [];
     const imageAttachment = attachments.find((a) => a.type === "image");
 
+    // Postback (icebreaker/CTA do anúncio): chega SEM message.mid e pode trazer
+    // o referral DENTRO do postback (auditoria 28/07 — antes era descartado).
+    const postbackIG = messaging.postback;
+
+    // AUDITORIA RASTREIO 04/08: referral extraído ANTES dos returns de sticker/
+    // emoji — um clique de anúncio cuja 1ª bolha é um sticker ou um emoji
+    // sozinho morria nesses returns SEM persistir a atribuição (o funil só roda
+    // depois do insert da mensagem). O descarte da bolha continua igual; só a
+    // atribuição é salva antes de sair.
+    // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
+    // no evento (messaging.referral / messaging_referral) ou no postback.
+    const refBruto = messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral ?? null;
+    // Timestamp do clique = timestamp do evento que trouxe o referral (a Meta
+    // não manda o instante do clique em si; este é o melhor proxy).
+    // (timestamp em segundos — caso do evento standalone no FB — é normalizado)
+    const tsRef = messaging.timestamp || Date.now();
+    const refComClique = refBruto
+      ? { ...refBruto, clicked_at: new Date(tsRef < 1e12 ? tsRef * 1000 : tsRef).toISOString() }
+      : null;
+
     // Ignore Instagram stickers (thumbs up and emoji stickers arrive as image with sticker_id)
-    if ((imageAttachment?.payload as Record<string, unknown>)?.sticker_id) return;
+    if ((imageAttachment?.payload as Record<string, unknown>)?.sticker_id) {
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conversation.id, refComClique));
+      return;
+    }
 
     const shareAttachment = attachments.find((a) => a.type === "share");
     const audioAttachment = attachments.find((a) => a.type === "audio");
     const clientSentAudio = !!audioAttachment;
 
     let rawText = messaging.message?.text ?? "";
-
-    // Postback (icebreaker/CTA do anúncio): chega SEM message.mid e pode trazer
-    // o referral DENTRO do postback (auditoria 28/07 — antes era descartado).
-    const postbackIG = messaging.postback;
     if (!rawText && postbackIG?.title) rawText = postbackIG.title;
 
     // Ignore emoji-only messages (end-of-conversation reactions like 👍 ❤️)
-    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
+    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) {
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conversation.id, refComClique));
+      return;
+    }
 
     const imageUrl = imageAttachment?.payload?.url ?? null;
     const shareUrl = shareAttachment?.payload?.url ?? null;
@@ -568,7 +593,7 @@ async function handleWebhook(body: WebhookPayload) {
     // (video / ig_reel / story), often with NO text in this event. That used to fall
     // through to `if (!rawText) return` below — creating an empty conversation with no
     // reply (exactly the "No messages yet" + raw IGSID we saw). Treat it as a hot lead.
-    const isAdReferral = !!(messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral);
+    const isAdReferral = !!refBruto;
     const hasAnyAttachment = attachments.length > 0;
 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
@@ -695,16 +720,8 @@ async function handleWebhook(body: WebhookPayload) {
       if (messaging.referral) {
         console.log("[FUNIL] referral cru:", JSON.stringify(messaging.referral).slice(0, 500));
       }
-      // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
-      // no evento (messaging.referral / messaging_referral) ou no postback.
-      const refBruto = messaging.message?.referral ?? messaging.referral ?? postbackIG?.referral ?? null;
-      // Timestamp do clique = timestamp do evento que trouxe o referral (a Meta
-      // não manda o instante do clique em si; este é o melhor proxy).
-      // (timestamp em segundos — caso do evento standalone no FB — é normalizado)
-      const tsRef = messaging.timestamp || Date.now();
-      const refComClique = refBruto
-        ? { ...refBruto, clicked_at: new Date(tsRef < 1e12 ? tsRef * 1000 : tsRef).toISOString() }
-        : null;
+      // (refBruto/refComClique agora são extraídos ANTES dos returns de
+      // sticker/emoji, no topo do handler — auditoria rastreio 04/08)
       // P0 (auditoria 28/07): captura crua persistente do que a Meta entrega em
       // clique de anúncio — prova o formato real (logs da Vercel truncam/expiram)
       if (refBruto || shareAttachment || postbackIG) {

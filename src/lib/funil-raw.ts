@@ -104,35 +104,28 @@ export async function limparCapturasAntigas(agoraMs?: number): Promise<number> {
   try {
     await supabaseAdmin.from("funil_capturas").delete().lt("recebido_em", new Date(corte).toISOString());
   } catch { /* tabela pode não existir */ }
-  // Fallback em platform_settings: epoch embutido na chave.
+  // Fallback em platform_settings: epoch embutido na chave com 13 dígitos fixos
+  // (até 2286), então ordem LEXICOGRÁFICA da chave = ordem numérica do epoch.
   //
-  // VARRE A TABELA INTEIRA antes de apagar (bug achado em 31/07/2026): a versão
-  // anterior pedia `limit(1000)` sem ordenação e PARAVA na primeira página sem
-  // captura velha. Assim que o volume passou de 1000 linhas `funil_raw_` (hoje
-  // 2177, com o tráfego triplicado), a 1ª página só trazia capturas novas e o GC
-  // morria calado — a caixa-preta crescia para sempre. Agora pagina com ordem
-  // estável, junta TODAS as velhas e só então apaga (deletar durante a varredura
-  // deslocaria o offset e puliria linhas).
+  // RANGE DELETE por canal (auditoria rastreio 04/08): a versão anterior juntava
+  // as chaves velhas num `.in()` de 100 por lote — cada chave tem até ~1.7KB,
+  // a URL do PostgREST estourava o limite e o delete FALHAVA SILENCIOSO (o erro
+  // nunca era checado e o log dizia "N apagadas" mesmo com 0 apagadas): a
+  // caixa-preta crescia para sempre. Agora é 1 requisição curta por canal,
+  // com erro checado e contagem real.
   try {
-    const velhas: string[] = [];
-    for (let pagina = 0; pagina < 50; pagina++) {
-      const { data } = await supabaseAdmin
+    for (const canal of ["ig", "fb", "wa"] as const) {
+      const { error, count } = await supabaseAdmin
         .from("platform_settings")
-        .select("platform")
-        .like("platform", "funil_raw_%")
-        .order("platform", { ascending: true })
-        .range(pagina * 1000, pagina * 1000 + 999);
-      for (const r of data ?? []) {
-        const k = r.platform as string;
-        const m = k.match(/^funil_raw_(?:ig|fb|wa)_(\d{10,})/);
-        if (m && Number(m[1]) < corte) velhas.push(k);
+        .delete({ count: "exact" })
+        .gte("platform", `funil_raw_${canal}_`)
+        .lt("platform", `funil_raw_${canal}_${corte}`);
+      if (error) {
+        console.warn(`[FUNIL] GC capturas raw (${canal}) falhou:`, (error.message || JSON.stringify(error)).slice(0, 120));
+        continue;
       }
-      if ((data ?? []).length < 1000) break;
+      apagadas += count ?? 0;
     }
-    for (let i = 0; i < velhas.length; i += 100) {
-      await supabaseAdmin.from("platform_settings").delete().in("platform", velhas.slice(i, i + 100));
-    }
-    apagadas = velhas.length;
     if (apagadas) console.log(`[FUNIL] GC capturas raw: ${apagadas} linhas com mais de 7 dias apagadas`);
   } catch (err) {
     console.warn("[FUNIL] GC capturas raw falhou:", String(err).slice(0, 150));

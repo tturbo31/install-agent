@@ -86,9 +86,29 @@ async function main() {
   ck("pré-marco com referral dispara lead_criado", /if \(!convNoFunil\(conv\)\) \{[\s\S]{0,900}if \(referral\) await enviarLeadCriadoDeCliqueAntigo\(conv, rawText\);/.test(funil), "gate do marco zero engole o clique novo");
   ck("só dispara com contrato de verdade (nunca reabre histórico sozinho)", /async function enviarLeadCriadoDeCliqueAntigo[\s\S]{0,400}if \(!contratoTemDados\(ad\.contrato\)\) return;/.test(funil), "falta a guarda contratoTemDados");
   ck("o clique antigo leva o contrato completo", /enviarLeadCriadoDeCliqueAntigo[\s\S]{0,700}\.\.\.ad\.contrato/.test(funil), "");
-  // GC da caixa-preta: varre a tabela INTEIRA (o `limit(1000)` sem ordem parava
-  // na 1ª página sem captura velha e o GC morria calado acima de 1000 linhas).
-  ck("GC da caixa-preta pagina com ordem estável (não para na 1ª página)", /\.order\("platform", \{ ascending: true \}\)\s*\n\s*\.range\(pagina \* 1000/.test(raw), "GC volta a parar na primeira página");
+  // GC da caixa-preta (auditoria 04/08): o `.in()` de 100 chaves de ~1.7KB
+  // estourava a URL do PostgREST e o delete falhava SILENCIOSO (0 apagadas com
+  // log de sucesso). O GC precisa usar range delete por canal e checar o erro.
+  ck("GC da caixa-preta usa range delete por canal (URL curta)", /\.gte\("platform", `funil_raw_\$\{canal\}_`\)\s*\n\s*\.lt\("platform", `funil_raw_\$\{canal\}_\$\{corte\}`\)/.test(raw), "range delete sumiu — .in() gigante falha silencioso");
+  ck("GC da caixa-preta checa o erro do delete e conta de verdade", /delete\(\{ count: "exact" \}\)/.test(raw) && /GC capturas raw \(\$\{canal\}\) falhou/.test(raw), "erro do delete não é checado");
+
+  // AUDITORIA RASTREIO 04/08: returns antecipados (sticker, emoji-only, tipo de
+  // callback não reconhecido) NÃO podem engolir a atribuição — o referral é
+  // extraído no topo do handler e persistido antes de qualquer descarte.
+  console.log("\n[A6 returns antecipados não engolem referral (auditoria 04/08)]");
+  const igPersistDescarte = (ig.match(/if \(refComClique\) waitUntil\(persistirAnuncioDaConversa\(conversation\.id, refComClique\)\);/g) ?? []).length;
+  ck("IG: persiste atribuição nos returns de sticker E emoji-only", igPersistDescarte >= 2, `encontrados ${igPersistDescarte} de 2`);
+  ck("IG: extração do referral vem ANTES do return de sticker", ig.indexOf("const refBruto = messaging.message?.referral") !== -1 && ig.indexOf("const refBruto = messaging.message?.referral") < ig.indexOf("sticker_id) {"), "extração depois do descarte");
+  const fbPersistDescarte = (fb.match(/if \(refComClique\) waitUntil\(persistirAnuncioDaConversa\(conv\.id, refComClique\)\);/g) ?? []).length;
+  ck("FB: persiste atribuição nos returns de sticker E emoji-only", fbPersistDescarte >= 2, `encontrados ${fbPersistDescarte} de 2`);
+  ck("FB: extração do referral vem ANTES do return de sticker", fb.indexOf("const refBruto =") !== -1 && fb.indexOf("const refBruto =") < fb.indexOf("sticker_id) {"), "extração depois do descarte");
+  const waPersistDescarte = (wa.match(/if \(referralFunilWa\) waitUntil\(persistirAnuncioDaConversa\(conv\.id, referralFunilWa\)\);/g) ?? []).length;
+  ck("WA: persiste atribuição nos descartes (emoji-only E tipo não reconhecido)", waPersistDescarte >= 2, `encontrados ${waPersistDescarte} de 2`);
+  ck("WA: extractWaAdReferral vem ANTES da triagem por tipo de mensagem", wa.indexOf("const adRefFunil = extractWaAdReferral(body)") < wa.indexOf("// Extract message content by type"), "extração depois da triagem");
+  // Paridade standalone: referral só com ref/source também persiste (o caminho
+  // de mensagem já persistia ad_ref/ad_source_type; o standalone descartava).
+  ck("IG: standalone persiste referral só com ref/source", /refSoloBruto\?\.ref \|\| refSoloBruto\?\.source/.test(ig), "");
+  ck("FB: standalone persiste referral só com ref/source", /refSolo\?\.ref \|\| refSolo\?\.source/.test(fb), "");
 
   // ── Parte B: funcional (banco real; sem AI, sem plataforma) ────────────────
   const { supabaseAdmin } = await import("@/lib/supabase");

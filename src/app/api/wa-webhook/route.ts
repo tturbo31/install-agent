@@ -467,6 +467,31 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
     if (!conv) return;
 
+    // ── ATRIBUIÇÃO DE ANÚNCIO (CTWA) — extraída ANTES da triagem por tipo ──
+    // AUDITORIA RASTREIO 04/08: a extração ficava depois do insert, então um
+    // callback de tipo não reconhecido (reaction, location, sticker...) ou um
+    // texto só-emoji dava return ANTES de olhar o externalAdReply — a atribuição
+    // daquele clique morria ali. Agora extrai primeiro e persiste antes de
+    // qualquer descarte. (Nos payloads reais o externalAdReply vem na RAIZ do
+    // callback, independente do tipo da mensagem — 15/15 na caixa-preta.)
+    const adRefFunil = extractWaAdReferral(body);
+    const referralFunilWa = adRefFunil
+      ? {
+          ad_id: adRefFunil.adId, // sourceId/source_id do WhatsApp = ad_id do contrato
+          ctwa_clid: adRefFunil.ctwaClid,
+          source: adRefFunil.sourceType, // sourceType ("ad"/"post") → ad_source_type
+          ref: adRefFunil.sourceUrl, // sourceUrl (fb.me/…) → ad_ref do contrato
+          // clicked_at = momment do callback Z-API (ms) — proxy do clique CTWA
+          clicked_at: new Date(Number(body.momment) || Date.now()).toISOString(),
+          ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage, video_url: adRefFunil.adVideo },
+        }
+      : undefined;
+    if (adRefFunil) {
+      console.log("[FUNIL] referral cru (wa):", JSON.stringify(adRefFunil).slice(0, 400));
+      // P0: captura crua persistente (só os objetos de referral, sem texto do cliente)
+      waitUntil(capturarRawFunil("wa", { extraido: adRefFunil, chaves_do_body: Object.keys(body).slice(0, 40) }));
+    }
+
     // Extract message content by type
     const textObj = body.text as Record<string, unknown> | undefined;
     const imageObj = body.image as Record<string, unknown> | undefined;
@@ -480,7 +505,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
 
     if (textObj?.message) {
       rawText = textObj.message as string;
-      if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
+      if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) {
+        if (referralFunilWa) waitUntil(persistirAnuncioDaConversa(conv.id, referralFunilWa));
+        return;
+      }
     } else if (imageObj?.imageUrl) {
       imageUrl = imageObj.imageUrl as string;
       rawText = "[floor plan or photo]";
@@ -493,7 +521,12 @@ async function handleWaMessage(body: Record<string, unknown>) {
       rawText = "[document]";
     }
 
-    if (!rawText) return;
+    if (!rawText) {
+      // Tipo de callback não reconhecido (reaction, location, sticker, chamada):
+      // a bolha é descartada, mas a atribuição do clique NUNCA morre junto.
+      if (referralFunilWa) waitUntil(persistirAnuncioDaConversa(conv.id, referralFunilWa));
+      return;
+    }
 
     // Pre-fetch image
     let preFetchedImageBase64: string | null = null;
@@ -526,25 +559,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // conversando (1ª resposta real) e retomou_conversa. Antes do gate
     // mode=human de propósito: a resposta do cliente conta para o funil mesmo
     // com o dono no controle. Só quando ESTA instância inseriu a mensagem.
-    // ATRIBUIÇÃO (auditoria 28/07): o referral do anúncio CTWA agora VAI JUNTO
-    // — antes era extraído mais abaixo e nunca chegava ao lead da plataforma.
-    const adRefFunil = extractWaAdReferral(body);
-    const referralFunilWa = adRefFunil
-      ? {
-          ad_id: adRefFunil.adId, // sourceId/source_id do WhatsApp = ad_id do contrato
-          ctwa_clid: adRefFunil.ctwaClid,
-          source: adRefFunil.sourceType, // sourceType ("ad"/"post") → ad_source_type
-          ref: adRefFunil.sourceUrl, // sourceUrl (fb.me/…) → ad_ref do contrato
-          // clicked_at = momment do callback Z-API (ms) — proxy do clique CTWA
-          clicked_at: new Date(Number(body.momment) || Date.now()).toISOString(),
-          ads_context_data: { ad_title: adRefFunil.adTitle, photo_url: adRefFunil.adImage, video_url: adRefFunil.adVideo },
-        }
-      : undefined;
-    if (adRefFunil) {
-      console.log("[FUNIL] referral cru (wa):", JSON.stringify(adRefFunil).slice(0, 400));
-      // P0: captura crua persistente (só os objetos de referral, sem texto do cliente)
-      waitUntil(capturarRawFunil("wa", { extraido: adRefFunil, chaves_do_body: Object.keys(body).slice(0, 40) }));
-    }
+    // ATRIBUIÇÃO (auditoria 28/07): o referral do anúncio CTWA VAI JUNTO no
+    // funil. (adRefFunil/referralFunilWa agora são extraídos no topo do handler,
+    // ANTES da triagem por tipo — auditoria rastreio 04/08.)
     if (insertedMsg?.id) {
       waitUntil(
         funilOnInboundMessage(

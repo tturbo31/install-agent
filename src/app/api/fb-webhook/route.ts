@@ -409,7 +409,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
             postback: postbackFb ? { title: postbackFb.title ?? null, payload: postbackFb.payload ?? null } : null,
           })
         );
-        if (refSolo?.ad_id || refSolo?.ads_context_data?.ad_title) {
+        // AUDITORIA RASTREIO 04/08: referral só com ref/source também é
+        // atribuição (o caminho de mensagem já persistia ad_ref/ad_source_type;
+        // o standalone descartava). Paridade com o IG.
+        if (refSolo?.ad_id || refSolo?.ads_context_data?.ad_title || refSolo?.ref || refSolo?.source) {
           const fbIgsidRef = `fb_${psid}`;
           let { data: convRef } = await supabaseAdmin
             .from("instagram_conversations")
@@ -483,13 +486,33 @@ async function handleFbMessage(body: Record<string, unknown>) {
     const attachments = (msg?.attachments as Record<string, unknown>[]) ?? [];
     const imageAtt = attachments.find((a) => a.type === "image");
 
-    if ((imageAtt?.payload as Record<string, unknown>)?.sticker_id) return;
+    // AUDITORIA RASTREIO 04/08: referral extraído ANTES dos returns de sticker/
+    // emoji — um clique de anúncio cuja 1ª bolha é um sticker ou um emoji
+    // sozinho morria nesses returns SEM persistir a atribuição (o funil só roda
+    // depois do insert). O descarte da bolha continua igual.
+    // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
+    // no evento (messaging.referral) ou no postback (tratado no bloco sem mid).
+    type RefFbMsg = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
+    const refBruto =
+      ((msg?.referral as RefFbMsg | undefined) ?? (messaging.referral as RefFbMsg | undefined)) ?? null;
+    const tsMsg = (messaging.timestamp as number) || Date.now();
+    const refComClique = refBruto
+      ? { ...refBruto, clicked_at: new Date(tsMsg < 1e12 ? tsMsg * 1000 : tsMsg).toISOString() }
+      : null;
+
+    if ((imageAtt?.payload as Record<string, unknown>)?.sticker_id) {
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
+      return;
+    }
 
     const audioAtt = attachments.find((a) => a.type === "audio");
 
     let rawText = (msg?.text as string) ?? "";
 
-    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) return;
+    if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) {
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
+      return;
+    }
 
     const imageUrl = (imageAtt?.payload as Record<string, unknown>)?.url as string ?? null;
     const audioUrl = (audioAtt?.payload as Record<string, unknown>)?.url as string ?? null;
@@ -543,15 +566,8 @@ async function handleFbMessage(body: Record<string, unknown>) {
       if (messaging.referral) {
         console.log("[FUNIL] referral cru (fb):", JSON.stringify(messaging.referral).slice(0, 500));
       }
-      // referral pode vir nos 3 lugares: DENTRO da mensagem (message.referral),
-      // no evento (messaging.referral) ou no postback (tratado no bloco sem mid).
-      type RefFbMsg = { ref?: string; source?: string; type?: string; ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string } };
-      const refBruto =
-        ((msg?.referral as RefFbMsg | undefined) ?? (messaging.referral as RefFbMsg | undefined)) ?? null;
-      const tsMsg = (messaging.timestamp as number) || Date.now();
-      const refComClique = refBruto
-        ? { ...refBruto, clicked_at: new Date(tsMsg < 1e12 ? tsMsg * 1000 : tsMsg).toISOString() }
-        : null;
+      // (refBruto/refComClique agora são extraídos ANTES dos returns de
+      // sticker/emoji, no topo do handler — auditoria rastreio 04/08)
       const shareAtt = attachments.find((a) => a.type !== "image" && a.type !== "audio");
       // P0 (auditoria 28/07): captura crua persistente p/ provar o formato real
       if (refBruto || shareAtt) {
