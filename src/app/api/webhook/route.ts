@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, perguntaOrigemPosAgendamento } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import {
   getAIResponse,
@@ -256,12 +256,8 @@ async function processBookingCommand(
       // then silenced the client for good (5-day review, 2026-08-01).
       const pending = questionSwallowedByBooking(aiResponse, history);
       if (pending) console.log("[IG] answering the question sent with the booking details before confirming");
-      // ORIGEM DECLARADA: conversa sem contrato de anúncio pergunta 1x como o
-      // cliente nos conheceu (a resposta vira origem_declarada na plataforma).
-      const perguntaOrigem = await perguntaOrigemPosAgendamento(conversationId, lang).catch(() => "");
-      const confirmacao = perguntaOrigem ? `${bookingSuccessMessage(lang)}\n\n${perguntaOrigem}` : bookingSuccessMessage(lang);
       return {
-        response: pending ? `${pending}\n\n${confirmacao}` : confirmacao,
+        response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang),
         booked: true,
       };
     } else if (result.error === "already_booked") {

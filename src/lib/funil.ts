@@ -386,105 +386,6 @@ async function enviarLeadCriadoDeCliqueAntigo(conv: ConvFunil, rawText: string):
   });
 }
 
-// ─── ORIGEM DECLARADA (05/08/2026) ───────────────────────────────────────────
-// A Meta só entrega o referral do anúncio em ~60% das conversas de IG (medido
-// contra a própria conta: FB 100%, WA 90%, IG 59%). Quando a visita é marcada e
-// a conversa NÃO tem nenhum contrato de anúncio, a melhor prova que resta é a
-// própria pessoa: uma pergunta única, depois da confirmação, e a resposta segue
-// para a plataforma como `origem_declarada` (pista "o cliente disse: X" — nunca
-// vira atribuição de anúncio nem entra no ranking de criativos).
-//
-// Regras: pergunta 1x por conversa (flag em platform_settings, nunca re-per-
-// gunta); só quando não há contrato; nunca para quem veio da LP do Google
-// (código G- na 1ª mensagem já diz a origem); a resposta é classificada por
-// palavra-chave explícita — sem palpite, sem LLM — e vale por 72h/3 mensagens.
-const origemQPrefix = (convId: string) => `funil_origem_q_${convId}::`;
-const ORIGEM_Q_VALIDADE_H = 72;
-const ORIGEM_Q_MAX_MSGS = 3;
-
-export function classificarOrigemDeclarada(texto: string): string | null {
-  const t = stripSys(texto ?? "").toLowerCase();
-  if (!t.trim() || t.length > 300) return null; // resposta longa não é resposta de origem
-  if (/\binsta(gram)?\b|\big\b/.test(t)) return "Instagram";
-  if (/\bface(book)?\b|\bfb\b|\bmessenger\b/.test(t)) return "Facebook";
-  if (/\bgoogle(d)?\b|\bsearch(ed)?\b|\bbusqu[ée]\b/.test(t)) return "Google";
-  if (/tik\s*tok/.test(t)) return "TikTok";
-  if (/\bfriend\b|\bneighbou?r\b|\brefer(red|ral)?\b|\brecommend/.test(t)) return "Indicação";
-  if (/\bamig[oa]\b|\bvecin[oa]\b|\brecomend/.test(t)) return "Indicação";
-  if (/\bwhats\s*app\b/.test(t)) return "WhatsApp";
-  if (/\b(an\s+)?ads?\b|\badvert/.test(t)) return "Anúncio";
-  if (/\banuncio\b|\banúncio\b|\bpublicidad\b/.test(t)) return "Anúncio";
-  return null;
-}
-
-// Chamada pelos 3 webhooks logo após a confirmação do agendamento. Devolve a
-// pergunta a ANEXAR na mensagem de confirmação, ou "" quando não deve perguntar.
-export async function perguntaOrigemPosAgendamento(convId: string, lang: "es" | "en"): Promise<string> {
-  try {
-    const ad = await dadosDeAnuncioDaConversa(convId);
-    if (contratoTemDados(ad.contrato)) return ""; // origem já rastreada de verdade
-    const msgs = await mensagensDaConversa(convId);
-    const primeira = msgs.find((m) => m.role === "user");
-    if (primeira && codigoLpDaMensagem(primeira.content)) return ""; // veio da LP do Google
-    // 1x por conversa — flag existente (mesmo vencida) = nunca re-pergunta
-    const { data } = await supabaseAdmin
-      .from("platform_settings")
-      .select("platform")
-      .like("platform", `${origemQPrefix(convId)}%`)
-      .limit(1);
-    if (data && data.length > 0) return "";
-    await supabaseAdmin
-      .from("platform_settings")
-      .upsert({ platform: `${origemQPrefix(convId)}${Date.now()}::0`, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
-    return lang === "es"
-      ? "Una última cosa: ¿cómo nos encontraste? ¿Instagram, Facebook, Google o un amigo?"
-      : "One last thing, how did you find us? Instagram, Facebook, Google, or a friend?";
-  } catch (err) {
-    console.warn("[FUNIL] perguntaOrigem falhou:", String(err).slice(0, 150));
-    return "";
-  }
-}
-
-// Roda em TODA mensagem recebida (antes de qualquer early-return do funil):
-// se existe pergunta de origem pendente, tenta classificar a resposta.
-async function capturarRespostaOrigem(conv: ConvFunil, rawText: string): Promise<void> {
-  const { data } = await supabaseAdmin
-    .from("platform_settings")
-    .select("platform")
-    .like("platform", `${origemQPrefix(conv.id)}%`)
-    .limit(1);
-  const key = data?.[0]?.platform as string | undefined;
-  if (!key) return;
-  const [epocaStr, usoStr] = key.slice(origemQPrefix(conv.id).length).split("::");
-  if (usoStr === "ok") return; // já respondida — nunca reprocessa
-  const epoca = Number(epocaStr) || 0;
-  const uso = Number(usoStr) || 0;
-  if (Date.now() - epoca > ORIGEM_Q_VALIDADE_H * H || uso >= ORIGEM_Q_MAX_MSGS) return; // vencida: fica como "já perguntei"
-
-  const origem = classificarOrigemDeclarada(rawText);
-  if (!origem) {
-    // conta a tentativa (troca a chave) — depois de 3 mensagens sem resposta
-    // clara, desiste em silêncio; a flag permanece para nunca re-perguntar
-    await supabaseAdmin.from("platform_settings").delete().eq("platform", key);
-    await supabaseAdmin
-      .from("platform_settings")
-      .upsert({ platform: `${origemQPrefix(conv.id)}${epoca}::${uso + 1}`, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
-    return;
-  }
-  // resposta clara → encerra a pendência e repassa como pista à plataforma
-  await supabaseAdmin.from("platform_settings").delete().eq("platform", key);
-  await supabaseAdmin
-    .from("platform_settings")
-    .upsert({ platform: `${origemQPrefix(conv.id)}${epoca}::ok`, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
-  const msgs = await mensagensDaConversa(conv.id);
-  await enviarEventoFunil("lead_criado", {
-    ...identidade(conv, msgs, rawText),
-    canal: canalDe(conv.igsid),
-    origem_declarada: origem,
-  });
-  console.log(`[FUNIL] origem declarada capturada (${conv.igsid}): ${origem}`);
-}
-
 // ─── EVENTOS DE ENTRADA (toda mensagem do cliente, nos 3 canais) ─────────────
 // Dispara conforme o caso: lead_criado (1ª mensagem de contato novo, com
 // atribuição de anúncio), retomou_conversa (sumido voltou), conversando
@@ -493,10 +394,6 @@ async function capturarRespostaOrigem(conv: ConvFunil, rawText: string): Promise
 export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, msgCreatedAt: string, referral?: ReferralIG): Promise<void> {
   try {
     if (referral) await persistirAnuncioDaConversa(conv.id, referral);
-    // Pergunta de origem pendente? Roda ANTES do early-return de conversa
-    // pré-funil: o agendamento backfilla o lead mesmo em conversa antiga, e a
-    // resposta do cliente chega por aqui igual. Nunca lança (best-effort).
-    await capturarRespostaOrigem(conv, rawText).catch((e) => console.warn("[FUNIL] capturarRespostaOrigem:", String(e).slice(0, 120)));
     if (!convNoFunil(conv)) {
       // Lead antigo (pré-funil): nenhum evento de conversa dispara — MENOS o
       // clique de anúncio de AGORA. Uma conversa de junho que hoje clica num
