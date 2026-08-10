@@ -145,7 +145,7 @@ async function main() {
   ck("texto sem telefone passa intacto", scrubForeignPhones("Perfect, see you Monday at 9am!") === "Perfect, see you Monday at 9am!");
   ck("endereço com CEP não é confundido com telefone", scrubForeignPhones("Visit at 123 NW 5th St, Miami FL 33125 confirmed.") === "Visit at 123 NW 5th St, Miami FL 33125 confirmed.");
   const aiSrc2 = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
-  ck("scrub ligado no pipeline de saída", /cleaned = scrubForeignPhones\(cleaned\)/.test(aiSrc2));
+  ck("scrub ligado no pipeline de saída", /cleaned = scrubForeignPhones\(cleaned[,)]/.test(aiSrc2));
   ck("regra 11 proíbe ecoar o número do cliente", /not even the CLIENT'S OWN number back to them/.test(aiSrc2));
 
   console.log(`\n=========== REVIEW3-FIXES-VERIFY: ${pass} passed, ${fail} failed ===========`);

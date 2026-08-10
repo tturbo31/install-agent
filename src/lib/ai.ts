@@ -1487,10 +1487,26 @@ export function stripReasoningLeak(text: string): string {
 // digit gets garbled. Any other phone-looking token is removed from the OUTBOUND
 // text (with its "at/on/al/en" connector), while content inside [ ... ] tags is
 // left alone so [BOOK:{"phone":...}] keeps the client's real number.
+// EXCEPTION (2026-08-10): the installation confirmation we send via
+// /api/confirmar-instalacao legitimately hands the client the seller's direct
+// number ("Diego ... reach them directly at (954) 325-6735"), and the prompt
+// tells the model to point reschedules/changes at exactly that contact — so the
+// caller may pass the numbers found in those confirmation messages as allowed.
+// Only numbers OUR system already delivered to this client qualify; the
+// client's own number keeps being scrubbed.
 const OFFICIAL_PHONE_DIGITS = "5616748334";
 const FOREIGN_PHONE = /(?:\b(?:at|on|to|al|en|no)\s+)?(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/gi;
 
-export function scrubForeignPhones(text: string): string {
+// Extracts the allowed phone digits from installation-confirmation messages in
+// the history. Normalized the same way scrubForeignPhones normalizes matches.
+export function installConfirmationPhones(messages: ChatMessage[]): string[] {
+  return messages
+    .filter((m) => m.role === "assistant" && /installation is confirmed for/i.test(m.content))
+    .flatMap((m) => m.content.match(/\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/g) ?? [])
+    .map((p) => p.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""));
+}
+
+export function scrubForeignPhones(text: string, allowedDigits: string[] = []): string {
   let out = "";
   let seg = "";
   let depth = 0;
@@ -1498,7 +1514,7 @@ export function scrubForeignPhones(text: string): string {
   const flush = () => {
     out += seg.replace(FOREIGN_PHONE, (m) => {
       const digits = m.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
-      if (digits === OFFICIAL_PHONE_DIGITS) return m;
+      if (digits === OFFICIAL_PHONE_DIGITS || allowedDigits.includes(digits)) return m;
       fired = true;
       return "";
     });
@@ -1843,7 +1859,9 @@ export async function getAIResponse(
 
     // The ONLY phone number allowed in client-facing text is (561) 674-8334 —
     // never echo the client's own number back ([BOOK:{...}] tags are untouched).
-    cleaned = scrubForeignPhones(cleaned);
+    // Exception: the seller's number our own installation confirmation already
+    // gave this client (the prompt directs reschedules/changes to that contact).
+    cleaned = scrubForeignPhones(cleaned, installConfirmationPhones(messages));
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {
