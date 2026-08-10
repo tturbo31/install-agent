@@ -519,13 +519,20 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     // Ad reply context: client replied to one of our ads. Meta delivers reels as a
     // video/share attachment we don't recognize, often with no text — never drop it.
-    const isAdReferral = !!messaging.referral;
+    // REVISÃO 10/08: era `!!messaging.referral` — um referral entregue DENTRO da
+    // mensagem (message.referral) sem texto e sem anexo caía no `return` abaixo
+    // sem persistir a atribuição, o único descarte que a paridade de 04/08 não
+    // cobriu. O refBruto já une as duas fontes; é ele quem decide.
+    const isAdReferral = !!refBruto;
     const hasAnyAttachment = attachments.length > 0;
 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (audioUrl && !rawText) rawText = "[voice message]";
     if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
-    if (!rawText) return;
+    if (!rawText) {
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
+      return;
+    }
 
     // Pre-fetch image
     let preFetchedImageBase64: string | null = null;

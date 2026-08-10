@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
-import { conciliarContratos } from "@/lib/funil-conciliar";
+import { conciliarContratos, saudeDoFunil } from "@/lib/funil-conciliar";
 
 // Conciliação contrato → lead com reparo automático, chamada pela auditoria de
 // criativos da Ozzi Plataforma nas duas rodadas do dia (9h e meia-noite da
@@ -23,6 +23,13 @@ async function executar(req: NextRequest, dryPadrao: boolean) {
   const secret = req.nextUrl.searchParams.get("secret") ?? req.headers.get("x-admin-secret");
   if (!isDashboardAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  // ?saude=1 (10/08/2026): só o estado da caixa-preta + contagem de contratos,
+  // sem conciliar — usado pelo vigia da plataforma, onde a conciliação completa
+  // custava os minutos que matavam o cron da madrugada por timeout.
+  if (req.nextUrl.searchParams.get("saude") === "1") {
+    const resumo = await saudeDoFunil();
+    return NextResponse.json(resumo, { status: resumo.ok ? 200 : 500 });
   }
   const dry = req.nextUrl.searchParams.get("dry") === "1" ? true : dryPadrao;
   const tetoParam = Number(req.nextUrl.searchParams.get("teto"));

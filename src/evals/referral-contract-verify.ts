@@ -83,7 +83,7 @@ async function main() {
   // segurava o lead_criado mesmo quando o clique era de hoje — 13 de 221
   // contratos ficaram presos e a visita dessas pessoas nasceria sem criativo.
   console.log("\n[A5 clique novo em conversa antiga não pode ficar preso no marco zero]");
-  ck("pré-marco com referral dispara lead_criado", /if \(!convNoFunil\(conv\)\) \{[\s\S]{0,900}if \(referral\) await enviarLeadCriadoDeCliqueAntigo\(conv, rawText\);/.test(funil), "gate do marco zero engole o clique novo");
+  ck("pré-marco com referral dispara lead_criado (com o referral em mãos)", /if \(!convNoFunil\(conv\)\) \{[\s\S]{0,900}if \(referral\) await enviarLeadCriadoDeCliqueAntigo\(conv, rawText, referral\);/.test(funil), "gate do marco zero engole o clique novo");
   ck("só dispara com contrato de verdade (nunca reabre histórico sozinho)", /async function enviarLeadCriadoDeCliqueAntigo[\s\S]{0,400}if \(!contratoTemDados\(ad\.contrato\)\) return;/.test(funil), "falta a guarda contratoTemDados");
   ck("o clique antigo leva o contrato completo", /enviarLeadCriadoDeCliqueAntigo[\s\S]{0,700}\.\.\.ad\.contrato/.test(funil), "");
   // GC da caixa-preta (auditoria 04/08): o `.in()` de 100 chaves de ~1.7KB
@@ -140,10 +140,20 @@ async function main() {
     await persistirAnuncioDaConversa(convId, { ad_id: "111", source: "ADS", clicked_at: "2026-07-28T10:00:00.000Z" });
     let lido = await dadosDeAnuncioDaConversa(convId);
     ck("grava 1º referral (ad_id/source/clicked_at)", lido.contrato.ad_id === "111" && lido.contrato.ad_source_type === "ADS" && lido.contrato.ad_clicked_at === "2026-07-28T10:00:00.000Z", JSON.stringify(lido.contrato));
-    // 2º evento: preenche o que falta, NÃO sobrescreve o que existe
-    await persistirAnuncioDaConversa(convId, { ad_id: "999-DIFERENTE", ads_context_data: { ad_title: "Titulo Novo" } });
+    // 2º evento do MESMO anúncio: preenche o que falta, NÃO sobrescreve o que existe
+    await persistirAnuncioDaConversa(convId, { ad_id: "111", ads_context_data: { ad_title: "Titulo Novo" } });
     lido = await dadosDeAnuncioDaConversa(convId);
     ck("preenche faltante (ad_title) sem sobrescrever ad_id", lido.contrato.ad_id === "111" && lido.contrato.ad_title === "Titulo Novo", JSON.stringify(lido.contrato));
+    // 2º clique em OUTRO anúncio: identidade NUNCA se mistura (10/08/2026 — o
+    // merge campo a campo criava contrato Frankenstein: título do anúncio B
+    // colado no ad_id do anúncio A, creditando a visita ao criativo errado)
+    await persistirAnuncioDaConversa(convId, { ad_id: "999-DIFERENTE", ads_context_data: { ad_title: "Titulo Errado" } });
+    lido = await dadosDeAnuncioDaConversa(convId);
+    ck(
+      "clique em OUTRO anúncio não mistura identidade (1º clique vence)",
+      lido.contrato.ad_id === "111" && lido.contrato.ad_title === "Titulo Novo",
+      JSON.stringify(lido.contrato)
+    );
     // referral vazio nunca apaga nada
     await persistirAnuncioDaConversa(convId, null);
     await persistirAnuncioDaConversa(convId, {});

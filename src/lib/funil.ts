@@ -285,7 +285,24 @@ export async function persistirAnuncioDaConversa(convId: string, referral: Refer
       await gravarContrato(convId, novo);
       return;
     }
-    const preenchidos = CAMPOS_CONTRATO.filter((k) => !atual.contrato[k] && novo[k]);
+    // NÃO MISTURAR ANÚNCIOS (10/08/2026): o merge campo a campo criava um
+    // contrato Frankenstein — 1º clique só com {ref, source}, 2º clique em
+    // OUTRO criativo com {ad_id, título, mídia}, e o resultado creditava a
+    // visita ao anúncio errado com cara de certo. Os campos de IDENTIDADE do
+    // anúncio (id, título, mídia, post) só se completam entre si quando são
+    // comprovadamente do MESMO anúncio (compartilham um campo e ele bate) ou
+    // quando o contrato atual ainda não tem identidade nenhuma (aí o bloco
+    // novo entra inteiro, internamente consistente).
+    const IDENTIDADE_ANUNCIO: (keyof ContratoAnuncio)[] = ["ad_id", "ad_title", "ad_media_url", "ad_post_id"];
+    const atualTemIdent = IDENTIDADE_ANUNCIO.some((k) => atual.contrato[k]);
+    const novoTemIdent = IDENTIDADE_ANUNCIO.some((k) => novo[k]);
+    const compartilham = IDENTIDADE_ANUNCIO.some((k) => atual.contrato[k] && novo[k]);
+    const concordam = IDENTIDADE_ANUNCIO.every((k) => !atual.contrato[k] || !novo[k] || atual.contrato[k] === novo[k]);
+    const mesmoAnuncio = !atualTemIdent || !novoTemIdent || (compartilham && concordam);
+    const candidatos = mesmoAnuncio
+      ? CAMPOS_CONTRATO
+      : CAMPOS_CONTRATO.filter((k) => !IDENTIDADE_ANUNCIO.includes(k));
+    const preenchidos = candidatos.filter((k) => !atual.contrato[k] && novo[k]);
     if (!preenchidos.length) return; // nada novo a preencher
     const mesclado: ContratoAnuncio = { ...atual.contrato };
     for (const k of preenchidos) mesclado[k] = novo[k];
@@ -372,8 +389,11 @@ export function codigoLpDaMensagem(texto: string): string | undefined {
 // anúncio. O clique é de HOJE — vale um lead_criado com identidade + contrato.
 // A plataforma cria o lead se não existir e faz merge fill-if-empty se existir.
 // Silencioso quando o referral não trouxe nada de útil.
-async function enviarLeadCriadoDeCliqueAntigo(conv: ConvFunil, rawText: string): Promise<void> {
-  const ad = await dadosDeAnuncioDaConversa(conv.id);
+async function enviarLeadCriadoDeCliqueAntigo(conv: ConvFunil, rawText: string, referral?: ReferralIG): Promise<void> {
+  // o referral EM MÃOS entra na consulta (10/08/2026): se a persistência do
+  // contrato tiver falhado num blip do banco, o clique de agora ainda vira
+  // lead — antes a função relia só o banco e retornava em silêncio
+  const ad = await dadosDeAnuncioDaConversa(conv.id, referral);
   if (!contratoTemDados(ad.contrato)) return;
   const msgs = await mensagensDaConversa(conv.id);
   await enviarEventoFunil("lead_criado", {
@@ -403,7 +423,7 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
       // 13 de 221 contratos (5,9%) presos nesta porta, 12 deles no Messenger.
       // Só dispara com referral REAL nesta mensagem (contratoTemDados) — nunca
       // reabre histórico por conta própria.
-      if (referral) await enviarLeadCriadoDeCliqueAntigo(conv, rawText);
+      if (referral) await enviarLeadCriadoDeCliqueAntigo(conv, rawText, referral);
       return;
     }
 

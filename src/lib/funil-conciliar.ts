@@ -27,10 +27,11 @@
 // Idempotente por construção: rodar de novo com tudo conciliado repara zero.
 import { supabaseAdmin } from "@/lib/supabase";
 import { enviarEventoFunil } from "@/lib/plataforma";
-import { canalDe, extrairTelefone, type ContratoAnuncio } from "@/lib/funil";
+import { canalDe, extrairTelefone, persistirAnuncioDaConversa, type ContratoAnuncio, type ReferralIG } from "@/lib/funil";
 
 const PREFIXO = "funil_adx_";
 const TETO_REPAROS = 60; // por rodada; o resto fica para a próxima (2x/dia)
+const TETO_RESGATES = 25; // contratos reconstruídos da caixa-preta por rodada
 
 export type FuroConciliacao = {
   conversa: string;
@@ -79,6 +80,15 @@ export type ResumoConciliacao = {
   furos: number; // contratos sem lead atribuído E com mensagem do cliente
   reparados: number;
   naoReparados: number;
+  // referral encontrado na CAIXA-PRETA sem contrato funil_adx_ correspondente,
+  // reconstruído nesta rodada (10/08/2026 — antes a prova ficava lá 7 dias e
+  // nenhuma rotina a usava: gravação de contrato que falhasse num blip do
+  // banco era perda permanente)
+  resgatadosDaCaixaPreta?: number;
+  // contrato SEM ad_id (clique via shortlink/m.me): a plataforma nunca terá
+  // `temAdId` para ele — com lead existindo, dá-se por resolvido em vez de
+  // "furo eterno" reparado em vão toda rodada consumindo o teto (10/08/2026)
+  semAdIdResolvidos?: number;
   detalhes: FuroConciliacao[];
   capturaRaw: CapturaCanal[];
   gcHorasAtras: number | null;
@@ -105,41 +115,58 @@ async function paginar(like: string): Promise<string[]> {
 
 type ConvRow = { id: string; igsid: string; name: string | null; username: string | null; created_at: string | null };
 
+// A rota da plataforma corta em 1000 identidades por chamada — e em 10/08/2026
+// já eram 959 contratos numa chamada só. O corte era SILENCIOSO: o excedente
+// voltava sem resultado, `conferido.get(id)` dava undefined e cada contrato
+// acima da linha viraria "furo" reparado em vão para sempre. Daí os lotes de
+// 800 (folga sobre o limite) e a exigência de TODOS os lotes responderem:
+// conferência pela metade repararia leads que já estão certos.
+const LOTE_CONFERENCIA = 800;
+
 async function conferirNaPlataforma(
   identidades: Array<{ chave: string; ig_id?: string; telefone?: string }>
 ): Promise<Map<string, { existe: boolean; temAdId: boolean; temTelefone: boolean }> | null> {
   const base = (process.env.PLATAFORMA_URL || "https://ozzi-plataforma.vercel.app").replace(/\/$/, "");
   const token = process.env.PLATAFORMA_WEBHOOK_TOKEN;
   if (!token) return null;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 45_000);
-    const res = await fetch(`${base}/api/rastreio/conferir`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-webhook-token": token },
-      body: JSON.stringify({ identidades }),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) {
-      console.warn(`[CONCILIA] /api/rastreio/conferir -> HTTP ${res.status}`);
-      return null;
-    }
-    const json = (await res.json()) as {
-      resultados?: Array<{ chave: string; existe: boolean; temAdId: boolean; temTelefone?: boolean }>;
-    };
-    return new Map(
-      (json.resultados ?? []).map((r) => [
-        r.chave,
+  const mapa = new Map<string, { existe: boolean; temAdId: boolean; temTelefone: boolean }>();
+  for (let i = 0; i < identidades.length; i += LOTE_CONFERENCIA) {
+    const lote = identidades.slice(i, i + LOTE_CONFERENCIA);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 45_000);
+      const res = await fetch(`${base}/api/rastreio/conferir`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-token": token },
+        body: JSON.stringify({ identidades: lote }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        console.warn(`[CONCILIA] /api/rastreio/conferir -> HTTP ${res.status} (lote ${i / LOTE_CONFERENCIA + 1})`);
+        return null;
+      }
+      const json = (await res.json()) as {
+        truncado?: boolean;
+        resultados?: Array<{ chave: string; existe: boolean; temAdId: boolean; temTelefone?: boolean }>;
+      };
+      if (json.truncado) {
+        // não deveria acontecer com lotes de 800 — se aconteceu, o contrato do
+        // outro lado mudou e continuar seria conciliar com dado pela metade
+        console.warn("[CONCILIA] plataforma truncou um lote de 800 — abortando por segurança");
+        return null;
+      }
+      for (const r of json.resultados ?? []) {
         // plataforma antiga não manda temTelefone: assumir que TEM evita
         // reparo em massa desnecessário no dia de um deploy defasado
-        { existe: r.existe, temAdId: r.temAdId, temTelefone: r.temTelefone !== false },
-      ])
-    );
-  } catch (err) {
-    console.warn("[CONCILIA] conferência falhou:", String(err).slice(0, 150));
-    return null;
+        mapa.set(r.chave, { existe: r.existe, temAdId: r.temAdId, temTelefone: r.temTelefone !== false });
+      }
+    } catch (err) {
+      console.warn("[CONCILIA] conferência falhou:", String(err).slice(0, 150));
+      return null;
+    }
   }
+  return mapa;
 }
 
 // Faixa horária na Flórida. O corte 8h-22h é a janela comercial do próprio
@@ -228,6 +255,173 @@ async function saudeDaCaptura(): Promise<Pick<ResumoConciliacao, "capturaRaw" | 
   };
 }
 
+// MODO SAÚDE (10/08/2026): responde só o estado da caixa-preta (última captura
+// por canal, ritmo e idade do GC) + a contagem de contratos, sem conciliar
+// nada. É o que o vigia da plataforma chama no começo do cron da madrugada —
+// a conciliação completa custa minutos com ~1000 contratos e lá esse tempo é
+// exatamente o que matava a rotina por timeout.
+export async function saudeDoFunil(): Promise<ResumoConciliacao> {
+  const out: ResumoConciliacao = {
+    ok: false,
+    quando: new Date().toISOString(),
+    dry: true,
+    contratos: 0,
+    comAtribuicao: 0,
+    telefonesCosturados: 0,
+    cliquesSemMensagem: 0,
+    furos: 0,
+    reparados: 0,
+    naoReparados: 0,
+    detalhes: [],
+    capturaRaw: [],
+    gcHorasAtras: null,
+  };
+  try {
+    const convs = new Set<string>();
+    for (const chave of await paginar(`${PREFIXO}%`)) {
+      const m = chave.match(/^funil_adx_([0-9a-f-]{36})::/);
+      if (m) convs.add(m[1]);
+    }
+    out.contratos = convs.size;
+    Object.assign(out, await saudeDaCaptura());
+    out.ok = true;
+  } catch (err) {
+    out.erro = String(err instanceof Error ? err.message : err).slice(0, 300);
+  }
+  return out;
+}
+
+// ─── RESGATE DA CAIXA-PRETA (10/08/2026) ─────────────────────────────────────
+// A caixa-preta guarda TODO webhook por 7 dias — inclusive o clique de anúncio
+// cuja gravação de contrato falhou num blip do banco (o webhook já respondeu
+// 200 e a Meta não reentrega; o erro era engolido). A prova ficava lá e
+// NENHUMA rotina a usava. Este passo roda ANTES da conciliação: acha referral
+// no raw sem funil_adx_ correspondente, reconstrói o contrato pela MESMA
+// função do webhook (persistirAnuncioDaConversa) e deixa o loop normal da
+// rodada reparar o lead em seguida. Nunca inventa: só usa o que a Meta mandou.
+
+type RefExtraido = { referral: NonNullable<ReferralIG>; igsid: string };
+
+function extrairReferralDeRaw(canal: "ig" | "fb" | "wa", corpo: string, epoch: number): RefExtraido | null {
+  const clickedAt = new Date(epoch).toISOString();
+  try {
+    const j = JSON.parse(corpo) as Record<string, unknown>;
+    if (canal === "wa") {
+      const phone = typeof j.phone === "string" ? j.phone.replace(/\D/g, "") : "";
+      const ear = j.externalAdReply as { sourceType?: string; sourceId?: string; ctwaClid?: string; title?: string; thumbnailUrl?: string } | undefined;
+      if (!phone || !ear) return null;
+      // mesma regra do webhook: link comum só vira atribuição com prova de anúncio
+      if (!(ear.sourceType === "ad" || ear.sourceId || ear.ctwaClid)) return null;
+      return {
+        igsid: `wa_${phone}`,
+        referral: {
+          ad_id: ear.sourceId,
+          ctwa_clid: ear.ctwaClid,
+          source: ear.sourceType,
+          clicked_at: clickedAt,
+          ads_context_data: { ad_title: ear.title, photo_url: ear.thumbnailUrl },
+        },
+      };
+    }
+    // IG/FB: entry[].messaging[] — referral standalone, na mensagem ou no postback
+    const entries = Array.isArray(j.entry) ? (j.entry as Array<Record<string, unknown>>) : [];
+    for (const e of entries) {
+      const messagings = Array.isArray(e.messaging) ? (e.messaging as Array<Record<string, unknown>>) : [];
+      for (const m of messagings) {
+        const msg = m.message as Record<string, unknown> | undefined;
+        const postback = m.postback as Record<string, unknown> | undefined;
+        const ref = ((msg?.referral ?? m.referral ?? postback?.referral) ?? null) as {
+          ad_id?: string; ref?: string; source?: string; type?: string;
+          ads_context_data?: { ad_title?: string; photo_url?: string; video_url?: string; post_id?: string };
+        } | null;
+        if (!ref || !(ref.ad_id || ref.ads_context_data?.ad_title || ref.ref || ref.source)) continue;
+        const sender = (m.sender as { id?: string } | undefined)?.id;
+        if (!sender) continue;
+        return {
+          igsid: canal === "fb" ? `fb_${sender}` : sender,
+          referral: { ...ref, clicked_at: clickedAt },
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null; // body truncado/não-JSON: sem prova utilizável
+  }
+}
+
+async function resgatarDaCaixaPreta(
+  contratos: Map<string, ContratoAnuncio>,
+  dry: boolean
+): Promise<{ candidatos: number; resgatados: number }> {
+  // 1. reconstrói as capturas (agrupa os chunks pela chave)
+  const grupos = new Map<string, { canal: "ig" | "fb" | "wa"; epoch: number; partes: Array<{ i: number; chunk: string }> }>();
+  for (const chave of await paginar("funil_raw_%")) {
+    const m = chave.match(/^funil_raw_(ig|fb|wa)_(\d{10,})_([a-z0-9]{4})_(\d+)of(\d+)(?:_s0)?(?:_trunc)?::([\s\S]*)$/);
+    if (!m) continue;
+    const id = `${m[1]}_${m[2]}_${m[3]}`;
+    const g = grupos.get(id) ?? { canal: m[1] as "ig" | "fb" | "wa", epoch: Number(m[2]), partes: [] };
+    g.partes.push({ i: Number(m[4]), chunk: m[6] });
+    grupos.set(id, g);
+  }
+
+  // 2. capturas com referral
+  const achados: RefExtraido[] = [];
+  for (const [, g] of grupos) {
+    const enc = g.partes.sort((a, b) => a.i - b.i).map((p) => p.chunk).join("");
+    let corpo = enc;
+    try {
+      corpo = decodeURIComponent(enc);
+    } catch {
+      continue; // truncado no meio de um %xx — sem JSON íntegro não há prova
+    }
+    if (!/referral|externalAdReply/.test(corpo)) continue;
+    const r = extrairReferralDeRaw(g.canal, corpo, g.epoch);
+    if (r) achados.push(r);
+  }
+  if (achados.length === 0) return { candidatos: 0, resgatados: 0 };
+
+  // 3. conversas dessas identidades (a captura não guarda o conv.id)
+  const igsids = [...new Set(achados.map((a) => a.igsid))];
+  const convPorIgsid = new Map<string, string>();
+  for (let i = 0; i < igsids.length; i += 100) {
+    const { data } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("id, igsid")
+      .in("igsid", igsids.slice(i, i + 100));
+    for (const c of data ?? []) convPorIgsid.set(c.igsid as string, c.id as string);
+  }
+
+  // 4. referral cuja conversa existe e NÃO tem contrato → reconstrói
+  let candidatos = 0;
+  let resgatados = 0;
+  const jaResgatadas = new Set<string>();
+  for (const a of achados) {
+    const convId = convPorIgsid.get(a.igsid);
+    if (!convId || contratos.has(convId) || jaResgatadas.has(convId)) continue;
+    candidatos++;
+    if (dry || resgatados >= TETO_RESGATES) continue;
+    try {
+      await persistirAnuncioDaConversa(convId, a.referral);
+      const lido = await supabaseAdmin
+        .from("platform_settings")
+        .select("platform")
+        .like("platform", `funil_adx_${convId}::%`)
+        .limit(1);
+      const key = lido.data?.[0]?.platform as string | undefined;
+      if (key) {
+        const ct = JSON.parse(decodeURIComponent(key.slice(`funil_adx_${convId}::`.length))) as ContratoAnuncio;
+        contratos.set(convId, ct); // entra na MESMA rodada de conciliação
+        jaResgatadas.add(convId);
+        resgatados++;
+        console.log(`[CONCILIA] contrato resgatado da caixa-preta: conv=${convId} igsid=${a.igsid} ad=${ct.ad_id ?? "?"}`);
+      }
+    } catch (err) {
+      console.warn("[CONCILIA] resgate falhou:", String(err).slice(0, 120));
+    }
+  }
+  return { candidatos, resgatados };
+}
+
 export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number }): Promise<ResumoConciliacao> {
   const dry = opcoes?.dry === true;
   const out: ResumoConciliacao = {
@@ -260,6 +454,17 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         /* chave ilegível: nada a conciliar */
       }
     }
+    // 1b) RESGATE DA CAIXA-PRETA: referral gravado no raw sem contrato — o
+    // clique cuja persistência falhou (blip do banco, canal pausado, return
+    // sem persistir de versão antiga) volta à vida aqui, e o loop abaixo já o
+    // concilia nesta mesma rodada. Em dry só conta.
+    try {
+      const resgate = await resgatarDaCaixaPreta(contratos, dry);
+      out.resgatadosDaCaixaPreta = dry ? resgate.candidatos : resgate.resgatados;
+    } catch (err) {
+      console.warn("[CONCILIA] resgate da caixa-preta falhou:", String(err).slice(0, 120));
+    }
+
     out.contratos = contratos.size;
     if (contratos.size === 0) {
       Object.assign(out, await saudeDaCaptura());
@@ -346,6 +551,18 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         continue;
       }
       if (faltaTelefone) out.telefonesCosturados++;
+
+      // CONTRATO SEM ad_id (clique via shortlink/m.me — só ref/source/título):
+      // a plataforma NUNCA responderá temAdId para ele, então tratá-lo como
+      // furo criava um zumbi reparado em vão TODA rodada, consumindo o teto de
+      // 60 e empurrando furo real para "fica para a próxima" (10/08/2026).
+      // Com o lead EXISTINDO, o que havia para entregar (título/ref) já foi:
+      // dá-se por resolvido, contado à parte. Sem lead, o reparo abaixo roda
+      // uma vez e cria o lead — na rodada seguinte cai neste ramo.
+      if (!ct?.ad_id && !faltaTelefone && estado?.existe) {
+        out.semAdIdResolvidos = (out.semAdIdResolvidos ?? 0) + 1;
+        continue;
+      }
 
       if (!faltaTelefone) out.furos++;
       const furo: FuroConciliacao = {
