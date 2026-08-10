@@ -27,6 +27,8 @@ import {
   classifyAdCreativeType,
   isConsecutiveDuplicate,
   adRetapNudge,
+  recapForDuplicateReply,
+  promisesOwnerContact,
   unansweredUserBurst,
   isVisitDetailQuestion,
   pastVisitSystemNote,
@@ -51,7 +53,14 @@ import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
 
-export const maxDuration = 60;
+// 60s was NOT enough: debounce (10s) + media download/transcription + vision
+// ad-creative classification + AI call + send retries can exceed it, and Vercel
+// then kills the function MID-FLIGHT — the client's message is already stored
+// but no reply is ever generated, with zero logs or alerts (3 scattered silent
+// conversations in the 2026-08-10 five-day review: a WA voice note, a WA ad
+// lead, an FB FAQ tap). Fluid Compute bills active CPU, so the idle debounce
+// sleep costs ~nothing; 300 is the platform default cap.
+export const maxDuration = 300;
 
 const RESPONSE_DELAY_MS = 10000;
 
@@ -1114,13 +1123,13 @@ async function handleWebhook(body: WebhookPayload) {
         return;
       }
       const noContentSent = await sendInstagramMessage(senderIgsid, finalResponse);
-      if (noContentSent.ok) {
-        await supabaseAdmin.from("instagram_messages").insert({
-          conversation_id: conversation.id,
-          role: "assistant",
-          content: finalResponse,
-        });
-      }
+      // Failed send → outbox row (SEND_FAILED) so the retry sweep re-delivers;
+      // dropping it invisibly is how silent clients are made (2026-08-10 review).
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: noContentSent.ok ? finalResponse : finalResponse + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1360,13 +1369,16 @@ async function handleWebhook(body: WebhookPayload) {
     if (retapNudge) {
       console.log("[IG] ad re-tap after opener — sending varied nudge instead of silence");
       const nudgeSent = await sendInstagramMessage(senderIgsid, retapNudge);
-      if (nudgeSent.ok) {
-        await supabaseAdmin.from("instagram_messages").insert({
-          conversation_id: conversation.id,
-          role: "assistant",
-          content: retapNudge,
-        });
-      }
+      // A failed nudge send used to vanish without a trace (no outbox row, no
+      // alert) — a blocked/restricted client re-tapped 5 times over 4 days and
+      // every reply was dropped invisibly (Emoney, 2026-08-10 review). Queue it
+      // like the main path: the outbox retries transient failures and gives up
+      // permanently on per-recipient errors, so this can never spam.
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: nudgeSent.ok ? retapNudge : retapNudge + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1589,11 +1601,19 @@ async function handleWebhook(body: WebhookPayload) {
 
     // Rule 29 backstop: never send the exact same message twice in a row. A
     // re-tapped FAQ button used to get the identical reply again (robotic
-    // loop). The client already has this answer directly above — stay silent.
+    // loop). But pure silence on an explicit re-ask is dead air (3 cases in the
+    // 2026-08-10 review) — so send the SAME answer behind a short rotating
+    // "as I mentioned" prefix instead, capped at 2 recaps per conversation.
     // Booking turns are exempt: a [BOOK:] confirmation must always go out.
+    let outboundResponse = finalResponse;
     if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
-      console.log("[IG] reply identical to previous bot message — staying silent (no robotic repeat)");
-      return;
+      const recap = recapForDuplicateReply(messagesForAI, finalResponse);
+      if (!recap) {
+        console.log("[IG] reply identical to previous bot message — staying silent (recap cap reached)");
+        return;
+      }
+      console.log("[IG] reply identical to previous bot message — sending recap instead of silence");
+      outboundResponse = recap;
     }
 
     // ── Send response ────────────────────────────────────────────────────
@@ -1602,7 +1622,7 @@ async function handleWebhook(body: WebhookPayload) {
     // (dashboard showed "answered", client saw nothing, and the history-based
     // guards then suppressed the re-send). The owner was already alerted by
     // reportSendFailure inside the send; the next inbound regenerates fresh.
-    const mainSent = await sendInstagramMessage(senderIgsid, finalResponse);
+    const mainSent = await sendInstagramMessage(senderIgsid, outboundResponse);
     if (!mainSent.ok) {
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
       // up to 48h (a transient Graph blip on 2026-07-22 14:38 UTC left a client
@@ -1611,13 +1631,13 @@ async function handleWebhook(body: WebhookPayload) {
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conversation.id,
         role: "assistant",
-        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+        content: outboundResponse + SEND_FAILED_DB_SUFFIX,
       });
       return;
     }
 
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
-      generateSpeech(finalResponse)
+      generateSpeech(outboundResponse)
         .then(async (buf) => {
           if (buf) await sendInstagramAudio(senderIgsid, buf);
         })
@@ -1627,8 +1647,34 @@ async function handleWebhook(body: WebhookPayload) {
     await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conversation.id,
       role: "assistant",
-      content: finalResponse,
+      content: outboundResponse,
     });
+
+    // ── Empty-promise backstop ────────────────────────────────────────────
+    // "Ozzi will reach out to you" only pings the owner when the model ALSO
+    // emitted [NOTIFY_OWNER]. When it says the words without the tag the
+    // promise is empty — Jorge waited weeks through five such replies and a
+    // $16,625 job walked (2026-08-10 review). If the delivered reply promises
+    // owner contact and the tag never fired this turn, notify the owner anyway.
+    if (!/\[NOTIFY_OWNER\]/i.test(afterCancel) && promisesOwnerContact(outboundResponse)) {
+      console.log("[IG] reply promises owner contact without [NOTIFY_OWNER] — forcing owner notification");
+      waitUntil(
+        (async () => {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conversation.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Instagram",
+            clientName: conversation.username ?? null,
+            clientId: senderIgsid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        })().catch((e) => console.error("[IG] promise-backstop notify error:", e))
+      );
+    }
 
     // ── Update memory in background (no latency impact) ──────────────────
     if (memoryStoreId && process.env.ANTHROPIC_API_KEY) {

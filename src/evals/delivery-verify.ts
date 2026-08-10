@@ -57,10 +57,12 @@ function main() {
     ck(`${label}: paused-convo backlog alerts the owner`, /alertPausedBacklog\(\{/.test(src), rel);
   }
   const igSrc = read("src/app/api/webhook/route.ts");
-  ck("IG: re-tap nudge stored only when delivered", /const nudgeSent = await sendInstagramMessage\(senderIgsid, retapNudge\);\s*if \(nudgeSent\.ok\)/.test(igSrc));
+  // Rev. 5d 2026-08-10: a failed nudge send used to vanish without a trace — now
+  // it is queued with SEND_FAILED so the outbox retries (or gives up on 551s).
+  ck("IG: re-tap nudge queued with SEND_FAILED on failure", /content: nudgeSent\.ok \? retapNudge : retapNudge \+ SEND_FAILED_DB_SUFFIX/.test(igSrc));
   ck("IG: visit details stored only when delivered", /const detailsSent = await sendInstagramMessage\(senderIgsid, details\);\s*if \(detailsSent\.ok\)/.test(igSrc));
   const fbSrc = read("src/app/api/fb-webhook/route.ts");
-  ck("FB: re-tap nudge stored only when delivered", /const nudgeSent = await sendFacebookMessage\(psid, retapNudge\);\s*if \(nudgeSent\.ok\)/.test(fbSrc));
+  ck("FB: re-tap nudge queued with SEND_FAILED on failure", /content: nudgeSent\.ok \? retapNudge : retapNudge \+ SEND_FAILED_DB_SUFFIX/.test(fbSrc));
 
   // ── 3. Token: DB-first, refreshable, hot-swappable ───────────────────────
   console.log("\n[3] IG token lifecycle");
@@ -122,7 +124,9 @@ function main() {
     ["WhatsApp", "src/app/api/wa-webhook/route.ts"],
   ] as const) {
     const src = read(rel);
-    ck(`${label}: failed main send queued with SEND_FAILED_DB_SUFFIX`, /content: finalResponse \+ SEND_FAILED_DB_SUFFIX/.test(src), rel);
+    // outboundResponse = finalResponse, ou o recap rotativo quando a guarda de
+    // duplicata dispararia (rev. 5d 2026-08-10) — o que vai pro fio é o que enfileira.
+    ck(`${label}: failed main send queued with SEND_FAILED_DB_SUFFIX`, /content: outboundResponse \+ SEND_FAILED_DB_SUFFIX/.test(src), rel);
     ck(`${label}: webhook POST triggers the retry sweep`, /waitUntil\(retryFailedSends\(\)\)/.test(src), rel);
   }
   ck("dream cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/dream/route.ts")));

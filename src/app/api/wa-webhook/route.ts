@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
@@ -22,7 +22,11 @@ import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal } from "@/lib/quote-reply";
 
-export const maxDuration = 60;
+// 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
+// + vision + AI + send retries): message stored, reply never generated, zero
+// alerts — a WA voice note died exactly this way (Kathe, 2026-08-10 five-day
+// review). Fluid Compute bills active CPU, so 300 is safe.
+export const maxDuration = 300;
 
 const RESPONSE_DELAY_MS = 10000;
 
@@ -935,9 +939,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const hasRealContent = isPlainText || mediaProcessed;
 
     if (!hasRealContent) {
+      // Voice notes get their own line (parity with IG): "could you type your
+      // question" after a voice message reads like we ignored it (Kathe,
+      // 2026-08-10 review — the reply never went out at all back then).
       const fallback = imageUrl
         ? "Got your photo! If it is a floor plan, just type the total area in sqft or sqm and I will calculate right here. If it is a photo of your current floors, just describe what you need."
-        : "Got your message! Could you type your question?";
+        : audioUrl
+          ? "Got your voice message but could not catch it. Could you type what you need?"
+          : "Got your message! Could you type your question?";
       // Dedup: a client re-sending an unsupported attachment (e.g. two PDFs in a
       // row) used to get this identical canned line each time — a robotic repeat
       // (rule 29). Once is enough; stay silent on the repeat.
@@ -954,7 +963,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
       const noContentSent = await sendWhatsAppMessage(phone, fallback);
       if (!noContentSent.ok) await reportSendFailure("whatsapp", phone, noContentSent.error ?? "unknown");
-      else await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
+      // Failed send → outbox row (SEND_FAILED) so the retry sweep re-delivers
+      // instead of dropping the reply invisibly (2026-08-10 review).
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: noContentSent.ok ? fallback : fallback + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1363,17 +1378,25 @@ async function handleWaMessage(body: Record<string, unknown>) {
 
     // Rule 29 backstop: never send the exact same message twice in a row. A
     // re-tapped FAQ button used to get the identical reply again (robotic
-    // loop). The client already has this answer directly above — stay silent.
+    // loop). But pure silence on an explicit re-ask is dead air (3 cases in the
+    // 2026-08-10 review) — so send the SAME answer behind a short rotating
+    // "as I mentioned" prefix instead, capped at 2 recaps per conversation.
     // Booking turns are exempt: a [BOOK:] confirmation must always go out.
+    let outboundResponse = finalResponse;
     if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
-      console.log("[WA] reply identical to previous bot message — staying silent (no robotic repeat)");
-      return;
+      const recap = recapForDuplicateReply(messagesForAI, finalResponse);
+      if (!recap) {
+        console.log("[WA] reply identical to previous bot message — staying silent (recap cap reached)");
+        return;
+      }
+      console.log("[WA] reply identical to previous bot message — sending recap instead of silence");
+      outboundResponse = recap;
     }
 
     // A failed send aborts the turn BEFORE the reply is stored — recording an
     // undelivered reply hides the outage and suppresses the re-send (see the
     // 2026-07-22 IG token incident). reportSendFailure alerts the owner.
-    const mainSent = await sendWhatsAppMessage(phone, finalResponse);
+    const mainSent = await sendWhatsAppMessage(phone, outboundResponse);
     if (!mainSent.ok) {
       await reportSendFailure("whatsapp", phone, mainSent.error ?? "unknown");
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
@@ -1383,11 +1406,37 @@ async function handleWaMessage(body: Record<string, unknown>) {
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conv.id,
         role: "assistant",
-        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+        content: outboundResponse + SEND_FAILED_DB_SUFFIX,
       });
       return;
     }
-    await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
+    await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: outboundResponse });
+
+    // ── Empty-promise backstop ────────────────────────────────────────────
+    // "Ozzi will reach out to you" only pings the owner when the model ALSO
+    // emitted [NOTIFY_OWNER]; without the tag the promise is empty — Jorge
+    // (wa_13059155997) waited weeks through five such replies and a $16,625
+    // job walked (2026-08-10 review). If the delivered reply promises owner
+    // contact and the tag never fired this turn, notify the owner anyway.
+    if (!/\[NOTIFY_OWNER\]/i.test(afterCancel) && promisesOwnerContact(outboundResponse)) {
+      console.log("[WA] reply promises owner contact without [NOTIFY_OWNER] — forcing owner notification");
+      waitUntil(
+        (async () => {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "WhatsApp",
+            clientName: conv.username ?? null,
+            clientId: phone,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        })().catch((e) => console.error("[WA] promise-backstop notify error:", e))
+      );
+    }
 
     // Update memory in background
     if (newMemoryStoreId && process.env.ANTHROPIC_API_KEY) {

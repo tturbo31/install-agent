@@ -5,7 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -21,7 +21,10 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
-export const maxDuration = 60;
+// 60s killed slow turns MID-FLIGHT (debounce 10s + media + vision + AI + send
+// retries): message stored, reply never generated, zero alerts — see the
+// 2026-08-10 five-day review. Fluid Compute bills active CPU, so 300 is safe.
+export const maxDuration = 300;
 
 const RESPONSE_DELAY_MS = 10000;
 
@@ -907,9 +910,13 @@ async function handleFbMessage(body: Record<string, unknown>) {
         return;
       }
       const noContentSent = await sendFacebookMessage(psid, fallback);
-      if (noContentSent.ok) {
-        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: fallback });
-      }
+      // Failed send → outbox row (SEND_FAILED) so the retry sweep re-delivers;
+      // dropping it invisibly is how silent clients are made (2026-08-10 review).
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: noContentSent.ok ? fallback : fallback + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1105,9 +1112,13 @@ async function handleFbMessage(body: Record<string, unknown>) {
     if (retapNudge) {
       console.log("[FB] ad re-tap after opener — sending varied nudge instead of silence");
       const nudgeSent = await sendFacebookMessage(psid, retapNudge);
-      if (nudgeSent.ok) {
-        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: retapNudge });
-      }
+      // Failed nudge send → outbox row (SEND_FAILED) so the retry sweep
+      // re-delivers instead of dropping it invisibly (2026-08-10 review).
+      await supabaseAdmin.from("instagram_messages").insert({
+        conversation_id: conv.id,
+        role: "assistant",
+        content: nudgeSent.ok ? retapNudge : retapNudge + SEND_FAILED_DB_SUFFIX,
+      });
       return;
     }
 
@@ -1301,17 +1312,25 @@ async function handleFbMessage(body: Record<string, unknown>) {
 
     // Rule 29 backstop: never send the exact same message twice in a row. A
     // re-tapped FAQ button used to get the identical reply again (robotic
-    // loop). The client already has this answer directly above — stay silent.
+    // loop). But pure silence on an explicit re-ask is dead air (3 cases in the
+    // 2026-08-10 review) — so send the SAME answer behind a short rotating
+    // "as I mentioned" prefix instead, capped at 2 recaps per conversation.
     // Booking turns are exempt: a [BOOK:] confirmation must always go out.
+    let outboundResponse = finalResponse;
     if (!booked && isConsecutiveDuplicate(messagesForAI, finalResponse)) {
-      console.log("[FB] reply identical to previous bot message — staying silent (no robotic repeat)");
-      return;
+      const recap = recapForDuplicateReply(messagesForAI, finalResponse);
+      if (!recap) {
+        console.log("[FB] reply identical to previous bot message — staying silent (recap cap reached)");
+        return;
+      }
+      console.log("[FB] reply identical to previous bot message — sending recap instead of silence");
+      outboundResponse = recap;
     }
 
     // A failed send aborts the turn BEFORE the reply is stored — recording an
     // undelivered reply hides the outage and suppresses the re-send (see the
     // 2026-07-22 IG token incident). Owner already alerted inside the send.
-    const mainSent = await sendFacebookMessage(psid, finalResponse);
+    const mainSent = await sendFacebookMessage(psid, outboundResponse);
     if (!mainSent.ok) {
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
       // up to 48h (the 2026-07-22 14:38 UTC transient blip hit exactly here).
@@ -1319,11 +1338,37 @@ async function handleFbMessage(body: Record<string, unknown>) {
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conv.id,
         role: "assistant",
-        content: finalResponse + SEND_FAILED_DB_SUFFIX,
+        content: outboundResponse + SEND_FAILED_DB_SUFFIX,
       });
       return;
     }
-    await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: finalResponse });
+    await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: outboundResponse });
+
+    // ── Empty-promise backstop ────────────────────────────────────────────
+    // "Ozzi will reach out to you" only pings the owner when the model ALSO
+    // emitted [NOTIFY_OWNER]; without the tag the promise is empty (Jorge
+    // waited weeks and a $16,625 job walked — 2026-08-10 review). If the
+    // delivered reply promises owner contact and the tag never fired this
+    // turn, notify the owner anyway.
+    if (!/\[NOTIFY_OWNER\]/i.test(afterCancel) && promisesOwnerContact(outboundResponse)) {
+      console.log("[FB] reply promises owner contact without [NOTIFY_OWNER] — forcing owner notification");
+      waitUntil(
+        (async () => {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Messenger",
+            clientName: (conv as Record<string, unknown>).username as string ?? null,
+            clientId: psid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        })().catch((e) => console.error("[FB] promise-backstop notify error:", e))
+      );
+    }
 
     // Update memory in background
     if (newMemoryStoreId && process.env.ANTHROPIC_API_KEY) {

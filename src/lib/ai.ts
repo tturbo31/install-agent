@@ -798,6 +798,57 @@ export function adRetapNudge(history: ChatMessage[]): string | null {
   return unsent ?? variants.find((v) => norm(v) !== norm(lastAssistant.content)) ?? null;
 }
 
+// ─── Recap instead of dead air on a repeated question ──────────────────────
+// A client who re-sends the SAME question after our answer (FAQ button re-tap,
+// or a genuine re-ask because the first answer didn't land) makes the model
+// regenerate a near-identical reply, which the consecutive-duplicate guard then
+// silences — dead air for an explicit client action (3 real cases in the 5-day
+// review, 2026-08-10: Cathy 0d12b131, fb 010e3e84, fb d3b9394d). Instead of
+// silence, prefix the answer with a short rotating "as I mentioned" so the
+// duplicate guard is satisfied AND the client gets their answer again. Capped
+// at 2 recaps per conversation — after that, silence again (storm backstop).
+const RECAP_PREFIXES: Record<"en" | "es" | "pt", string[]> = {
+  en: ["As I mentioned above: ", "Just to recap: ", "In case my last message didn't come through: "],
+  es: ["Como te mencioné arriba: ", "Para recapitular: ", "Por si no te llegó mi último mensaje: "],
+  pt: ["Como mencionei acima: ", "Recapitulando: ", "Caso minha última mensagem não tenha chegado: "],
+};
+const RECAP_CAP = 2;
+export function recapForDuplicateReply(history: ChatMessage[], reply: string): string | null {
+  if (!reply.trim()) return null;
+  const allPrefixes = [...RECAP_PREFIXES.en, ...RECAP_PREFIXES.es, ...RECAP_PREFIXES.pt];
+  const recapsSent = history.filter(
+    (m) => m.role === "assistant" && allPrefixes.some((p) => m.content.startsWith(p))
+  ).length;
+  if (recapsSent >= RECAP_CAP) return null;
+  const lang: "en" | "es" | "pt" = /[¿¡]|\b(hola|precio|instalaci[oó]n|cu[aá]l|gracias)\b/i.test(reply)
+    ? "es"
+    : /\b(voc[eê]|or[cç]amento|obrigad|instala[cç][aã]o)\b/i.test(reply)
+      ? "pt"
+      : "en";
+  const prefix = RECAP_PREFIXES[lang][recapsSent] ?? RECAP_PREFIXES[lang][RECAP_PREFIXES[lang].length - 1];
+  return prefix + reply;
+}
+
+// ─── Empty-promise backstop ────────────────────────────────────────────────
+// The model routinely tells clients "Ozzi will reach out to you shortly" — but
+// the owner is only ACTUALLY pinged when the reply carries [NOTIFY_OWNER]. When
+// the model says the words without the tag, the promise is empty: one client
+// (Jorge, wa_13059155997) waited WEEKS through five "I'm flagging this right
+// now" replies, nobody was ever notified, and a $16,625 job walked. Detect the
+// promise in the FINAL outbound text so the webhook can force the owner
+// notification whenever the tag is missing.
+const OWNER_PROMISE_PATTERNS: RegExp[] = [
+  /\b(ozzi|the owner|our team|someone)\b[^.!?\n]{0,60}\b(will|is going to|going to)\b[^.!?\n]{0,40}\b(reach(?:ing)? out|call(?:ing)?|contact(?:ing)?|be in touch|get(?:ting)? in touch|text(?:ing)? you|follow(?:ing)? up|get(?:ting)? back)/i,
+  /\bI'?ll (have|make sure|get|ask)\b[^.!?\n]{0,40}\b(ozzi|the owner|our team)\b/i,
+  /\bflagging (this|it)\b[^.!?\n]{0,40}\b(for|to|as urgent)/i,
+  /\b(ozzi|el due[nñ]o|nuestro equipo|alguien)\b[^.!?\n]{0,60}(te (va a )?(llama|contacta|responde)|se pondr[aá] en contacto|estar[aá] esperando|devolver[aá] la llamada|te contacta)/i,
+  /\b(ozzi|o dono|nossa equipe|algu[eé]m)\b[^.!?\n]{0,60}(vai (te )?(ligar|contatar|responder)|entra(r[aá])? em contato)/i,
+];
+export function promisesOwnerContact(text: string): boolean {
+  const t = normalizeSmartPunct(text || "");
+  return OWNER_PROMISE_PATTERNS.some((p) => p.test(t));
+}
+
 // Phone keyboards send smart punctuation: U+2019 for the apostrophe ("Let’s")
 // instead of the ASCII "'" every guard regex here is written with. "Let’s do
 // 9:00–thank you" failed `let'?s\s+do` ONLY because of the curly quote, carried
