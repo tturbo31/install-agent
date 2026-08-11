@@ -12,7 +12,7 @@
 // Run: npx tsx src/evals/instalacao-replies-verify.ts
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getAIResponse, scrubForeignPhones, installConfirmationPhones, type ChatMessage } from "../lib/ai";
+import { getAIResponse, scrubForeignPhones, installConfirmationPhones, hasInstallationConfirmation, type ChatMessage } from "../lib/ai";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -68,6 +68,25 @@ async function main() {
   ck("client's own number is STILL scrubbed", !/3057668885/.test(clientEcho), clientEcho);
   ck("without the allowance the seller number is scrubbed (default unchanged)", !/325-6735/.test(scrubForeignPhones("Call Diego at (954) 325-6735.")));
   ck("no confirmation in history → no allowance", installConfirmationPhones([{ role: "assistant", content: "Hi, which floor are you interested in?" }]).length === 0);
+
+  // ── 1c. UNIT + STATIC: stale-booked guard yields to the confirmation ───────
+  // Caso Jean E Raymond 2026-08-11: "See you tomorrow" após a confirmação de
+  // instalação levou o handoff enlatado ("double check your visit details") em
+  // vez da continuidade natural — a guarda visita-afirmada rodava ANTES do
+  // modelo e a seção INSTALLATION CONFIRMED nunca agia.
+  console.log("\n[1c] Guarda visita-afirmada não intercepta pós-confirmação de instalação");
+  ck("hasInstallationConfirmation detecta a confirmação", hasInstallationConfirmation(history) === true);
+  ck("sem confirmação no histórico → false", hasInstallationConfirmation([
+    { role: "assistant", content: "Perfect, see you then!" },
+    { role: "user", content: "See you tomorrow" },
+  ]) === false);
+  ck("confirmação vinda do CLIENTE não conta", hasInstallationConfirmation([
+    { role: "user", content: "your flooring installation is confirmed for Tuesday" },
+  ]) === false);
+  for (const [name, file] of [["wa-webhook", "src/app/api/wa-webhook/route.ts"], ["fb-webhook", "src/app/api/fb-webhook/route.ts"], ["ig webhook", "src/app/api/webhook/route.ts"]] as const) {
+    const src = readFileSync(join(process.cwd(), file), "utf-8");
+    ck(`${name}: guarda condicionada a !hasInstallationConfirmation`, /!hasInstallationConfirmation\(staleRows\) && assertsExistingAppointment\(/.test(src));
+  }
 
   // ── 2. LIVE: reschedule ask → Diego + his phone, no promise, no owner number ─
   console.log("\n[2] Reschedule ask → direct to Diego at (954) 325-6735");

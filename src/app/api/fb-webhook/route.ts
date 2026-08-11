@@ -5,7 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
@@ -703,7 +703,11 @@ async function handleFbMessage(body: Record<string, unknown>) {
         const staleRows = (staleBurstMsgs ?? []).reverse();
         const staleBurst = unansweredUserBurst(staleRows) || rawText;
         const staleLastAsst = [...staleRows].reverse().find((m) => m.role === "assistant")?.content ?? null;
-        if (assertsExistingAppointment(staleBurst, staleLastAsst)) {
+        // EXCEÇÃO (2026-08-11): se o histórico recente tem a confirmação de
+        // instalação que NÓS enviamos (/api/confirmar-instalacao), a "visita"
+        // que o cliente afirma é essa instalação — não é acordo por fora. A
+        // guarda não dispara e o modelo segue pelo INSTALLATION CONFIRMED.
+        if (!hasInstallationConfirmation(staleRows) && assertsExistingAppointment(staleBurst, staleLastAsst)) {
           console.log("[FB] stale booked flag BUT client asserts an existing appointment — owner handoff, no re-engage");
           const handoff = appointmentMismatchHandoffMessage(detectLang(staleBurst));
           if (!(staleLastAsst && isConsecutiveDuplicate([{ role: "assistant", content: staleLastAsst }], handoff))) {

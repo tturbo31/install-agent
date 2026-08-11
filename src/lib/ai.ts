@@ -1497,6 +1497,17 @@ export function stripReasoningLeak(text: string): string {
 const OFFICIAL_PHONE_DIGITS = "5616748334";
 const FOREIGN_PHONE = /(?:\b(?:at|on|to|al|en|no)\s+)?(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/gi;
 
+// True when the recent history contains the installation confirmation our
+// /api/confirmar-instalacao sent. A client replying after that message is a
+// CLOSED SALE in the installation stage — the appointment they assert IS one we
+// ourselves confirmed, so the stale-booked "visita afirmada" guard must NOT
+// intercept: the model answers via the INSTALLATION CONFIRMED prompt section
+// (caso Jean E Raymond, 2026-08-11: "See you tomorrow" após a confirmação levou
+// o handoff enlatado de visita em vez da continuidade natural).
+export function hasInstallationConfirmation(messages: { role: string; content: string }[]): boolean {
+  return messages.some((m) => m.role === "assistant" && /installation is confirmed for/i.test(m.content));
+}
+
 // Extracts the allowed phone digits from installation-confirmation messages in
 // the history. Normalized the same way scrubForeignPhones normalizes matches.
 export function installConfirmationPhones(messages: ChatMessage[]): string[] {

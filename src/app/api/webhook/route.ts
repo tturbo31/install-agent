@@ -34,6 +34,7 @@ import {
   pastVisitSystemNote,
   questionSwallowedByBooking,
   assertsExistingAppointment,
+  hasInstallationConfirmation,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
@@ -858,7 +859,11 @@ async function handleWebhook(body: WebhookPayload) {
         const staleRows = (staleBurstMsgs ?? []).reverse();
         const staleBurst = unansweredUserBurst(staleRows) || rawText;
         const staleLastAsst = [...staleRows].reverse().find((m) => m.role === "assistant")?.content ?? null;
-        if (assertsExistingAppointment(staleBurst, staleLastAsst)) {
+        // EXCEÇÃO (2026-08-11): se o histórico recente tem a confirmação de
+        // instalação que NÓS enviamos (/api/confirmar-instalacao), a "visita"
+        // que o cliente afirma é essa instalação — não é acordo por fora. A
+        // guarda não dispara e o modelo segue pelo INSTALLATION CONFIRMED.
+        if (!hasInstallationConfirmation(staleRows) && assertsExistingAppointment(staleBurst, staleLastAsst)) {
           console.log("[IG] stale booked flag BUT client asserts an existing appointment — owner handoff, no re-engage");
           const handoff = appointmentMismatchHandoffMessage(detectLang(staleBurst));
           if (!(staleLastAsst && isConsecutiveDuplicate([{ role: "assistant", content: staleLastAsst }], handoff))) {
