@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,8 +13,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Instagram AI Agent",
-  description: "Instagram DM AI Agent Dashboard",
+  title: "Ozzi Floors — Painel IA",
+  description: "Central de atendimento com IA — Instagram, Messenger e WhatsApp",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#09090b",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -24,10 +30,10 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="pt-BR"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="h-full flex flex-col bg-gray-950">{children}</body>
+      <body className="h-full flex flex-col bg-zinc-950 text-zinc-100 font-sans">{children}</body>
     </html>
   );
 }
