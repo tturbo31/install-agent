@@ -10,7 +10,7 @@ import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -120,6 +120,7 @@ async function processBookingCommand(
         phone: bookingData.phone,
         address: bookingData.address,
         notes: bookingData.notes,
+        clientBurst: recentClientText(history),
       });
       if (r.success) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
@@ -777,6 +778,59 @@ async function handleFbMessage(body: Record<string, unknown>) {
         .limit(1)
         .maybeSingle();
       if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── Correção de ENDEREÇO depois da visita marcada (caso Kristina, IG,
+    //    2026-08-13): mesma rua, outro apartamento. A correção morria no fluxo
+    //    silencioso de booked e o vendedor ia para a unidade errada. Troca de
+    //    unidade na MESMA rua é gravada aqui (detecção determinística, o modelo
+    //    não opina); rua diferente pode ser outro imóvel e só vai para o dono. ──
+    if (isBooked && !engageReschedule) {
+      const addrBurst = [gateBurst, rawText].filter(Boolean).join("\n");
+      const corr = await applyPostBookingAddressCorrection(fbIgsid, addrBurst);
+      if (corr) {
+        const lang = detectLang(addrBurst);
+        const reply =
+          corr.kind === "unit"
+            ? addressCorrectedMessage(lang, corr.unit)
+            : addressChangeHandoffMessage(lang);
+        const { data: lastBotAddr } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("content")
+          .eq("conversation_id", conv.id)
+          .eq("role", "assistant")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!(lastBotAddr?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotAddr.content }], reply))) {
+          const addrSent = await sendFacebookMessage(psid, reply);
+          if (addrSent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conv.id,
+              role: "assistant",
+              content: reply,
+            });
+          }
+        }
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Messenger",
+            clientName: (conv as Record<string, unknown>).username as string ?? null,
+            clientId: psid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+            alert: postBookingAddressAlert(corr),
+          });
+        } catch (err) {
+          console.error("FB address-correction notify error:", err);
+        }
+        return;
+      }
     }
 
     // ── Booked client asking about their OWN visit ("Are you coming at 3?",

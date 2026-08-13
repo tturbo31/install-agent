@@ -247,7 +247,7 @@ export async function rescheduleClientBooking(
   igsid: string,
   newDate: string,
   newTime: string,
-  fallback?: { name?: string; phone?: string; address?: string; notes?: string }
+  fallback?: { name?: string; phone?: string; address?: string; notes?: string; clientBurst?: string }
 ): Promise<BookingResult & { rescheduled?: boolean }> {
   try {
     const db = await getAuthenticatedClient();
@@ -280,13 +280,26 @@ export async function rescheduleClientBooking(
     if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
 
     // 3. Create the NEW booking (copy original details, fall back to provided values).
+    // O endereço antigo SEMPRE vencia (old.address só é null se um humano criou
+    // a visita sem endereço), então uma correção mandada no mesmo turno da
+    // remarcação era descartada em silêncio. Só uma troca de UNIDADE detectada
+    // deterministicamente na rajada do cliente pode sobrescrever — o endereço
+    // que o modelo escreve no [BOOK] continua sem poder nenhum aqui.
+    let addressToUse = (old.address ?? fallback?.address ?? "").toString().trim();
+    if (fallback?.clientBurst && old.address) {
+      const corr = detectAddressCorrection(fallback.clientBurst, old.address);
+      if (corr?.kind === "unit") {
+        console.warn(`[reschedule] address unit corrected: "${old.address}" -> "${corr.address}"`);
+        addressToUse = corr.address;
+      }
+    }
     const { data: created, error: insErr } = await db
       .from("bookings")
       .insert({
         name: (old.name ?? fallback?.name ?? "Instagram Client").toString().trim().slice(0, 100),
         email: `ia-${igsid}@instagram.ozzifloors.com`,
         phone: (old.phone ?? fallback?.phone ?? "").toString().trim().slice(0, 30) || null,
-        address: (old.address ?? fallback?.address ?? "").toString().trim().slice(0, 300),
+        address: addressToUse.slice(0, 300),
         referral_source: old.referral_source ?? "Instagram DM",
         source: old.source ?? "Instagram DM",
         creative_url: old.creative_url ?? null,
@@ -1298,4 +1311,316 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
   } catch {
     return ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"];
   }
+}
+
+// ─── Post-booking ADDRESS CORRECTION ───────────────────────────────────────
+// Caso Kristina Mittendorff (IG, 2026-08-13): no agendamento a cliente digitou
+// "300 s Australian Av, 1506, 33401" e o booking gravou exatamente isso. Quatro
+// dias depois ela mandou "300 s Australian Av 916" — a MESMA rua, outro
+// apartamento. Não existia NENHUM caminho que atualizasse o endereço de uma
+// visita já confirmada: a correção morreu no fluxo silencioso de booked, o
+// registro ficou com o 1506 e o vendedor foi para o apartamento errado.
+//
+// A detecção é 100% determinística (o modelo nunca decide sobre isso): compara
+// o endereço GRAVADO com o que a rajada do cliente traz. Só a troca de UNIDADE
+// na mesma rua é escrita sozinha, porque é inequívoca. Rua diferente = possível
+// mudança de imóvel, isso vai para o dono decidir.
+
+const STREET_SUFFIXES: Record<string, string> = {
+  st: "st", street: "st",
+  ave: "ave", av: "ave", avenue: "ave",
+  blvd: "blvd", boulevard: "blvd",
+  dr: "dr", drive: "dr",
+  rd: "rd", road: "rd",
+  ln: "ln", lane: "ln",
+  ct: "ct", court: "ct",
+  way: "way",
+  ter: "ter", terr: "ter", terrace: "ter",
+  pl: "pl", place: "pl",
+  hwy: "hwy", highway: "hwy",
+  cir: "cir", circle: "cir",
+  pkwy: "pkwy", parkway: "pkwy",
+  calle: "calle", avenida: "avenida",
+};
+const DIRECTIONALS = new Set([
+  "n", "s", "e", "w", "ne", "nw", "se", "sw",
+  "north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest",
+]);
+const UNIT_WORD = /^(?:apt|apto|apartment|apartamento|unit|unidad|unidade|suite|ste|room|rm)$/;
+// "Apt 916", "unit 916", "#916" — uma correção de unidade sem repetir a rua.
+// A lookahead final derruba "apartment 750 sqft": metragem e preço são os dois
+// números que mais aparecem colados nessas palavras e não são unidade nenhuma.
+const BARE_UNIT_RE =
+  /(?:^|[\s,;(])(?:(?:apt|apto|apartment|apartamento|unit|unidad|unidade|suite|ste)\.?\s*#?\s*|#\s*)(\d{1,6}[a-z]?)\b(?!\s*(?:sq|sqft|sf|square|feet|foot|ft|dollars?|usd|k\b))/i;
+
+// Pré-filtro barato, rodado ANTES de tocar o banco da agenda: toda mensagem de
+// cliente já agendado passaria a pagar um login + select sem isto.
+export function mayCarryAddressCorrection(text?: string | null): boolean {
+  const t = (text ?? "").toString();
+  if (!t.trim()) return false;
+  if (BARE_UNIT_RE.test(t)) return true;
+  // O nome da rua aceita token com dígito ("NW 7th St"): sem isso o pré-filtro
+  // barrava endereços de OUTRA rua e a mudança de imóvel voltava a morrer antes
+  // da detecção. Ser permissivo aqui só custa uma consulta; quem decide de fato
+  // é o parseStreetAddress.
+  return /\b\d{1,6}[a-z]?\b[\s,.-]+(?:[\w'.-]+[\s,.-]+){0,4}(?:st|street|ave|av|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terr|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|calle|avenida)\b/i.test(
+    t
+  );
+}
+
+export interface ParsedStreetAddress {
+  house: string;
+  street: string; // tokens do nome da rua, sem direcional e sem sufixo
+  suffix: string; // sufixo normalizado (ave, st, blvd...)
+  unit: string | null;
+  head: string; // trecho original até o sufixo, inclusive
+  tail: string; // trecho original depois da unidade (cidade/estado/zip)
+}
+
+// Quebra um endereço em casa + rua + sufixo + unidade, guardando os offsets do
+// texto original para conseguir remontar a string sem perder cidade/estado/ZIP.
+// Devolve null quando não dá para ter certeza (sem número de casa ou sem sufixo
+// de rua reconhecido) — melhor não detectar nada do que detectar errado.
+export function parseStreetAddress(input?: string | null): ParsedStreetAddress | null {
+  const s = (input ?? "").toString();
+  if (!s.trim()) return null;
+  const toks: Array<{ norm: string; start: number; end: number }> = [];
+  const re = /[^\s,;]+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const norm = m[0].toLowerCase().replace(/^#+/, "").replace(/[.]+$/, "");
+    if (norm) toks.push({ norm, start: m.index, end: m.index + m[0].length });
+  }
+  if (toks.length < 3) return null;
+
+  // O ZIP não faz parte da rua nem pode ser confundido com unidade.
+  const zip = extractZip(s);
+  const zipTok = zip ? toks.findIndex((t, i) => i > 0 && t.norm.replace(/-\d{4}$/, "") === zip) : -1;
+
+  if (!/^\d{1,6}[a-z]?$/.test(toks[0].norm)) return null;
+  const house = toks[0].norm;
+
+  const street: string[] = [];
+  let suffix = "";
+  let suffixIdx = -1;
+  let i = 1;
+  for (; i < toks.length; i++) {
+    if (i === zipTok) break;
+    const t = toks[i].norm;
+    if (DIRECTIONALS.has(t) && street.length === 0) continue; // "300 S Australian Ave"
+    if (STREET_SUFFIXES[t] && street.length > 0) {
+      suffix = STREET_SUFFIXES[t];
+      suffixIdx = i;
+      i++;
+      break;
+    }
+    if (street.length >= 5) return null; // não é um endereço, é texto solto
+    street.push(t);
+  }
+  if (!suffix || street.length === 0) return null;
+
+  // Depois do sufixo pode vir um direcional ("300 Australian Ave NW, 916").
+  let headIdx = suffixIdx;
+  while (i < toks.length && DIRECTIONALS.has(toks[i].norm) && i !== zipTok) {
+    headIdx = i;
+    i++;
+  }
+
+  let unit: string | null = null;
+  let unitIdx = -1;
+  for (; i < toks.length; i++) {
+    if (i === zipTok) break;
+    const t = toks[i].norm;
+    if (UNIT_WORD.test(t)) continue; // "apt" antes do número
+    if (/^\d{1,6}[a-z]?$/.test(t)) {
+      unit = t;
+      unitIdx = i;
+    }
+    break;
+  }
+
+  return {
+    house,
+    street: street.join(" "),
+    suffix,
+    unit,
+    head: s.slice(0, toks[headIdx].end),
+    tail: unitIdx >= 0 ? s.slice(toks[unitIdx].end) : s.slice(toks[headIdx].end),
+  };
+}
+
+function sameStreet(a: ParsedStreetAddress, b: ParsedStreetAddress): boolean {
+  return a.house === b.house && a.street === b.street && a.suffix === b.suffix;
+}
+
+// Remonta o endereço gravado trocando só a unidade, preservando cidade, estado
+// e ZIP que o cliente não repetiu ao mandar a correção.
+function withUnit(booked: ParsedStreetAddress, unit: string): string {
+  const tail = booked.tail.replace(/^[\s,;]+/, "").trim();
+  return `${booked.head.trim()}, ${unit}${tail ? `, ${tail}` : ""}`.replace(/\s+/g, " ").trim();
+}
+
+export type AddressCorrection =
+  | { kind: "unit"; unit: string; previousUnit: string | null; address: string }
+  | { kind: "moved"; address: string };
+
+// Compara a rajada do cliente com o endereço já gravado. null = nada a fazer
+// (não veio endereço, ou veio o MESMO endereço repetido).
+export function detectAddressCorrection(
+  burst: string,
+  bookedAddress: string
+): AddressCorrection | null {
+  const booked = parseStreetAddress(bookedAddress);
+  if (!booked) return null;
+  const text = (burst ?? "").toString();
+  if (!text.trim()) return null;
+
+  for (const line of text.split(/[\n\r]+/)) {
+    const cand = parseStreetAddress(line);
+    if (!cand) continue;
+    if (!sameStreet(cand, booked)) return { kind: "moved", address: line.trim().slice(0, 300) };
+    if (cand.unit && cand.unit !== booked.unit) {
+      return { kind: "unit", unit: cand.unit, previousUnit: booked.unit, address: withUnit(booked, cand.unit) };
+    }
+    return null; // mesma rua, mesma unidade: só repetiu o endereço
+  }
+
+  // Sem rua na mensagem: "Apt 916" / "#916" ainda é uma correção de unidade.
+  const bare = BARE_UNIT_RE.exec(text);
+  if (bare && bare[1].toLowerCase() !== (booked.unit ?? "").toLowerCase()) {
+    const unit = bare[1].toLowerCase();
+    return { kind: "unit", unit, previousUnit: booked.unit, address: withUnit(booked, unit) };
+  }
+  return null;
+}
+
+// As últimas falas do cliente, sem o sufixo [SYSTEM:...] que os webhooks anexam
+// (esse sufixo já quebrou regex de histórico antes, no eco do followup).
+export function recentClientText(history: Array<{ role: string; content: string }>, n = 6): string {
+  return history
+    .filter((m) => m.role === "user")
+    .slice(-n)
+    .map((m) => (m.content || "").split(/\n\n?\[SYSTEM:/)[0])
+    .join("\n");
+}
+
+export interface UpcomingBookingRecord {
+  id: string;
+  address: string;
+  date: string;
+  time: string;
+}
+
+// A visita ainda por acontecer deste cliente, com o endereço gravado.
+export async function getUpcomingBookingRecord(igsid: string): Promise<UpcomingBookingRecord | null> {
+  try {
+    const db = await getAuthenticatedClient();
+    const today = easternTodayStr();
+    const { data, error } = await db
+      .from("bookings")
+      .select("id, address, booking_date, booking_time")
+      .like("email", `ia-${igsid}@%`)
+      .gte("booking_date", today)
+      .order("booking_date", { ascending: true })
+      .order("booking_time", { ascending: true });
+    if (error) {
+      console.error("getUpcomingBookingRecord error:", error.message);
+      return null;
+    }
+    const { hour, minute } = easternNowHM();
+    const nowMinutes = hour * 60 + minute;
+    const row = (data ?? []).find((b) =>
+      visitStillUpcoming(b.booking_date, b.booking_time, today, nowMinutes)
+    );
+    if (!row) return null;
+    return {
+      id: row.id,
+      address: (row.address ?? "").toString(),
+      date: row.booking_date,
+      time: row.booking_time ?? "",
+    };
+  } catch (err) {
+    console.error("getUpcomingBookingRecord exception:", err);
+    return null;
+  }
+}
+
+// Escreve o endereço novo na visita. Checa error E linhas afetadas: um update
+// barrado por RLS volta sem error e com zero linhas, e um "sucesso" fantasma
+// aqui é o vendedor indo para o endereço velho de novo.
+export async function updateBookingAddress(
+  bookingId: string,
+  newAddress: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const db = await getAuthenticatedClient();
+    const { data, error } = await db
+      .from("bookings")
+      .update({ address: newAddress.trim().slice(0, 300) })
+      .eq("id", bookingId)
+      .select("id");
+    if (error) return { success: false, error: error.message };
+    if (!data || data.length === 0) return { success: false, error: "no_rows_updated" };
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export type PostBookingAddressResult =
+  | { kind: "unit"; unit: string; address: string; previousAddress: string; bookingId: string }
+  | { kind: "moved"; address: string; previousAddress: string; bookingId: string }
+  | { kind: "failed"; address: string; previousAddress: string; bookingId: string; error: string };
+
+// Ponto único usado pelos 3 webhooks: detecta a correção na rajada e, quando é
+// troca de unidade na mesma rua, já grava. Devolve null quando não há nada a
+// fazer, e o webhook segue o fluxo normal.
+export async function applyPostBookingAddressCorrection(
+  igsid: string,
+  burst: string
+): Promise<PostBookingAddressResult | null> {
+  if (!mayCarryAddressCorrection(burst)) return null;
+  const booking = await getUpcomingBookingRecord(igsid);
+  if (!booking || !booking.address.trim()) return null;
+  const corr = detectAddressCorrection(burst, booking.address);
+  if (!corr) return null;
+
+  if (corr.kind === "moved") {
+    // Rua diferente: pode ser outro imóvel, não sobrescreve sozinho.
+    return { kind: "moved", address: corr.address, previousAddress: booking.address, bookingId: booking.id };
+  }
+  const upd = await updateBookingAddress(booking.id, corr.address);
+  if (!upd.success) {
+    console.error(`[booking] address correction FAILED for ${igsid}: ${upd.error}`);
+    return { kind: "failed", address: corr.address, previousAddress: booking.address, bookingId: booking.id, error: upd.error ?? "unknown" };
+  }
+  console.warn(`[booking] address corrected for ${igsid}: "${booking.address}" -> "${corr.address}"`);
+  return { kind: "unit", unit: corr.unit, address: corr.address, previousAddress: booking.address, bookingId: booking.id };
+}
+
+// Confirmação curta ao cliente depois de trocar a unidade na visita marcada.
+export function addressCorrectedMessage(lang: "es" | "en", unit: string): string {
+  return lang === "es"
+    ? `Listo, ya actualicé la dirección de tu visita al ${unit}. Ozzi te avisa unos 40 minutos antes de llegar.`
+    : `Got it, I updated your visit address to ${unit}. Ozzi will message you about 40 minutes before arriving.`;
+}
+
+// Endereço de OUTRA rua depois da visita marcada, ou falha ao gravar: o cliente
+// recebe um aviso honesto em vez do silêncio, e o dono decide.
+export function addressChangeHandoffMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Gracias, anoté la dirección nueva. Ozzi te confirma el cambio antes de la visita."
+    : "Thanks, I have the new address. Ozzi will confirm the change with you before the visit.";
+}
+
+// Linha de alerta no WhatsApp do dono. O que importa é ele bater o olho e saber
+// se precisa fazer alguma coisa antes do vendedor sair.
+export function postBookingAddressAlert(r: PostBookingAddressResult): string {
+  if (r.kind === "unit") {
+    return `ENDERECO DA VISITA ATUALIZADO (unidade ${r.unit}).\nAntes: ${r.previousAddress}\nAgora: ${r.address}`;
+  }
+  if (r.kind === "moved") {
+    return `CLIENTE MANDOU OUTRO ENDERECO depois da visita marcada. NAO foi alterado, confirme com ele.\nNa agenda: ${r.previousAddress}\nMandou: ${r.address}`;
+  }
+  return `FALHA AO ATUALIZAR O ENDERECO DA VISITA (${r.error}). Corrija na plataforma!\nNa agenda: ${r.previousAddress}\nDeveria ser: ${r.address}`;
 }
