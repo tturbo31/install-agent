@@ -68,12 +68,19 @@ function composeConfirmation(params: {
   partes.push(nomeCliente ? `Hi ${nomeCliente}! This is Ozzi Floors 😊` : `Hi! This is Ozzi Floors 😊`);
   partes.push(`Great news — your flooring installation is confirmed for ${dataInstalacao}.`);
 
+  // Quem executa o serviço é a EQUIPE DE INSTALADORES; o vendedor que fez o
+  // orçamento é só o CONTATO para dúvidas (regra do dono 2026-08-14). A versão
+  // antiga dizia "<vendedor> will be taking care of your installation", o que
+  // fazia o cliente entender que o representante de vendas faria a instalação.
+  const equipe = `Our installation team will be taking care of the job.`;
   if (nomeVendedor && telefoneVendedor) {
-    partes.push(`${nomeVendedor} will be taking care of your installation. If you need anything, you can reach them directly at ${telefoneVendedor}.`);
+    partes.push(`${equipe} If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate, at ${telefoneVendedor}.`);
   } else if (nomeVendedor) {
-    partes.push(`${nomeVendedor} will be taking care of your installation.`);
+    partes.push(`${equipe} If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate.`);
   } else if (telefoneVendedor) {
-    partes.push(`If you need anything before then, you can reach our team at ${telefoneVendedor}.`);
+    partes.push(`${equipe} If you have any questions, you can reach the sales rep who put together your estimate directly at ${telefoneVendedor}.`);
+  } else {
+    partes.push(equipe);
   }
 
   partes.push(`See you soon! 🏠`);

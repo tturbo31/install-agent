@@ -39,7 +39,7 @@ const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, null, false)
 const CONFIRMATION =
   "Hi Maria! This is Ozzi Floors 😊\n\n" +
   "Great news — your flooring installation is confirmed for Tuesday, August 11 at 8am.\n\n" +
-  "Diego will be taking care of your installation. If you need anything, you can reach them directly at (954) 325-6735.\n\n" +
+  "Our installation team will be taking care of the job. If you have any questions, you can reach out directly to Diego, the sales rep who put together your estimate, at (954) 325-6735.\n\n" +
   "See you soon! 🏠";
 
 const SELLER_PHONE = /954[)\s.-]*325[\s.-]*6735/;
@@ -88,6 +88,18 @@ async function main() {
     ck(`${name}: guarda condicionada a !hasInstallationConfirmation`, /!hasInstallationConfirmation\(staleRows\) && assertsExistingAppointment\(/.test(src));
   }
 
+  // ── 1d. STATIC: quem instala é a EQUIPE, o vendedor é só o contato ────────
+  // Regra do dono 2026-08-14: o template dizia "<vendedor> will be taking care
+  // of your installation" e o cliente entendia que o representante de vendas
+  // faria a instalação.
+  console.log("\n[1d] Template: instaladores fazem o serviço, vendedor é só contato de dúvidas");
+  const rotaSrc = readFileSync(join(process.cwd(), "src/app/api/confirmar-instalacao/route.ts"), "utf-8");
+  ck("template nomeia a equipe de instalação como executora", /Our installation team will be taking care of the job/.test(rotaSrc));
+  ck("template NÃO diz que o vendedor faz a instalação", !/\$\{nomeVendedor\} will be taking care of your installation/.test(rotaSrc));
+  ck("template apresenta o vendedor como quem fez o orçamento", /the sales rep who put together your estimate/.test(rotaSrc));
+  ck("confirmação de exemplo bate com o template atual", /Our installation team will be taking care of the job\./.test(CONFIRMATION));
+  ck("prompt proíbe dizer que o vendedor instala", /THE INSTALLATION IS DONE BY OUR INSTALLATION TEAM/.test(promptSrc));
+
   // ── 2. LIVE: reschedule ask → Diego + his phone, no promise, no owner number ─
   console.log("\n[2] Reschedule ask → direct to Diego at (954) 325-6735");
   const r1 = await ai([
@@ -135,6 +147,17 @@ async function main() {
   ck("says WE move the furniture", /we ('ll |will )?(move|take care of|handle)/i.test(r4), r4);
   ck("does NOT restart the type ask", !TYPE_ASK.test(r4), r4);
   ck("pitches no promo/price", !/\$\s?\d/.test(r4), r4);
+
+  // ── 6. LIVE: 'quem vem instalar?' → a equipe, nunca o vendedor ─────────────
+  console.log("\n[6] 'Diego é quem vem instalar?' → equipe de instalação, nunca o vendedor");
+  const r5 = await ai([
+    { role: "assistant", content: CONFIRMATION },
+    { role: "user", content: "So Diego is the one coming to install my floor?" },
+  ]);
+  console.log("   AI:", r5.replace(/\s+/g, " ").slice(0, 220));
+  ck("aponta a equipe/instaladores como quem faz o serviço", /\b(installation team|install team|crew|installers|our team)\b/i.test(r5), r5);
+  ck("NÃO confirma que o vendedor instala", !/^\s*(yes|yep|correct|that'?s right|exactly)\b/i.test(r5), r5);
+  ck("não fica em silêncio ([REACT_ONLY])", !r5.includes("[REACT_ONLY]"), r5);
 
   console.log(`\n${"─".repeat(50)}\n${pass} passed, ${fail} failed${fail ? `: ${fails.join(", ")}` : ""}`);
   process.exit(fail ? 1 : 0);
