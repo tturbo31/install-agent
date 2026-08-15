@@ -67,6 +67,71 @@ async function shouldAlert(kind: string, key: string, everyMs: number): Promise<
 // credibility — 2026-07-22 14:38 incident review).
 const PER_RECIPIENT_CODES = new Set([551, 24, 10, 100]);
 
+// Code 200 "Permissions error" is the ambiguous one: Meta returns the SAME code
+// when the token genuinely lost a messaging permission (channel down, real
+// siren) and when one account simply refuses business DMs — blocked, restricted
+// or "Allow access to messages" off (per-recipient, calm note). Nothing in the
+// error body separates them, so the only honest way to tell is to ask the API
+// whether the channel itself still works.
+//
+// 2026-08-15: emone455 tapped the ad and the reply came back 200. The channel
+// was perfectly healthy (60 IG conversations delivering that same hour), but the
+// classifier read 200 as "channel down" and woke the owner with the full
+// ENTREGA FALHANDO siren — and, because the outbox also treats 200 as
+// retryable, it was on course to repeat that hourly for 48h.
+const AMBIGUOUS_CODES = new Set([200]);
+
+// Cheap liveness probe on the channel's own credentials, memoised so a burst of
+// failures costs one Graph call, not one per message.
+const HEALTH_TTL_MS = 60 * 1000;
+const healthCache = new Map<string, { at: number; ok: boolean }>();
+
+async function channelIsHealthy(channel: "instagram" | "facebook" | "whatsapp"): Promise<boolean> {
+  // Z-API exposes no equivalent one-shot credential check, so a WhatsApp
+  // ambiguity stays "channel down" — the loud, safe reading.
+  if (channel === "whatsapp") return false;
+  const hit = healthCache.get(channel);
+  if (hit && Date.now() - hit.at < HEALTH_TTL_MS) return hit.ok;
+  let ok = false;
+  try {
+    let url: string;
+    if (channel === "instagram") {
+      const { getInstagramToken } = await import("@/lib/ig-token");
+      url = `https://graph.instagram.com/v24.0/me?fields=id&access_token=${encodeURIComponent(await getInstagramToken())}`;
+    } else {
+      const { getFacebookPageToken } = await import("@/lib/fb-token");
+      url = `https://graph.facebook.com/v24.0/me?fields=id&access_token=${encodeURIComponent(await getFacebookPageToken())}`;
+    }
+    const res = await fetch(url);
+    const body = (await res.json().catch(() => ({}))) as { error?: unknown; id?: string };
+    ok = !body.error && !!body.id;
+  } catch (err) {
+    // A probe that cannot run proves nothing; assume the worst and shout.
+    console.error(`[DELIVERY] health probe failed for ${channel}:`, err);
+    ok = false;
+  }
+  healthCache.set(channel, { at: Date.now(), ok });
+  return ok;
+}
+
+// The igsid prefix is what tells the three channels apart everywhere else.
+function channelOf(igsid: string): "instagram" | "facebook" | "whatsapp" {
+  if (igsid.startsWith("wa_")) return "whatsapp";
+  if (igsid.startsWith("fb_")) return "facebook";
+  return "instagram";
+}
+
+// True when this failure is about ONE client and the channel is fine.
+async function isPerRecipientFailure(
+  channel: "instagram" | "facebook" | "whatsapp",
+  errorMsg: string
+): Promise<boolean> {
+  const code = Number((String(errorMsg).match(/^(\d+):/) ?? [])[1] ?? NaN);
+  if (PER_RECIPIENT_CODES.has(code)) return true;
+  if (AMBIGUOUS_CODES.has(code)) return await channelIsHealthy(channel);
+  return false;
+}
+
 // A send to a client failed after retries. Log loudly + alert the owner on
 // WhatsApp (the channel that still works) at most once per hour per channel.
 // Channel-wide failures (token, permissions, rate limit) get the loud siren;
@@ -77,10 +142,13 @@ export async function reportSendFailure(
   errorMsg: string
 ): Promise<void> {
   console.error(`🚨 [DELIVERY] ${channel} send FAILED for ${clientId}: ${errorMsg}`);
-  if (!(await shouldAlert("sendfail", channel, ALERT_EVERY_MS))) return;
+  const perRecipient = await isPerRecipientFailure(channel, errorMsg);
+  // Separate throttle slots: a calm "1 client unreachable" note must never burn
+  // the hour in which a real outage would have screamed.
+  const slot = perRecipient ? `${channel}-recipient` : channel;
+  if (!(await shouldAlert("sendfail", slot, ALERT_EVERY_MS))) return;
   const label = CHANNEL_LABEL[channel] ?? channel;
-  const code = Number((errorMsg.match(/^(\d+):/) ?? [])[1] ?? NaN);
-  const msg = PER_RECIPIENT_CODES.has(code)
+  const msg = perRecipient
     ? [
         `⚠️ OzziFloors - 1 cliente inalcancavel no ${label}`,
         ``,
@@ -242,12 +310,12 @@ export async function retryFailedSends(): Promise<void> {
       }
       // Per-recipient errors never heal (blocked/deactivated/window) — give up
       // NOW instead of re-pinging the owner hourly for 48h (2026-07-23 review:
-      // two 551 "person isn't available" rows kept the calm alert firing).
-      const code = Number((String(r.error ?? "").match(/^(\d+):/) ?? [])[1] ?? NaN);
-      if (PER_RECIPIENT_CODES.has(code)) {
+      // two 551 "person isn't available" rows kept the calm alert firing). A
+      // 200 counts here only once the probe says the channel itself is fine.
+      if (await isPerRecipientFailure(channelOf(conv.igsid), String(r.error ?? ""))) {
         await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
         await releaseSendClaim(m.id);
-        console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${code}) — giving up permanently`);
+        console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${r.error ?? "?"}) — giving up permanently`);
         continue;
       }
       // Nothing reached the client, so hand the reply back to the next sweep.

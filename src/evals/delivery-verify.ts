@@ -132,7 +132,29 @@ function main() {
   ck("dream cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/dream/route.ts")));
   ck("followup cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/followup/route.ts")));
   ck("retry gives up permanently on per-recipient errors (551 etc.)",
-    /PER_RECIPIENT_CODES\.has\(code\)[\s\S]{0,200}?delete\(\)/.test(del) && /giving up permanently/.test(del));
+    /isPerRecipientFailure\(channelOf\(conv\.igsid\)[\s\S]{0,200}?delete\(\)/.test(del) && /giving up permanently/.test(del));
+
+  // ── 6c. Ambiguous 200 "Permissions error" (2026-08-15, emone455) ──────────
+  // Meta reuses code 200 for "the token lost a permission" (real outage) and
+  // "this one account refuses business DMs" (blocked/restricted). Reading it as
+  // an outage woke the owner with the full siren while 60 IG conversations were
+  // delivering fine that same hour — and the outbox was set to repeat it hourly
+  // for 48h. A live credential probe is what separates the two.
+  console.log("\n[6c] ambiguous 200 resolved by a live channel probe");
+  ck("200 is classified as ambiguous, not automatically channel-wide",
+    /AMBIGUOUS_CODES = new Set\(\[200\]\)/.test(del) && !/PER_RECIPIENT_CODES = new Set\(\[[^\]]*200/.test(del));
+  ck("ambiguous code asks the channel whether it is actually healthy",
+    /AMBIGUOUS_CODES\.has\(code\)\) return await channelIsHealthy\(channel\)/.test(del));
+  ck("probe hits the real credential endpoint per channel",
+    /graph\.instagram\.com\/v24\.0\/me\?fields=id/.test(del) && /graph\.facebook\.com\/v24\.0\/me\?fields=id/.test(del));
+  ck("probe is memoised so a burst costs one Graph call",
+    /HEALTH_TTL_MS/.test(del) && /healthCache/.test(del));
+  ck("a probe that cannot run stays loud (fails closed)",
+    /health probe failed for/.test(del) && /ok = false;/.test(del));
+  ck("WhatsApp has no probe, so it keeps the loud reading",
+    /if \(channel === "whatsapp"\) return false;/.test(del));
+  ck("calm note and channel siren use SEPARATE throttle slots",
+    /\$\{channel\}-recipient/.test(del) && /shouldAlert\("sendfail", slot, ALERT_EVERY_MS\)/.test(del));
   ck("repeated identical question never gets silence (rule 35)",
     /REPEATED IDENTICAL QUESTION RULE/.test(read("src/lib/ai.ts")));
 
