@@ -26,7 +26,7 @@
 //  • throttle do sweep de 6h → "funil_check_<epochMs>".
 // Tudo chamado via waitUntil (fire-and-forget): NUNCA lança para o atendimento.
 import { supabaseAdmin } from "@/lib/supabase";
-import { enviarEventoFunil, type EnvioResultado } from "@/lib/plataforma";
+import { enviarEventoFunil, resolverMidiasNaPlataforma, type EnvioResultado } from "@/lib/plataforma";
 
 export type ConvFunil = { id: string; igsid: string; name?: string | null; username?: string | null; created_at?: string | null };
 export type ReferralIG = {
@@ -78,6 +78,76 @@ export function contratoAnuncio(r: ReferralIG): ContratoAnuncio {
 
 function contratoTemDados(c: ContratoAnuncio): boolean {
   return CAMPOS_CONTRATO.some((k) => !!c[k]);
+}
+
+// ─── O POST DO ANÚNCIO NA DM (17/08/2026) ───────────────────────────────────
+// A Meta só manda referral para quem CLICA no anúncio, e só na 1ª mensagem.
+// Quem responde um story nosso ou manda um post nosso na conversa chega sem
+// nada — medido em 7 dias de caixa-preta, 113 de 571 conversas novas de IG/FB.
+// Mas essas mensagens trazem o ID DA MÍDIA do Instagram, e ele é o mesmo
+// `effective_instagram_media_id` do criativo na Marketing API: dá para saber a
+// PEÇA exata sem chutar nada.
+//
+// Quem faz o de/para é a plataforma (ela tem o token da Marketing API) — mídia
+// de terceiro não volta na resposta e nada entra no rastreio. É a diferença
+// para o antigo fallback pelo TÍTULO do share, removido em 29/07 justamente
+// por transformar post orgânico em criativo falso: aqui a prova é o id da peça,
+// não uma frase parecida.
+//
+// A atribuição nasce marcada `ad_source_type = 'ig_post_reply'`: a tela mostra
+// a peça dizendo de onde veio a certeza e a Conversions API continua exigindo
+// clique de verdade para mandar conversão à Meta.
+export const FONTE_POST = "ig_post_reply";
+
+export const ehReferralDePost = (r?: ReferralIG): boolean => !!r && r.source === FONTE_POST;
+
+/** ids de mídia do IG que a mensagem cita (anexo, URL do CDN ou resposta a story). */
+export function midiasDaMensagem(mensagem: unknown): string[] {
+  const out = new Set<string>();
+  const msg = (mensagem ?? {}) as {
+    attachments?: Array<{ payload?: Record<string, unknown> }>;
+    reply_to?: { story?: { url?: string } };
+  };
+  const doUrl = (u: unknown) => {
+    const m = /asset_id=(\d{8,})/.exec(typeof u === "string" ? u : "");
+    if (m) out.add(m[1]);
+  };
+  for (const a of msg.attachments ?? []) {
+    const p = a?.payload ?? {};
+    for (const campo of ["ig_post_media_id", "reel_video_id", "media_id"]) {
+      const v = p[campo];
+      if (typeof v === "string" && /^\d{8,}$/.test(v)) out.add(v);
+    }
+    doUrl(p.url);
+  }
+  doUrl(msg.reply_to?.story?.url);
+  return [...out];
+}
+
+// Vira referral (sem clique) SÓ quando: a mídia é de anúncio NOSSO e a conversa
+// ainda não tem atribuição nenhuma. Clique sempre vence — nunca sobrescreve.
+export async function referralDePostDeAnuncio(convId: string, midias: string[]): Promise<ReferralIG | undefined> {
+  try {
+    if (midias.length === 0) return undefined;
+    const atual = await lerContratoPersistido(convId);
+    if (atual && ["ad_id", "ad_title", "ad_media_url", "ad_post_id"].some((k) => atual.contrato[k as keyof ContratoAnuncio])) {
+      return undefined; // já tem peça (clique ou post anterior)
+    }
+    const achados = await resolverMidiasNaPlataforma(midias);
+    const midia = midias.find((m) => achados[m]);
+    if (!midia) return undefined;
+    const anuncio = achados[midia];
+    console.log(`[FUNIL] post de anúncio na DM: mídia ${midia} → ${anuncio.ad_name} (${anuncio.ad_id})`);
+    return {
+      ad_id: anuncio.ad_id,
+      source: FONTE_POST,
+      clicked_at: new Date().toISOString(),
+      ads_context_data: { ad_title: anuncio.ad_name, post_id: midia },
+    };
+  } catch (err) {
+    console.warn("[FUNIL] referralDePostDeAnuncio:", String(err).slice(0, 150));
+    return undefined;
+  }
 }
 type MsgRow = { role: string; content: string; created_at: string };
 
@@ -285,6 +355,15 @@ export async function persistirAnuncioDaConversa(convId: string, referral: Refer
       await gravarContrato(convId, novo);
       return;
     }
+    // CLIQUE VENCE O POST (17/08/2026): o contrato que veio do post que a pessoa
+    // mandou na DM é a peça CERTA sem clique. Se o clique de verdade chegar
+    // depois (ela viu, mandou o post e só então clicou no anúncio), ele
+    // substitui o contrato inteiro — senão o merge campo a campo travaria na
+    // regra de identidade e a conversa ficaria para sempre "sem clique".
+    if (atual.contrato.ad_source_type === FONTE_POST && !ehReferralDePost(referral)) {
+      await gravarContrato(convId, novo, atual.key);
+      return;
+    }
     // NÃO MISTURAR ANÚNCIOS (10/08/2026): o merge campo a campo criava um
     // contrato Frankenstein — 1º clique só com {ref, source}, 2º clique em
     // OUTRO criativo com {ad_id, título, mídia}, e o resultado creditava a
@@ -411,8 +490,19 @@ async function enviarLeadCriadoDeCliqueAntigo(conv: ConvFunil, rawText: string, 
 // atribuição de anúncio), retomou_conversa (sumido voltou), conversando
 // (primeira resposta real). `msgCreatedAt` = created_at da mensagem recém-
 // inserida (fronteira do "antes"); `referral` = anúncio CTWA quando houver.
-export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, msgCreatedAt: string, referral?: ReferralIG): Promise<void> {
+export async function funilOnInboundMessage(
+  conv: ConvFunil,
+  rawText: string,
+  msgCreatedAt: string,
+  referral?: ReferralIG,
+  midias?: string[]
+): Promise<void> {
   try {
+    // Sem clique, mas a pessoa mandou/respondeu um post nosso: a mídia diz qual
+    // peça é. Só entra quando não há referral de verdade nesta mensagem.
+    if (!referral && midias && midias.length > 0) {
+      referral = await referralDePostDeAnuncio(conv.id, midias);
+    }
     if (referral) await persistirAnuncioDaConversa(conv.id, referral);
     if (!convNoFunil(conv)) {
       // Lead antigo (pré-funil): nenhum evento de conversa dispara — MENOS o
@@ -423,7 +513,9 @@ export async function funilOnInboundMessage(conv: ConvFunil, rawText: string, ms
       // 13 de 221 contratos (5,9%) presos nesta porta, 12 deles no Messenger.
       // Só dispara com referral REAL nesta mensagem (contratoTemDados) — nunca
       // reabre histórico por conta própria.
-      if (referral) await enviarLeadCriadoDeCliqueAntigo(conv, rawText, referral);
+      // só CLIQUE reabre conversa pré-funil: responder um post antigo não é
+      // evento novo de anúncio (e o post pode ser de meses atrás)
+      if (referral && !ehReferralDePost(referral)) await enviarLeadCriadoDeCliqueAntigo(conv, rawText, referral);
       return;
     }
 

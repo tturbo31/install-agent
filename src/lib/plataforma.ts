@@ -80,3 +80,46 @@ export async function enviarEventoFunil(
   console.error(`[FUNIL] ${evento} PERDIDO apos ${TENTATIVAS} tentativas — atendimento segue normal. Payload para reenvio manual: ${json}`);
   return ultimo;
 }
+
+// ─── DE QUE ANÚNCIO É ESTE POST? (17/08/2026) ────────────────────────────────
+// Quem responde um story nosso ou manda um post nosso na DM não gera referral —
+// a Meta só o manda para quem CLICA no anúncio. Mas a mensagem traz o ID DA
+// MÍDIA do Instagram, e ele é o mesmo `effective_instagram_media_id` do criativo
+// na Marketing API. Quem tem esse mapa é a PLATAFORMA (token da Marketing API +
+// tabela `ads`), então a pergunta vai por HTTP: mídia de terceiro (meme, reel de
+// outra conta) simplesmente não volta na resposta, e nada entra no rastreio.
+//
+// Timeout curto e falha silenciosa: isto roda no caminho da mensagem e NUNCA
+// pode atrasar o atendimento. Se falhar, a rede de segurança é a auditoria da
+// plataforma (2x/dia, `resolverLeadsPorPost`).
+export type AnuncioDaMidia = { ad_id: string; ad_name: string };
+
+export async function resolverMidiasNaPlataforma(
+  midias: string[]
+): Promise<Record<string, AnuncioDaMidia>> {
+  const token = process.env.PLATAFORMA_WEBHOOK_TOKEN;
+  const ids = [...new Set(midias.filter((m) => /^\d{8,}$/.test(m)))].slice(0, 10);
+  if (!token || ids.length === 0) return {};
+  const base = (process.env.PLATAFORMA_URL || "https://ozzi-plataforma.vercel.app").replace(/\/$/, "");
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4_000);
+  try {
+    const res = await fetch(`${base}/api/rastreio/midia`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-webhook-token": token },
+      body: JSON.stringify({ midias: ids }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      console.warn(`[FUNIL] mídia->anúncio HTTP ${res.status}`);
+      return {};
+    }
+    const json = (await res.json()) as { resolvidas?: Record<string, AnuncioDaMidia> };
+    return json.resolvidas ?? {};
+  } catch (err) {
+    console.warn(`[FUNIL] mídia->anúncio falhou: ${String(err).slice(0, 120)}`);
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+}

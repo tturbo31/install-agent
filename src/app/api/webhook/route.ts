@@ -3,7 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { fetchAdCreative } from "@/lib/facebook";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import {
   getAIResponse,
@@ -750,12 +750,16 @@ async function handleWebhook(body: WebhookPayload) {
       // share de post ORGÂNICO virava criativo falso (casos "Amen🙏" e
       // "Have a blessed Wednesday"). Share segue capturado no raw p/ diagnóstico.
       const referralFunil = refComClique;
+      // SEM clique, a mensagem ainda pode dizer de qual peça a pessoa fala: o id
+      // da mídia do post/story que ela mandou (17/08/2026 — ver funil.ts).
+      const midiasCitadas = referralFunil ? [] : midiasDaMensagem(messaging.message);
       waitUntil(
         funilOnInboundMessage(
           { id: conversation.id, igsid: senderIgsid, name: conversation.name, username: conversation.username, created_at: conversation.created_at },
           rawText,
           insertedMsg.created_at ?? new Date().toISOString(),
-          referralFunil
+          referralFunil,
+          midiasCitadas
         )
       );
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h

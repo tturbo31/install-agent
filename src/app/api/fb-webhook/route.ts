@@ -18,7 +18,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + media + vision + AI + send
@@ -599,12 +599,16 @@ async function handleFbMessage(body: Record<string, unknown>) {
       // share de post ORGÂNICO virava criativo falso (casos "Amen🙏" e
       // "Have a blessed Wednesday"). Share segue capturado no raw p/ diagnóstico.
       const referralFunil = refComClique;
+      // SEM clique, a mensagem ainda pode dizer de qual peça a pessoa fala: o id
+      // da mídia do post/story que ela mandou (17/08/2026 — ver funil.ts).
+      const midiasCitadas = referralFunil ? [] : midiasDaMensagem(messaging.message);
       waitUntil(
         funilOnInboundMessage(
           { id: conv.id, igsid: conv.igsid, name: conv.name, username: conv.username, created_at: conv.created_at },
           rawText,
           insertedMsg.created_at ?? new Date().toISOString(),
-          referralFunil
+          referralFunil,
+          midiasCitadas
         )
       );
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
