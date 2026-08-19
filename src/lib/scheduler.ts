@@ -7,7 +7,7 @@ const SCHEDULER_ID = "b9de3572-b50a-4185-9fd2-9e54f23e2e50";
 const BOT_EMAIL = "ia@ozzifloors.com";
 const BOT_PASSWORD = "OzziIA2026!";
 
-interface Seller {
+export interface Seller {
   id: string;
   name: string;
   priority: number;
@@ -20,6 +20,75 @@ interface BookingRow {
   seller_id: string | null;
   booking_date: string;
   booking_time: string;
+}
+
+// ─── Folgas (seller_days_off) ──────────────────────────────────────────────
+// A Ozzi Plataforma registra dias de folga por vendedor e um trigger do banco
+// BLOQUEIA qualquer insert de booking nesse dia (code 23514, "Vendedor esta de
+// folga em ..."). Até 19/08/2026 o cálculo de disponibilidade não lia essa
+// tabela: com o Diego de folga na quinta 20/08, o agente ofereceu "jueves 1pm,
+// 3pm, 5pm o 7pm" inteiramente em cima da agenda dele — só as 3pm existiam de
+// verdade — e o [BOOK] da Mayra Rosabal estourou no trigger e caiu no handoff.
+// TODA leitura de disponibilidade e escolha de vendedor exclui quem está de
+// folga no dia.
+type DaysOffSet = Set<string>; // chaves "sellerId|YYYY-MM-DD"
+
+const dayOffKey = (sellerId: string, dateStr: string) => `${sellerId}|${dateStr}`;
+
+async function getDaysOff(
+  db: Awaited<ReturnType<typeof getAuthenticatedClient>>,
+  from: string,
+  to: string
+): Promise<DaysOffSet> {
+  // Falha na query = fail-open (sem folgas): oferecer um slot que o trigger
+  // ainda bloqueia é recuperável (o webhook oferece alternativas reais);
+  // esconder a agenda inteira não é. E SEMPRE checar { error } — o PostgREST
+  // devolve data null em silêncio.
+  const { data, error } = await db
+    .from("seller_days_off")
+    .select("seller_id,day")
+    .gte("day", from)
+    .lte("day", to);
+  if (error) {
+    console.error("seller_days_off fetch error:", error.message);
+    return new Set();
+  }
+  return new Set(
+    ((data ?? []) as Array<{ seller_id: string; day: string }>).map((r) => dayOffKey(r.seller_id, r.day))
+  );
+}
+
+// Regra única de "este vendedor pode atender (dia, horário)?" — usada tanto na
+// escolha de vendedor do [BOOK] quanto nas três leituras de disponibilidade.
+// Antes cada uma repetia o filtro por conta própria e nenhuma conhecia folga.
+export function sellerOpenForSlot(
+  s: Seller,
+  dateStr: string,
+  weekday: number,
+  slot: string,
+  bookings: BookingRow[],
+  daysOff: DaysOffSet
+): boolean {
+  return (
+    s.active &&
+    s.enabled_weekdays.includes(weekday) &&
+    s.time_slots.includes(slot) &&
+    !daysOff.has(dayOffKey(s.id, dateStr)) &&
+    !bookings.some(
+      (b) => b.seller_id === s.id && b.booking_date === dateStr && b.booking_time === slot
+    )
+  );
+}
+
+// Postgres 23514 = violação de check/trigger. É assim que a plataforma bloqueia
+// agendamento em dia de folga — indisponibilidade de agenda, não erro de
+// sistema. O caller converte para a classe "No availability" para o webhook
+// oferecer horários reais em vez do handoff sem saída.
+export function isScheduleBlockedError(
+  err: { code?: string | null; message?: string | null } | null | undefined
+): boolean {
+  if (!err) return false;
+  return err.code === "23514" || /de folga|day off|agendamento bloqueado/i.test(err.message ?? "");
 }
 
 export interface BookingRequest {
@@ -73,23 +142,13 @@ function pickSellerForSlot(
   sellers: Seller[],
   bookings: BookingRow[],
   dateStr: string,
-  slot: string
+  slot: string,
+  daysOff: DaysOffSet
 ): Seller | null {
   const date = new Date(dateStr + "T12:00:00");
   const weekday = date.getDay();
   const candidates = sellers
-    .filter(
-      (s) =>
-        s.active &&
-        s.enabled_weekdays.includes(weekday) &&
-        s.time_slots.includes(slot) &&
-        !bookings.some(
-          (b) =>
-            b.seller_id === s.id &&
-            b.booking_date === dateStr &&
-            b.booking_time === slot
-        )
-    )
+    .filter((s) => sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff))
     .sort((a, b) => a.priority - b.priority);
   return candidates[0] ?? null;
 }
@@ -121,13 +180,14 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
 
-    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
+      getDaysOff(db, req.bookingDate, req.bookingDate),
     ]);
 
     const sellers = (sellersData ?? []) as Seller[];
@@ -137,7 +197,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       return { success: false, error: "No active sellers found." };
     }
 
-    const seller = pickSellerForSlot(sellers, bookings, req.bookingDate, req.bookingTime);
+    const seller = pickSellerForSlot(sellers, bookings, req.bookingDate, req.bookingTime, daysOff);
 
     if (!seller) {
       return {
@@ -172,6 +232,13 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
 
     if (error) {
       console.error("Booking insert error:", error);
+      // Trigger da plataforma (folga registrada DEPOIS da nossa leitura, ou
+      // regra de agenda que não modelamos): é indisponibilidade, não pane —
+      // devolve a classe "No availability" para o webhook oferecer horários
+      // reais em vez do handoff sem saída (caso Mayra, 19/08/2026).
+      if (isScheduleBlockedError(error)) {
+        return { success: false, error: `No availability for ${req.bookingDate} at ${req.bookingTime}.` };
+      }
       return { success: false, error: error.message };
     }
 
@@ -270,13 +337,14 @@ export async function rescheduleClientBooking(
     const future = new Date();
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
-    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
+      getDaysOff(db, newDate, newDate),
     ]);
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
-    const seller = pickSellerForSlot(sellers, bookings, newDate, newTime);
+    const seller = pickSellerForSlot(sellers, bookings, newDate, newTime, daysOff);
     if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
 
     // 3. Create the NEW booking (copy original details, fall back to provided values).
@@ -315,6 +383,9 @@ export async function rescheduleClientBooking(
 
     if (insErr || !created) {
       console.error("Reschedule insert error:", insErr);
+      if (isScheduleBlockedError(insErr)) {
+        return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
+      }
       return { success: false, error: insErr?.message ?? "insert_failed" };
     }
 
@@ -801,13 +872,14 @@ export async function getRealAvailabilityContext(): Promise<string> {
     const fromStr = windowDays[0];
     const toStr = windowDays[windowDays.length - 1];
 
-    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
+      getDaysOff(db, fromStr, toStr),
     ]);
 
     const sellers = (sellersData ?? []) as Seller[];
@@ -826,15 +898,8 @@ export async function getRealAvailabilityContext(): Promise<string> {
 
       const slotSet = new Set<string>();
       sellers.forEach((s) => {
-        if (!s.active || !s.enabled_weekdays.includes(weekday)) return;
         s.time_slots.forEach((slot) => {
-          const taken = bookings.some(
-            (b) =>
-              b.seller_id === s.id &&
-              b.booking_date === dateStr &&
-              b.booking_time === slot
-          );
-          if (!taken) slotSet.add(slot);
+          if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
         });
       });
 
@@ -908,9 +973,10 @@ export async function getNextOpenSlots(
   const fromStr = windowDays[0];
   const toStr = windowDays[windowDays.length - 1];
 
-  const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+  const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
     db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
     db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
+    getDaysOff(db, fromStr, toStr),
   ]);
 
   const sellers = (sellersData ?? []) as Seller[];
@@ -923,10 +989,8 @@ export async function getNextOpenSlots(
     const { weekday } = ymd(dateStr);
     const slotSet = new Set<string>();
     sellers.forEach((s) => {
-      if (!s.active || !s.enabled_weekdays.includes(weekday)) return;
       s.time_slots.forEach((slot) => {
-        const taken = bookings.some((b) => b.seller_id === s.id && b.booking_date === dateStr && b.booking_time === slot);
-        if (!taken) slotSet.add(slot);
+        if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
       });
     });
     const isToday = dateStr === windowDays[0];
@@ -1279,13 +1343,14 @@ export function aiOutageHandoffMessage(lang: "es" | "en"): string {
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {
   try {
     const db = await getAuthenticatedClient();
-    const [{ data: sellersData }, { data: bookedData }] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
+      getDaysOff(db, dateStr, dateStr),
     ]);
 
     const sellers = (sellersData ?? []) as Seller[];
@@ -1295,15 +1360,8 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
 
     const slotSet = new Set<string>();
     sellers.forEach((s) => {
-      if (!s.active || !s.enabled_weekdays.includes(weekday)) return;
       s.time_slots.forEach((slot) => {
-        const taken = bookings.some(
-          (b) =>
-            b.seller_id === s.id &&
-            b.booking_date === dateStr &&
-            b.booking_time === slot
-        );
-        if (!taken) slotSet.add(slot);
+        if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
       });
     });
 

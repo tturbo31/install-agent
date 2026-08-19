@@ -59,7 +59,21 @@ const eachChannel = (label: string, test: (src: string) => boolean) => {
 };
 
 const today = easternTodayStr();
-const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n• TODAY [${today}]: 5pm, 7pm\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "13055551234" as the phone.]${extra ? "\n\n" + extra : ""}]`;
+// "5pm today" só é agendável enquanto ainda não passou das 5pm em ET — rodada à
+// noite, a suite oferecia um horário já vencido e o modelo (corretamente)
+// recusava, derrubando o teste sem bug nenhum. Depois das 16h ET o cenário
+// inteiro muda para "tomorrow", preservando exatamente a mesma guarda.
+const etHourNow = parseInt(
+  new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour12: false, hour: "2-digit" }).format(new Date()),
+  10
+);
+const slotIsToday = etHourNow < 16;
+const SLOT_DAY = slotIsToday ? "today" : "tomorrow";
+const slotDateStr = slotIsToday
+  ? today
+  : new Date(new Date(today + "T12:00:00").getTime() + 86400000).toISOString().slice(0, 10);
+const slotDayLine = slotIsToday ? `• TODAY [${today}]: 5pm, 7pm` : `• TOMORROW [${slotDateStr}]: 5pm, 7pm`;
+const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${slotDayLine}\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "13055551234" as the phone.]${extra ? "\n\n" + extra : ""}]`;
 const BOOKS = (t: string) => /\[BOOK:/i.test(t);
 
 async function main() {
@@ -73,8 +87,8 @@ async function main() {
     { role: "user", content: "What do you charge for showers?" },
     { role: "assistant", content: "Shower work is a bathroom remodel, I do a free in-person visit. What day works?" },
     { role: "user", content: "Anyday, sooner the better" },
-    { role: "assistant", content: "I have today at 5pm or 7pm. What's your name, your address, and which time works?" },
-    { role: "user", content: "5pm today" },
+    { role: "assistant", content: `I have ${SLOT_DAY} at 5pm or 7pm. What's your name, your address, and which time works?` },
+    { role: "user", content: `5pm ${SLOT_DAY}` },
   ];
   const r1 = await ai([...err1Head,
     { role: "user", content: "113 NW 11th St Ft Lauderdale FL 33311" + waBook("") },
