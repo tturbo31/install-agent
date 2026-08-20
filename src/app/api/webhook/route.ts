@@ -40,7 +40,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -333,32 +333,61 @@ async function processNotifyOwner(
 }
 
 // ─── Cancel booking when AI generates [CANCEL_BOOKING] ────────────────────
+// The cancellation is executed in the scheduler and CONFIRMED before the client
+// hears anything: on success the reply is the deterministic confirmation naming
+// the real cancelled date/time (never the model's free text, which used to be
+// sent even when the delete failed), on failure it is an honest handoff. The
+// owner is alerted either way so a cancellation is never invisible.
 async function processCancelCommand(
   aiResponse: string,
   senderIgsid: string,
-  conversationId: string
+  conversationId: string,
+  clientName: string | null,
+  lang: "es" | "en"
 ): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
 
   const cleanResponse = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
 
+  let result: Awaited<ReturnType<typeof cancelClientBooking>>;
   try {
-    const result = await cancelClientBooking(senderIgsid);
-    if (result.success) {
-      console.log(`Cancelled ${result.cancelled} booking(s) for igsid ${senderIgsid}`);
-      // Reset the DB flag so the conversation flows normally after cancellation
-      await supabaseAdmin
-        .from("instagram_conversations")
-        .update({ booking_confirmed: false })
-        .eq("id", conversationId);
-    } else {
-      console.warn(`Cancel for igsid ${senderIgsid}: ${result.error}`);
-    }
+    result = await cancelClientBooking(senderIgsid);
   } catch (err) {
     console.error("processCancelCommand error:", err);
+    result = { success: false, error: String(err) };
   }
-
-  return cleanResponse;
+  if (result.success || result.error === "no_booking_found") {
+    // no_booking_found = stale flag (visit already gone); clear it so the
+    // conversation flows normally when the client comes back to rebook.
+    await supabaseAdmin
+      .from("instagram_conversations")
+      .update({ booking_confirmed: false })
+      .eq("id", conversationId);
+  }
+  if (result.success) console.log(`Cancelled ${result.cancelled} booking(s) for igsid ${senderIgsid}`);
+  else console.warn(`Cancel for igsid ${senderIgsid}: ${result.error}`);
+  try {
+    const { data: recentMsgs } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("role, content")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(8);
+    await notifyOwners({
+      platform: "Instagram",
+      clientName,
+      clientId: senderIgsid,
+      recentMessages: (recentMsgs ?? []).reverse(),
+      alert: cancellationAlert(result),
+    });
+  } catch (err) {
+    console.error("IG cancel notify error:", err);
+  }
+  if (result.success && result.visits && result.visits.length > 0) {
+    return cancellationConfirmedMessage(lang, result.visits[0].date, result.visits[0].time);
+  }
+  if (result.error === "no_booking_found") return cleanResponse;
+  return cancellationHandoffMessage(lang);
 }
 
 // ─── Core webhook handler ──────────────────────────────────────────────────
@@ -1649,7 +1678,7 @@ async function handleWebhook(body: WebhookPayload) {
       isRescheduling,
       history
     );
-    const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id);
+    const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id, conversation.username ?? null, lang);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
     const finalResponse = stripForbiddenTags(afterNotify);
 

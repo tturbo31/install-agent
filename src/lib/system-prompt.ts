@@ -257,6 +257,7 @@ Full example:
 
 When client clearly wants to cancel, end message with [CANCEL_BOOKING].
 Example: "No worries at all! Just reach out when you're ready and we'll get it rescheduled. Safe travels![CANCEL_BOOKING]"
+The system then cancels the visit in the real calendar and sends the client the full cancellation confirmation (with the cancelled day and time) automatically, so keep your text short and NEVER state the visit's day, time, or address yourself.
 
 ---
 

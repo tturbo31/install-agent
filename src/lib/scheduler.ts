@@ -272,14 +272,29 @@ export async function cancelBooking(bookingId: string): Promise<{ success: boole
 
 // Cancel the most recent future booking for a client by their igsid
 // No SQL migration needed — finds booking via email pattern ia-{igsid}@...
-export async function cancelClientBooking(igsid: string): Promise<{ success: boolean; cancelled?: number; error?: string }> {
+// Returns the cancelled visits' details (date/time/address) so the webhook can
+// CONFIRM to the client exactly which visit was cancelled and tell the owner
+// which house the seller no longer needs to drive to — the model's own text
+// never carries that information reliably.
+export interface CancelledVisit {
+  date: string;
+  time: string;
+  address: string | null;
+}
+
+export async function cancelClientBooking(
+  igsid: string
+): Promise<{ success: boolean; cancelled?: number; visits?: CancelledVisit[]; error?: string }> {
   try {
     const db = await getAuthenticatedClient();
-    const today = new Date().toISOString().slice(0, 10);
+    // Eastern, not UTC: in the Miami evening UTC has already rolled to tomorrow,
+    // and a UTC "today" made this lookup skip a visit scheduled for TODAY — the
+    // client asked to cancel tonight and got "no_booking_found".
+    const today = easternTodayStr();
 
     const { data: bookings, error: fetchErr } = await db
       .from("bookings")
-      .select("id, booking_date, booking_time")
+      .select("id, booking_date, booking_time, address")
       .like("email", `ia-${igsid}@%`)
       .gte("booking_date", today)
       .order("booking_date", { ascending: true })
@@ -289,15 +304,20 @@ export async function cancelClientBooking(igsid: string): Promise<{ success: boo
     if (!bookings || bookings.length === 0) return { success: false, error: "no_booking_found" };
 
     let cancelled = 0;
+    const visits: CancelledVisit[] = [];
     for (const b of bookings) {
       const { error } = await db.from("bookings").delete().eq("id", b.id);
       if (!error) {
         cancelled++;
+        visits.push({ date: b.booking_date, time: b.booking_time, address: b.address ?? null });
         console.log(`Cancelled booking ${b.id} on ${b.booking_date} at ${b.booking_time}`);
+      } else {
+        console.error(`Cancel delete failed for booking ${b.id}:`, error.message);
       }
     }
 
-    return { success: cancelled > 0, cancelled };
+    if (cancelled === 0) return { success: false, error: "delete_failed" };
+    return { success: true, cancelled, visits };
   } catch (err) {
     console.error("cancelClientBooking exception:", err);
     return { success: false, error: String(err) };
@@ -1681,4 +1701,47 @@ export function postBookingAddressAlert(r: PostBookingAddressResult): string {
     return `CLIENTE MANDOU OUTRO ENDERECO depois da visita marcada. NAO foi alterado, confirme com ele.\nNa agenda: ${r.previousAddress}\nMandou: ${r.address}`;
   }
   return `FALHA AO ATUALIZAR O ENDERECO DA VISITA (${r.error}). Corrija na plataforma!\nNa agenda: ${r.previousAddress}\nDeveria ser: ${r.address}`;
+}
+
+// ─── Cancellation messages (deterministic, never the model's own text) ──────
+// The client must hear WHICH visit was cancelled (the real scheduler date/time,
+// so they can catch a mix-up) and that we reschedule whenever they are ready.
+// The model's free text used to be sent as-is — even when the scheduler delete
+// FAILED, the client still got a reassuring goodbye and the seller still drove
+// out. Two short sentences, no dashes, no emojis (owner rules).
+export function cancellationConfirmedMessage(lang: "es" | "en", dateStr: string, timeStr: string): string {
+  const { weekday, month, day } = ymd(dateStr);
+  const time = /^\d{1,2}:\d{2}/.test((timeStr || "").trim()) ? fmt12(timeStr.trim().slice(0, 5)) : (timeStr || "").trim();
+  const atTime = time ? (lang === "es" ? ` a las ${time}` : ` at ${time}`) : "";
+  if (lang === "es") {
+    return `Sin problema, tu visita del ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${atTime} quedó cancelada. Cuando estés listo solo escríbeme por aquí y agendamos de nuevo el día que mejor te quede, quedamos a la orden.`;
+  }
+  return `No worries, your visit for ${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}${atTime} is cancelled. Whenever you're ready just message me here and we'll set it up again on the day that works best for you, we're always at your disposal.`;
+}
+
+// The scheduler delete FAILED (or blew up): never claim the visit is cancelled.
+// Honest handoff — the owner gets the siren alert and cancels by hand.
+export function cancellationHandoffMessage(lang: "es" | "en"): string {
+  return lang === "es"
+    ? "Entendido, ya pasé tu solicitud de cancelación a Ozzi y él te la confirma enseguida. Cuando estés listo agendamos una nueva visita el día que mejor te quede."
+    : "Got it, I sent your cancellation request to Ozzi and he will confirm it with you right away. Whenever you're ready we can set up a new visit on the day that works best for you.";
+}
+
+// Owner WhatsApp alert for every cancellation attempt, so cancellations are
+// trackable without reading the whole DM firehose (and the seller never drives
+// to a cancelled visit). ASCII like the other alerts.
+export function cancellationAlert(
+  r: { success: boolean; visits?: CancelledVisit[]; error?: string }
+): string {
+  if (r.success && r.visits && r.visits.length > 0) {
+    const lines = r.visits.map((v) => {
+      const { weekday } = ymd(v.date);
+      return `${DAY_NAMES[weekday]} ${v.date} as ${v.time}${v.address ? ` - ${v.address}` : ""}`;
+    });
+    return `VISITA CANCELADA PELO CLIENTE (ja removida da agenda, vendedor NAO precisa ir):\n${lines.join("\n")}`;
+  }
+  if (r.error === "no_booking_found") {
+    return `Cliente pediu CANCELAMENTO mas nao havia visita futura na agenda (nada foi cancelado). Confira se a visita foi criada por fora.`;
+  }
+  return `CLIENTE PEDIU CANCELAMENTO E NAO CONSEGUI CANCELAR NA AGENDA (${r.error ?? "erro"}). CANCELE MANUALMENTE na plataforma!`;
 }

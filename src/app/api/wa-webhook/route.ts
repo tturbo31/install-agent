@@ -7,7 +7,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -261,26 +261,58 @@ async function processNotifyOwner(
 }
 
 // ─── [CANCEL_BOOKING] processor ──────────────────────────────────────────
+// The cancellation is executed in the scheduler and CONFIRMED before the client
+// hears anything: on success the reply is the deterministic confirmation naming
+// the real cancelled date/time (never the model's free text, which used to be
+// sent even when the delete failed), on failure it is an honest handoff. The
+// owner is alerted either way so a cancellation is never invisible.
 async function processCancelCommand(
   aiResponse: string,
   waId: string,
-  conversationId: string
+  conversationId: string,
+  clientName: string | null,
+  lang: "es" | "en"
 ): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
   const clean = aiResponse.replace(/\[CANCEL_BOOKING\]/gi, "").trim();
+  let result: Awaited<ReturnType<typeof cancelClientBooking>>;
   try {
-    const result = await cancelClientBooking(`wa_${waId}`);
-    if (result.success) {
-      console.log(`WA: Cancelled ${result.cancelled} booking(s) for ${waId}`);
-      await supabaseAdmin
-        .from("instagram_conversations")
-        .update({ booking_confirmed: false })
-        .eq("id", conversationId);
-    }
+    result = await cancelClientBooking(`wa_${waId}`);
   } catch (err) {
     console.error("WA cancel error:", err);
+    result = { success: false, error: String(err) };
   }
-  return clean;
+  if (result.success || result.error === "no_booking_found") {
+    // no_booking_found = stale flag (visit already gone); clear it so the
+    // conversation flows normally when the client comes back to rebook.
+    await supabaseAdmin
+      .from("instagram_conversations")
+      .update({ booking_confirmed: false })
+      .eq("id", conversationId);
+  }
+  if (result.success) console.log(`WA: Cancelled ${result.cancelled} booking(s) for ${waId}`);
+  try {
+    const { data: recentMsgs } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("role, content")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(8);
+    await notifyOwners({
+      platform: "WhatsApp",
+      clientName,
+      clientId: waId,
+      recentMessages: (recentMsgs ?? []).reverse(),
+      alert: cancellationAlert(result),
+    });
+  } catch (err) {
+    console.error("WA cancel notify error:", err);
+  }
+  if (result.success && result.visits && result.visits.length > 0) {
+    return cancellationConfirmedMessage(lang, result.visits[0].date, result.visits[0].time);
+  }
+  if (result.error === "no_booking_found") return clean;
+  return cancellationHandoffMessage(lang);
 }
 
 // ─── Click-to-WhatsApp ad referral extraction ─────────────────────────────
@@ -1419,7 +1451,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     const { response: afterBooking, booked } = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling, history);
-    const afterCancel = await processCancelCommand(afterBooking, phone, conv.id);
+    const afterCancel = await processCancelCommand(afterBooking, phone, conv.id, conv.username ?? null, lang);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, conv.username ?? null, phone);
     const finalResponse = stripForbiddenTags(afterNotify);
 
