@@ -171,6 +171,140 @@ export function evidenciaFaqButton(msgs: MsgRow[]): EvidenciaAnuncio | undefined
   return primeira && isAdFaqButtonFunil(primeira.content) ? "faq_button" : undefined;
 }
 
+// ─── A PEÇA PELO TEMPLATE DO ANÚNCIO (20/08/2026) ───────────────────────────
+// A saudação automática e os botões de pergunta que aparecem na conversa são
+// DEFINIDOS DENTRO do criativo (page_welcome_message). Quando a Meta não manda
+// o referral, o texto que está na conversa ainda identifica a peça — sem
+// chute: só atribui quando UM único anúncio ATIVO tem aquele template. Fontes:
+//   msg_greeting   — a saudação real na thread do Messenger;
+//   faq_icebreaker — a 1ª mensagem é um botão de FAQ de anúncio.
+// Ambíguo (template compartilhado por 2+ nomes) devolve undefined.
+type TemplateAnuncio = { ad_id: string; nome: string };
+let templatesCache: { em: number; porSaudacao: Map<string, TemplateAnuncio[]>; porPergunta: Map<string, TemplateAnuncio[]> } | null = null;
+const TEMPLATES_TTL_MS = 6 * 3600_000;
+
+const normTpl = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+// a parte que identifica: tudo DEPOIS da primeira "!" (o "Hi {{nome}}!" sai)
+const caudaTpl = (s: string) => {
+  const n = normTpl(s ?? "");
+  const i = n.indexOf("!");
+  return i >= 0 && /^(hi|hello|olá|ola|oi)\b/.test(n) ? n.slice(i + 1).trim() : n;
+};
+const nomeBaseTpl = (n: string) => (n ?? "").replace(/_Group_\d+$/i, "").trim();
+
+async function templatesDosAnuncios(): Promise<NonNullable<typeof templatesCache> | null> {
+  if (templatesCache && Date.now() - templatesCache.em < TEMPLATES_TTL_MS) return templatesCache;
+  const token = process.env.META_ADS_TOKEN;
+  const acctRaw = process.env.META_AD_ACCOUNT_ID ?? "";
+  if (!token || !acctRaw) return templatesCache; // sem credencial, usa o que tiver
+  const acct = acctRaw.startsWith("act_") ? acctRaw : `act_${acctRaw}`;
+  try {
+    const porSaudacao = new Map<string, TemplateAnuncio[]>();
+    const porPergunta = new Map<string, TemplateAnuncio[]>();
+    let url: string | null =
+      `https://graph.facebook.com/v24.0/${acct}/ads?fields=id,name,effective_status,creative{object_story_spec}&limit=100&access_token=${encodeURIComponent(token)}`;
+    for (let p = 0; p < 8 && url; p++) {
+      const res: Response = await fetch(url);
+      if (!res.ok) return templatesCache;
+      const j = (await res.json()) as {
+        data?: Array<{ id: string; name: string; effective_status?: string; creative?: { object_story_spec?: Record<string, { page_welcome_message?: string }> } }>;
+        paging?: { next?: string };
+      };
+      for (const a of j.data ?? []) {
+        if (a.effective_status !== "ACTIVE") continue; // runtime: só quem está no ar agora
+        const oss = a.creative?.object_story_spec ?? {};
+        const raw = (oss.video_data ?? oss.link_data ?? oss.template_data ?? {}).page_welcome_message;
+        if (!raw) continue;
+        let pwm: { text_format?: { message?: { text?: string; ice_breakers?: Array<{ title?: string }> } } };
+        try { pwm = JSON.parse(raw); } catch { continue; }
+        const tf = pwm.text_format?.message ?? {};
+        const item = { ad_id: a.id, nome: a.name };
+        const g = caudaTpl(tf.text ?? "");
+        if (g) porSaudacao.set(g, [...(porSaudacao.get(g) ?? []), item]);
+        for (const ice of tf.ice_breakers ?? []) {
+          const q = normTpl(ice.title ?? "");
+          if (q) porPergunta.set(q, [...(porPergunta.get(q) ?? []), item]);
+        }
+      }
+      url = j.paging?.next ?? null;
+    }
+    templatesCache = { em: Date.now(), porSaudacao, porPergunta };
+    return templatesCache;
+  } catch {
+    return templatesCache;
+  }
+}
+
+// único NOME entre os candidatos ativos vence; empate de variantes fica com a 1ª
+function unicoPorNome(candidatos: TemplateAnuncio[] | undefined): TemplateAnuncio | undefined {
+  if (!candidatos || candidatos.length === 0) return undefined;
+  const nomes = new Set(candidatos.map((c) => nomeBaseTpl(c.nome)));
+  return nomes.size === 1 ? candidatos[0] : undefined;
+}
+
+/** Peça pelo template: saudação da thread (Messenger) ou botão de FAQ (1ª msg). */
+export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<ReferralIG | undefined> {
+  try {
+    const tpl = await templatesDosAnuncios();
+    if (!tpl) return undefined;
+
+    // 1) saudação real na thread do Messenger
+    if (canalDe(igsid) === "facebook") {
+      const psid = igsid.slice(3);
+      const { getFacebookPageToken } = await import("@/lib/fb-token");
+      const token = await getFacebookPageToken();
+      if (token) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 6_000);
+        try {
+          const conv = await fetch(
+            `https://graph.facebook.com/v24.0/me/conversations?user_id=${encodeURIComponent(psid)}&fields=id&access_token=${encodeURIComponent(token)}`,
+            { signal: ctrl.signal }
+          );
+          const convId = conv.ok ? ((await conv.json()) as { data?: Array<{ id?: string }> }).data?.[0]?.id : undefined;
+          if (convId) {
+            let url: string | null =
+              `https://graph.facebook.com/v24.0/${encodeURIComponent(convId)}/messages?fields=message&limit=100&access_token=${encodeURIComponent(token)}`;
+            let ultimas: Array<{ message?: string }> = [];
+            for (let p = 0; p < 4 && url; p++) {
+              const res: Response = await fetch(url, { signal: ctrl.signal });
+              if (!res.ok) break;
+              const j = (await res.json()) as { data?: Array<{ message?: string }>; paging?: { next?: string } };
+              ultimas = j.data ?? ultimas;
+              url = j.paging?.next ?? null;
+            }
+            for (const m of [...ultimas].reverse().slice(0, 12)) {
+              const t = caudaTpl(m.message ?? "");
+              const achado = t ? unicoPorNome(tpl.porSaudacao.get(t)) : undefined;
+              if (achado) {
+                console.log(`[FUNIL] peça pela saudação: ${achado.nome} (${achado.ad_id})`);
+                return { ad_id: achado.ad_id, source: "msg_greeting", clicked_at: new Date().toISOString(), ads_context_data: { ad_title: achado.nome } };
+              }
+            }
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
+
+    // 2) botão de FAQ na 1ª mensagem do cliente (IG e FB)
+    const primeira = msgs.find((m) => m.role === "user");
+    if (primeira && isAdFaqButtonFunil(primeira.content)) {
+      const q = normTpl(stripSys(primeira.content));
+      const achado = unicoPorNome(tpl.porPergunta.get(q));
+      if (achado) {
+        console.log(`[FUNIL] peça pelo botão de FAQ: ${achado.nome} (${achado.ad_id})`);
+        return { ad_id: achado.ad_id, source: "faq_icebreaker", clicked_at: new Date().toISOString(), ads_context_data: { ad_title: achado.nome } };
+      }
+    }
+    return undefined;
+  } catch (err) {
+    console.warn("[FUNIL] pecaPeloTemplate:", String(err).slice(0, 150));
+    return undefined;
+  }
+}
+
 // Procura o cartão "replied to an ad." na thread do Messenger. Melhor esforço:
 // timeout curto, qualquer falha devolve undefined (nunca derruba o funil).
 export async function evidenciaCardMessenger(igsid: string): Promise<EvidenciaAnuncio | undefined> {
@@ -702,13 +836,22 @@ export async function funilOnBookingConfirmed(
 
     // Lead antigo (pré-funil) agendou → backfill do lead_criado primeiro, para
     // a plataforma ter o cadastro completo antes do agendamento.
-    const ad = await dadosDeAnuncioDaConversa(conversationId);
-    // A visita é O momento que o dono confere no painel: se não há contrato de
-    // anúncio, procura a PROVA de origem (botão de FAQ / cartão do Messenger)
-    // para a visita dizer "veio de anúncio" em vez de "sem referral" (20/08).
-    const adEvidencia = !contratoTemDados(ad.contrato)
-      ? evidenciaFaqButton(msgs) ?? (await evidenciaCardMessenger(igsid))
-      : undefined;
+    let ad = await dadosDeAnuncioDaConversa(conversationId);
+    // A visita é O momento que o dono confere no painel. Sem contrato de
+    // anúncio, tenta primeiro achar a PEÇA pelo template (saudação do
+    // Messenger / botão de FAQ — só quando UM anúncio ativo tem aquele texto);
+    // achando, persiste como contrato da conversa. Sem peça, ainda procura a
+    // PROVA de origem para a visita dizer "veio de anúncio" (20/08).
+    let adEvidencia: EvidenciaAnuncio | undefined;
+    if (!contratoTemDados(ad.contrato)) {
+      const peca = await pecaPeloTemplate(igsid, msgs);
+      if (peca) {
+        await persistirAnuncioDaConversa(conversationId, peca);
+        ad = await dadosDeAnuncioDaConversa(conversationId, peca);
+      } else {
+        adEvidencia = evidenciaFaqButton(msgs) ?? (await evidenciaCardMessenger(igsid));
+      }
+    }
     if (!convNoFunil(conv)) {
       await enviarEventoFunil("lead_criado", {
         ...base,
