@@ -181,30 +181,37 @@ async function primeiraMensagem(igsid) {
 let porSaud = 0, porFaq = 0, ambiguos = 0, semProva = 0, erros = 0;
 for (const l of alvos) {
   const dia = diaNY(l.criado_em);
-  let achado = null, fonte = null;
 
-  // caminho 1: saudação na thread do Messenger (mais específico)
+  // os DOIS textos da mesma conversa vêm do MESMO anúncio: a interseção
+  // saudação ∩ pergunta desempata templates compartilhados (Ad16–20 ∩
+  // pergunta exclusiva do Ad18 = Ad18). Sem interseção, cada um sozinho.
+  let candSaud = null;
   if (l.canal === "facebook") {
     const t = await saudacaoDaThread(l.ig_id);
     await new Promise((ok) => setTimeout(ok, 200));
-    if (t) {
-      const d = decidir(porSaudacao.get(t) ?? [], dia);
-      if (d?.ad_id) { achado = d; fonte = "msg_greeting"; }
-      else if (d?.ambiguo) { ambiguos++; console.log(`  ~ ambíguo (saudação) ${l.nome ?? "?"} ${dia}: ${d.ambiguo.slice(0, 90)}`); continue; }
-    }
+    if (t) candSaud = porSaudacao.get(t) ?? null;
   }
-  // caminho 2: botão de FAQ (IG e FB)
+  const msg = await primeiraMensagem(l.canal === "facebook" ? `fb_${l.ig_id}` : l.ig_id);
+  const q = norm((msg ?? "").replace(/\?+\s*$/, "?"));
+  const candFaq = porPergunta.get(q) ?? null;
+
+  let candidatos = null, fonte = null;
+  if (candSaud && candFaq) {
+    const ids = new Set(candFaq.map((c) => c.ad_id));
+    const inter = candSaud.filter((c) => ids.has(c.ad_id));
+    if (inter.length > 0) { candidatos = inter; fonte = "msg_greeting"; }
+    else { candidatos = candSaud; fonte = "msg_greeting"; }
+  } else if (candSaud) { candidatos = candSaud; fonte = "msg_greeting"; }
+  else if (candFaq) { candidatos = candFaq; fonte = "faq_icebreaker"; }
+
+  if (!candidatos) { semProva++; continue; }
+  const d = decidir(candidatos, dia);
+  let achado = d?.ad_id ? d : null;
   if (!achado) {
-    const msg = await primeiraMensagem(l.canal === "facebook" ? `fb_${l.ig_id}` : l.ig_id);
-    const q = norm((msg ?? "").replace(/\?+\s*$/, "?"));
-    const candidatos = porPergunta.get(q) ?? [];
-    if (candidatos.length > 0) {
-      const d = decidir(candidatos, dia);
-      if (d?.ad_id) { achado = d; fonte = "faq_icebreaker"; }
-      else if (d?.ambiguo) { ambiguos++; continue; }
-    }
+    if (d?.ambiguo) { ambiguos++; console.log(`  ~ ambíguo ${l.nome ?? "?"} ${dia}: ${d.ambiguo.slice(0, 90)}`); }
+    else semProva++;
+    continue;
   }
-  if (!achado) { semProva++; continue; }
 
   if (fonte === "msg_greeting") porSaud++; else porFaq++;
   console.log(`  ✅ ${fonte.padEnd(14)} ${String(l.nome ?? "?").slice(0, 22).padEnd(22)} [${l.canal}] ${dia} → ${achado.nome} (${achado.ad_id})`);

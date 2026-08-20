@@ -242,12 +242,15 @@ function unicoPorNome(candidatos: TemplateAnuncio[] | undefined): TemplateAnunci
   return nomes.size === 1 ? candidatos[0] : undefined;
 }
 
-/** Peça pelo template: saudação da thread (Messenger) ou botão de FAQ (1ª msg). */
+/** Peça pelo template: saudação da thread (Messenger) e/ou botão de FAQ (1ª msg).
+ * Os dois textos da MESMA conversa vêm do MESMO anúncio: quando ambos existem,
+ * a interseção desempata templates compartilhados entre anúncios. */
 export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<ReferralIG | undefined> {
   try {
     const tpl = await templatesDosAnuncios();
     if (!tpl) return undefined;
 
+    let candSaud: TemplateAnuncio[] | undefined;
     // 1) saudação real na thread do Messenger
     if (canalDe(igsid) === "facebook") {
       const psid = igsid.slice(3);
@@ -275,11 +278,8 @@ export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<R
             }
             for (const m of [...ultimas].reverse().slice(0, 12)) {
               const t = caudaTpl(m.message ?? "");
-              const achado = t ? unicoPorNome(tpl.porSaudacao.get(t)) : undefined;
-              if (achado) {
-                console.log(`[FUNIL] peça pela saudação: ${achado.nome} (${achado.ad_id})`);
-                return { ad_id: achado.ad_id, source: "msg_greeting", clicked_at: new Date().toISOString(), ads_context_data: { ad_title: achado.nome } };
-              }
+              const c = t ? tpl.porSaudacao.get(t) : undefined;
+              if (c && c.length > 0) { candSaud = c; break; }
             }
           }
         } finally {
@@ -289,14 +289,24 @@ export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<R
     }
 
     // 2) botão de FAQ na 1ª mensagem do cliente (IG e FB)
+    let candFaq: TemplateAnuncio[] | undefined;
     const primeira = msgs.find((m) => m.role === "user");
     if (primeira && isAdFaqButtonFunil(primeira.content)) {
-      const q = normTpl(stripSys(primeira.content));
-      const achado = unicoPorNome(tpl.porPergunta.get(q));
-      if (achado) {
-        console.log(`[FUNIL] peça pelo botão de FAQ: ${achado.nome} (${achado.ad_id})`);
-        return { ad_id: achado.ad_id, source: "faq_icebreaker", clicked_at: new Date().toISOString(), ads_context_data: { ad_title: achado.nome } };
-      }
+      candFaq = tpl.porPergunta.get(normTpl(stripSys(primeira.content)));
+    }
+
+    // interseção quando os dois textos existem; senão, cada um sozinho
+    let candidatos = candSaud ?? candFaq;
+    let fonte: string = candSaud ? "msg_greeting" : "faq_icebreaker";
+    if (candSaud && candFaq) {
+      const ids = new Set(candFaq.map((c) => c.ad_id));
+      const inter = candSaud.filter((c) => ids.has(c.ad_id));
+      if (inter.length > 0) candidatos = inter;
+    }
+    const achado = unicoPorNome(candidatos);
+    if (achado) {
+      console.log(`[FUNIL] peça pelo template (${fonte}): ${achado.nome} (${achado.ad_id})`);
+      return { ad_id: achado.ad_id, source: fonte, clicked_at: new Date().toISOString(), ads_context_data: { ad_title: achado.nome } };
     }
     return undefined;
   } catch (err) {
