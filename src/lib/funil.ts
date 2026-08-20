@@ -315,6 +315,103 @@ export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<R
   }
 }
 
+// ─── VARREDURA DIÁRIA DE RECUPERAÇÃO (20/08/2026) ───────────────────────────
+// Pedido do dono: "todo dia verifica os criativos; se faltar, roda a
+// investigação e recupera". A resolução em tempo real acontece no agendamento,
+// mas conversa que o VENDEDOR agenda pelo calendário nunca passa por lá — e
+// uma falha transitória da Graph não pode significar peça perdida para sempre.
+// Esta varredura refaz a recuperação para as conversas recentes sem contrato:
+// peça pelo template (saudação/botão) e, sem peça, a prova "veio de anúncio".
+// Chamada 2x/dia pela auditoria da plataforma (via /api/recuperar-criativos).
+export type ResumoRecuperacao = {
+  ok: boolean;
+  verificadas: number;
+  pecas: number;
+  evidencias: number;
+  detalhes: string[];
+  erros: string[];
+};
+
+export async function recuperarCriativosRecentes(opts?: {
+  dias?: number;
+  teto?: number; // orçamento de conversas do Messenger com chamada à Graph
+  dry?: boolean;
+}): Promise<ResumoRecuperacao> {
+  const dias = opts?.dias ?? 10;
+  const dry = opts?.dry === true;
+  let orcamentoThreads = opts?.teto ?? 30;
+  const out: ResumoRecuperacao = { ok: true, verificadas: 0, pecas: 0, evidencias: 0, detalhes: [], erros: [] };
+  try {
+    const desde = new Date(Date.now() - dias * 864e5).toISOString();
+    const { data: convs, error } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("id, igsid, name, username, created_at, updated_at")
+      .gte("updated_at", desde)
+      .order("updated_at", { ascending: false })
+      .limit(400);
+    if (error) throw new Error(error.message);
+
+    for (const conv of convs ?? []) {
+      // WhatsApp: o CTWA vem completo no webhook e não há template para ler.
+      if (canalDe(conv.igsid) === "whatsapp") continue;
+      if (!convNoFunil(conv as ConvFunil)) continue; // pré-funil: o agendamento cobre
+      const ad = await dadosDeAnuncioDaConversa(conv.id);
+      if (contratoTemDados(ad.contrato)) continue; // já tem atribuição
+      const msgs = await mensagensDaConversa(conv.id);
+      if (!msgs.some((m) => m.role === "user")) continue;
+      out.verificadas++;
+
+      const ehFb = canalDe(conv.igsid) === "facebook";
+      if (ehFb) {
+        if (orcamentoThreads <= 0) continue; // orçamento da Graph esgotado — a próxima rodada continua
+        orcamentoThreads--;
+      }
+      const quem = conv.username ?? conv.name ?? conv.igsid;
+
+      // 1) a PEÇA pelo template (saudação da thread / botão de FAQ)
+      const peca = await pecaPeloTemplate(conv.igsid, msgs);
+      const base = identidade(conv as ConvFunil, msgs);
+      if (peca) {
+        out.pecas++;
+        out.detalhes.push(`${quem}: ${peca.ads_context_data?.ad_title ?? peca.ad_id} (${peca.source})`);
+        if (!dry) {
+          await persistirAnuncioDaConversa(conv.id, peca);
+          const adNovo = await dadosDeAnuncioDaConversa(conv.id, peca);
+          await enviarEventoFunil("lead_criado", {
+            ...base,
+            canal: canalDe(conv.igsid),
+            ...adNovo.contrato,
+            ad_name: adNovo.ad_name ?? undefined,
+            campanha: adNovo.campanha ?? undefined,
+          });
+        }
+        continue;
+      }
+
+      // 2) sem peça, a PROVA de origem — enviada uma única vez por conversa
+      // (flag funil_adev_ evita reenvio a cada rodada; o merge é fill-if-empty)
+      const flagKey = `funil_adev_${conv.id}`;
+      const { data: jaEnviada } = await supabaseAdmin
+        .from("platform_settings").select("platform").eq("platform", flagKey).maybeSingle();
+      if (jaEnviada) continue;
+      const evid = evidenciaFaqButton(msgs) ?? (ehFb ? await evidenciaCardMessenger(conv.igsid) : undefined);
+      if (!evid) continue;
+      out.evidencias++;
+      out.detalhes.push(`${quem}: veio de anúncio (${evid})`);
+      if (!dry) {
+        await enviarEventoFunil("lead_criado", { ...base, canal: canalDe(conv.igsid), ad_evidencia: evid });
+        await supabaseAdmin
+          .from("platform_settings")
+          .upsert({ platform: flagKey, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
+      }
+    }
+  } catch (err) {
+    out.ok = false;
+    out.erros.push(String(err).slice(0, 200));
+  }
+  return out;
+}
+
 // Procura o cartão "replied to an ad." na thread do Messenger. Melhor esforço:
 // timeout curto, qualquer falha devolve undefined (nunca derruba o funil).
 export async function evidenciaCardMessenger(igsid: string): Promise<EvidenciaAnuncio | undefined> {
