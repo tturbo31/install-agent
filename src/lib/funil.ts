@@ -151,6 +151,65 @@ export async function referralDePostDeAnuncio(convId: string, midias: string[]):
 }
 type MsgRow = { role: string; content: string; created_at: string };
 
+// ─── PROVA DE ANÚNCIO SEM PEÇA (20/08/2026) ─────────────────────────────────
+// A Meta perde o referral em ~20% das conversas de IG (medido em 15/08) — o
+// dono abre o inbox, VÊ o cartão do anúncio no topo da conversa, e o painel
+// diz "sem referral". Nenhuma API devolve qual peça foi (conferido em 20/08:
+// a thread do IG via graph.instagram.com só tem as mensagens de texto, e o
+// cartão do Messenger vem sem shares/attachments). Mas a ORIGEM é provável:
+//   • faq_button      — a 1ª mensagem do cliente é um botão de pergunta que só
+//                       existe dentro do anúncio (FAQ_BUTTON, os 3 canais);
+//   • card_messenger  — a thread do Messenger tem a mensagem de sistema
+//                       "<nome> replied to an ad." (via Graph, token da página).
+// A prova vai no campo `ad_evidencia` dos eventos — a plataforma troca o
+// motivo "sem referral" por "veio de ANÚNCIO — a Meta não informou a peça".
+// NUNCA vira criativo: prova de origem não é atribuição de peça.
+export type EvidenciaAnuncio = "faq_button" | "card_messenger";
+
+export function evidenciaFaqButton(msgs: MsgRow[]): EvidenciaAnuncio | undefined {
+  const primeira = msgs.find((m) => m.role === "user");
+  return primeira && isAdFaqButtonFunil(primeira.content) ? "faq_button" : undefined;
+}
+
+// Procura o cartão "replied to an ad." na thread do Messenger. Melhor esforço:
+// timeout curto, qualquer falha devolve undefined (nunca derruba o funil).
+export async function evidenciaCardMessenger(igsid: string): Promise<EvidenciaAnuncio | undefined> {
+  if (canalDe(igsid) !== "facebook") return undefined;
+  const psid = igsid.slice(3);
+  try {
+    const { getFacebookPageToken } = await import("@/lib/fb-token");
+    const token = await getFacebookPageToken();
+    if (!token) return undefined;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6_000);
+    try {
+      const conv = await fetch(
+        `https://graph.facebook.com/v24.0/me/conversations?user_id=${encodeURIComponent(psid)}&fields=id&access_token=${encodeURIComponent(token)}`,
+        { signal: ctrl.signal }
+      );
+      if (!conv.ok) return undefined;
+      const convJson = (await conv.json()) as { data?: Array<{ id?: string }> };
+      const convId = convJson.data?.[0]?.id;
+      if (!convId) return undefined;
+      // o cartão é a mensagem MAIS ANTIGA — segue a paginação até 3 páginas
+      let url: string | null =
+        `https://graph.facebook.com/v24.0/${encodeURIComponent(convId)}/messages?fields=message&limit=100&access_token=${encodeURIComponent(token)}`;
+      for (let pagina = 0; pagina < 3 && url; pagina++) {
+        const res: Response = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) return undefined;
+        const j = (await res.json()) as { data?: Array<{ message?: string }>; paging?: { next?: string } };
+        if ((j.data ?? []).some((m) => /replied to an ad/i.test(m.message ?? ""))) return "card_messenger";
+        url = j.paging?.next ?? null;
+      }
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 const H = 3600_000;
 const SILENCIO_H = 24; // "sem responder há mais de 24h"
 const SWEEP_MIN_GAP_H = 6; // cadência do parou_de_responder
@@ -527,10 +586,15 @@ export async function funilOnInboundMessage(
     // anúncio via referral (CTWA); conversa orgânica omite os campos ad_*.
     if (!anteriores.some((m) => m.role === "user")) {
       const ad = await dadosDeAnuncioDaConversa(conv.id, referral);
+      // sem contrato nenhum, a 1ª mensagem sendo botão de FAQ do anúncio já
+      // prova a origem (20/08) — barato, sem chamada externa
+      const adEvidencia =
+        !contratoTemDados(ad.contrato) && isAdFaqButtonFunil(rawText) ? "faq_button" : undefined;
       await enviarEventoFunil("lead_criado", {
         ...base,
         nome: conv.name ?? conv.username ?? undefined,
         canal: canalDe(conv.igsid),
+        ...(adEvidencia ? { ad_evidencia: adEvidencia } : {}),
         // clique no botão de WhatsApp da LP do Google (código G-XXXXXX na 1ª
         // mensagem) — a plataforma resolve para gclid/campanha/termo
         lp_codigo: codigoLpDaMensagem(rawText),
@@ -639,6 +703,12 @@ export async function funilOnBookingConfirmed(
     // Lead antigo (pré-funil) agendou → backfill do lead_criado primeiro, para
     // a plataforma ter o cadastro completo antes do agendamento.
     const ad = await dadosDeAnuncioDaConversa(conversationId);
+    // A visita é O momento que o dono confere no painel: se não há contrato de
+    // anúncio, procura a PROVA de origem (botão de FAQ / cartão do Messenger)
+    // para a visita dizer "veio de anúncio" em vez de "sem referral" (20/08).
+    const adEvidencia = !contratoTemDados(ad.contrato)
+      ? evidenciaFaqButton(msgs) ?? (await evidenciaCardMessenger(igsid))
+      : undefined;
     if (!convNoFunil(conv)) {
       await enviarEventoFunil("lead_criado", {
         ...base,
@@ -647,6 +717,7 @@ export async function funilOnBookingConfirmed(
         ...ad.contrato, // contrato de atribuição completo (nomes exatos)
         ad_name: ad.ad_name ?? undefined,
         campanha: ad.campanha ?? undefined,
+        ...(adEvidencia ? { ad_evidencia: adEvidencia } : {}),
       });
     }
 
@@ -663,6 +734,7 @@ export async function funilOnBookingConfirmed(
       ...ad.contrato,
       ad_name: ad.ad_name ?? undefined,
       campanha: ad.campanha ?? undefined,
+      ...(adEvidencia ? { ad_evidencia: adEvidencia } : {}),
       // endereço coletado no agendamento (a plataforma mostra na agenda)
       ...(endereco ? { endereco } : {}),
     });
