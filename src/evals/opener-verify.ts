@@ -10,7 +10,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, isBareGreeting, openerMessage, type ChatMessage } from "../lib/ai";
-import { OPENER_EN, OPENER_ES, OPENER_PT } from "../lib/system-prompt";
+import { OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT } from "../lib/system-prompt";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -79,6 +79,30 @@ async function main() {
 
   const substantive = await ai([{ role: "user", content: "How much per square foot for vinyl?" + NOTE }]);
   ck("substantive first message → NOT the opener (AI answers)", substantive !== OPENER_EN && substantive !== OPENER_ES, substantive);
+
+  // ── 5b. first-contact LOCATION question → location opener, right language ──
+  // Caso Ken 2026-08-21: "Dónde te encuentras" (tú form) matched neither the
+  // location FAQ nor the Spanish language check and got the generic ENGLISH
+  // opener — question ignored AND wrong language.
+  console.log("\n[5b] location question on first contact → location opener in the client's language");
+  const locCases: Array<[string, string]> = [
+    ["Dónde te encuentras", OPENER_LOCATION_ES],
+    ["Dónde se encuentran?", OPENER_LOCATION_ES],
+    ["¿Dónde están ubicados?", OPENER_LOCATION_ES],
+    ["Ubicación?", OPENER_LOCATION_ES],
+    ["En qué zona trabajan", OPENER_LOCATION_ES],
+    ["Where are you located?", OPENER_LOCATION_EN],
+    ["What areas do you serve?", OPENER_LOCATION_EN],
+    ["Onde fica?", OPENER_LOCATION_PT],
+    ["Onde vocês atendem?", OPENER_LOCATION_PT],
+  ];
+  for (const [q, want] of locCases) {
+    const got = await ai([{ role: "user", content: q + NOTE }]);
+    ck(`"${q}" → location opener (${want === OPENER_LOCATION_ES ? "ES" : want === OPENER_LOCATION_PT ? "PT" : "EN"})`, got === want, got);
+  }
+  // The ad-reply note must not reroute a location question to the generic opener.
+  const adLoc = await ai([{ role: "user", content: "Dónde te encuentras\n\n[Client replied to our ad]" + NOTE }]);
+  ck("'Dónde te encuentras' + ad note → still the ES location opener", adLoc === OPENER_LOCATION_ES, adLoc);
 
   // ── 6. wiring: the opener helpers are reachable via the shared brain ───────
   console.log("\n[6] source wiring");

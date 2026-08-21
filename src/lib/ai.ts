@@ -922,14 +922,19 @@ export function openerLang(text: string): "en" | "es" | "pt" {
   // Accented "olá" / "oi" / "bom dia" are clearly Portuguese; bare "ola" (no H,
   // no accent) is far more often a Spanish speaker dropping the H of "hola". A few
   // non-greeting words also pin the language for a no-greeting inquiry.
-  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria)\b/.test(t)) return "pt";
+  // "onde" is uniquely Portuguese (Spanish is "donde"/"dónde", and \b protects
+  // against the substring inside them — "d" is a word char, so no boundary).
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria|onde)\b/.test(t)) return "pt";
   // "pisos?/cerámica/instalación/cotización" pin Spanish for no-greeting
   // inquiries like "Q piso es el de la promo?" — that message used to fail both
   // language checks and get the ENGLISH opener (2026-07-07 review). "piso" is
   // also Portuguese, but the PT check above runs first and catches PT context.
   // "loza/losa" ("Quw material de loza es ese") and "nesesitan/instalar" cover
   // common misspelled Spanish first messages that used to get the English opener.
-  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o)\b/.test(t)) return "es";
+  // "dónde/donde", "ubicación/ubicados" and the "encuentr-" verb stem (PT stem
+  // is "encontr-") pin Spanish for location questions — "Dónde te encuentras"
+  // used to fail both checks and get the ENGLISH opener (2026-08-21).
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o|d[oó]nde|ubicaci[oó]n|ubicad[oa]s?|encuentr\w*|zonas?|trabaja[ns]?)\b/.test(t)) return "es";
   return "en";
 }
 
@@ -947,7 +952,11 @@ const AD_FAQ_DISCOUNT = /\bdiscounts?\b[^.!?\n]{0,40}\b(?:large|larger|big|bigge
 // "Where are you located?" typed as the first message — a direct question the
 // generic opener used to steamroll (Tom Kiper, 2026-07-29: asked twice, got the
 // type-ask opener once and then dead air). Answer + type-ask, zero-token.
-const AD_FAQ_LOCATION = /\bwhere\b[^.!?\n]{0,40}\b(?:located|based|location)\b|\bwhat(?:'?s| is)\s+your\s+location\b|\bwhat\s+areas?\s+do\s+you\s+(?:serve|cover|service)\b|\bd[oó]nde\s+(?:est[aá]n|se\s+ubican|se\s+encuentran|quedan)\b|\bonde\s+(?:voc[eê]s?\s+)?(?:ficam?|est[aã]o|atendem)\b/i;
+// Spanish must cover the SINGULAR/tú and usted forms too — "Dónde te
+// encuentras" (Ken, 2026-08-21) matched nothing and got the generic ENGLISH
+// opener: question ignored AND wrong language. Bare "ubicación"/"ubicados" and
+// "en qué zona/ciudad/área" are also common first-message location asks.
+const AD_FAQ_LOCATION = /\bwhere\b[^.!?\n]{0,40}\b(?:located|based|location)\b|\bwhat(?:'?s| is)\s+your\s+location\b|\bwhat\s+areas?\s+do\s+you\s+(?:serve|cover|service)\b|\bd[oó]nde\s+(?:est[aá]|te\s+encuentras?|se\s+encuentran?|te\s+ubicas?|se\s+ubican?|quedan?|los\s+encuentro)|\bubicaci[oó]n\b|\bubicad[oa]s?\b|\ben\s+qu[eé]\s+(?:zona|ciudad|[aá]rea)\b|\bqu[eé]\s+zonas?\s+(?:cubren|atienden|sirven|trabajan)\b|\bonde\s+(?:voc[eê]s?\s+)?(?:ficam?|est[aã]o|atendem|se\s+localizam?)\b|\blocaliza[çc][aã]o\b/i;
 // Inclusions-family Meta FAQ buttons (shared by the first-contact opener router
 // AND the repeated-message intercept, so both agree on what the ask-type
 // inclusions line actually answered).
