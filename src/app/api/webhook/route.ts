@@ -40,7 +40,7 @@ import {
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -104,7 +104,7 @@ async function processBookingCommand(
   conversationId: string,
   senderIgsid: string,
   isAlreadyBooked: boolean,
-  lang: "es" | "en",
+  lang: Lang,
   isReschedule: boolean = false,
   history: Array<{ role: string; content: string }> = []
 ): Promise<{ response: string; booked: boolean }> {
@@ -283,7 +283,7 @@ async function processBookingCommand(
       // Slot the client picked is full but OTHER slots may be open: offer the
       // soonest remaining one instead of handing off (never say it was "taken").
       // Keep the AI active so the client's next pick books normally.
-      const recovery = await slotConflictRecoveryMessage(lang);
+      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time);
       if (recovery) {
         console.warn(`[IG] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
         return { response: recovery, booked: false };
@@ -343,7 +343,7 @@ async function processCancelCommand(
   senderIgsid: string,
   conversationId: string,
   clientName: string | null,
-  lang: "es" | "en"
+  lang: Lang
 ): Promise<string> {
   if (!/\[CANCEL_BOOKING\]/i.test(aiResponse)) return aiResponse;
 

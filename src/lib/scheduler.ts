@@ -785,7 +785,8 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
 
 // Sent when we have address/phone but the client never picked a specific
 // day/time: ask them to choose instead of inventing one.
-export function needSlotConfirmationMessage(lang: "es" | "en"): string {
+export function needSlotConfirmationMessage(lang: Lang): string {
+  if (lang === "pt") return "Perfeito! Só falta confirmar o dia e o horário, qual fica melhor para você para a visita?";
   return lang === "es"
     ? "¡Perfecto! Solo me falta confirmar el día y la hora, ¿cuál te queda mejor para la visita?"
     : "Perfect! I just need to confirm the day and time, which works best for you for the visit?";
@@ -826,7 +827,7 @@ export function bookedTimeSeenInConversation(
 
 // Sent when the client picked a day but the [BOOK] hour was never shown to them:
 // re-offer with that day's REAL open times so the pick that follows is explicit.
-export async function needTimeChoiceMessage(lang: "es" | "en", dateStr: string): Promise<string> {
+export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promise<string> {
   try {
     let slots = await getAvailableSlots(dateStr);
     if (dateStr === easternTodayStr()) {
@@ -839,8 +840,9 @@ export async function needTimeChoiceMessage(lang: "es" | "en", dateStr: string):
     }
     const times = slots.slice(0, 4).map(fmt12);
     if (times.length > 0) {
-      const sep = lang === "es" ? " o " : " or ";
+      const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
       const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
+      if (lang === "pt") return `Perfeito! Para esse dia tenho disponível ${list}, qual horário fica melhor para você?`;
       return lang === "es"
         ? `¡Perfecto! Para ese día tengo disponible ${list}, ¿a qué hora te queda mejor?`
         : `Perfect! For that day I have ${list} available, which time works best for you?`;
@@ -1027,30 +1029,107 @@ export async function getNextOpenSlots(
 }
 
 const DAY_NAMES_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const DAY_NAMES_PT = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
 
 // Recovery offer for when the slot the client confirmed turned out to be full.
 // Instead of handing the lead to a human (the old behavior, which lost the
-// client), offer the soonest OTHER open slot(s) from the real schedule, never
-// saying the time was "taken". Returns null only when there is genuinely nothing
-// open in the window, so the caller can fall back to the human handoff.
-export async function slotConflictRecoveryMessage(lang: "es" | "en"): Promise<string | null> {
+// client), offer other open slot(s) from the real schedule, never saying the
+// time was "taken". Returns null when there is genuinely nothing open in the
+// window OR when this same recovery was already sent before (anti-loop), so
+// the caller falls back to the human handoff.
+//
+// Caso Anna Evangelista (IG, 2026-08-21): the client's ONLY constraint was the
+// day (a 10am walkthrough with the sellers on Tuesday), 10am was full but the
+// same Tuesday had 9am/11am open — yet the old message jumped to "soonest
+// overall" (Sunday evening), which she had already declined, and repeated it
+// verbatim three times. Now: (1) if the REQUESTED day still has open times,
+// offer those first; (2) if the exact text we are about to send already sits
+// in the assistant history, return null so the lead escalates to Ozzi instead
+// of looping.
+export async function slotConflictRecoveryMessage(
+  lang: Lang,
+  requestedDate?: string,
+  history?: Array<{ role: string; content: string }>,
+  requestedTime?: string
+): Promise<string | null> {
   try {
-    const open = await getNextOpenSlots(21);
-    if (open.length === 0) return null;
-    const first = open[0];
-    const times = first.times.slice(0, 2).map(fmt12);
-    if (lang === "es") {
-      const wd = DAY_NAMES_ES[first.weekday];
-      const t = times.length >= 2 ? `${times[0]} o ${times[1]}` : times[0];
-      return times.length >= 2
-        ? `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Cuál te queda mejor?`
-        : `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Te funciona?`;
+    let msg: string | null = null;
+
+    // Same-day alternatives first: the client picked that day for a reason.
+    if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      try {
+        // Never re-offer the very time that just failed to book, even if the
+        // availability view disagrees with the booking write.
+        const failedHM = /^(\d{1,2}):(\d{2})/.exec((requestedTime ?? "").trim());
+        const failedMin = failedHM ? parseInt(failedHM[1], 10) * 60 + parseInt(failedHM[2], 10) : null;
+        let slots = (await getAvailableSlots(requestedDate)).filter((s) => {
+          if (failedMin === null) return true;
+          const [h, min] = s.split(":").map(Number);
+          return h * 60 + min !== failedMin;
+        });
+        if (requestedDate === easternTodayStr()) {
+          const nowET = easternNowHM();
+          const cutoff = nowET.hour * 60 + nowET.minute + 30;
+          slots = slots.filter((s) => {
+            const [h, min] = s.split(":").map(Number);
+            return h * 60 + min >= cutoff;
+          });
+        }
+        const times = slots.slice(0, 3).map(fmt12);
+        if (times.length > 0) {
+          const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
+          const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
+          msg =
+            lang === "pt"
+              ? `Esse horário exato eu não tenho disponível, mas nesse mesmo dia posso às ${list}. Qual fica melhor para você?`
+              : lang === "es"
+                ? `Ese horario exacto no lo tengo disponible, pero ese mismo día puedo a las ${list}. ¿Cuál te queda mejor?`
+                : `That exact time isn't open on my end, but that same day I can do ${list}. Which works better for you?`;
+        }
+      } catch (err) {
+        console.error("slotConflictRecoveryMessage same-day error:", err);
+      }
     }
-    const wd = DAY_NAMES[first.weekday];
-    const t = times.length >= 2 ? `${times[0]} or ${times[1]}` : times[0];
-    return times.length >= 2
-      ? `The soonest I have open is ${wd} at ${t}, which works better for you?`
-      : `The soonest I have open is ${wd} at ${t}, does that work for you?`;
+
+    if (!msg) {
+      const open = await getNextOpenSlots(21);
+      if (open.length === 0) return null;
+      const first = open[0];
+      const times = first.times.slice(0, 2).map(fmt12);
+      if (lang === "pt") {
+        const wd = DAY_NAMES_PT[first.weekday];
+        const t = times.length >= 2 ? `${times[0]} ou ${times[1]}` : times[0];
+        msg =
+          times.length >= 2
+            ? `O mais cedo que tenho disponível é ${wd} às ${t}. Qual fica melhor para você?`
+            : `O mais cedo que tenho disponível é ${wd} às ${t}. Funciona para você?`;
+      } else if (lang === "es") {
+        const wd = DAY_NAMES_ES[first.weekday];
+        const t = times.length >= 2 ? `${times[0]} o ${times[1]}` : times[0];
+        msg =
+          times.length >= 2
+            ? `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Cuál te queda mejor?`
+            : `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Te funciona?`;
+      } else {
+        const wd = DAY_NAMES[first.weekday];
+        const t = times.length >= 2 ? `${times[0]} or ${times[1]}` : times[0];
+        msg =
+          times.length >= 2
+            ? `The soonest I have open is ${wd} at ${t}, which works better for you?`
+            : `The soonest I have open is ${wd} at ${t}, does that work for you?`;
+      }
+    }
+
+    // Anti-loop: the same canned recovery, sent again, is dead air with extra
+    // steps (the recap guard even prefixes it "Como te mencioné arriba"). If
+    // the client is still stuck after hearing this exact offer once, a human
+    // has to decide — null makes the caller hand off to Ozzi.
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+    if (history?.some((m) => m.role === "assistant" && norm(m.content).includes(norm(msg!)))) {
+      console.warn("[scheduler] slot-conflict recovery already sent once — escalating instead of repeating");
+      return null;
+    }
+    return msg;
   } catch (err) {
     console.error("slotConflictRecoveryMessage error:", err);
     return null;
@@ -1122,15 +1201,19 @@ export async function getClientBookingSnapshot(igsid: string): Promise<ClientBoo
 }
 
 const MONTH_NAMES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const MONTH_NAMES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
 
 // Deterministic answer for a booked client asking about their OWN visit
 // ("Are you coming at 3?", "Which day, Tuesday?"). No model involved, so it can
 // never hallucinate a date: it restates the scheduler's real booking and opens
 // the reschedule door. Two short sentences, no dashes, no emojis (owner rules).
-export function visitDetailsMessage(lang: "es" | "en", dateStr: string, timeStr: string): string {
+export function visitDetailsMessage(lang: Lang, dateStr: string, timeStr: string): string {
   const { weekday, month, day } = ymd(dateStr);
   const time = /^\d{1,2}:\d{2}$/.test((timeStr || "").trim()) ? fmt12(timeStr.trim()) : (timeStr || "").trim();
-  const atTime = time ? (lang === "es" ? ` a las ${time}` : ` at ${time}`) : "";
+  const atTime = time ? (lang === "en" ? ` at ${time}` : lang === "es" ? ` a las ${time}` : ` às ${time}`) : "";
+  if (lang === "pt") {
+    return `Sua visita está confirmada para ${DAY_NAMES_PT[weekday]} dia ${day} de ${MONTH_NAMES_PT[month]}${atTime}. O Ozzi te avisa uns 40 minutos antes de chegar, e se você precisar mover a visita é só me dizer o novo dia e horário.`;
+  }
   if (lang === "es") {
     return `Tu visita está confirmada para el ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${atTime}. Ozzi te avisa unos 40 minutos antes de llegar, y si necesitas mover la visita solo dime el nuevo día y hora.`;
   }
@@ -1138,22 +1221,35 @@ export function visitDetailsMessage(lang: "es" | "en", dateStr: string, timeStr:
 }
 
 // ─── Language detection + localized booking messages ──────────────────────
-// Lightweight heuristic: decide whether the conversation is in Spanish or
-// English so confirmation/recovery messages match the client's language.
-export function detectLang(text: string): "es" | "en" {
+// Lightweight heuristic: decide whether the conversation is in Spanish,
+// Portuguese or English so canned confirmation/recovery messages match the
+// client's language. PT was MISSING here until 2026-08-21 (Anna Evangelista,
+// IG): a conversation held entirely in Portuguese scored "es" (shared words +
+// the á/é/í/ó accents), so the canned slot-conflict recovery came out in
+// SPANISH mid-conversation and the client had to say "Eu não falo espanhol".
+// The chars ã õ ç â ê à ô exist in Portuguese but not Spanish, so each is a
+// heavyweight PT signal; ñ ¿ ¡ are the Spanish mirror image.
+export type Lang = "es" | "en" | "pt";
+export function detectLang(text: string): Lang {
   const t = (text || "").toLowerCase();
   if (!t.trim()) return "en";
-  let es = (t.match(/[áéíóúñ¿¡]/g) || []).length;
+  let es = (t.match(/[ñ¿¡]/g) || []).length * 2 + (t.match(/[áéíóú]/g) || []).length;
   let en = 0;
+  let pt = (t.match(/[ãõçâêàô]/g) || []).length * 2;
   const esWords = ["hola", "gracias", "cuánto", "cuanto", "precio", "piso", "casa", "área", "area", "necesito", "quiero", "buenas", "cita", "dirección", "direccion", "cocina", "cuarto", "metros", "usted", "mañana", "tengo", "viernes", "sábado", "sabado", "domingo", "lunes", "martes", "miércoles", "miercoles", "jueves", "para", "está", "esta", "pisos"];
   const enWords = ["hello", "thanks", "thank", "price", "floor", "house", "need", "want", "quote", "address", "kitchen", "room", "tomorrow", "morning", "would", "please", "available", "looking"];
+  // \b is ASCII-only in JS, so accented words use (?:^|\W)…(?=$|\W) instead.
+  const ptWords = ["você", "voce", "vcs", "obrigado", "obrigada", "não", "endereço", "endereco", "orçamento", "orcamento", "amanhã", "terça", "segunda-feira", "quarta", "quinta", "sexta", "gostaria", "gostaríamos", "gostariamos", "olá", "hoje", "preço", "madeira", "banheiro", "cozinha", "preciso", "falo", "português", "portugues", "pode", "seria", "tudo bem", "estou", "muito"];
   for (const w of esWords) if (new RegExp(`\\b${w}\\b`).test(t)) es++;
   for (const w of enWords) if (new RegExp(`\\b${w}\\b`).test(t)) en++;
+  for (const w of ptWords) if (new RegExp(`(?:^|\\W)${w}(?=$|\\W)`).test(t)) pt++;
+  if (pt > es && pt > en) return "pt";
   return es > en ? "es" : "en";
 }
 
 // Sent to the client after a booking is successfully created.
-export function bookingSuccessMessage(lang: "es" | "en"): string {
+export function bookingSuccessMessage(lang: Lang): string {
+  if (lang === "pt") return "Visita confirmada. Eu te aviso aproximadamente 40 minutos antes de chegar na sua casa. Meu nome é Ozzi.";
   return lang === "es"
     ? "Cita confirmada. Te aviso aproximadamente 40 minutos antes de llegar a tu casa. Mi nombre es Ozzi."
     : "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
@@ -1164,7 +1260,8 @@ export function bookingSuccessMessage(lang: "es" | "en"): string {
 // dono pode ter combinado por fora do bot (caso Msleo 2026-08-05: remarcação
 // manual pelo app do IG nunca chegou ao scheduler). Não afirma NADA sobre data
 // ou disponibilidade: reconhece e passa para o Ozzi. Sem traço, sem emoji.
-export function appointmentMismatchHandoffMessage(lang: "es" | "en"): string {
+export function appointmentMismatchHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Obrigado! O Ozzi vai revisar pessoalmente os detalhes da sua visita e te confirma tudo em seguida.";
   return lang === "es"
     ? "¡Gracias! Ozzi va a revisar personalmente los detalles de tu visita y te confirma todo enseguida."
     : "Thank you! Let me have Ozzi personally double check your visit details and confirm everything with you shortly.";
@@ -1173,7 +1270,8 @@ export function appointmentMismatchHandoffMessage(lang: "es" | "en"): string {
 // Sent to the client when the booking could NOT be created (slot genuinely
 // unavailable, scheduler error, etc.). Honest, never claims the slot was
 // "just taken", and hands the lead to Ozzi so it is never lost.
-export function bookingFailureHandoffMessage(lang: "es" | "en"): string {
+export function bookingFailureHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Desculpa, não consegui confirmar esse horário no sistema. Já avisei o Ozzi para confirmar sua visita diretamente, em breve ele te contata.";
   return lang === "es"
     ? "Disculpa, no pude confirmar ese horario en el sistema. Le aviso a Ozzi para que confirme tu cita directamente, en breve te contacta."
     : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
@@ -1231,7 +1329,8 @@ export function clientProvidedName(name: string | null | undefined, history: Arr
 
 // Sent when the slot (and possibly address/phone) is in hand but the client
 // never gave their name: ask for it instead of booking under a profile name.
-export function needNameMessage(lang: "es" | "en"): string {
+export function needNameMessage(lang: Lang): string {
+  if (lang === "pt") return "Última coisinha! Em nome de quem eu coloco a visita?";
   return lang === "es"
     ? "¡Última cosita! ¿A nombre de quién pongo la visita?"
     : "Last thing! What name should I put the visit under?";
@@ -1265,7 +1364,8 @@ export function isRealAddress(address?: string | null): boolean {
 // Sent when the slot is confirmed but we still need a usable street address.
 // Asks for the ZIP in the same breath (owner rule 2026-08-01) so the client
 // sends the complete address once instead of being asked twice.
-export function needAddressMessage(lang: "es" | "en"): string {
+export function needAddressMessage(lang: Lang): string {
+  if (lang === "pt") return "Perfeito! Qual é o endereço completo da propriedade, com o zip code, para a visita?";
   return lang === "es"
     ? "¡Perfecto! ¿Cuál es la dirección completa de la propiedad, con el código postal, para la visita?"
     : "Perfect! What's the full property address, including the zip code, for the visit?";
@@ -1326,7 +1426,8 @@ export function bookingAddressHasZip(
 // Sent when the slot, street address, name and phone are in hand but the ZIP is
 // missing (or was invented by the model). Short and specific: the client only
 // has to send five digits back.
-export function needZipMessage(lang: "es" | "en"): string {
+export function needZipMessage(lang: Lang): string {
+  if (lang === "pt") return "Quase pronto! Qual é o zip code desse endereço?";
   return lang === "es"
     ? "¡Casi listo! ¿Cuál es el código postal de esa dirección?"
     : "Almost set! What's the zip code for that address?";
@@ -1334,7 +1435,8 @@ export function needZipMessage(lang: "es" | "en"): string {
 
 // Sent when we have the slot + address but still need a real callback number
 // before booking (the client gave a non-number like "Messenger", or no phone).
-export function needPhoneMessage(lang: "es" | "en"): string {
+export function needPhoneMessage(lang: Lang): string {
+  if (lang === "pt") return "Quase pronto! Qual é o melhor número de telefone para eu confirmar a visita?";
   return lang === "es"
     ? "¡Casi listo! ¿Cuál es el mejor número de teléfono para confirmarte la visita?"
     : "Almost set! What's the best phone number to reach you so I can lock in the visit?";
@@ -1343,7 +1445,8 @@ export function needPhoneMessage(lang: "es" | "en"): string {
 // Sent to the client after their visit is successfully moved to a new slot.
 // The webhook already includes the new day/time around it via the AI, so this
 // stays short and never repeats details that could drift from the real booking.
-export function rescheduleSuccessMessage(lang: "es" | "en"): string {
+export function rescheduleSuccessMessage(lang: Lang): string {
+  if (lang === "pt") return "Pronto, sua visita foi remarcada. Eu te aviso aproximadamente 40 minutos antes de chegar. Meu nome é Ozzi.";
   return lang === "es"
     ? "Listo, tu visita quedó reagendada. Te aviso aproximadamente 40 minutos antes de llegar. Mi nombre es Ozzi."
     : "All set, your visit has been rescheduled. I will notify you approximately 40 minutes before arriving. My name is Ozzi.";
@@ -1354,7 +1457,8 @@ export function rescheduleSuccessMessage(lang: "es" | "en"): string {
 // means the client gets TOTAL SILENCE and the lead is lost. This keeps the
 // client warm with an honest holding reply while the owner is notified and the
 // conversation is handed to a human.
-export function aiOutageHandoffMessage(lang: "es" | "en"): string {
+export function aiOutageHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Obrigado pela sua mensagem! Já avisei nossa equipe e alguém te contata em seguida.";
   return lang === "es"
     ? "Gracias por tu mensaje! Le aviso a nuestro equipo y alguien te contacta en seguida."
     : "Thanks for your message! Let me get our team to reach out, someone will get right back to you.";
@@ -1677,7 +1781,8 @@ export async function applyPostBookingAddressCorrection(
 }
 
 // Confirmação curta ao cliente depois de trocar a unidade na visita marcada.
-export function addressCorrectedMessage(lang: "es" | "en", unit: string): string {
+export function addressCorrectedMessage(lang: Lang, unit: string): string {
+  if (lang === "pt") return `Pronto, já atualizei o endereço da sua visita para ${unit}. O Ozzi te avisa uns 40 minutos antes de chegar.`;
   return lang === "es"
     ? `Listo, ya actualicé la dirección de tu visita al ${unit}. Ozzi te avisa unos 40 minutos antes de llegar.`
     : `Got it, I updated your visit address to ${unit}. Ozzi will message you about 40 minutes before arriving.`;
@@ -1685,7 +1790,8 @@ export function addressCorrectedMessage(lang: "es" | "en", unit: string): string
 
 // Endereço de OUTRA rua depois da visita marcada, ou falha ao gravar: o cliente
 // recebe um aviso honesto em vez do silêncio, e o dono decide.
-export function addressChangeHandoffMessage(lang: "es" | "en"): string {
+export function addressChangeHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Obrigado, anotei o endereço novo. O Ozzi te confirma a mudança antes da visita.";
   return lang === "es"
     ? "Gracias, anoté la dirección nueva. Ozzi te confirma el cambio antes de la visita."
     : "Thanks, I have the new address. Ozzi will confirm the change with you before the visit.";
@@ -1709,10 +1815,13 @@ export function postBookingAddressAlert(r: PostBookingAddressResult): string {
 // The model's free text used to be sent as-is — even when the scheduler delete
 // FAILED, the client still got a reassuring goodbye and the seller still drove
 // out. Two short sentences, no dashes, no emojis (owner rules).
-export function cancellationConfirmedMessage(lang: "es" | "en", dateStr: string, timeStr: string): string {
+export function cancellationConfirmedMessage(lang: Lang, dateStr: string, timeStr: string): string {
   const { weekday, month, day } = ymd(dateStr);
   const time = /^\d{1,2}:\d{2}/.test((timeStr || "").trim()) ? fmt12(timeStr.trim().slice(0, 5)) : (timeStr || "").trim();
-  const atTime = time ? (lang === "es" ? ` a las ${time}` : ` at ${time}`) : "";
+  const atTime = time ? (lang === "en" ? ` at ${time}` : lang === "es" ? ` a las ${time}` : ` às ${time}`) : "";
+  if (lang === "pt") {
+    return `Sem problema, sua visita de ${DAY_NAMES_PT[weekday]} dia ${day} de ${MONTH_NAMES_PT[month]}${atTime} foi cancelada. Quando você estiver pronto é só me escrever por aqui e agendamos de novo no dia que ficar melhor para você, estamos à disposição.`;
+  }
   if (lang === "es") {
     return `Sin problema, tu visita del ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${atTime} quedó cancelada. Cuando estés listo solo escríbeme por aquí y agendamos de nuevo el día que mejor te quede, quedamos a la orden.`;
   }
@@ -1721,7 +1830,8 @@ export function cancellationConfirmedMessage(lang: "es" | "en", dateStr: string,
 
 // The scheduler delete FAILED (or blew up): never claim the visit is cancelled.
 // Honest handoff — the owner gets the siren alert and cancels by hand.
-export function cancellationHandoffMessage(lang: "es" | "en"): string {
+export function cancellationHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Entendido, já passei seu pedido de cancelamento para o Ozzi e ele te confirma em seguida. Quando você estiver pronto agendamos uma nova visita no dia que ficar melhor para você.";
   return lang === "es"
     ? "Entendido, ya pasé tu solicitud de cancelación a Ozzi y él te la confirma enseguida. Cuando estés listo agendamos una nueva visita el día que mejor te quede."
     : "Got it, I sent your cancellation request to Ozzi and he will confirm it with you right away. Whenever you're ready we can set up a new visit on the day that works best for you.";
