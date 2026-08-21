@@ -104,6 +104,25 @@ async function main() {
   const adLoc = await ai([{ role: "user", content: "Dónde te encuentras\n\n[Client replied to our ad]" + NOTE }]);
   ck("'Dónde te encuentras' + ad note → still the ES location opener", adLoc === OPENER_LOCATION_ES, adLoc);
 
+  // ── 5c. question the opener does NOT answer → model, never the canned line ──
+  // 2026-08-21 sweep: 25 first messages in 7 days carried a real question and
+  // got the canned opener over it (licensed? smaller projects? free estimates?).
+  console.log("\n[5c] first-message question beyond the opener → real answer (not canned)");
+  const ALL_CANNED = [OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT];
+  const beyondCases = [
+    "Are you guys licensed? I’m looking to do some flooring",
+    "Hello, do you do smaller projects? I need to replace a portion of my flooring but not the whole thing",
+    "Que material están colocando??",
+    "Do you remove any existing rugs???",
+  ];
+  for (const q of beyondCases) {
+    const got = await ai([{ role: "user", content: q + "\n\n[Client replied to our ad]" + NOTE }]);
+    ck(`"${q.slice(0, 50)}…" → NOT a canned opener`, !ALL_CANNED.includes(got) && got.trim().length > 0, got);
+  }
+  // …but price/how-much questions are the opener's home turf and stay canned.
+  ck("'how much per sqft?' still gets the canned type-ask", (await ai([{ role: "user", content: "how much per sqft?" + NOTE }])) === OPENER_EN);
+  ck("'Hola?' (greeting with ?) still gets the canned ES opener", (await ai([{ role: "user", content: "Hola?" + NOTE }])) === OPENER_ES);
+
   // ── 6. wiring: the opener helpers are reachable via the shared brain ───────
   console.log("\n[6] source wiring");
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");

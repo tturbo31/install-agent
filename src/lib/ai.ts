@@ -283,7 +283,9 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // A first message that already declares 500+ sqft skips the canned opener
     // entirely (OPENER EXCEPTION): the model must acknowledge the size and
     // propose the free visit.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text)) return openerMessage(last.content);
+    // ...and a first message whose question the opener does NOT answer goes to
+    // the model too (2026-08-21 sweep) — see questionBeyondOpener.
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !questionBeyondOpener(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -934,7 +936,7 @@ export function openerLang(text: string): "en" | "es" | "pt" {
   // "dónde/donde", "ubicación/ubicados" and the "encuentr-" verb stem (PT stem
   // is "encontr-") pin Spanish for location questions — "Dónde te encuentras"
   // used to fail both checks and get the ENGLISH opener (2026-08-21).
-  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o|d[oó]nde|ubicaci[oó]n|ubicad[oa]s?|encuentr\w*|zonas?|trabaja[ns]?)\b/.test(t)) return "es";
+  if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o|d[oó]nde|ubicaci[oó]n|ubicad[oa]s?|encuentr\w*|zonas?|trabaja[ns]?|est[aá]n)\b/.test(t)) return "es";
   return "en";
 }
 
@@ -949,6 +951,26 @@ export function openerMessage(text: string): string {
 // went silent right after the generic opener ignored their tapped FAQ).
 const AD_FAQ_PROCESS = /\bwhat(?:'?s| is)?\s+the\s+installation\s+process\b|\bhow\s+does\s+the\s+installation\s+work\b|\bc[oó]mo\s+es\s+el\s+proceso\b|proceso\s+de\s+instalaci[oó]n/i;
 const AD_FAQ_DISCOUNT = /\bdiscounts?\b[^.!?\n]{0,40}\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?|jobs?)\b|\b(?:large|larger|big|bigger)\s+(?:spaces?|areas?|projects?)\b[^.!?\n]{0,20}\bdiscounts?\b|\bdescuentos?\b[^.!?\n]{0,40}\b(?:espacios?|[aá]reas?|proyectos?)\s+(?:m[aá]s\s+)?grandes?\b/i;
+// OPEN-QUESTION BACKSTOP (2026-08-21 sweep: 25 first messages in 7 days carried
+// a real question and got the canned opener over it — "Are you guys licensed?",
+// "Do you do smaller projects?", "Do you give free estimates?", "Que material
+// están colocando??"). Price / how-it-works / what-material questions are the
+// opener's home turf ("which type?" IS the first step of that answer) and keep
+// the deterministic opener; ANY other question in the first message must reach
+// the model, which answers it in the client's own language and folds in the
+// type question naturally. The FAQ-aware location/process/discount/inclusions
+// branches run BEFORE this is consulted, so they stay deterministic.
+export function questionBeyondOpener(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  // A bare "Hola?"/"Hello??" is a greeting, not a question.
+  if (isBareGreeting(t)) return false;
+  const interrogative =
+    /\?|(?:^|[\s¡¿])(?:where|when|why|who|do\s+yo?u|are\s+you|can\s+you|does\b|hacen\b|tienen\b|d[oó]nde|donde|cu[aá]ndo|c[oó]mo|por\s*qu[eé]|onde|quando|como|porqu[eê]|voc[eê]s|ustedes)(?![a-zà-ÿ])/i.test(t);
+  if (!interrogative) return false;
+  return !(PROMO_PRICE.test(t) || HOW_WORK.test(t) || PRODUCT_TYPE_Q.test(t));
+}
+
 // "Where are you located?" typed as the first message — a direct question the
 // generic opener used to steamroll (Tom Kiper, 2026-07-29: asked twice, got the
 // type-ask opener once and then dead air). Answer + type-ask, zero-token.
@@ -1024,7 +1046,7 @@ const HOW_WORK = /how\s+(?:much|does\s+(?:it|this|that|your|the)\s+\w*\s*work|do
 // re-asks a plural/misspelled/shorthand type the client already gave.
 const SPECIFIC_TYPE = /\b(tiles?|v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|oak(?![\s-]?look)|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|carpets?|carpetes?|carpeting|alfombras?|moquetas?|alcatifas?|marble|m[aá]rmol|m[aá]rmore|azulejos?|lvp|lvt|spc)\b/i;
 const SEE_OR_COLOR = /\b(photo|picture|image|catalog|colou?r|grey|gray|style|sample|show me|wood.?look|stone.?look|tile.?look|marble.?look|website|instagram)\b/i;
-const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çc]|repair|fix\b|hiring|\bjob\b|trabajo|emprego|baseboards?|quarter\s*round|rodap[ée]s?|z[oó]calos?)\b/i;
+const OTHER_TOPIC = /\b(bathroom|ba[ñn]o|banheiro|remodel|reforma|renovat|permit|licen[çcs]|repair|fix\b|hiring|\bjob\b|trabajo|emprego|baseboards?|quarter\s*round|rodap[ée]s?|z[oó]calos?)\b/i;
 
 export function isFlooringInquiry(text: string): boolean {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
@@ -1744,7 +1766,10 @@ export async function getAIResponse(
     const excludedTopic =
       SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
       OTHER_TOPIC.test(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
-    if (!largeFirstMessage && !carpetFirstMessage && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    // questionBeyondOpener: a first-message question the opener does not answer
+    // (licensed? smaller projects? free estimates?) reaches the model instead of
+    // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
+    if (!largeFirstMessage && !carpetFirstMessage && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(lastMsg.content);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
