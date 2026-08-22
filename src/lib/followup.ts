@@ -144,6 +144,12 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
   if (!lastUser) return no("no-user-message");
   if (isClientDeferral(lastUser.content)) return no("client-deferred");
 
+  // A client who told us to go away / stop messaging / threatened a spam
+  // report — ANYWHERE in the history — is never nudge-eligible (2026-08-22,
+  // "No. Get away from me" case). A re-engagement text to that person is
+  // exactly the spam they threatened to report.
+  if (messages.some((m) => m.role === "user" && isHostileRejection(strip(m.content)))) return no("client-rejected");
+
   const win = WINDOW_H[channelOfIgsid(igsid)];
   const ageH = (nowMs - Date.parse(lastUser.created_at)) / H;
   if (!Number.isFinite(ageH)) return no("bad-timestamp");
@@ -172,7 +178,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage } from "@/lib/facebook";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
-import { removeDashes, removeEmojis, stripWrappingQuotes } from "@/lib/ai";
+import { removeDashes, removeEmojis, stripWrappingQuotes, isHostileRejection } from "@/lib/ai";
 import { promisesDiscount } from "@/lib/quote-followup";
 
 // ─── Nudge personalizada pela IA (2026-07-17) ───────────────────────────────

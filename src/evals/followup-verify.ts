@@ -68,6 +68,20 @@ check("'when I'm ready I'll reach out' is a deferral", isClientDeferral("It's ok
 check("'not interested' is a deferral", isClientDeferral("no thanks, not interested"));
 check("'Vinyl, whole house' is NOT a deferral", !isClientDeferral("Vinyl, the whole house"));
 
+console.log("\n── 3b. Hostile / stop-contact client is NEVER followed up ──");
+// 2026-08-22 ("No. Get away from me"): even if the conversation somehow ends
+// on our scheduling ask, any hostility/stop from the client anywhere in the
+// history kills eligibility — a re-engagement text to that person is exactly
+// the spam they threatened to report.
+const hostileHistory: FollowupMsg[] = [
+  m("user", "No. Get away from me", 10),
+  m("assistant", OPENER, 10),
+  m("user", "Reporting you for spam", 9.5),
+  m("assistant", VISIT_OFFER, 9.4),
+];
+d = decideFollowup("fb_9", hostileHistory, NOW);
+check("'get away from me' in history → blocked (client-rejected)", !d.eligible && d.reason === "client-rejected", d.reason);
+
 console.log("\n── 4. Bot already closed the loop → no contradictory nudge ──");
 check("'reach out whenever you're ready' closes the loop", botClosedTheLoop("No problem, just reach out whenever you're ready and we'll get everything set up!"));
 check("'team will reach out' handoff closes the loop", botClosedTheLoop("Thanks for your message! Let me get our team to reach out, someone will get right back to you."));

@@ -118,8 +118,12 @@ async function main() {
     const aiIdx = src.indexOf("await getAIResponse(");
     ck(`${tag}: nudge determinístico existe`, nudgeIdx > 0);
     ck(`${tag}: nudge decide ANTES da chamada de IA`, nudgeIdx > 0 && aiIdx > 0 && nudgeIdx < aiIdx);
-    const trecho = src.slice(nudgeIdx, nudgeIdx + 700);
-    ck(`${tag}: nudge é enviado E gravado no histórico`, /content: retapNudge/.test(trecho));
+    // 1000 e não 700: o comentário do outbox (2026-08-10) no webhook IG empurra
+    // o insert para além dos 700 chars.
+    const trecho = src.slice(nudgeIdx, nudgeIdx + 1000);
+    // O insert ganhou o sufixo SEND_FAILED (outbox, 2026-08-10): o content é
+    // "nudgeSent.ok ? retapNudge : retapNudge + SEND_FAILED_DB_SUFFIX".
+    ck(`${tag}: nudge é enviado E gravado no histórico`, /content:\s*(?:nudgeSent\.ok\s*\?\s*)?retapNudge/.test(trecho));
   }
 
   // ── B. quote-reply: pedido de reenvio devolve o total na hora ──────────────

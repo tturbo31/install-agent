@@ -285,7 +285,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // propose the free visit.
     // ...and a first message whose question the opener does NOT answer goes to
     // the model too (2026-08-21 sweep) — see questionBeyondOpener.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !questionBeyondOpener(text)) return openerMessage(last.content);
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !questionBeyondOpener(text) && !mentionsRejection(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -1379,6 +1379,194 @@ export function isJobSeeker(text: string): boolean {
   return JOB_SEEKER_PATTERNS.some((p) => p.test(t));
 }
 
+// ─── Rejection / hostility → total silence ─────────────────────────────────
+// fb_27777958491826513 (2026-08-22): the client's FIRST message was "No. Get
+// away from me" and the ad-context leg still fired the canned promo opener —
+// nothing in the pipeline read the client's words, and their next messages
+// were "Reporting you for spam" and an insult. 29 first-contact victims in
+// the 7-day sweep ("Stop", "No", "not interested", "Seriously piss off"...).
+// A client who tells us to go away gets NO reply at all: a promo is fuel for
+// a real spam report (Meta counts those against the Page), and even an
+// apology is one more unwanted message.
+//
+// PRECISION-FIRST, three families with surgical exceptions (the adversarial
+// sweep of 2026-08-22 killed the naive one-list version: "get away with
+// vinyl", "take me off the schedule", "no me hablen en ingles" and "my
+// neighbor reported you did an amazing job" were all being silenced):
+//  • HOSTILE_CORE — insults / f-off / go-away-AT-US. No exceptions.
+//  • STOP_CONTACT — stop/don't-message-me. EXCEPT when a channel/time/language
+//    preference or alternative is attached ("call me instead", "en español",
+//    "before 9am", "my new number") — that is a preference, the model answers.
+//  • SPAM_ACCUSATION — report/spam/scam/estafa/golpe threats. EXCEPT when the
+//    message carries a "?": "esto es spam o es real?" / "no son una estafa
+//    verdad?" is a suspicious-but-interested lead the model reassures.
+// When in doubt the tie always breaks toward the MODEL (which reads the
+// words) — never toward the canned opener, never toward silencing a real
+// client.
+const HOSTILE_CORE: RegExp[] = [
+  // EN — aimed at us ("get away with vinyl" / "stay away from the pool area"
+  // never match: the target must be me/us)
+  /\b(?:get|stay|keep)\s+(?:the\s+)?(?:f\W{0,2}(?:u\W{0,2})?c?k(?:ing)?\s+|hell\s+|tf\s+)?away\s+from\s+(?:me|us)\b/i,
+  // "we go away for the summer / in June" is travel, not hostility
+  /\bgo\s+away\b(?!\s+(?:for|in|on|to|this|next|that|during|until|till))/i,
+  /\bleave\s+(?:me|us)\s+(?:the\s+)?(?:f\W{0,2}(?:u\W{0,2})?c?k(?:ing)?\s+|tf\s+|hell\s+)?(?:alone|be)\b/i,
+  /\bf\W{0,2}(?:u\W{0,2})?c?k\s*(?:off|you|u\b|this)/i,
+  /\b(?:f|eff)\s+(?:off|you|u)\b/i,
+  /\bscrew\s+(?:you|off)\b/i,
+  /\bpiss\s+off\b|\bgtfo\b|\bstfu\b|\bgo\s+to\s+hell\b|\bget\s+off\s+my\s+phone\b/i,
+  // "get lost" only as the ENTIRE message — "if you get lost just call me
+  // when you get to the gate" is a booked client giving directions
+  /^[\s.,!]*(?:get\s+lost|buzz\s+off|blocked(?:\s+and\s+reported)?|chega|vaza|basta|ya\s+basta)[\s.,!]*$/i,
+  /\byou(?:'?re|\s+are|r)\s+(?:trash|garbage|pathetic|a\s+joke|the\s+worst|horrible|terrible)\b/i,
+  // ES
+  /\bd[eé]j[ea](?:me|nme|nos)\s+(?:en\s+paz|tranquil[oa]s?)\b/i,
+  /\bl[aá]rg(?:ate|uense)\b/i,
+  // "váyase derecho por la calle 8" is directions to the client's house
+  /\bv[aá]ya(?:n)?se\b(?!\s+(?:derecho|recto|por|a\s|hasta|hacia))/i,
+  /\bno\s+(?:me\s+)?jodas?\b|\bdeja\s+de\s+(?:chingar|fregar|joder)\b/i,
+  // PT — "NÃO me esquece" is a client chasing the quote; "sai fora DO meu
+  // orçamento" is a price objection
+  /\b(?:me|nos)\s+deixe[m]?\s+em\s+paz\b|\bme\s+deixa\s+em\s+paz\b/i,
+  /(?<!n[aã]o\s)\bme\s+esquece\b/i,
+  /\bsai\s+fora\b(?!\s+d[oa])/i,
+  /\bsome\s+daqui\b|\bn[aã]o\s+enche\b|\bpar[ae]\s+com\s+isso\b|\bpar[ae]\s+de\s+encher\b/i,
+];
+// Stop-contact requests. "stop by" / "stop the installation" never match (the
+// verb list is contact-only); "stop sending the crew" doesn't either (send/
+// write/hit require a me/us-style object).
+const STOP_CONTACT: RegExp[] = [
+  /\b(?:stop|quit)\s+(?:messag\w*|msg\w*|te?xt\w*|contact\w*|dm\w*|spamm?\w*|bother\w*|harass\w*|blowing\s+up)\b/i,
+  /\b(?:stop|quit)\s+(?:send\w*|writ\w*|hit\w*)\s+(?:(?:to|up)\s+)?(?:me|us|my\s+line|stuff|messages?|texts?|msgs?|any\w*|more)\b/i,
+  /\b(?:stop|quit)\s+reach\w*(?:\s+out)?\b/i,
+  /\b(?:don'?t|do\s+not|never)\s+(?:message|msg|te?xt|contact|write\s+(?:to\s+)?|dm|hit)\s*(?:me|us|this\s+number|my\s+(?:number|phone|line))\b/i,
+  /\bdon'?t\s+send\s+(?:me|us)\s+(?:any\w*|more|messages?|texts?|stuff)\b/i,
+  // bare / polite "stop" as the whole message ("please stop", "stop already")
+  /^[\s.,!]*(?:pl(?:ea)?[sz]e?\s+)?stop(?:\s+(?:it|already|please|pls|plz))*[\s.,!]*$/i,
+  /^[\s.,!]*no\s+more\s+(?:messages?|texts?|msgs?|spam)[\s\w.,!]*$/i,
+  /\bstop\s+with\s+the\s+(?:messages?|texts?|spam)\b/i,
+  /\bunsubscribe\b/i,
+  /\b(?:remove|take|delete)\s+(?:me|my\s+number)\s+(?:off|from|out\s+of)\b[^.!?\n]{0,30}\b(?:lists?|contacts?|database|system|file)\b/i,
+  /\blose\s+my\s+number\b/i,
+  // ES — imperative with OR without the object pronoun ("no molesten por
+  // favor"); "no me mandaron el precio" (past-tense complaint) never matches
+  /\b(?:ya\s+)?no\s+(?:me\s+|nos\s+)?(?:escriba[sn]?|moleste[sn]?|contacte[sn]?|hable[sn]?|mande[sn]?\s+(?:m[aá]s\s+)?(?:mensajes?|nada)|env[ií]e[sn]?\s+(?:m[aá]s\s+)?mensajes?)\b/i,
+  /\bno\s+(?:escriban?|molesten?|manden?)\s+m[aá]s\b/i,
+  /\bdeje[n]?\s+de\s+(?:escribir|molestar|mandar|contactar)(?:me|nos)?\b/i,
+  // PT — coloquial "manda" and singular "mensagem" both covered
+  /\bpar(?:e[m]?|a)\s+de\s+me\s+(?:mandar|escrever|incomodar|perturbar|procurar)\b/i,
+  /\bn[aã]o\s+me\s+mand[ae][mns]?\s+(?:mais\s+)?mensage[mn]s?\b/i,
+  /\bme\s+tira\s+dessa\s+lista\b|\btira\s+meu\s+n[uú]mero\b/i,
+];
+// A stop-contact phrase with one of these attached is a PREFERENCE (channel /
+// schedule / language / another person or number), not a rejection — route to
+// the model, which accommodates it: "don't text me, call me instead", "no me
+// hablen en ingles", "stop texting me here, whatsapp me", "quit bothering my
+// tenant, coordinate with me", "deje de mandar mensajes porque estaba de
+// viaje, todavia me interesa".
+const CONTACT_PREFERENCE = /\b(?:call|calling|ll[aá]m[aeo]\w*|ligue?m?|liga\w*|whatsapp|wpp|instead|rather|before|after|until|morning|night|tonight|\d{1,2}\s*(?:am|pm)|english|spanish|portuguese|ingl[eé]s|espa[ñn]ol|portugu[eê]s|tenant|inquilino|esposo|esposa|marido|mujer|wife|husband|old\s+number|new\s+(?:number|account|phone)|other\s+number|este\s+n[uú]mero|antes\s+de|despu[eé]s\s+de|depois\s+de|mejor|melhor|celular|keep\s+my|appointment|visita?|cita|reminders?|already\s+booked|porque|pero|but\b|todav[ií]a|a[uú]n|ainda|estaba|interesa|quiero|quero)\b/i;
+// Spam/report/scam accusations and threats. A "?" anywhere turns these into a
+// suspicious-but-interested question that deserves reassurance, not silence.
+const SPAM_ACCUSATION: RegExp[] = [
+  // "my neighbor reported you did an amazing job" (reported speech) must not
+  // match: only present/future report-you forms, plus "reported as spam"
+  /\breport(?:ing)?\s+(?:you\b|y'?all|u\b|your\s+(?:page|account|profile|number|business)|this\s+(?:page|account|profile|number|business)|this\s+to\s+(?:facebook|fb|meta|instagram))/i,
+  /\breported?\s+as\s+spam\b/i,
+  /\b(?:this|it)\s+is\s+spam\b|\bit'?s\s+(?:all\s+)?spam\b|\bspamming\s+(?:me|us|people|everyone)\b/i,
+  /\byou(?:'?re|\s+are|r|\s+guys\s+are|\s+all\s+are)\s+(?:all\s+)?(?:a\s+)?(?:spam+er|scam+er)s?\b/i,
+  /\b(?:this|it)\s*(?:is|'?s)\s+a\s+(?:scam|fraud)\b|\btotal\s+scam\b|\bscam\s+alert\b/i,
+  /\bscamming\s+(?:me|us|people|everyone)\b/i,
+  /^[\s.,!]*(?:spam+|scam+(?:mers?)?|spammers?)[\s.,!]*$/i,
+  /\bthis\s+is\s+harassment\b/i,
+  /\b(?:i'?m|i\s+am|about\s+to|gonna|going\s+to)\s+block(?:ing)?\s+(?:you\b|this\s+(?:page|number|account))/i,
+  // ES — "vou denunciar meu vizinho" (third party) never matches: the target
+  // must be us; enclitic "reportarlos" covered
+  /\b(?:l[oa]s?|te)\s+voy\s+a\s+(?:reportar|denunciar|bloquear)\b|\bvoy\s+a\s+(?:reportar|denunciar|bloquear)l[oa]s\b/i,
+  /\bes(?:to)?\s+es\s+spam\b|\bson\s+(?:unos?\s+)?estafadores\b|(?<!\bno\s)\bes\s+una\s+estafa\b/i,
+  // PT
+  /\bvou\s+(?:te|voc[eê]s?|os)\s+(?:denunciar|bloquear)\b|\bvou\s+(?:denunciar|bloquear)\s+(?:voc[eê]s?|essa?\s+p[aá]gina|isso)\b/i,
+  // JS \b never matches before an accented letter, so "é golpe" needs an
+  // explicit start/space anchor instead of \b.
+  /\bisso\s+[eé]\s+spam\b|(?:^|[\s.,!¡¿])(?<!n[aã]o\s)(?<!\bou\s)[eé]\s+golpe\b|\bs[aã]o\s+golpistas\b/i,
+];
+
+// Explicit hostility / stop-contact / spam-accusation — silences at ANY point
+// in the conversation (also consumed by the follow-up sweep: a client who sent
+// any of this is never nudge-eligible).
+export function isHostileRejection(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  if (HOSTILE_CORE.some((p) => p.test(t))) return true;
+  if (!/\?/.test(t) && SPAM_ACCUSATION.some((p) => p.test(t))) return true;
+  return STOP_CONTACT.some((p) => p.test(t)) && !CONTACT_PREFERENCE.test(t);
+}
+
+// Polite declines — a softer family that only silences the very FIRST contact
+// (an accidental ad tap being declined). Mid-conversation these go to the
+// model, which closes politely.
+const POLITE_DECLINE_PATTERNS: RegExp[] = [
+  /\b(?:not|no\s+longer)\s+interested\b/i,
+  /\bno\s+(?:estoy|estamos)\s+interesad[oa]s?\b|\bno\s+me\s+interesa\b/i,
+  /\bn[aã]o\s+(?:tenho|temos|t[oô])\s+interesse\b|\bn[aã]o\s+me\s+interessa\b/i,
+  // "não quero O vinil, quero tile" keeps its answer (the interest check also
+  // rescues it); "no quiero nada" / "não quero" alone decline
+  /\bno\s+(?:quiero|necesito)\s+nada\b|\bn[aã]o\s+quero(?:\s+nada)?\b(?!\s+(?:o\b|a\b|de|que))/i,
+  /\bwrong\s+(?:number|person)\b|\bn[uú]mero\s+(?:equivocado|errado)\b/i,
+  /\bi\s+never\s+(?:contacted|messaged|texted)\s+(?:you|this)\b|\b(?:never|didn'?t)\s+sign(?:ed)?\s+up\b/i,
+  // The ENTIRE message is just a "no" (optionally + thanks), or the classic
+  // "I'm good / we're all set" brush-off.
+  /^[\s.,!¡¿?]*(?:no+|nope|nah)[\s.,!]*(?:thanks?|thank\s+(?:you|u)|ty|gracias|obrigad[oa])?[\s.,!?]*$/i,
+  /^[\s.,!]*(?:no+[\s.,!]*)?(?:i'?m|im|we'?re|were)\s+(?:good|all\s+set|fine|ok(?:ay)?)(?:\s+(?:thanks?|thank\s+(?:you|u)|ty))?[\s.,!]*$/i,
+];
+
+// Interest expressed in the same breath — negation-aware ("no quiero nada"
+// and "não quero" do NOT count; "quero piso vinílico" and "todavia me
+// interesa" do). Also plugs the SPECIFIC_TYPE gap for ES/PT forms it lacks
+// (madera, madeira, vinílico, porcelanato).
+const INTEREST_AFFIRM = /(?<!\bno\s)(?<!\bn[aã]o\s)\b(?:quiero|quero|necesito|nesesito|preciso|busco|gostaria|i\s+want|i\s+need|i'?d\s+like|me\s+interes+a\w*|estou\s+interessad\w*|estoy\s+interesad\w*)\b(?!\s+nada\b)|\b(?:todav[ií]a|a[uú]n|ainda|still)\s+(?:me\s+interes+a\w*|interested|quero|quiero|t[oô]\s+esperando|estou|espero)\b|\b(?:maderas?|madeiras?|vin[ií]licos?|porcelanatos?)\b/i;
+
+// Shared cleaner: strip the [SYSTEM: ...] note and ad placeholder lines
+// ("[Client replied to our ad]") so whole-message patterns can see "No." as
+// the entire real message.
+function cleanRejectionText(burst: string): string {
+  return normalizeSmartPunct(burst || "")
+    .split(/\n\n?\[SYSTEM:/)[0]
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !/^\[[^\]]*\]$/.test(l))
+    .join("\n")
+    .trim();
+}
+
+// ANY rejection-family wording present at all, exceptions ignored. Used by
+// the first-contact router to suppress every CANNED opener: when the burst is
+// rejection-flavored the reply is either total silence (isFirstContactRejection)
+// or the model reading the actual words — never the canned promo line.
+export function mentionsRejection(text: string): boolean {
+  const t = cleanRejectionText(text);
+  if (!t) return false;
+  return (
+    HOSTILE_CORE.some((p) => p.test(t)) ||
+    STOP_CONTACT.some((p) => p.test(t)) ||
+    SPAM_ACCUSATION.some((p) => p.test(t)) ||
+    POLITE_DECLINE_PATTERNS.some((p) => p.test(t))
+  );
+}
+
+// First-contact rejection → total silence. ANY interest signal alongside (a
+// question mark, a named type, a price ask, a phone/address, an affirmative
+// want) routes to the model instead — including for the hostile family: "How
+// do I know you're not scammers? Are you licensed?" is due diligence from a
+// hot lead, and a re-engaging client whose old hostile bubble still sits in
+// the un-answered burst ("Sorry about earlier. Do you install tile?") must
+// get an answer, not eternal silence.
+export function isFirstContactRejection(burst: string): boolean {
+  const t = cleanRejectionText(burst);
+  if (!t) return false;
+  if (/\?/.test(t) || SPECIFIC_TYPE.test(t) || PROMO_PRICE.test(t) || containsBookingInfo(t) || INTEREST_AFFIRM.test(t)) return false;
+  if (isHostileRejection(t)) return true;
+  return POLITE_DECLINE_PATTERNS.some((p) => p.test(t));
+}
+
 export function isPureClosing(text: string): boolean {
   const t = normalizeSmartPunct(text).trim();
   if (!t || t.length > 80) return false;
@@ -1674,6 +1862,30 @@ export async function getAIResponse(
     return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
   }
 
+  // REJECTION / HOSTILITY: read the client's words BEFORE any canned line
+  // fires (fb_27777958491826513, 2026-08-22: first message "No. Get away from
+  // me" still got the promo opener through the ad-context leg — the client
+  // then wrote "Reporting you for spam"). First contact judges the whole
+  // opening burst but ANY interest signal routes to the model instead of
+  // silence. Mid-conversation only the NEWEST bubble is judged: [REACT_ONLY]
+  // writes no assistant row, so the un-answered burst keeps old bubbles — a
+  // client who came back days after a "stop messaging me" with "actually I'd
+  // like the estimate" must reach the model, not be silenced by their own
+  // stale hostility. A cancel request or booking info always keeps its flow.
+  const lastAssistantIdx = messages.map((m) => m.role).lastIndexOf("assistant");
+  const unansweredBurst = unansweredUserBurst(messages);
+  if (unansweredBurst.trim()) {
+    const newestBubble = (messages[messages.length - 1]?.role === "user" ? messages[messages.length - 1].content : "").split(/\n\n?\[SYSTEM:/)[0];
+    const rejected =
+      lastAssistantIdx === -1
+        ? isFirstContactRejection(unansweredBurst)
+        : isHostileRejection(newestBubble) && !isCancelRequest(newestBubble) && !containsBookingInfo(newestBubble);
+    if (rejected) {
+      console.log("[AI] client rejected the contact — REACT_ONLY (total silence, no promo, no apology)");
+      return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+    }
+  }
+
   // TYPE FIRST: on first contact, when we do NOT yet know the flooring type
   // (no ad detection, client has not named one), open by asking which of the
   // three types they want — for a bare greeting AND for a generic pricing/promo/
@@ -1706,10 +1918,15 @@ export async function getAIResponse(
     // conversationFlooringType; skip the canned lines and let the model answer
     // with the CARPET INSTALLATION rules ($2.20/sqft labor only).
     const carpetFirstMessage = mentionsCarpet(burst);
+    // REJECTION-FLAVORED wording anywhere in the burst → no canned line at
+    // all (2026-08-22): either the guard above already silenced it, or an
+    // interest signal routed it here — and then the MODEL must read the words
+    // ("don't text me, call me instead" must never get the promo opener).
+    const rejectionish = mentionsRejection(burst);
     // AD-FAQ AWARE OPENERS: the tapped quick-reply question gets its one-line
     // answer folded into the SAME deterministic type-ask (still zero-token).
     // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
-    if (!largeFirstMessage && !carpetFirstMessage) {
+    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish) {
       const lang = openerLang(burst);
       // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
       // at once, so the single-topic chain below (first match wins) answered one
@@ -1769,7 +1986,7 @@ export async function getAIResponse(
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
-    if (!largeFirstMessage && !carpetFirstMessage && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(lastMsg.content);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };

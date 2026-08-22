@@ -9,7 +9,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getAIResponse, isBareGreeting, openerMessage, type ChatMessage } from "../lib/ai";
+import { getAIResponse, isBareGreeting, openerMessage, isHostileRejection, isFirstContactRejection, type ChatMessage } from "../lib/ai";
 import { OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT } from "../lib/system-prompt";
 
 function loadEnv() {
@@ -123,10 +123,168 @@ async function main() {
   ck("'how much per sqft?' still gets the canned type-ask", (await ai([{ role: "user", content: "how much per sqft?" + NOTE }])) === OPENER_EN);
   ck("'Hola?' (greeting with ?) still gets the canned ES opener", (await ai([{ role: "user", content: "Hola?" + NOTE }])) === OPENER_ES);
 
+  // ── 5d. rejection / hostility on first contact → TOTAL silence ─────────────
+  // fb_27777958491826513 (2026-08-22): "No. Get away from me" as the first
+  // message got the canned promo opener via the ad-context leg. Any rejection
+  // must produce [REACT_ONLY] deterministically — no promo, no apology, and
+  // NEVER a model call (inputTokens must be 0).
+  console.log("\n[5d] first-contact rejection → [REACT_ONLY], zero tokens");
+  const rejectionCases = [
+    // the reported case + the 7-day sweep's real victims
+    "No. Get away from me",
+    "No. Get away from me\n\n[Client replied to our ad]",
+    "Reporting you for spam",
+    "stop messaging me",
+    "Don’t message me",
+    "Fuck off",
+    "Leave me alone",
+    "Not interested",
+    "No thanks",
+    "No.",
+    "Nope",
+    "STOP",
+    "Seriously piss off",
+    "no me interesa",
+    "Déjenme en paz",
+    "não tenho interesse",
+    "para de me mandar mensagem",
+    "wrong number",
+    "unsubscribe",
+    // false negatives from the 2026-08-22 adversarial sweep
+    "please stop",
+    "stop sending me messages",
+    "stop hitting me up",
+    "stop reaching out",
+    "no more messages please",
+    "this is harassment",
+    "I'll report your page",
+    "im blocking you",
+    "reported as spam",
+    "spam",
+    "scam",
+    "f off",
+    "screw you",
+    "lose my number",
+    "no im good thanks",
+    "we're all set thanks",
+    "no molesten",
+    "no escriban mas",
+    "no quiero nada",
+    "es una estafa",
+    "váyanse",
+    "não quero",
+    "não me mande mais mensagem",
+    "não enche",
+    "para com isso",
+    "é golpe",
+    "vou te bloquear",
+  ];
+  for (const msg of rejectionCases) {
+    const r = await getAIResponse([{ role: "user", content: msg + NOTE }], null, null, null, false);
+    ck(`"${msg.split("\n")[0]}" → [REACT_ONLY] (silence)`, r.text === "[REACT_ONLY]" && r.inputTokens === 0, r.text);
+  }
+  // Follow-up abuse AFTER the (already sent) opener → still silence, not a model chat.
+  const midAbuse = await getAIResponse([
+    { role: "user", content: "No. Get away from me" },
+    { role: "assistant", content: OPENER_EN },
+    { role: "user", content: "Reporting you for spam" },
+    { role: "user", content: "Not even good flooring work, you're trash" + NOTE },
+  ], null, null, null, false);
+  ck("post-opener abuse burst → [REACT_ONLY] (silence)", midAbuse.text === "[REACT_ONLY]" && midAbuse.inputTokens === 0, midAbuse.text);
+
+  // ── 5e. rejection detector precision — real customers are NEVER silenced ───
+  // Every case here came from the 2026-08-22 adversarial sweep: 20/33 EN and
+  // 23/45 ES/PT realistic customer messages were being silenced by the naive
+  // pattern list. The owner's hardest rule: never silence a real client.
+  console.log("\n[5e] rejection detectors do NOT fire on real customers");
+  const notRejections = [
+    "Can you stop by tomorrow to measure?",
+    "no rush, whenever works",
+    "you never contacted me back",
+    "no me mandaron el precio",
+    "Is this a scam?",
+    "can we stop the installation for now?",
+    "I want to stop the vinyl order and do tile instead",
+    // adversarial sweep — hostile-family false positives
+    "Take me off the schedule for Friday, can we do Monday instead?",
+    "If you get lost just call me when you get to the gate",
+    "Can we get away with vinyl in the bathroom?",
+    "We go away for the summer in June, can we schedule before that?",
+    "My neighbor reported you guys did an amazing job on her floors",
+    "Don't text me, call me instead",
+    "Stop texting me here, message me on WhatsApp instead",
+    "Please don't message me before 9am, I work nights. But yes I want a quote",
+    "Please quit bothering my tenant, coordinate with me directly",
+    "Tell your guys to stay away from the pool area when they come",
+    "Unsubscribe me from the promo blasts but keep my appointment",
+    "stop texting my old number this is my new account",
+    "no me hablen en ingles porfavor, solo español",
+    "no me contacten por messenger, uso mas whatsapp",
+    "no me molesten antes de las 9 porfa, trabajo de noche",
+    "esto es spam o es real? me interesa el piso",
+    "no son una estafa verdad?",
+    "hay muchos estafadores por aqui, ustedes tienen licencia?",
+    "cuidado, hay estafadores usando el nombre de ustedes",
+    "perdon, deje de mandar mensajes porque estaba de viaje, todavia me interesa",
+    "vayase derecho por la calle 8 y mi casa queda a la derecha",
+    "não me esquece não, ainda to esperando o orçamento",
+    "esse valor sai fora do meu orçamento, tem opção mais barata?",
+    "vou denunciar meu vizinho na prefeitura, voces tiram a licença da obra?",
+  ];
+  for (const msg of notRejections)
+    ck(`"${msg.slice(0, 60)}" → NOT hostile`, !isHostileRejection(msg), msg);
+  const notFirstContactRejections = [
+    "Not interested in vinyl, do you do tile?",
+    "No, I need hardwood actually",
+    "Hola",
+    "Hi",
+    "How much per sqft?",
+    "How do I know you're not scammers? Are you licensed?",
+    "no me interesa madera, quiero piso vinilico",
+    "não tenho interesse em madeira, quero piso vinílico",
+    "Stop texting me here, whatsapp me at 5613334444",
+    "Do you install tile?\nstop texting my old number this is my new account",
+  ];
+  for (const msg of notFirstContactRejections)
+    ck(`"${msg.split("\n")[0].slice(0, 60)}" → NOT a first-contact rejection`, !isFirstContactRejection(msg), msg);
+  // ...but rejection-flavored wording still suppresses the CANNED opener: the
+  // model must read the words ("call me instead" gets a call answer, never
+  // the promo line).
+  const prefReply = await getAIResponse([{ role: "user", content: "Don't text me, call me instead\n\n[Client replied to our ad]" + NOTE }], null, null, null, false);
+  ck("'Don't text me, call me instead' → NOT the canned opener, NOT silence (model reads it)",
+    !ALL_CANNED.includes(prefReply.text) && prefReply.text !== "[REACT_ONLY]" && prefReply.text.trim().length > 0, prefReply.text);
+  // Re-engagement after a silenced first-contact rejection: the old hostile
+  // bubble is still in the un-answered burst, but the new interest must win.
+  const reengaged = await getAIResponse([
+    { role: "user", content: "No. Get away from me" },
+    { role: "user", content: "Sorry about earlier. Do you install tile? How much per sqft?" + NOTE },
+  ], null, null, null, false);
+  ck("re-engagement after first-contact rejection → answered (never eternal silence)",
+    reengaged.text !== "[REACT_ONLY]" && reengaged.text.trim().length > 0, reengaged.text);
+  // Mid-conversation re-engagement: stale hostility must not silence a client
+  // who changed their mind (only the NEWEST bubble is judged).
+  const midReengaged = await getAIResponse([
+    { role: "user", content: "Hi" },
+    { role: "assistant", content: OPENER_EN },
+    { role: "user", content: "stop messaging me" },
+    { role: "user", content: "Actually I changed my mind, I would like the free estimate for vinyl please" + NOTE },
+  ], null, null, null, false);
+  ck("mid-convo re-engagement after 'stop messaging me' → answered",
+    midReengaged.text !== "[REACT_ONLY]" && midReengaged.text.trim().length > 0, midReengaged.text);
+  // Cancel and booking info always beat mid-conversation silence.
+  const cancelNotSwallowed = await getAIResponse([
+    { role: "user", content: "Hi" },
+    { role: "assistant", content: OPENER_EN },
+    { role: "user", content: "stop messaging me, I want to cancel my appointment" + NOTE },
+  ], null, null, null, false);
+  ck("'stop messaging me, I want to cancel my appointment' → NOT silenced (cancel flow wins)", cancelNotSwallowed.text !== "[REACT_ONLY]" && cancelNotSwallowed.text.trim().length > 0, cancelNotSwallowed.text);
+
   // ── 6. wiring: the opener helpers are reachable via the shared brain ───────
   console.log("\n[6] source wiring");
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
   ck("getAIResponse sends the opener on a first-contact greeting", /isBareGreeting\(lastMsg\.content\)/.test(aiSrc) && /openerMessage\(lastMsg\.content\)/.test(aiSrc));
+  ck("getAIResponse consults the rejection guard before any canned opener", /isFirstContactRejection\(unansweredBurst\)/.test(aiSrc) && /isHostileRejection\(newestBubble\)/.test(aiSrc));
+  ck("first-contact router suppresses canned openers on rejection-flavored bursts", /mentionsRejection\(burst\)/.test(aiSrc) && /!rejectionish/.test(aiSrc));
 
   console.log(`\n=========== OPENER-VERIFY: ${pass} passed, ${fail} failed ===========`);
   if (fail) console.log("FAILED:", fails.join(" | "));
