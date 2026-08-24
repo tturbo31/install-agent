@@ -1294,9 +1294,13 @@ const VISIT_DETAIL_PATTERNS: RegExp[] = [
   /\bwhat\s+time\b/i,
   /\bwhen\s+(?:is|are|will|do)\b[^.!?\n]{0,30}\b(?:visit|appointment|arrive|arriving|come|coming|you)\b/i,
   /\bconfirm\b[^.!?\n]{0,30}\b(?:visit|appointment|time|day|date)\b/i,
-  // Spanish
+  // Spanish. Only the tú forms were listed until 2026-08-24: Maria Hernandez's
+  // "Todavía están viniendo hoy?" (ustedes progressive) matched nothing and she
+  // waited at home in the booked-silence. Cover viene/vienen/viniendo and the
+  // llegar/venir plural+future forms too — over-matching here only restates the
+  // client's own appointment, which is the safe direction.
   /\ba\s+qu[eé]\s+hora\b/i,
-  /\b(?:vienes|vendr[aá]s?|llegas|llegar[aá]s?)\b/i,
+  /\b(?:vienes?|vienen|viniendo|vendr[aá]s?|vendr[aá]n|llegas?|llegan|llegar[aá]s?|llegar[aá]n)\b/i,
   /\bsigue\s+en\s+pie\b/i,
   /\bcu[aá]ndo\s+(?:es|vienen?|llegan?|ser[ií]a)\b/i,
   /\bqu[eé]\s+d[ií]a\b/i,
@@ -1304,6 +1308,7 @@ const VISIT_DETAIL_PATTERNS: RegExp[] = [
   /\bque\s+horas\b/i,
   /\bqual\s+dia\b/i,
   /\bquando\s+(?:[eé]|vem|chega)\b/i,
+  /\b(?:est[aã]o?\s+vindo|v[eê]m\s+hoje)\b/i,
 ];
 
 export function isVisitDetailQuestion(text: string): boolean {

@@ -101,6 +101,12 @@ ck('"are we still on for tomorrow?"', isVisitDetailQuestion("are we still on for
 ck('"A que hora vienes?"', isVisitDetailQuestion("A que hora vienes?"));
 ck('"Sigue en pie la visita?"', isVisitDetailQuestion("Sigue en pie la visita?"));
 ck('"Que horas você chega?"', isVisitDetailQuestion("Que horas você chega?"));
+// Maria Hernandez (FB, 2026-08-23): ustedes/progressivo ficava mudo — só as
+// formas de tú estavam cobertas.
+ck('"Todavía están viniendo hoy?"', isVisitDetailQuestion("Todavía están viniendo hoy?"));
+ck('"Vienen hoy?"', isVisitDetailQuestion("Vienen hoy?"));
+ck('"Cuando llegan?"', isVisitDetailQuestion("Cuando llegan?"));
+ck('"Vocês estão vindo?"', isVisitDetailQuestion("Vocês estão vindo?"));
 ck('"Thank you" NÃO é pergunta de visita', !isVisitDetailQuestion("Thank you"));
 ck('"Wednesday at 1pm" NÃO é pergunta de visita', !isVisitDetailQuestion("Wednesday at 1pm"));
 ck('"What is the installation process?" NÃO é pergunta de visita', !isVisitDetailQuestion("What is the installation process?"));
