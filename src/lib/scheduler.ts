@@ -729,6 +729,24 @@ const LETS_DO_HOUR = /\blet'?s\s+do\s+(?:it\s+at\s+)?(\d{1,2})(?::\d{2})?\b/i;
 const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])\b/i;
 const SLOT_ORDINAL = /\b(?:the\s+)?(?:first|second|1st|2nd)\b|\b(?:el\s+|la\s+)?(?:primer[oa]?|segund[oa]?)\b|\bese\s+(?:horario|d[ií]a)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/i;
 const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfeito|claro|dale|vale|de acuerdo|works|sounds good|let'?s do it|hag[aá]moslo|me funciona|funciona|pode ser|combinado|est[aá]\s+bien|est[áa]\s+perfecto)\b/i;
+// "September 2nd" / "2 de septiembre" — a month-name date is a day reference
+// too (SLOT_DAY_REF only knows weekdays and today/tomorrow words).
+const SLOT_MONTH_DATE = new RegExp(`\\b(?:${MONTH_WORDS})\\s+\\d{1,2}\\b|\\b\\d{1,2}\\s+de\\s+(?:${MONTH_WORDS})\\b`, "i");
+
+// Every distinct clock HOUR (mod 12) a message names: "6pm", "6:00 pm", bare
+// "9:00" (colon keeps street numbers out), "a las 11" / "às 11", "9 o'clock".
+export function hoursNamed(text: string): Set<number> {
+  const out = new Set<number>();
+  const t = text || "";
+  for (const tok of t.matchAll(/\b(\d{1,2})(?::\d{2})?\s*(?:am|pm)\b|\b(\d{1,2}):\d{2}\b/gi)) {
+    out.add(parseInt(tok[1] ?? tok[2], 10) % 12);
+  }
+  for (const tok of t.matchAll(/(?:^|\W)(?:a\s+las?|[àa]s)\s+(\d{1,2})\b|\b(\d{1,2})\s*o'?clock\b/gi)) {
+    out.add(parseInt(tok[1] ?? tok[2], 10) % 12);
+  }
+  if (/\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i.test(t)) out.add(0);
+  return out;
+}
 
 export function clientConfirmedSlot(history: Array<{ role: string; content: string }>): boolean {
   const msgs = history ?? [];
@@ -778,6 +796,32 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
     if (distinct !== 1) continue;
     for (let i = idx + 1; i < end; i++) {
       if (msgs[i].role === "user" && SLOT_AFFIRMATIVE.test(strip(msgs[i].content))) return true;
+    }
+  }
+
+  // 3. CLIENT-PROPOSED slot (LISSETTE, IG 2026-08-24): the client opened with a
+  //    complete proposal — "are you available next Wednesday September 2nd at
+  //    6:00 pm?" — and the bot ACCEPTED it ("Yes, Wednesday September 2nd at 6pm
+  //    works perfectly! Can I get your name..."). Rules 1–2 never see it: the
+  //    proposal PRECEDES the bot's first clock-time message, so it sits outside
+  //    the pick window, the [BOOK] was blocked, and the canned "confirm the day
+  //    and time" ask went out to a client who had already given day, time, name,
+  //    address AND phone. A slot the client themselves proposed IS a slot the
+  //    client picked — but only when the bot's very next reply echoes the same
+  //    hour with an affirmative; a counter-offer ("Friday is full, I have
+  //    Saturday...") names other hours and must NOT unlock the booking.
+  for (let i = 0; i < msgs.length; i++) {
+    if (msgs[i].role !== "user") continue;
+    const t = strip(msgs[i].content);
+    if (!SLOT_DAY_REF.test(t) && !SLOT_MONTH_DATE.test(t)) continue;
+    const proposed = hoursNamed(t);
+    if (proposed.size === 0) continue;
+    for (let j = i + 1; j < msgs.length; j++) {
+      if (msgs[j].role !== "assistant") continue;
+      const reply = strip(msgs[j].content);
+      const echoed = hoursNamed(reply);
+      if (SLOT_AFFIRMATIVE.test(reply) && [...proposed].some((h) => echoed.has(h))) return true;
+      break; // only the bot's IMMEDIATE reply can accept the proposal
     }
   }
   return false;
@@ -851,6 +895,105 @@ export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promis
     console.error("needTimeChoiceMessage error:", err);
   }
   return needSlotConfirmationMessage(lang);
+}
+
+// ─── Promise-match guard: the [BOOK] must honor the LAST concrete promise ────
+// THE BUG (2026-08-23, MARIA HERNANDEZ, Messenger): the bot offered "hoy
+// domingo a las 11am, 1pm, ..., o el martes 25 a las 9am, 1pm, ...", the client
+// picked "Hoy ahora" and sent her address, the bot echoed the deal — "Perfecto,
+// tengo hoy a las 11am" — and then the model's [BOOK] silently wrote TUESDAY the
+// 25th at 1:00pm. Every existing guard passed: "hoy" is a valid day pick
+// (clientConfirmedSlot), 1pm appears in the offer list (bookedTimeSeen), and no
+// weekday word disagreed (reconcileBookingWeekday). The client sat home all
+// Sunday asking "Todavía están viniendo hoy?" while her visit quietly sat two
+// days later. This guard is the missing rule: whatever slot the conversation
+// last PROMISED (the newest message, either side, naming a single clock hour)
+// is the only slot a [BOOK] may write. On a contradiction we block and re-offer
+// that day's REAL open times instead of confirming a swap the client never saw.
+const PROMISE_TODAY = /\b(?:today|tonight|hoy|hoje)\b/i;
+// "mañana" is ONLY "tomorrow" when not "la/de/una mañana" (= the morning).
+const PROMISE_TOMORROW = /\b(?:tomorrow|amanh[ãa])\b|(?<!\b(?:la|de|una)\s)\bma[ñn]ana\b/i;
+// A number directly followed by am/pm/":" is an HOUR, never a day of month —
+// without the lookahead, "Tuesday 2pm" would parse as "day 2".
+const NOT_AN_HOUR = "(?!\\s*(?:am|pm|:))";
+const PROMISE_DOM_PATTERNS = [
+  new RegExp(`\\b(?:${WEEKDAY_WORDS})\\b[,\\s]+(?:the\\s+|el\\s+|d[ií]a\\s+)?([0-3]?\\d)(?:st|nd|rd|th)?\\b${NOT_AN_HOUR}`, "gi"),
+  new RegExp(`\\b(?:${MONTH_WORDS})\\s+([0-3]?\\d)\\b${NOT_AN_HOUR}`, "gi"),
+  new RegExp(`\\b([0-3]?\\d)${NOT_AN_HOUR}\\s+de\\s+(?:${MONTH_WORDS})\\b`, "gi"),
+  new RegExp(`\\bthe\\s+([0-3]?\\d)(?:st|nd|rd|th)\\b${NOT_AN_HOUR}`, "gi"), // English needs the ordinal suffix ("the 2 bedrooms" must not parse)
+  new RegExp(`\\b(?:el|d[ií]a)\\s+([0-3]?\\d)\\b${NOT_AN_HOUR}`, "gi"),
+];
+
+export function bookedSlotMismatchesPromise(
+  history: Array<{ role: string; content: string }>,
+  dateStr: string,
+  timeHHMM: string
+): { mismatch: boolean; promisedDate?: string; reason?: string } {
+  const tm = /^(\d{1,2}):(\d{2})/.exec((timeHHMM ?? "").trim());
+  if (!tm || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr || "")) return { mismatch: false };
+  const bookedH12 = parseInt(tm[1], 10) % 12;
+  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+
+  // The anchor is the NEWEST message carrying a slot signal: a clock hour (either
+  // side) or a day reference from the CLIENT (their late "mejor el miércoles"
+  // must supersede an older echo, not be contradicted by it).
+  const msgs = history ?? [];
+  let anchor: string | null = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const t = strip(msgs[i].content);
+    const hasHours = hoursNamed(t).size > 0;
+    const hasClientDay =
+      msgs[i].role === "user" &&
+      (SLOT_DAY_REF.test(t) || SLOT_MONTH_DATE.test(t) || weekdaysNamed(t).length > 0);
+    if (hasHours || hasClientDay) { anchor = t; break; }
+  }
+  if (anchor === null) return { mismatch: false };
+
+  // Hour: enforced only when the anchor names exactly ONE distinct hour — that
+  // is a concrete promise/pick, not a multi-slot offer.
+  const hours = hoursNamed(anchor);
+  const hourMismatch = hours.size === 1 && ![...hours].includes(bookedH12);
+
+  // Date: enforced only on ONE unambiguous signal — today, tomorrow, or a single
+  // day-of-month. Weekday words are reconcileBookingWeekday's job, not ours.
+  const saysToday = PROMISE_TODAY.test(anchor);
+  const saysTomorrow = PROMISE_TOMORROW.test(anchor);
+  const doms = new Set<number>();
+  for (const re of PROMISE_DOM_PATTERNS) {
+    for (const m of anchor.matchAll(re)) {
+      const n = parseInt(m[1], 10);
+      if (n >= 1 && n <= 31) doms.add(n);
+    }
+  }
+  const todayStr = easternTodayStr();
+  let promisedDate: string | undefined;
+  let dateMismatch = false;
+  const signalCount = (saysToday ? 1 : 0) + (saysTomorrow ? 1 : 0) + (doms.size === 1 ? 1 : 0);
+  if (signalCount === 1) {
+    if (saysToday) promisedDate = todayStr;
+    else if (saysTomorrow) promisedDate = addDaysStr(todayStr, 1);
+    else {
+      const dom = [...doms][0];
+      const anchorWeekdays = weekdaysNamed(anchor);
+      for (let d = todayStr, k = 0; k < 40; d = addDaysStr(d, 1), k++) {
+        const f = ymd(d);
+        if (f.day === dom && (anchorWeekdays.length !== 1 || f.weekday === anchorWeekdays[0])) {
+          promisedDate = d;
+          break;
+        }
+      }
+    }
+    if (promisedDate) dateMismatch = promisedDate !== dateStr;
+  }
+
+  if (!hourMismatch && !dateMismatch) return { mismatch: false };
+  return {
+    mismatch: true,
+    promisedDate,
+    reason:
+      `last promise says ${hours.size === 1 ? `hour ${[...hours][0] || 12} (mod 12)` : "no single hour"}` +
+      `${promisedDate ? ` on ${promisedDate}` : ""} but [BOOK] wrote ${dateStr} ${timeHHMM}`,
+  };
 }
 
 // Date context injected into the AI prompt — always Eastern, never UTC.

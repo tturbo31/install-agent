@@ -7,7 +7,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
+import { createBooking, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -92,6 +92,19 @@ async function processBookingCommand(
     if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(history, bookingData.time)) {
       console.warn(`[WA] booking blocked — time ${bookingData.time} never appeared in the conversation; asking client to choose`);
       return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+    }
+
+    // PROMISE-MATCH guard: the [BOOK] must honor the LAST concrete slot promise
+    // in the conversation (MARIA HERNANDEZ, FB 2026-08-23: the bot echoed
+    // "Perfecto, tengo hoy a las 11am" and the model silently booked Tuesday the
+    // 25th at 1pm — a day+time the offer list contained, so every other guard
+    // passed; the client waited all Sunday for a visit sitting two days later).
+    if (bookingData.date && bookingData.time) {
+      const pm = bookedSlotMismatchesPromise(history, bookingData.date, bookingData.time);
+      if (pm.mismatch) {
+        console.warn(`[WA] booking blocked — ${pm.reason}; re-offering real times`);
+        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date), booked: false };
+      }
     }
 
     // ── Reschedule: move the existing visit to the new date/time. Address/phone
