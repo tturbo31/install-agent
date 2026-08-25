@@ -19,12 +19,29 @@ export const OPENER_EN = "Hi, we work with luxury vinyl, tile, and hardwood floo
 export const OPENER_ES = "Hola, trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno. ¿Cuál te interesa?";
 export const OPENER_PT = "Olá, trabalhamos com piso vinílico de luxo, tile e hardwood, e temos uma promoção em cada um. Qual é a sua preferência?";
 
+// LANGUAGE-REQUEST OPENERS (caso Pedro Sanchez, Messenger, 2026-08-25): the
+// client's very first message was "En español" and the ad-context leg fired the
+// generic ENGLISH opener over it — the same thing happened to "Hablas español"
+// (21/08), "No inglés" (14/08) and "No sé inglés, si puede tráeselo en español"
+// (13/08); none of the four ever wrote again. openerLang() only knew greetings
+// and a few inquiry words, so a bare language request defaulted to English.
+// These variants CONFIRM the language the client asked for and ask the type in
+// that language, in the same deterministic zero-token message. They name tile +
+// hardwood so assistantAlreadyAskedType() counts them as the one type-ask.
+export const OPENER_LANG_ES = "Claro, con gusto te atiendo en español. Trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno, ¿cuál te interesa?";
+export const OPENER_LANG_PT = "Claro, com prazer te atendo em português. Trabalhamos com piso vinílico de luxo, tile e hardwood, e temos uma promoção em cada um, qual você prefere?";
+export const OPENER_LANG_EN = "Of course, English works. We work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each, which one are you interested in?";
+
 // SAFETY NET — used when the lead came from an ad but we have NOT confirmed which
 // flooring type the ad was for. The inclusions differ per product (vinyl includes
 // the material, tile and hardwood are labor only), so we must NEVER assume vinyl
 // and tell a tile lead the material is included. Ask the type instead — this is
 // the one answer that can never be wrong.
-export const WHAT_IS_INCLUDED_ASK_TYPE = "Hello! We run separate promotions for tile, vinyl, and hardwood, and what is included is a little different for each. Which one are you interested in, tile, vinyl, or hardwood?";
+// 3-day review 2026-08-25: the old wording ("what is included is a little
+// different for each") answered NOTHING — 15 Messenger/IG leads got it, 8 never
+// wrote again, one snapped "I have already sent you a message. I need to know
+// what type of material is…". Now it actually answers before asking the type.
+export const WHAT_IS_INCLUDED_ASK_TYPE = "Hello! It depends on the floor you pick: our vinyl promo already includes the flooring material, the installation labor, and the quarter round, while tile and hardwood cover the installation labor only and you supply the material. Which one are you interested in, tile, vinyl, or hardwood?";
 
 // AD-FAQ AWARE OPENERS (2026-07-15 review): the Meta ad quick-reply buttons send
 // known first messages ("What is the installation process?", "Do you offer any
@@ -69,13 +86,13 @@ const AD_FAQ_FRAGMENTS: Record<"en" | "es", Record<AdFaqTopic, string>> = {
     location: "we are based in Miami and serve all of South Florida, from Homestead to Jupiter",
     process: "we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish",
     discount: "larger spaces get our best pricing and the estimate visit is completely free",
-    inclusions: "what is included is a little different for each floor",
+    inclusions: "our vinyl promo already includes the material, labor, and quarter round, while tile and hardwood cover the installation labor only",
   },
   es: {
     location: "estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter",
     process: "movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar",
     discount: "los espacios grandes tienen nuestro mejor precio y la visita para el estimado es totalmente gratis",
-    inclusions: "lo que viene incluido cambia un poco según el piso",
+    inclusions: "la promo de vinyl ya incluye el material, la mano de obra y el quarter round, mientras que tile y hardwood cubren solo la mano de obra",
   },
 };
 const AD_FAQ_LEAD_IN = { en: "Great questions!", es: "¡Buenas preguntas!" };
@@ -123,6 +140,8 @@ CRITICAL: this answer is the VINYL offer (material included). If the flooring ty
 ---
 
 You are a flooring sales specialist for OzziFloors, a premium American flooring company in Miami, FL. Text like a real person: warm, fast, confident, expert. Never robotic or scripted.
+
+LANGUAGE: Always reply in the language the client writes in (English, Spanish, or Portuguese). If the client asks for a language or says they do not speak English ("en español", "hablas español", "no inglés", "em português", "do you speak Spanish"), switch to that language in THIS reply, briefly confirm it, and keep that language for the rest of the conversation even if a later message from them is short or mixes in English words. Never answer a language request in English.
 
 Short messages: 1 sentence when it covers the whole thought. 2 sentences ONLY when you need both an answer AND a forward question in the same message. NEVER 3 sentences. No standalone "Hello!" or "Hi!" — if you greet, combine it with the first sentence. No bullet points. No bold. No italic. No headers. No lists. No markdown. Plain text only.
 

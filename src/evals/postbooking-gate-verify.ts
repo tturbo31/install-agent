@@ -107,6 +107,13 @@ ck('"Todavía están viniendo hoy?"', isVisitDetailQuestion("Todavía están vin
 ck('"Vienen hoy?"', isVisitDetailQuestion("Vienen hoy?"));
 ck('"Cuando llegan?"', isVisitDetailQuestion("Cuando llegan?"));
 ck('"Vocês estão vindo?"', isVisitDetailQuestion("Vocês estão vindo?"));
+// Teresa (FB fbcbac15, 2026-08-23): double-checking the booked slot got the
+// booked-silence — restating the real date/time IS the answer.
+ck('"Thank you Ozzi and see you on Tuesday at 4:00 pm. Right?"', isVisitDetailQuestion("Thank you Ozzi and see you on Tuesday at 4:00 pm. Right?"));
+ck('"See you tomorrow?"', isVisitDetailQuestion("See you tomorrow?"));
+ck('"Saturday at 10am, correct?"', isVisitDetailQuestion("Saturday at 10am, correct?"));
+ck('"Nos vemos el martes a las 4?"', isVisitDetailQuestion("Nos vemos el martes a las 4?"));
+ck('"Thank you see you Saturday" (sem pergunta) NÃO é pergunta de visita', !isVisitDetailQuestion("Thank you see you Saturday"));
 ck('"Thank you" NÃO é pergunta de visita', !isVisitDetailQuestion("Thank you"));
 ck('"Wednesday at 1pm" NÃO é pergunta de visita', !isVisitDetailQuestion("Wednesday at 1pm"));
 ck('"What is the installation process?" NÃO é pergunta de visita', !isVisitDetailQuestion("What is the installation process?"));

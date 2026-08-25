@@ -97,6 +97,12 @@ async function main() {
   ck("detectLang ES", detectLang("hola quiero un estimado para mi cocina")==="es");
   ck("detectLang EN", detectLang("hello i want a quote for my kitchen please")==="en");
   ck("success ES/EN localized", bookingSuccessMessage("es").includes("Cita confirmada") && bookingSuccessMessage("en").includes("Appointment confirmed"));
+  // 2026-08-25: the confirmation RESTATES the booked day and time in the client's
+  // language (Ruth Erazo / Mrsmachadoo / Teresa, 3-day review 2026-08-25).
+  ck("success EN restates the day + time", /Appointment confirmed for Tuesday, August 25 at 3pm\./.test(bookingSuccessMessage("en", "2026-08-25", "15:00")), bookingSuccessMessage("en", "2026-08-25", "15:00"));
+  ck("success ES restates the day + time", /Cita confirmada para el martes 25 de agosto a las 3pm\./.test(bookingSuccessMessage("es", "2026-08-25", "15:00")), bookingSuccessMessage("es", "2026-08-25", "15:00"));
+  ck("success PT restates the day + time", /Visita confirmada para terça dia 25 de agosto às 3pm\./.test(bookingSuccessMessage("pt", "2026-08-25", "15:00")), bookingSuccessMessage("pt", "2026-08-25", "15:00"));
+  ck("success without a date keeps the plain wording", bookingSuccessMessage("en").startsWith("Appointment confirmed. "));
   ck("failure honest (no 'taken'/'ocupado')", !/taken|ocupad/i.test(bookingFailureHandoffMessage("es")) && /Ozzi/.test(bookingFailureHandoffMessage("es")));
   const waAsk = await ai(withSys([
     {role:"user",content:"toda la casa 1200 sqft"},

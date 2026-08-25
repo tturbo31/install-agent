@@ -18,6 +18,7 @@
  * Run: npx tsx src/evals/reasoning-leak-aug03-verify.ts
  */
 import { stripReasoningLeak } from "../lib/ai";
+import { sanitizeOutbound } from "../lib/quote-followup";
 
 let passed = 0, failed = 0; const fails: string[] = [];
 function ck(name: string, cond: boolean, detail = "") {
@@ -80,6 +81,22 @@ for (const legit of [
   "I still need a phone number to complete the booking, what's the best number to reach you?",
   "I still need the address before the visit to confirm the booking, so just send it over when you're ready.",
 ]) ck(`untouched: "${legit.slice(0, 56)}…"`, stripReasoningLeak(legit) === legit, stripReasoningLeak(legit));
+
+// 3-day review 2026-08-25: three NEW leak shapes reached clients.
+console.log("\n[3] leaks of 2026-08-23..25");
+const leakFb = "The type is still unknown here, but 1,900 sqft is already a large lead so no DM price regardless. I need to propose the visit, but I also don't know if they want vinyl, tile, or hardwood. I'll acknowledge the size, note that LVP can go right over existing tile, and propose the free in-person visit without giving a dollar figure. For 1,900 sqft I need to come measure in person to give you the best price, and the visit is completely free.";
+const cleanFb = stripReasoningLeak(leakFb);
+ck("fb a9a3e8da: internal monologue removed", !/no DM price|type is still unknown|I need to propose|I'll acknowledge|large lead/i.test(cleanFb), cleanFb);
+ck("fb a9a3e8da: the real answer survives", /For 1,900 sqft I need to come measure/.test(cleanFb), cleanFb);
+const leakWa = "Of course, next week works perfectly! I have Monday August 31st at 9am or 1pm, or Sunday August 30th... let me give you the right ones: Monday the 31st at 9am or 1pm, and Sunday the 31st does not exist. What day next week works best for you?";
+const cleanWa = stripReasoningLeak(leakWa);
+ck("wa R0t4ld3: 'let me give you the right ones… does not exist' removed", !/right ones|does not exist/i.test(cleanWa), cleanWa);
+const leakQuote = "Hi Angie, your quote of $2,320 does not have to be paid all at once. You can fill it out here: https://app.gerhearth.com/partners/ozzifloors. Any questions about the quote, just let me know. Wait, I need to copy the link exactly. Fill it out here: https://app.gethearth.com/partners/ozzifloors. Any questions about the quote, just reach out.";
+const cleanQuote = sanitizeOutbound(leakQuote);
+ck("quote follow-up: 'Wait, I need to copy the link exactly' removed", !/wait, i need/i.test(cleanQuote), cleanQuote);
+ck("quote follow-up: no misspelled hearth link", !/gerhearth|gohearth/i.test(cleanQuote), cleanQuote);
+ck("quote follow-up: canonical link appears exactly once", (cleanQuote.match(/app\.gethearth\.com\/partners\/ozzifloors/g) ?? []).length === 1, cleanQuote);
+ck("sanitizeOutbound: 'gohearth' typo alone is canonicalized", sanitizeOutbound("Apply here: https://app.gohearth.com/partners/ozzifloors and let me know.").includes("https://app.gethearth.com/partners/ozzifloors"), sanitizeOutbound("Apply here: https://app.gohearth.com/partners/ozzifloors and let me know."));
 
 console.log(`\n========== ${passed} passed, ${failed} failed ==========`);
 if (failed > 0) { console.log("FAILED:", fails.join(" | ")); process.exit(1); }

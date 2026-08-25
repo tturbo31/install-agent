@@ -213,7 +213,7 @@ async function processBookingCommand(
       // then silenced the client for good (Meylan Marrero, 2026-07-31).
       const pending = questionSwallowedByBooking(aiResponse, history);
       if (pending) console.log("[WA] answering the question sent with the booking details before confirming");
-      return { response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang), booked: true };
+      return { response: pending ? `${pending}\n\n${bookingSuccessMessage(lang, bookingData.date, bookingData.time)}` : bookingSuccessMessage(lang, bookingData.date, bookingData.time), booked: true };
     } else if (result.error === "already_booked") {
       console.warn("[WA] Duplicate booking blocked by scheduler guard");
       await supabaseAdmin

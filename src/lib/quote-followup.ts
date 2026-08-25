@@ -180,6 +180,15 @@ function stripAllTags(text: string): string {
 export function sanitizeOutbound(text: string): string {
   let out = stripReasoningLeak(stripAllTags(stripWrappingQuotes(removeEmojis(removeDashes(text ?? "")))));
   out = out.replace(/[ \t]{3,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  // The model once retyped the financing link ("app.gerhearth.com",
+  // "app.gohearth.com") and then corrected itself out loud ("Wait, I need to
+  // copy the link exactly." — Angie / R0t4ld3, 2026-08-24/25). Any hearth-looking
+  // URL becomes the canonical one, and when the message then carries the link
+  // twice only the first sentence with it survives.
+  out = out.replace(/https?:\/\/(?:app\.)?g\w*hearth\.com\/partners\/ozzifloors\/?/gi, "https://app.gethearth.com/partners/ozzifloors");
+  let linkSeen = 0;
+  out = out.replace(/[^.!?\n]*https:\/\/app\.gethearth\.com\/partners\/ozzifloors[^.!?\n]*[.!?]?\s*/g, (m) => (linkSeen++ === 0 ? m : ""));
+  out = out.replace(/[ \t]{2,}/g, " ").trim();
   return out.slice(0, MAX_MESSAGE_LENGTH);
 }
 

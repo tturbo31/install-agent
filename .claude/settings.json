@@ -55,7 +55,9 @@
       "Bash(node \"C:\\\\Users\\\\vicam\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-vicam-Downloads-Ozzi-floors-instagram-dm-agent\\\\fd837ae2-b676-4fbe-8abd-385aded4a80b\\\\scratchpad\\\\triage.mjs\" 5)",
       "Bash(node \"C:\\\\Users\\\\vicam\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-vicam-Downloads-Ozzi-floors-instagram-dm-agent\\\\fd837ae2-b676-4fbe-8abd-385aded4a80b\\\\scratchpad\\\\dump-convo.mjs\" af90456c-6072-4c82-a530-8e95a671f1ce)",
       "Bash(node \"C:\\\\Users\\\\vicam\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-vicam-Downloads-Ozzi-floors-instagram-dm-agent\\\\fd837ae2-b676-4fbe-8abd-385aded4a80b\\\\scratchpad\\\\dump-convo.mjs\" e810fc72-9039-4b79-aec7-e169d7765f5e ee499226-33cd-4ad1-b770-a2ecb92c9741)",
-      "Bash(node \"C:\\\\Users\\\\vicam\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-vicam-Downloads-Ozzi-floors-instagram-dm-agent\\\\fd837ae2-b676-4fbe-8abd-385aded4a80b\\\\scratchpad\\\\check-booking.mjs\" 1356458229947903)"
+      "Bash(node \"C:\\\\Users\\\\vicam\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-vicam-Downloads-Ozzi-floors-instagram-dm-agent\\\\fd837ae2-b676-4fbe-8abd-385aded4a80b\\\\scratchpad\\\\check-booking.mjs\" 1356458229947903)",
+      "Bash(node cdp-shot.mjs http://localhost:3457 390 844 mobile-sim.png \"nav button:nth-of-type\\(2\\)\")",
+      "Bash(node cdp-shot.mjs http://localhost:3457 1440 900 desktop-sim.png \"nav button:nth-of-type\\(2\\)\")"
     ]
   }
 }

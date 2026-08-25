@@ -55,6 +55,24 @@ function main() {
   ck("'yes Thursday at 9am works'", clientConfirmedSlot([
     A("I have Thursday at 9am open, does that work?"), U("yes Thursday at 9am works"), A("Perfect, address?"), U("123 NW 5th St, Miami FL 33125"),
   ]) === true);
+  // 3-day review 2026-08-25 (Carlos, Brittany, Anna — Messenger): a bare number
+  // that IS one of the offered hours is a pick; the canned "confirm the day and
+  // time" line went out up to 3x in a row to clients who had already answered.
+  ck("bare '3' after 'martes 25 tengo 3pm, 5pm o 6pm' → pick", clientConfirmedSlot([
+    U("25"), A("Para el martes 25 tengo 3pm, 5pm o 6pm, cual te queda mejor?"), U("3"),
+  ]), "returned false");
+  ck("bare '6' after 'Wednesday the 26th has 6pm or 8pm' → pick", clientConfirmedSlot([
+    A("Wednesday the 26th has 6pm or 8pm, which works better?"), U("6"),
+  ]), "returned false");
+  ck("'26th at 6' after '6pm or 8pm' → pick", clientConfirmedSlot([
+    A("Wednesday the 26th has 6pm or 8pm, which works better?"), U("26th at 6"),
+  ]), "returned false");
+  ck("bare '25' (a DAY, 1pm offered) is NOT a pick", !clientConfirmedSlot([
+    A("I have Monday the 24th at 1pm or Tuesday the 25th at 1pm, which day?"), U("25"),
+  ]), "returned true");
+  ck("bare '9' when only 6pm/8pm were offered is NOT a pick", !clientConfirmedSlot([
+    A("I have Wednesday at 6pm or 8pm, which works better?"), U("9"),
+  ]), "returned true");
   ck("'5pm today' (WhatsApp flow)", clientConfirmedSlot([
     A("I have today at 5pm or 7pm. What's your address and which time works?"), U("5pm today"), A("Perfect, address?"), U("123 Main St"),
   ]) === true);

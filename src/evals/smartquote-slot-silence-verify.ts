@@ -58,6 +58,19 @@ ck("'thanks, see you at 9:00' carrega hora → não é fechamento", !isPureClosi
 // A guarda não pode ter sido enfraquecida: agradecimento puro segue silenciado.
 ck("'Thank you so much!' segue sendo fechamento puro", isPureClosing("Thank you so much!"));
 ck("'Thank you so much!' com apóstrofo curvo em volta segue fechamento", isPureClosing("Ok thanks, I’ll think about it"));
+// 2026-08-24 (WA, quote follow-up): "pagaré con cheque, gracias" was a pure
+// closing → silence on a client saying HOW they will pay. Payment intent is
+// substance; a bare "I'll check and let you know" is still a closing.
+ck("'No hay problema, pagaré con cheque, gracias.' NÃO é fechamento (intenção de pagamento)", !isPureClosing("No hay problema, pagaré con cheque, gracias."));
+ck("'i don't need financing, thanks' NÃO é fechamento", !isPureClosing("i don't need financing, thanks"));
+ck("'Thanks, I'll pay in full' NÃO é fechamento", !isPureClosing("Thanks, I'll pay in full"));
+ck("'Ok gracias, pago con Zelle' NÃO é fechamento", !isPureClosing("Ok gracias, pago con Zelle"));
+ck("'Thanks, I'll check and let you know' segue fechamento puro", isPureClosing("Thanks, I'll check and let you know"));
+ck("'Ok gracias, te aviso' segue fechamento puro", isPureClosing("Ok gracias, te aviso"));
+// tronchris89 (IG, 2026-08-24): "Cancel for now thanks" was a pure closing → the
+// cancel request was silenced and the visit stayed on the calendar.
+ck("'Cancel for now thanks' NÃO é fechamento (pedido de cancelamento)", !isPureClosing("Cancel for now thanks"));
+ck("'Ok, reschedule please, thanks' NÃO é fechamento", !isPureClosing("Ok, reschedule please, thanks"));
 
 console.log("\n[3] clientConfirmedSlot — '9:00' sem am/pm é escolha de slot");
 const guilfordFull = [

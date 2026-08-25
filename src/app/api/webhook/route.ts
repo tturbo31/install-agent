@@ -281,7 +281,7 @@ async function processBookingCommand(
       const pending = questionSwallowedByBooking(aiResponse, history);
       if (pending) console.log("[IG] answering the question sent with the booking details before confirming");
       return {
-        response: pending ? `${pending}\n\n${bookingSuccessMessage(lang)}` : bookingSuccessMessage(lang),
+        response: pending ? `${pending}\n\n${bookingSuccessMessage(lang, bookingData.date, bookingData.time)}` : bookingSuccessMessage(lang, bookingData.date, bookingData.time),
         booked: true,
       };
     } else if (result.error === "already_booked") {

@@ -59,7 +59,10 @@ async function main() {
   console.log("   AI:", r1.replace(/\s+/g, " ").slice(0, 150));
   ck("answers (not silent)", r1.trim().length > 0, r1);
   ck("asks the flooring type (tile / vinyl / hardwood), never assumes vinyl", /tile/i.test(r1) && /vinyl/i.test(r1) && /hardwood/i.test(r1), r1);
-  ck("does NOT assert the vinyl flooring/quarter-round inclusions", !/quarter round/i.test(r1) && !/includes the flooring/i.test(r1), r1);
+  // The ask-type line states the inclusions PER TYPE (vinyl → material+labor+
+  // quarter round; tile/hardwood → labor only) and still asks the type — it must
+  // never present the vinyl package as THE package.
+  ck("vinyl inclusions are scoped to vinyl, tile/hardwood labor only (never a blanket vinyl claim)", /\bvinyl\s+promo\b[^.]{0,80}\bquarter round\b/i.test(r1) && /\btile\s+and\s+hardwood\b[^.]{0,60}\blabor\s+only\b/i.test(r1) && !/\bthe\s+promotional\s+package\s+already\s+includes\b/i.test(r1), r1);
   ck("no prices ($5/$2/over 1,000 sqft)", !/\$\s*\d/.test(r1) && !/over\s+1,?000/i.test(r1), r1);
   ck("does not leak the share note back to the client", !/\[Client shared/i.test(r1), r1);
 

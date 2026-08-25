@@ -162,11 +162,13 @@ async function main() {
   console.log("   →", qUnknown.replace(/\s+/g, " ").slice(0, 160));
   ck("unknown ad type: returns the ASK_TYPE safety response", qUnknown.includes(WHAT_IS_INCLUDED_ASK_TYPE), qUnknown);
   ck("unknown ad type: asks tile/vinyl/hardwood", /tile/i.test(qUnknown) && /vinyl/i.test(qUnknown) && /hardwood/i.test(qUnknown), qUnknown);
-  ck("unknown ad type: NEVER claims the vinyl quarter-round inclusions", !/quarter round/i.test(qUnknown), qUnknown);
+  // The inclusions are stated PER TYPE (vinyl → material+labor+quarter round;
+  // tile/hardwood → labor only), never as a blanket vinyl claim.
+  ck("unknown ad type: quarter-round claim is scoped to VINYL, tile/hardwood labor only", /\bvinyl\s+promo\b[^.]{0,80}\bquarter round\b/i.test(qUnknown) && /\btile\s+and\s+hardwood\b[^.]{0,60}\blabor\s+only\b/i.test(qUnknown), qUnknown);
   ck("unknown ad type: no price", !/\$\s*\d/.test(qUnknown), qUnknown);
   // The exact screenshot text with a share-reel ad context must also ask, not assume vinyl
   const qShare = await ai([{ role: "user", content: "What is included in the materials package?\n[Client shared a post/reel from our ad]" }]);
-  ck("shared-reel ad lead: asks the type, does not assume vinyl", !/quarter round/i.test(qShare) && /tile/i.test(qShare) && /hardwood/i.test(qShare), qShare);
+  ck("shared-reel ad lead: asks the type, does not assume vinyl (inclusions scoped per type)", /\bvinyl\s+promo\b[^.]{0,80}\bquarter round\b/i.test(qShare) && /\btile\s+and\s+hardwood\b[^.]{0,60}\blabor\s+only\b/i.test(qShare) && /which one are you interested in/i.test(qShare), qShare);
 
   // ── 4d. AD CLICK, type UNDETECTED, any opening message → ask the type ─────
   // The exact "clicked the tile ad, got the vinyl $5 pitch" bug: an ad reply
@@ -199,7 +201,8 @@ async function main() {
   // $3.20, proving it is not assuming vinyl for an unknown-type lead.
   const safeTypeAnswer = (r: string) =>
     /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r) &&
-    !/quarter round/i.test(r) &&
+    // "quarter round" only as part of the VINYL inclusions, never as THE package
+    (!/quarter round/i.test(r) || /\bvinyl\b[^.]{0,80}\bquarter round\b/i.test(r)) &&
     (!/\$\s?5\b/.test(r) || (/4\.50/.test(r) && /3\.20/.test(r)));
   const mHiw2 = await ai([
     { role: "user", content: "hi" },

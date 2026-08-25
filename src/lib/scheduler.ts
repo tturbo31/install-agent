@@ -726,6 +726,8 @@ const SLOT_TIME_REF = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\ba\
 // "Let's do 9" — a bare colon-less hour counts as a pick ONLY when it matches
 // an hour the bot actually offered, so "let's do 2 rooms" can never confirm.
 const LETS_DO_HOUR = /\blet'?s\s+do\s+(?:it\s+at\s+)?(\d{1,2})(?::\d{2})?\b/i;
+// "3" / "the 6" / "26th at 6" / "a las 6" as the WHOLE reply (or its tail).
+const BARE_HOUR_PICK = /^\s*(?:the\s+|el\s+|la\s+|las\s+|a\s+las?\s+)?(\d{1,2})\s*[.!]*\s*$|\b(?:at|a\s+las?|[àa]s)\s+(\d{1,2})\s*[.!]*\s*$/i;
 const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])\b/i;
 const SLOT_ORDINAL = /\b(?:the\s+)?(?:first|second|1st|2nd)\b|\b(?:el\s+|la\s+)?(?:primer[oa]?|segund[oa]?)\b|\bese\s+(?:horario|d[ií]a)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/i;
 const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfeito|claro|dale|vale|de acuerdo|works|sounds good|let'?s do it|hag[aá]moslo|me funciona|funciona|pode ser|combinado|est[aá]\s+bien|est[áa]\s+perfecto)\b/i;
@@ -783,6 +785,16 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
     if (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_ORDINAL.test(t)) return true;
     const bareHour = t.match(LETS_DO_HOUR);
     if (bareHour && offeredHours.has(parseInt(bareHour[1], 10) % 12)) return true;
+    // A bare number that IS one of the offered hours ("3" after "3pm, 5pm o
+    // 6pm"; "6" / "26th at 6" after "6pm or 8pm") is a pick — three Messenger
+    // clients (Carlos, Brittany, Anna, 2026-08-23/24) answered exactly that and
+    // got "I just need to confirm the day and time" up to three times in a row.
+    // Only 1–12 qualifies (a bare "25" is a day-of-month, never 1pm).
+    const barePick = t.match(BARE_HOUR_PICK);
+    if (barePick) {
+      const h = parseInt(barePick[1] ?? barePick[2], 10);
+      if (h >= 1 && h <= 12 && offeredHours.has(h % 12)) return true;
+    }
   }
 
   // 2. Exactly ONE slot on the table + a plain affirmative right after that
@@ -1391,11 +1403,25 @@ export function detectLang(text: string): Lang {
 }
 
 // Sent to the client after a booking is successfully created.
-export function bookingSuccessMessage(lang: Lang): string {
-  if (lang === "pt") return "Visita confirmada. Eu te aviso aproximadamente 40 minutos antes de chegar na sua casa. Meu nome é Ozzi.";
+// Since 2026-08-25 the confirmation RESTATES the booked day and time: "Appointment
+// confirmed." alone left clients guessing (Ruth Erazo: "Quedamos confirmados para
+// el martes a la 1:00" → "Perdon a las 11:00"; Mrsmachadoo booked "anytime" and
+// never learned the 3pm; Teresa asked "Tuesday at 4:00 pm. Right?"). The date
+// and time come from the booking we just wrote, never from the model.
+export function bookingSuccessMessage(lang: Lang, dateStr?: string, timeStr?: string): string {
+  let when = "";
+  if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const { weekday, month, day } = ymd(dateStr);
+    const t = (timeStr || "").trim();
+    const time = /^\d{1,2}:\d{2}$/.test(t) ? fmt12(t) : t;
+    if (lang === "pt") when = ` para ${DAY_NAMES_PT[weekday]} dia ${day} de ${MONTH_NAMES_PT[month]}${time ? ` às ${time}` : ""}`;
+    else if (lang === "es") when = ` para el ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${time ? ` a las ${time}` : ""}`;
+    else when = ` for ${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}${time ? ` at ${time}` : ""}`;
+  }
+  if (lang === "pt") return `Visita confirmada${when}. Eu te aviso aproximadamente 40 minutos antes de chegar na sua casa. Meu nome é Ozzi.`;
   return lang === "es"
-    ? "Cita confirmada. Te aviso aproximadamente 40 minutos antes de llegar a tu casa. Mi nombre es Ozzi."
-    : "Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.";
+    ? `Cita confirmada${when}. Te aviso aproximadamente 40 minutos antes de llegar a tu casa. Mi nombre es Ozzi.`
+    : `Appointment confirmed${when}. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.`;
 }
 
 // Enviada quando um cliente com a flag booked VENCIDA afirma que tem uma visita

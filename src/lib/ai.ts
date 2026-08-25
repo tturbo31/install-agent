@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot } from "@/lib/scheduler";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -285,7 +285,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // propose the free visit.
     // ...and a first message whose question the opener does NOT answer goes to
     // the model too (2026-08-21 sweep) — see questionBeyondOpener.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !questionBeyondOpener(text) && !mentionsRejection(text)) return openerMessage(last.content);
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -298,6 +298,10 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   for (const rule of HARDCODED_RESPONSES) {
     if (rule.patterns.some((p) => p.test(text))) {
       if (rule.skipIfSubstantive && skipDeflection) continue;
+      // "What are the payment options?" matched the samples/colors FAQ and got
+      // the website + "one area or the whole house?" line (Albania, WA
+      // 2026-08-23). Payment/financing questions belong to the model.
+      if (rule.id?.startsWith("see_options") && /\b(?:payment|pay|paying|financ\w*|deposit|installments?)\b/i.test(text)) continue;
       if (rule.id === "price_negotiation") return priceNegotiationHandoff(text);
       if (rule.id === "what_included") {
         // Known type → its exact inclusions.
@@ -620,7 +624,7 @@ export function clientEngagedScheduling(userText: string): boolean {
   // availability phrases ("I get off at 5:30", "after work", "off work") — these
   // ARE the client engaging scheduling, so the anti-pressure guard must not fire
   // and mangle the bot's slot reply into a dangling fragment.
-  return /(?:\bwhat|which)\s+(?:time|day)|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\bduring\s+the\s+week\b|\bweek\s*days?\b|\bweekends?\b|\bi\s+work\b|\bwork(?:ing)?\s+(?:all\s+)?(?:day|days|week)\b|\bonly\s+(?:on\s+)?(?:weekends?|saturdays?|sundays?|evenings?|nights?|mornings?)\b|\bdays?\s+off\b|\bfin(?:es)?\s+de\s+semana\b|\bentre\s+semana\b|\bd[ií]as?\s+de\s+semana\b/i.test(clientText);
+  return /(?:\bwhat|which)\s+(?:time|day)|\bgood\s+time\b|\bwhen\s+can\s+(?:you|u|someone)\b|\bcome\s+(?:out|by|over|see|take\s+a\s+look)\b|\b(?:next|this)\s+week\b|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\bduring\s+the\s+week\b|\bweek\s*days?\b|\bweekends?\b|\bi\s+work\b|\bwork(?:ing)?\s+(?:all\s+)?(?:day|days|week)\b|\bonly\s+(?:on\s+)?(?:weekends?|saturdays?|sundays?|evenings?|nights?|mornings?)\b|\bdays?\s+off\b|\bfin(?:es)?\s+de\s+semana\b|\bentre\s+semana\b|\bd[ií]as?\s+de\s+semana\b/i.test(clientText);
 }
 
 // Decides whether the anti-pressure strip may run at all. It fires only when
@@ -913,10 +917,49 @@ export function isBareGreeting(text: string): boolean {
   return GREETING_ONLY.test(t);
 }
 
+// ─── Explicit language request ─────────────────────────────────────────────
+// "En español" / "Hablas español" / "No inglés" / "Em português" / "Do you speak
+// Spanish" — the client is telling us which language to use. Until 2026-08-25
+// NOTHING in the pipeline read that: openerLang() knew greetings and a handful
+// of inquiry words, so a first message that was ONLY a language request came
+// back "en" and the ad-context leg fired the ENGLISH opener over it (Pedro
+// Sanchez 25/08, "Hablas español" 21/08, "No inglés" 14/08, "No sé inglés, si
+// puede tráeselo en español" 13/08 — all four leads went silent afterwards).
+// Returns the requested language, or null when the message carries no explicit
+// request. Precision notes:
+//  • "I don't speak Spanish/Portuguese" / "no hablo español" → EN (negated
+//    target), checked before the positive matches.
+//  • "Spanish tile / Spanish style" is a product, not a language.
+//  • "no inglés" / "no hablo inglés" / "no english" → ES: someone who tells us
+//    they do not speak English is, in this market, asking for Spanish; the PT
+//    form ("não falo inglês") and "espanhol" (PT word for Spanish) → PT.
+export function requestedLang(text: string): "en" | "es" | "pt" | null {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
+  if (!t.trim()) return null;
+  // Negated target language → the client wants English.
+  if (/\b(?:don'?t|do\s+not|can'?t|cannot|doesn'?t|does\s+not)\s+(?:speak|understand|know|read|write)\s+(?:any\s+|much\s+)?(?:spanish|portuguese)\b/.test(t)) return "en";
+  if (/\bno\s+hablo\s+(?:nada\s+de\s+)?(?:espa[ñn]ol|portugu[eê]s)\b/.test(t)) return "en";
+  // Portuguese (PT-exclusive wording first: "português", "espanhol", "não falo inglês").
+  if (/(?:^|[^a-zà-ÿ])(?:portugu[eê]s|espanhol)(?![a-zà-ÿ])/.test(t)) return "pt";
+  if (/\bportuguese\b(?!\s+(?:tile|style|floor|flooring|pattern))/.test(t)) return "pt";
+  if (/(?:^|[^a-zà-ÿ])n[aã]o\s+(?:falo|entendo|sei|falamos|entendemos)\s+(?:bem\s+|nada\s+de\s+|muito\s+)?(?:o\s+|em\s+)?ingl[eê]s(?![a-zà-ÿ])/.test(t)) return "pt";
+  // Spanish.
+  if (/(?:^|[^a-zà-ÿ])(?:espa[ñn]ol|castellano)(?![a-zà-ÿ])/.test(t)) return "es";
+  if (/\bspanish\b(?!\s+(?:tile|tiles|style|floor|flooring|pattern|colonial|revival|villa|home|house|mission|clay|terracotta|terra))/.test(t)) return "es";
+  if (/(?:^|[^a-zà-ÿ])no\s+(?:me\s+|nos\s+)?(?:hablo|hablamos|hable[ns]?|habla|s[eé]|sabemos|sabe|entiendo|entendemos|entiende[ns]?|escriba[ns]?|escribe[ns]?|manden?|domino|manejo)\s+(?:bien\s+|nada\s+de\s+|mucho\s+|muy\s+bien\s+)?(?:el\s+|en\s+)?ingl[eé]s(?![a-zà-ÿ])/.test(t)) return "es";
+  if (/(?:^|[\s.,!¡¿])no\s+ingl[eé]s(?![a-zà-ÿ])/.test(t)) return "es";
+  if (/\bno\s+(?:speak|speaking)\s+english\b|\bno\s+english\b|\bdon'?t\s+speak\s+(?:any\s+|much\s+)?english\b/.test(t)) return "es";
+  // English, explicitly requested.
+  if (/\bin\s+english\b|\benglish\s+(?:please|pls|plz|only)\b|\bspeak\s+english\b|(?:^|[\s.,!¡¿])en\s+ingl[eé]s(?![a-zà-ÿ])|(?:^|[\s.,!¡¿])em\s+ingl[eê]s(?![a-zà-ÿ])/.test(t)) return "en";
+  return null;
+}
+
 // Pick the first-contact opener in the language of the greeting itself (the
 // greeting word is the most reliable language signal), so a "Hola" gets Spanish
-// and an "Olá" gets Portuguese.
+// and an "Olá" gets Portuguese. An EXPLICIT language request always wins.
 export function openerLang(text: string): "en" | "es" | "pt" {
+  const requested = requestedLang(text);
+  if (requested) return requested;
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
   // Accent-safe boundaries: JS \b does not work around accented letters, so a
   // trailing \b after "olá" never matches. Anchor on start/space/punctuation and
@@ -937,10 +980,18 @@ export function openerLang(text: string): "en" | "es" | "pt" {
   // is "encontr-") pin Spanish for location questions — "Dónde te encuentras"
   // used to fail both checks and get the ENGLISH opener (2026-08-21).
   if (/(?:^|[\s!.,?¡¿])(?:hola|ola|buenas|buenos|saludos|qu[eé]\s+tal)(?![a-zà-ÿ])/.test(t) || /\b(cu[aá]nto|precio|cuesta|necesito|nesesito|quiero|busco|interesad|promoci[oó]n|presupuesto|pisos?|cer[aá]mica|instalaci[oó]n|cotizaci[oó]n|lo[sz]as?|madera|cocina|ba[ñn]o|d[oó]nde|ubicaci[oó]n|ubicad[oa]s?|encuentr\w*|zonas?|trabaja[ns]?|est[aá]n)\b/.test(t)) return "es";
+  // 3-day review 2026-08-25: "No se inglés, español", "Me gustaría tener un
+  // estimado", "Esto es epoxy", "786… llamame", "7865396038 me interesa" all
+  // got the ENGLISH opener. Accent-safe anchors (no trailing \b after "é").
+  if (/(?:^|[\s!.,?¡¿])(?:ingl[eé]s|espa[ñn]ol|no\s+s[eé]|no\s+hablo|gustar[ií]a|estimado|esto\s+es|ll[aá]m[ae]\w*|me\s+interesa|quisiera|puedo|mism[oa]|pagar[eé]?|cheque)(?![a-zà-ÿ])/.test(t)) return "es";
   return "en";
 }
 
 export function openerMessage(text: string): string {
+  // An explicit language request gets the variant that CONFIRMS the language
+  // before asking the type ("Claro, con gusto te atiendo en español. …").
+  const requested = requestedLang(text);
+  if (requested) return requested === "pt" ? OPENER_LANG_PT : requested === "es" ? OPENER_LANG_ES : OPENER_LANG_EN;
   const lang = openerLang(text);
   return lang === "pt" ? OPENER_PT : lang === "es" ? OPENER_ES : OPENER_EN;
 }
@@ -966,7 +1017,7 @@ export function questionBeyondOpener(text: string): boolean {
   // A bare "Hola?"/"Hello??" is a greeting, not a question.
   if (isBareGreeting(t)) return false;
   const interrogative =
-    /\?|(?:^|[\s¡¿])(?:where|when|why|who|do\s+yo?u|are\s+you|can\s+you|does\b|hacen\b|tienen\b|d[oó]nde|donde|cu[aá]ndo|c[oó]mo|por\s*qu[eé]|onde|quando|como|porqu[eê]|voc[eê]s|ustedes)(?![a-zà-ÿ])/i.test(t);
+    /\?|(?:^|[\s¡¿])(?:where|when|why|who|do\s+(?:you|yo?u|ya|u)|are\s+you|can\s+you|does\b|is\s+(?:this|it|that|there|the)\b|hacen\b|tienen\b|a\s?d[oó]nde|d[oó]nde|donde|cu[aá]ndo|c[oó]mo|por\s*qu[eé]|onde|quando|como|porqu[eê]|voc[eê]s|ustedes)(?![a-zà-ÿ])/i.test(t);
   if (!interrogative) return false;
   return !(PROMO_PRICE.test(t) || HOW_WORK.test(t) || PRODUCT_TYPE_Q.test(t));
 }
@@ -1076,7 +1127,7 @@ export function isFlooringInquiry(text: string): boolean {
 // clock time is an ANSWER, never a goodbye. A bare "9:00" (colon, NO am/pm) is
 // also a clock time — "Let’s do 9:00–thank you" was silenced because the am/pm
 // token missed it (Brian Guilford, 2026-07-25).
-const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|a\s+las?\s+\d{1,2})\b/i;
+const SUBSTANTIVE_CONTENT = /\b(v[iy]n[iy]ls?|laminate[ds]?|laminad[oa]s?|hardwoods?|wood|madeira|tile|tiles|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|lvp|lvt|spc|carpet|carpete|marble|m[aá]rmore|floor|flooring|piso|kitchen|bedroom|bathroom|living\s*room|cozinha|quarto|banheiro|sala|house|casa|home|apartment|apartamento|condo|garage|garagem|office|escrit[oó]rio|whole\s+(?:house|home|place|thing)|one\s+(?:area|room)|both|either\b|yes\s+please|s[ií]\s+por\s+favor|sim\s+por\s+favor|go\s+ahead|let'?s\s+do|monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|a\s+las?\s+\d{1,2}|pay(?:ing|ment)?|paid|pagar[eé]?|pagamos|pago|pagamento|cheque|(?:by|with\s+a?)\s+check|zelle|venmo|cash|efectivo|dep[oó]sito?|financ\w*|financiamiento|financiamento|upfront|in\s+full|credit\s+card|tarjeta|cart[aã]o|cancel\w*|reschedul\w*|reagendar|remarcar|postpone)\b/i;
 
 export function hasSubstantiveContent(text: string): boolean {
   return SUBSTANTIVE_CONTENT.test(normalizeSmartPunct(text));
@@ -1294,6 +1345,12 @@ const VISIT_DETAIL_PATTERNS: RegExp[] = [
   /\bwhat\s+time\b/i,
   /\bwhen\s+(?:is|are|will|do)\b[^.!?\n]{0,30}\b(?:visit|appointment|arrive|arriving|come|coming|you)\b/i,
   /\bconfirm\b[^.!?\n]{0,30}\b(?:visit|appointment|time|day|date)\b/i,
+  // "Thank you Ozzi and see you on Tuesday at 4:00 pm. Right?" — a booked
+  // client double-checking the slot got the booked-silence (fbcbac15,
+  // 2026-08-23). Restating the real date/time is exactly the answer.
+  /\bsee\s+(?:you|u|ya)\b[^!?\n]{0,60}\?/i,
+  /\b(?:tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b[^!?\n]{0,30}\b(?:right|correct|yes|still\s+(?:on|good|ok))\s*\?/i,
+  /\b(?:nos\s+vemos|te\s+veo|los\s+veo)\b[^!?\n]{0,60}\?/i,
   // Spanish. Only the tú forms were listed until 2026-08-24: Maria Hernandez's
   // "Todavía están viniendo hoy?" (ustedes progressive) matched nothing and she
   // waited at home in the booked-silence. Cover viene/vienen/viniendo and the
@@ -1516,12 +1573,47 @@ const POLITE_DECLINE_PATTERNS: RegExp[] = [
   // rescues it); "no quiero nada" / "não quero" alone decline
   /\bno\s+(?:quiero|necesito)\s+nada\b|\bn[aã]o\s+quero(?:\s+nada)?\b(?!\s+(?:o\b|a\b|de|que))/i,
   /\bwrong\s+(?:number|person)\b|\bn[uú]mero\s+(?:equivocado|errado)\b/i,
+  /^[\s.,!]*(?:not\s+needed|no\s+need|not\s+necessary|no\s+necesito|no\s+gracias|n[aã]o\s+preciso)[\s.,!]*$/i,
   /\bi\s+never\s+(?:contacted|messaged|texted)\s+(?:you|this)\b|\b(?:never|didn'?t)\s+sign(?:ed)?\s+up\b/i,
   // The ENTIRE message is just a "no" (optionally + thanks), or the classic
   // "I'm good / we're all set" brush-off.
   /^[\s.,!¡¿?]*(?:no+|nope|nah)[\s.,!]*(?:thanks?|thank\s+(?:you|u)|ty|gracias|obrigad[oa])?[\s.,!?]*$/i,
   /^[\s.,!]*(?:no+[\s.,!]*)?(?:i'?m|im|we'?re|were)\s+(?:good|all\s+set|fine|ok(?:ay)?)(?:\s+(?:thanks?|thank\s+(?:you|u)|ty))?[\s.,!]*$/i,
 ];
+
+// ACCIDENTAL TAP — "Sorry, clicked by mistake" / "Hit by accident" / "Sorry MIs
+// press" / "fue sin querer". 9 of these in the 3-day review of 2026-08-22..25
+// got the PROMO OPENER (the rejection families above only knew "no thanks"
+// and "not interested"), which is exactly the "bot doesn't read the message"
+// complaint. First contact → total silence like the polite declines; the
+// interest signals checked first in isFirstContactRejection still win ("clicked
+// by mistake but how much is vinyl?", "wrong button, I meant hardwood", an
+// address). Any DIGIT in the message disqualifies it — "I made a mistake on the
+// measurements, it's 800 sqft" is a correction, never an accidental tap.
+const ACCIDENTAL_TAP_PATTERNS: RegExp[] = [
+  // tap-verb … by mistake/accident ("clicked on your post by mistake")
+  /\b(?:hit|click(?:ed)?|press(?:ed)?|push(?:ed)?|tap(?:ped)?|sent|send|text(?:ed)?|messag(?:ed|e)|contact(?:ed)?|replied|touch(?:ed)?|open(?:ed)?)\b[^.!?\n]{0,25}\b(?:by\s+(?:mistake|accident|error)|accidental(?:ly)?|on\s+accident|mistakenly|wrong\s+(?:button|thing|ad|post|page|chat))\b/i,
+  // by mistake/accident … tap-verb ("by mistake i text you", "accidentally hit button")
+  /\b(?:by\s+(?:mistake|accident|error)|accidental(?:ly)?|mistakenly)\b[^.!?\n]{0,25}\b(?:hit|click(?:ed)?|press(?:ed)?|push(?:ed)?|tap(?:ped)?|sent|send|text(?:ed)?|messag(?:ed|e)|contact(?:ed)?|replied|touch(?:ed)?)\b/i,
+  /\bmis-?\s?(?:press|click|tap|touch)(?:ed)?\b|\bfat[\s-]?finger/i,
+  /\bwrong\s+(?:button|chat|ad|post|page)\b/i,
+  // "didn't mean to contact/message you" — NOT "didn't mean to ignore you" (a
+  // client coming back) nor "didn't mean to be rude"
+  /\b(?:didn'?t|did\s+not|never)\s+mean\s+to\s+(?:contact|message|msg|text|click|hit|press|push|tap|reply|send|reach\s+out|bother|write|dm)\b/i,
+  /\b(?:it|that|this)\s+was\s+(?:a\s+|an\s+|my\s+)?(?:mistake|accident|error)\b/i,
+  // "Sorry, my mistake" / "my bad" as the END of the message only — "my
+  // mistake on the sqft was…" keeps flowing
+  /(?:^|[\s.,!])(?:sorry,?\s+)?my\s+(?:mistake|bad)[\s.,!]*$/i,
+  /^[\s.,!]*(?:sorry[,.!]*\s*)?(?:oops|whoops|oopsie)[\s.,!]*$/i,
+  // ES / PT
+  /\b(?:fue|ha\s+sido)\s+(?:un\s+)?(?:error|accidente)\b|\bpor\s+error\b|\bsin\s+querer\b|\bme\s+equivoqu[eé](?![a-záéíóú])|\bequivocaci[oó]n\b|\bfue\s+por\s+equivocaci[oó]n\b/i,
+  /\bsem\s+querer\b|\bfoi\s+(?:um\s+)?engano\b|\bpor\s+engano\b|\bme\s+enganei\b|\bcliquei\s+errado\b|\bmandei\s+errado\b|\bfoi\s+erro\b/i,
+];
+export function isAccidentalTap(text: string): boolean {
+  const t = cleanRejectionText(text);
+  if (!t || /\d/.test(t)) return false;
+  return ACCIDENTAL_TAP_PATTERNS.some((p) => p.test(t));
+}
 
 // Interest expressed in the same breath — negation-aware ("no quiero nada"
 // and "não quero" do NOT count; "quero piso vinílico" and "todavia me
@@ -1553,7 +1645,8 @@ export function mentionsRejection(text: string): boolean {
     HOSTILE_CORE.some((p) => p.test(t)) ||
     STOP_CONTACT.some((p) => p.test(t)) ||
     SPAM_ACCUSATION.some((p) => p.test(t)) ||
-    POLITE_DECLINE_PATTERNS.some((p) => p.test(t))
+    POLITE_DECLINE_PATTERNS.some((p) => p.test(t)) ||
+    isAccidentalTap(t)
   );
 }
 
@@ -1569,7 +1662,37 @@ export function isFirstContactRejection(burst: string): boolean {
   if (!t) return false;
   if (/\?/.test(t) || SPECIFIC_TYPE.test(t) || PROMO_PRICE.test(t) || containsBookingInfo(t) || INTEREST_AFFIRM.test(t)) return false;
   if (isHostileRejection(t)) return true;
-  return POLITE_DECLINE_PATTERNS.some((p) => p.test(t));
+  if (POLITE_DECLINE_PATTERNS.some((p) => p.test(t)) || isAccidentalTap(t)) return true;
+  // Several bubbles that are EACH a rejection ("No ty" … 6h later … "No"):
+  // the whole-message patterns above are single-line, so the joined burst
+  // matched nothing and the second bubble got the promo opener (fb 4d907e41,
+  // 2026-08-24). Judge line by line when there is more than one.
+  const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length > 1 && lines.every((l) => isHostileRejection(l) || POLITE_DECLINE_PATTERNS.some((p) => p.test(l)) || isAccidentalTap(l))) return true;
+  return false;
+}
+
+// FIRST MESSAGE THAT NEEDS READING — the canned openers must never answer it;
+// the model reads the words (and hands the owner in when asked). Every family
+// here is a real 3-day-review victim (2026-08-22..25) of the generic opener:
+//  • a phone number / "call me" / "phone number please" / "llámame" (10 cases)
+//  • an existing client ("You did an estimate… I have a question on the quote")
+//  • a conditional objection ("Not if you don't remove and replace moldings")
+//  • a language statement ("I don't speak English", "No se inglés, español")
+//  • DIY / not-a-customer ("Lo puedo hacer yo misma", "I sell it!", "I do not
+//    own a house", "I own a flooring company")
+// Cheap on purpose: routing to the model is always safe (never silence).
+export function firstMessageNeedsReading(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  if (!t.trim()) return false;
+  return (
+    /\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b|\b\d{3}\s\d{3}\s\d{2}\s\d{2}\b/.test(t) ||
+    /\b(?:call|text|contact|phone|ring)\s+(?:me|us)\b|\bgive\s+me\s+a\s+call\b|\b(?:your|ur)\s+(?:phone|number|contact)\b|\bphone\s+number\b|\bcontact\s+me\b|\bsend\s+(?:me\s+)?(?:one\s+)?text\b|\bll[aá]m[ae](?:me|nos|n)?\b|\bme\s+(?:llaman?|pueden\s+llamar)\b|\bme\s+lig(?:a|ue|uem)\b/i.test(t) ||
+    /\byou\s+(?:did|came|gave|sent|already)\b|\balready\s+(?:had|got|received|came|been)\b|\bmoving\s+forward\b|\b(?:my|the|your)\s+(?:quote|estimate)\b|\bcame\s+to\s+my\s+(?:house|home)\b|\bwere\s+(?:here|at\s+my)\b|\bi\s+have\s+a\s+question\b|\bya\s+(?:vinieron|me\s+dieron|tengo)\b/i.test(t) ||
+    /\b(?:not\s+if|only\s+if|unless)\b|\bmou?ldings?\b|\bbaseboards?\b/i.test(t) ||
+    /\b(?:don'?t|do\s+not|cannot|can'?t)\s+(?:speak|understand)\s+english\b|\bno\s+(?:s[eé]|hablo|entiendo)\s+(?:el\s+)?ingl[eé]s\b|\b(?:solo|s[oó]lo)\s+espa[ñn]ol\b|\bhabla[ns]?\s+espa[ñn]ol\b|\bspanish\s+speakers?\b/i.test(t) ||
+    /\b(?:do\s+it|hacerlo)\s+(?:my|our)self|\byo\s+mism[oa]\b|\beu\s+mesm[oa]\b|\bi\s+sell\s+(?:it|flooring|floors)\b|\bown\s+a\s+flooring\b|\b(?:do\s+not|don'?t)\s+own\s+a\s+(?:house|home)\b|\bi\s+(?:am|'m)\s+an?\s+installer\b|\bnot\s+needed\b/i.test(t)
+  );
 }
 
 export function isPureClosing(text: string): boolean {
@@ -1639,6 +1762,19 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bwait,?\s+let\s+me\b/.source,
     /\blet\s+me\s+(?:redo|recalculate|re-?check|recompute|handle\s+this\s+properly|start\s+over|try\s+(?:this|that)\s+again|give\s+the\s+right\s+answer|fix\s+that)\b/.source,
     /\bscratch\s+that\b/.source,
+    // 3-day review 2026-08-25 (fb a9a3e8da, wa R0t4ld3, quote follow-up Angie):
+    // "The type is still unknown here, but 1,900 sqft is already a large lead so
+    // no DM price regardless. I need to propose the visit… I'll acknowledge the
+    // size…", "let me give you the right ones: … Sunday the 31st does not
+    // exist", "Wait, I need to copy the link exactly."
+    /\bwait,?\s+i\s+(?:need|have|should)\s+to\b/.source,
+    /\blet\s+me\s+give\s+(?:you\s+)?the\s+(?:right|correct)\s+ones?\b/.source,
+    /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b[^.!?\n]{0,25}\bdoes\s+not\s+exist\b/.source,
+    /\bno\s+dm\s+price\b/.source,
+    /\b(?:the\s+)?type\s+is\s+still\s+unknown\b/.source,
+    /\blarge\s+lead\b/.source,
+    /\bi\s+need\s+to\s+propose\b/.source,
+    /\bi(?:'ll|\s+will)\s+(?:acknowledge|propose)\b/.source,
     // ENGLISH self-correction leak shipped 2026-08-03 (Stacey Russo, fb_384715…):
     // "Let me give you the correct number: … Hmm, I need to apply the rules
     // properly and not narrate my math. 400 sqft of LVT, small job tier (200 to
@@ -1833,7 +1969,13 @@ export async function getAIResponse(
             (AD_FAQ_PROCESS.test(lastText) && /furniture|muebles/i.test(betweenReply)) ||
             (AD_FAQ_DISCOUNT.test(lastText) && /pricing|precio/i.test(betweenReply)) ||
             (AD_FAQ_LOCATION.test(lastText) && /miami|florida/i.test(betweenReply)) ||
-            (AD_FAQ_INCLUSIONS.test(lastText) && /includ|incluid/i.test(betweenReply));
+            // "what is included is a little different for each" (the ask-type
+            // inclusions line) contains "included" but answers NOTHING — the
+            // re-tapped "What type of materials are included?" 99s later was
+            // silenced as a double-tap (fb_27474567792195210, 2026-08-25).
+            // Answered = the reply actually names what is included.
+            (AD_FAQ_INCLUSIONS.test(lastText) &&
+              /\b(?:includes?|incluye|inclui)\s+(?:the\s+|el\s+|la\s+|o\s+|a\s+)?(?:flooring|material|labor|installation|instalaci[oó]n|mano|piso)|\blabor\s+only\b|\bquarter\s+round\b|\bmano\s+de\s+obra\b|\bm[aã]o\s+de\s+obra\b/i.test(betweenReply));
           if (typeAskOpener && !openerAnsweredIt) {
             console.log("[AI] repeat right after a type-ask opener that ignored the question — answering it fresh");
             break;
@@ -1928,10 +2070,16 @@ export async function getAIResponse(
     // interest signal routed it here — and then the MODEL must read the words
     // ("don't text me, call me instead" must never get the promo opener).
     const rejectionish = mentionsRejection(burst);
+    // Phone number / call-me / existing client / objection / language / DIY
+    // in the opening burst → the model reads it, never a canned line.
+    // A language request ("Hablas español", "en português") keeps its own
+    // deterministic language-confirming opener below; everything else that
+    // needs reading goes to the model.
+    const needsReading = firstMessageNeedsReading(burst) && !requestedLang(burst);
     // AD-FAQ AWARE OPENERS: the tapped quick-reply question gets its one-line
     // answer folded into the SAME deterministic type-ask (still zero-token).
     // Meta's FAQ buttons are EN/ES; PT falls through to the generic opener.
-    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish) {
+    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
       const lang = openerLang(burst);
       // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
       // at once, so the single-topic chain below (first match wins) answered one
@@ -1991,8 +2139,8 @@ export async function getAIResponse(
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
-    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
-      const opener = openerMessage(lastMsg.content);
+    if (!largeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+      const opener = openerMessage(burst);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
     }
@@ -2053,7 +2201,10 @@ export async function getAIResponse(
 32. AD PRICE MISMATCH RULE: If the client quotes a price they saw in one of our ads ("the ad says $2,350 for 1000 sqft", "the promotion mentioned $2,300") that does NOT match the promotions in these rules, NEVER confirm, endorse, repeat, or validate that number as ours, and NEVER do math that legitimizes it (never "that $2,300 promo is our vinyl package"). Say the promotions vary by flooring type and the exact price is confirmed at the free in-person measure, then continue the normal flow. Never call the ad wrong or fake either, just move to what you can offer.
 33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. The CLIENT AVAILABILITY RULE still applies first.
 34. NO INVENTED COMPANY FACTS: NEVER state years in business, number of installers or crews, business hours, company history, or any company fact that is not written in these rules. If asked, keep it warm and general (the team has deep local experience across South Florida) and steer back to the free visit. Also never assert which city a zip code belongs to.
-35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].`;
+35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].
+36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. Only a request to fix a FEW tiles with nothing else is a repair we decline.
+37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
+38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, say Ozzi will personally contact them right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {

@@ -22,7 +22,7 @@ import {
   getAIResponse,
   type ChatMessage,
 } from "@/lib/ai";
-import { OPENER_ES, OPENER_EN, OPENER_LOCATION_EN, OPENER_LOCATION_ES } from "@/lib/system-prompt";
+import { OPENER_ES, OPENER_EN, OPENER_LOCATION_EN, OPENER_LOCATION_ES, WHAT_IS_INCLUDED_ASK_TYPE } from "@/lib/system-prompt";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -352,6 +352,78 @@ async function repeatInterceptChecks() {
     "…e a resposta fala da localização (Miami / South Florida)",
     /miami|florida/i.test(tomKiper.text),
     tomKiper.text.slice(0, 100)
+  );
+
+  // Albania (WA, 2026-08-23): "What are the payment options?" hit the
+  // samples/colors FAQ and got the website + "one area or the whole house?".
+  const payOpts = await getAIResponse(
+    [
+      { role: "user", content: "Do you offer any discounts for larger spaces?" },
+      { role: "assistant", content: "Yes, larger spaces get our best pricing and the estimate visit is completely free, which one are you thinking about: tile, vinyl, or hardwood?" },
+      { role: "user", content: "What are the payment options?" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "'What are the payment options?' NÃO cai na FAQ de amostras/site",
+    !/ozzifloors\.com/i.test(payOpts.text) && payOpts.inputTokens > 0,
+    payOpts.text.slice(0, 120)
+  );
+
+  // fb_27474567792195210 (2026-08-25): "What type of materials are included?"
+  // → inclusions ask-type line → SAME button 99s later → silenced, because the
+  // ask-type line contained the word "included" and counted as "answered".
+  // The line the client actually received (the OLD wording, which named
+  // nothing) is used verbatim: a reply that does not say what is included has
+  // NOT answered, so the re-tap must get a real answer.
+  const OLD_ASK_TYPE_NAMES_NOTHING = "Hello! We run separate promotions for tile, vinyl, and hardwood, and what is included is a little different for each. Which one are you interested in, tile, vinyl, or hardwood?";
+  const inclRetap = await getAIResponse(
+    [
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:49:10Z" },
+      { role: "assistant", content: OLD_ASK_TYPE_NAMES_NOTHING, at: "2026-08-25T01:49:25Z" },
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:50:49Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "FAQ de inclusões repetida 99s após a linha ask-type → resposta de verdade (nunca mudo)",
+    inclRetap.text !== "[REACT_ONLY]" && inclRetap.text.trim().length > 20,
+    inclRetap.text.slice(0, 100)
+  );
+  check(
+    "…e a resposta diz o que está incluído (material / labor)",
+    /material|labor|mano de obra|includ/i.test(inclRetap.text),
+    inclRetap.text.slice(0, 100)
+  );
+  // Counter-case: the CURRENT ask-type line names the inclusions per type, so
+  // the same repeat within a minute IS a double-tap — suppressed, zero tokens.
+  const inclDoubleTapCanned = await getAIResponse(
+    [
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:49:10Z" },
+      { role: "assistant", content: WHAT_IS_INCLUDED_ASK_TYPE, at: "2026-08-25T01:49:25Z" },
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:50:49Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Mesma FAQ re-tocada após a linha ask-type ATUAL (que nomeia as inclusões) → double-tap suprimido, zero tokens",
+    inclDoubleTapCanned.text === "[REACT_ONLY]" && inclDoubleTapCanned.inputTokens === 0,
+    inclDoubleTapCanned.text.slice(0, 100)
+  );
+  // Counter-case: after a FULL model answer, the same repeat within a minute
+  // IS a double-tap — stays suppressed, zero tokens.
+  const inclDoubleTap = await getAIResponse(
+    [
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:49:10Z" },
+      { role: "assistant", content: "It depends on the floor you choose: our vinyl promo includes the flooring material, the installation labor, and the quarter round, while tile and hardwood cover the installation labor only. Which one are you interested in, tile, vinyl, or hardwood?", at: "2026-08-25T01:49:25Z" },
+      { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:50:49Z" },
+    ],
+    null, null, null, false
+  );
+  check(
+    "Mesma FAQ re-tocada após resposta COMPLETA de inclusões → double-tap suprimido, zero tokens",
+    inclDoubleTap.text === "[REACT_ONLY]" && inclDoubleTap.inputTokens === 0,
+    inclDoubleTap.text.slice(0, 100)
   );
 
   // Counter-case: after the LOCATION opener (which DID answer), the same
