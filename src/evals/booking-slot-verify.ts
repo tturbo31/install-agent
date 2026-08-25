@@ -77,7 +77,7 @@ function main() {
   // 4:28pm — nobody could get there. Same-day slots need real notice now.
   ck(`same-day notice is at least 2h (${SAME_DAY_MIN_NOTICE_MIN} min)`, SAME_DAY_MIN_NOTICE_MIN >= 120);
   ck("17:00 at 16:25 is TOO SOON", isSameDaySlotTooSoon("17:00", 16 * 60 + 25));
-  ck("17:00 at 14:59 is TOO SOON (2h rule)", isSameDaySlotTooSoon("17:00", 14 * 60 + 59));
+  ck("17:00 at 15:01 is TOO SOON (2h rule, boundary)", isSameDaySlotTooSoon("17:00", 15 * 60 + 1));
   ck("17:00 at 15:00 is OK", !isSameDaySlotTooSoon("17:00", 15 * 60));
   ck("09:00 at 06:00 is OK", !isSameDaySlotTooSoon("09:00", 6 * 60));
   for (const f of ["src/app/api/wa-webhook/route.ts", "src/app/api/fb-webhook/route.ts", "src/app/api/webhook/route.ts"]) {
