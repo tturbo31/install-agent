@@ -218,7 +218,9 @@ console.log("\n4) PERGUNTA ENGOLIDA PELA CONFIRMAÇÃO (Kenny Abbasi + Meylan, 3
   const wa = fs.readFileSync(path.join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf-8");
   for (const [name, src] of [["IG", ig], ["FB", fb], ["WA", wa]] as const) {
     ck(`${name}: a confirmação vai DEPOIS da resposta pendente`, /questionSwallowedByBooking\(aiResponse, history\)/.test(src));
-    ck(`${name}: a frase canônica da confirmação continua intacta`, /bookingSuccessMessage\(lang\)/.test(src));
+    // Since 2026-08-25 the confirmation restates the booked day/time, so the
+    // call carries the booking's date and time (never the model's).
+    ck(`${name}: a frase canônica da confirmação continua intacta`, /bookingSuccessMessage\(lang(?:, bookingData\.date, bookingData\.time)?\)/.test(src));
   }
 }
 
