@@ -153,11 +153,52 @@ function pickSellerForSlot(
   return candidates[0] ?? null;
 }
 
+// Minimum notice for a SAME-DAY visit, in Eastern minutes. A seller has to see
+// the booking, finish what they are doing and drive there; the platform’s
+// "40 minutes before" reminder also needs the booking to exist before that
+// window opens. 30 minutes was never enough (Rowan Hobbs, 2026-08-23: offered
+// at 4:25pm for 5pm, booked 4:28pm, seller cancelled at 5:19pm, client thought
+// it was a scam).
+export const SAME_DAY_MIN_NOTICE_MIN = 120;
+export function isSameDaySlotTooSoon(slotHHMM: string, nowMinutes: number): boolean {
+  const m = /^(\d{1,2}):(\d{2})$/.exec((slotHHMM || "").trim());
+  if (!m) return false;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10) < nowMinutes + SAME_DAY_MIN_NOTICE_MIN;
+}
+
+// Owner alert for a visit just booked for TODAY. The platform’s "40 minutes
+// before" reminder cannot be relied on for a short-notice booking, and the
+// seller may be mid-visit elsewhere — someone has to see it NOW (Rowan Hobbs,
+// 2026-08-23: booked 4:28pm for 5pm, seller cancelled at 5:19pm, nobody told
+// the client). Null when the visit is not today or is more than 4h away.
+export function sameDayBookingAlert(dateStr: string, timeStr: string, sellerName?: string | null): string | null {
+  if (dateStr !== easternTodayStr()) return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec((timeStr || "").trim());
+  if (!m) return null;
+  const { hour, minute } = easternNowHM();
+  const diff = parseInt(m[1], 10) * 60 + parseInt(m[2], 10) - (hour * 60 + minute);
+  if (diff > 4 * 60) return null;
+  const em = diff >= 60 ? `${Math.floor(diff / 60)}h${diff % 60 ? String(diff % 60).padStart(2, "0") : ""}` : `${Math.max(0, diff)} min`;
+  return `VISITA HOJE às ${fmt12(timeStr)} (daqui a ~${em}), marcada agora${sellerName ? ` para ${sellerName}` : ""}. Confirme que o vendedor viu a agenda.`;
+}
+
 export async function createBooking(req: BookingRequest): Promise<BookingResult> {
   try {
     const db = await getAuthenticatedClient();
 
     const today = easternTodayStr();
+
+    // Server-side backstop for the same-day notice: even if a too-soon slot
+    // slipped into the offer (stale availability text, client-proposed time),
+    // never write a visit nobody can reach. The webhooks treat this like any
+    // other "No availability" and re-offer real slots.
+    if (req.bookingDate === today) {
+      const { hour, minute } = easternNowHM();
+      if (isSameDaySlotTooSoon(req.bookingTime, hour * 60 + minute)) {
+        console.warn(`[createBooking] Same-day slot ${req.bookingTime} is less than ${SAME_DAY_MIN_NOTICE_MIN} min away — blocked`);
+        return { success: false, error: `No availability for ${req.bookingDate} at ${req.bookingTime} (too soon).` };
+      }
+    }
 
     // Guard: if this client already has an upcoming booking, block the duplicate.
     // Time-aware like the snapshot: a visit that already happened earlier TODAY
@@ -1065,7 +1106,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
 
     const nowET = easternNowHM();
-    const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + 30;
+    const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
 
     let hasAnySlot = false;
 
@@ -1080,7 +1121,10 @@ export async function getRealAvailabilityContext(): Promise<string> {
         });
       });
 
-      // For today only: drop slots already past in Eastern time (30-min buffer)
+      // For today only: drop slots that start in less than SAME_DAY_MIN_NOTICE_MIN
+      // Eastern minutes (was a 30-min buffer: at 4:25pm the bot offered "today at
+      // 5pm", booked it at 4:28pm, nobody could get there and the client wrote
+      // "Is this a scam" — Rowan Hobbs, 2026-08-23).
       const isToday = dateStr === windowDays[0];
       const futureSlots = Array.from(slotSet).filter((slot) => {
         if (!isToday) return true;
@@ -1159,7 +1203,7 @@ export async function getNextOpenSlots(
   const sellers = (sellersData ?? []) as Seller[];
   const bookings = (bookedData ?? []) as BookingRow[];
   const nowET = easternNowHM();
-  const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + 30;
+  const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
 
   const out: Array<{ dateStr: string; weekday: number; times: string[] }> = [];
   for (const dateStr of windowDays) {

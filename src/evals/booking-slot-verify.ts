@@ -18,7 +18,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { clientConfirmedSlot, needSlotConfirmationMessage } from "../lib/scheduler";
+import { clientConfirmedSlot, needSlotConfirmationMessage, isSameDaySlotTooSoon, SAME_DAY_MIN_NOTICE_MIN } from "../lib/scheduler";
 
 let pass = 0, fail = 0; const fails: string[] = [];
 function ck(name: string, cond: boolean, detail = "") {
@@ -73,6 +73,17 @@ function main() {
   ck("bare '9' when only 6pm/8pm were offered is NOT a pick", !clientConfirmedSlot([
     A("I have Wednesday at 6pm or 8pm, which works better?"), U("9"),
   ]), "returned true");
+  // Rowan Hobbs (WA, 2026-08-23): "today at 5pm" offered at 4:25pm and booked at
+  // 4:28pm — nobody could get there. Same-day slots need real notice now.
+  ck(`same-day notice is at least 2h (${SAME_DAY_MIN_NOTICE_MIN} min)`, SAME_DAY_MIN_NOTICE_MIN >= 120);
+  ck("17:00 at 16:25 is TOO SOON", isSameDaySlotTooSoon("17:00", 16 * 60 + 25));
+  ck("17:00 at 14:59 is TOO SOON (2h rule)", isSameDaySlotTooSoon("17:00", 14 * 60 + 59));
+  ck("17:00 at 15:00 is OK", !isSameDaySlotTooSoon("17:00", 15 * 60));
+  ck("09:00 at 06:00 is OK", !isSameDaySlotTooSoon("09:00", 6 * 60));
+  for (const f of ["src/app/api/wa-webhook/route.ts", "src/app/api/fb-webhook/route.ts", "src/app/api/webhook/route.ts"]) {
+    const src = readFileSync(join(process.cwd(), f), "utf-8");
+    ck(`${f}: same-day booking alerts the owner`, /sameDayBookingAlert\(bookingData\.date, bookingData\.time/.test(src));
+  }
   ck("'5pm today' (WhatsApp flow)", clientConfirmedSlot([
     A("I have today at 5pm or 7pm. What's your address and which time works?"), U("5pm today"), A("Perfect, address?"), U("123 Main St"),
   ]) === true);
