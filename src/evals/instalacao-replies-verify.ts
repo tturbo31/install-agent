@@ -116,6 +116,9 @@ async function main() {
   const rotaSrc = readFileSync(join(process.cwd(), "src/app/api/confirmar-instalacao/route.ts"), "utf-8");
   ck("endpoint passa o texto pela guarda de horário", /sanitizeInstallDate\(/.test(rotaSrc));
   ck("endpoint aceita data_instalacao_iso", /data_instalacao_iso/.test(rotaSrc) && /formatInstallDateTime\(/.test(rotaSrc));
+  ck("guarda de horário vale TAMBÉM para o caminho ISO (placeholder 09:00Z do all_day)", /sanitizeInstallDate\(viaIso \?\? dataInstalacao!\)/.test(rotaSrc));
+  const placeholder = sanitizeInstallDate(formatInstallDateTime("2026-08-26T09:00:00Z") ?? "");
+  ck("09:00Z (all_day do Lovable) formatado vira 5am e é cortado", placeholder.text === "Wednesday, August 26" && placeholder.horarioSuspeito === "5am", JSON.stringify(placeholder));
   ck("endpoint avisa o dono quando remove o horário", /notifyOwners\(/.test(rotaSrc) && /installTimeAlert\(/.test(rotaSrc));
   ck("template nomeia a equipe de instalação como executora", /Our installation team will be taking care of the job/.test(rotaSrc));
   const waSrc = readFileSync(join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf-8");

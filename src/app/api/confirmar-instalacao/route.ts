@@ -187,10 +187,12 @@ export async function POST(req: NextRequest) {
   const nomeVendedor = asText(body.nome_vendedor);
   const telefoneVendedor = asText(body.telefone_vendedor);
 
-  // Data final: ISO com fuso (formatada por nós) ganha do texto livre; o texto
-  // livre passa pela guarda de horário implausível.
+  // Data final: ISO com fuso (formatada por nós) ganha do texto livre. A guarda
+  // de horário implausível vale para OS DOIS caminhos: o Lovable grava job
+  // "all_day" com o placeholder 09:00Z (= 5am na Flórida) — se um dia esse
+  // placeholder vier como ISO, ele NÃO pode virar "at 5am" só por ser ISO.
   const viaIso = typeof body.data_instalacao_iso === "string" ? formatInstallDateTime(body.data_instalacao_iso) : null;
-  const guarda = viaIso ? { text: viaIso, horarioSuspeito: null } : sanitizeInstallDate(dataInstalacao!);
+  const guarda = sanitizeInstallDate(viaIso ?? dataInstalacao!);
   const dataFinal = guarda.text;
   if (guarda.horarioSuspeito) {
     console.warn(
