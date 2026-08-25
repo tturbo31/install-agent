@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { fetchWaQueueHealth, sendWhatsAppMessage } from "@/lib/whatsapp";
+import { judgeWaQueue } from "@/lib/wa-queue-policy";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 
 export const maxDuration = 30;
@@ -34,6 +35,8 @@ export async function GET(req: NextRequest) {
     }
   };
 
+  const queue = await fetchWaQueueHealth();
+
   const out: Record<string, unknown> = {
     config: {
       instancePresent: !!inst,
@@ -44,6 +47,10 @@ export async function GET(req: NextRequest) {
     },
     status: await call("status"),
     device: await call("device"),
+    // Outbound queue (Olimpia 2026-08-25): send-text says 200 on ENQUEUE, so a
+    // hung Z-API worker looks like success everywhere except here.
+    queue: queue,
+    queueVerdict: judgeWaQueue(queue),
   };
 
   const send = req.nextUrl.searchParams.get("send");

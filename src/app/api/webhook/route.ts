@@ -50,7 +50,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog, retryFailedSends } from "@/lib/delivery";
+import { alertPausedBacklog, retryFailedSends, watchWaQueue } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
 
@@ -1845,5 +1845,8 @@ export async function POST(req: NextRequest) {
   // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
   // whose delivery failed (self-throttled to 1 sweep / 10 min).
   waitUntil(retryFailedSends());
+  // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
+  // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
+  waitUntil(watchWaQueue());
   return NextResponse.json({ status: "ok" }, { status: 200 });
 }

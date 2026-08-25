@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runDreaming, getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { refreshInstagramTokenIfDue } from "@/lib/ig-token";
-import { retryFailedSends } from "@/lib/delivery";
+import { retryFailedSends, watchWaQueue } from "@/lib/delivery";
 
 // Nightly analysis fans out across dozens of conversations plus two Claude
 // calls — give it room so the cron never silently times out mid-run.
@@ -45,6 +45,7 @@ export async function GET(req: NextRequest) {
     // Outbox: re-send replies whose delivery failed (guarantees at least one
     // sweep even on a day with zero webhook traffic). Never throws.
     await retryFailedSends();
+    await watchWaQueue();
     console.log("Dreaming started (cron GET) at", new Date().toISOString());
     try {
       const result = await runDreaming();

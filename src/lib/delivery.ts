@@ -326,3 +326,64 @@ export async function retryFailedSends(): Promise<void> {
     console.error("[DELIVERY] retry sweep error:", err);
   }
 }
+
+// ─── Z-API queue watchdog ────────────────────────────────────────────────────
+// 2026-08-25 (Olimpia, wa_18138414465): Z-API's send worker hung. send-text
+// still answered 200 (it only means "enqueued"), so the bot stored its reply,
+// the panel showed the client as answered, and the reply sat in Z-API's queue
+// behind 380 stale items. The owner got no siren because the siren is ALSO a
+// WhatsApp message through that same queue. This watchdog is the missing
+// external check: it reads the queue on webhook traffic (any channel) and on
+// both daily crons, throttled to one probe / 5 min.
+//
+// When the oldest queued item is older than WA_QUEUE_STUCK_AFTER_MS with the
+// phone online, it (1) restarts the Z-API instance — the documented fix, keeps
+// the pairing, max once per hour — and (2) alerts the owner (the alert queues
+// too, but a successful restart flushes it seconds later; if the restart did
+// not help, the owner still sees it once Z-API recovers, together with the
+// instruction to check the panel).
+const WA_QUEUE_PROBE_EVERY_MS = 5 * 60 * 1000;
+const WA_QUEUE_RESTART_EVERY_MS = 60 * 60 * 1000;
+
+export async function watchWaQueue(): Promise<void> {
+  try {
+    if (!process.env.ZAPI_INSTANCE_ID || !process.env.ZAPI_TOKEN) return;
+    if (!(await shouldAlert("waqueue", "probe", WA_QUEUE_PROBE_EVERY_MS))) return;
+    const { fetchWaQueueHealth, restartWaInstance } = await import("@/lib/whatsapp");
+    const { judgeWaQueue, fmtAge } = await import("@/lib/wa-queue-policy");
+    const h = await fetchWaQueueHealth();
+    const v = judgeWaQueue(h);
+    if (!v.stuck) {
+      if (h.count > 0) console.log(`[WAQUEUE] ${v.reason}`);
+      return;
+    }
+    console.error(`🚨 [WAQUEUE] Z-API queue STUCK: ${v.reason} (session=${h.session}, connected=${h.connected}, phone=${h.smartphoneConnected})`);
+    let restartNote = "";
+    if (v.restart) {
+      if (await shouldAlert("waqueue", "restart", WA_QUEUE_RESTART_EVERY_MS)) {
+        const r = await restartWaInstance();
+        console.error(`[WAQUEUE] restart instance → ok=${r.ok} status=${r.status} ${r.body}`);
+        restartNote = r.ok
+          ? "Reiniciei a instancia da Z-API automaticamente (nao precisa de QR code). Se as mensagens presas nao sairem em alguns minutos, reinicie pelo painel da Z-API."
+          : `Tentei reiniciar a instancia da Z-API e NAO consegui (HTTP ${r.status}). Reinicie pelo painel da Z-API.`;
+      } else {
+        restartNote = "Ja reiniciei a instancia na ultima hora e a fila continua parada — reinicie pelo painel da Z-API ou reconecte o celular.";
+      }
+    } else {
+      restartNote = "O celular do WhatsApp aparece OFFLINE na Z-API — ligue o celular na internet / abra o WhatsApp nele.";
+    }
+    if (!(await shouldAlert("waqueue", "alert", WA_QUEUE_RESTART_EVERY_MS))) return;
+    const msg = [
+      `🚨 OzziFloors - WhatsApp com ${h.count} mensagem(ns) PRESA(S) na fila da Z-API`,
+      ``,
+      `A mais antiga esta esperando ha ${fmtAge(h.oldestAgeMs)}. Enquanto isso NENHUMA resposta do bot chega aos clientes no WhatsApp (o sistema acha que enviou).`,
+      ``,
+      restartNote,
+      ``,
+      `Ate normalizar, responda os clientes do WhatsApp pelo celular.`,
+    ].join("\n");
+    await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+  } catch (err) {
+    console.error("[WAQUEUE] watchdog error:", err);
+  }
+}
