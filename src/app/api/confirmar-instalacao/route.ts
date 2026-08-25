@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "crypto";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { sendWhatsAppMessage, notifyOwners } from "@/lib/whatsapp";
 import { supabaseAdmin } from "@/lib/supabase";
+import { sanitizeInstallDate, formatInstallDateTime, installTimeAlert } from "@/lib/instalacao";
 
 // ─── POST /api/confirmar-instalacao — confirmação de instalação via WhatsApp ─
 // Chamado por sistemas externos (ex.: Ozzi Plataforma) quando uma instalação é
@@ -18,6 +19,15 @@ import { supabaseAdmin } from "@/lib/supabase";
 //   Obrigatórios: telefone_cliente e data_instalacao — sem eles NADA é enviado
 //   e o erro fica no log. Os demais campos só enriquecem a mensagem.
 //   Opcional: "dry": true → monta a mensagem e devolve sem enviar (preview).
+//   Opcional: "data_instalacao_iso": "2026-08-26T14:00:00-04:00" (ISO 8601 COM
+//     fuso). Quando presente e válido, NÓS formatamos a data em horário da
+//     Flórida ("Wednesday, August 26 at 10am") e o texto de data_instalacao é
+//     ignorado — caminho recomendado desde 25/08/2026.
+//
+//   GUARDA DE HORÁRIO (25/08/2026, caso Sarah McKnight): o texto chegou como
+//   "Wednesday, August 26 at 5am" para uma instalação às 10am. Horário fora de
+//   7h–19h é REMOVIDO da mensagem (vai só a data), a resposta traz
+//   "horario_suspeito" e o dono recebe um alerta para confirmar a hora.
 //
 // Responses: 200 {"ok":true,...} | 400 campos inválidos | 401 token errado | 502 Z-API.
 export const maxDuration = 60;
@@ -177,15 +187,35 @@ export async function POST(req: NextRequest) {
   const nomeVendedor = asText(body.nome_vendedor);
   const telefoneVendedor = asText(body.telefone_vendedor);
 
+  // Data final: ISO com fuso (formatada por nós) ganha do texto livre; o texto
+  // livre passa pela guarda de horário implausível.
+  const viaIso = typeof body.data_instalacao_iso === "string" ? formatInstallDateTime(body.data_instalacao_iso) : null;
+  const guarda = viaIso ? { text: viaIso, horarioSuspeito: null } : sanitizeInstallDate(dataInstalacao!);
+  const dataFinal = guarda.text;
+  if (guarda.horarioSuspeito) {
+    console.warn(
+      `[INSTALACAO] horario IMPLAUSIVEL "${guarda.horarioSuspeito}" em data_instalacao=${JSON.stringify(dataInstalacao)} ` +
+        `phone=${telefoneCliente} — enviando so a data (${JSON.stringify(dataFinal)})`
+    );
+  }
+
   const mensagem = composeConfirmation({
     nomeCliente,
-    dataInstalacao: dataInstalacao!,
+    dataInstalacao: dataFinal,
     nomeVendedor,
     telefoneVendedor,
   });
 
   if (body.dry === true) {
-    return NextResponse.json({ ok: true, dry: true, enviado: false, mensagem });
+    return NextResponse.json({
+      ok: true,
+      dry: true,
+      enviado: false,
+      mensagem,
+      data_usada: dataFinal,
+      horario_suspeito: guarda.horarioSuspeito,
+      via_iso: !!viaIso,
+    });
   }
 
   // ── Envio ──────────────────────────────────────────────────────────────────
@@ -204,8 +234,35 @@ export async function POST(req: NextRequest) {
 
   const registrado = await recordInHistory(telefoneCliente!, mensagem);
 
-  console.log(`[INSTALACAO] ok phone=${telefoneCliente} data=${dataInstalacao} vendedor=${nomeVendedor ?? "-"} registrado=${registrado}`);
-  return NextResponse.json({ ok: true, enviado: true, mensagem, registrado });
+  // Horário removido → o dono precisa confirmar a hora com o cliente. Best
+  // effort: o WhatsApp do cliente já saiu, um alerta que falha não vira erro.
+  if (guarda.horarioSuspeito) {
+    try {
+      await notifyOwners({
+        platform: "WhatsApp",
+        clientName: nomeCliente,
+        clientId: telefoneCliente!,
+        recentMessages: [{ role: "assistant", content: mensagem }],
+        alert: installTimeAlert({ nome: nomeCliente, horarioSuspeito: guarda.horarioSuspeito, dataEnviada: dataFinal }),
+      });
+    } catch (err) {
+      console.error("[INSTALACAO] alerta de horario suspeito falhou:", err);
+    }
+  }
+
+  console.log(
+    `[INSTALACAO] ok phone=${telefoneCliente} data=${JSON.stringify(dataFinal)} recebido=${JSON.stringify(dataInstalacao)} ` +
+      `via_iso=${!!viaIso} horario_suspeito=${guarda.horarioSuspeito ?? "-"} vendedor=${nomeVendedor ?? "-"} registrado=${registrado}`
+  );
+  return NextResponse.json({
+    ok: true,
+    enviado: true,
+    mensagem,
+    registrado,
+    data_usada: dataFinal,
+    horario_suspeito: guarda.horarioSuspeito,
+    via_iso: !!viaIso,
+  });
 }
 
 // Um GET é quase sempre um humano cutucando a URL no navegador. Responde com o
@@ -216,6 +273,7 @@ export async function GET() {
     rota: "POST /api/confirmar-instalacao",
     auth: "header Authorization: Bearer <token>",
     obrigatorios: ["telefone_cliente", "data_instalacao"],
-    opcionais: ["nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
+    opcionais: ["data_instalacao_iso", "nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
+    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; horario fora de 7h-19h no texto livre e removido da mensagem",
   });
 }

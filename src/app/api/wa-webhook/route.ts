@@ -21,6 +21,7 @@ import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceChe
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal } from "@/lib/quote-reply";
+import { findRecentInstallationConfirmation, isInstallAck, installHandoffMessage, INSTALL_STAGE_ALERT } from "@/lib/instalacao";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
 // + vision + AI + send retries): message stored, reply never generated, zero
@@ -810,6 +811,72 @@ async function handleWaMessage(body: Record<string, unknown>) {
         .limit(1)
         .maybeSingle();
       if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── ETAPA DE INSTALAÇÃO: cliente respondeu ao aviso de véspera ─────────
+    // Regra do dono (25/08/2026, caso Sarah McKnight): depois da confirmação
+    // de instalação enviada por /api/confirmar-instalacao, o bot NÃO conversa.
+    //   • agradecimento / "ok" / "see you tomorrow" / 👍 → só um 👍 de volta;
+    //   • qualquer outra coisa (dúvida, "5am???", pedido) → UMA frase dizendo
+    //     que vai repassar ao Ozzi, que entra em contato — e o dono é avisado.
+    // Determinístico, sem modelo: o bot nunca responde a dúvida sozinho nessa
+    // etapa (foi o "Ha, that does sound early!" que o dono apagou). Roda ANTES
+    // do cérebro de follow-up de orçamento e da lógica de visita marcada porque
+    // a venda já fechou — nenhum dos dois faz sentido aqui. Só vale enquanto a
+    // confirmação for recente (INSTALL_STAGE_MAX_DAYS); depois a conversa volta
+    // ao fluxo normal.
+    {
+      const { data: instMsgs } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content, created_at")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: false })
+        .limit(15);
+      const instRows = (instMsgs ?? []).reverse();
+      const instConf = findRecentInstallationConfirmation(instRows);
+      if (instConf) {
+        const instBurst = unansweredUserBurst(instRows) || rawText;
+        // A cadência de follow-up de orçamento (se houver) precisa parar do
+        // mesmo jeito: a conversa agora é do Ozzi.
+        try {
+          if (await findQuoteFollowupContext(conv.id)) {
+            await enviarEventoFunil("followup_respondeu", { telefone: phone });
+          }
+        } catch (err) {
+          console.error("[WA] instalacao: followup_respondeu error:", err);
+        }
+        if (isHostileRejection(instBurst)) {
+          console.log("[WA] instalacao: rejeição hostil — silêncio total, avisando o dono");
+        } else if (isInstallAck(instBurst)) {
+          await sendWhatsAppReaction(phone, messageId, "👍");
+          console.log("[WA] instalacao: agradecimento/ack — só 👍, nada de texto");
+          return;
+        } else {
+          const reply = installHandoffMessage(detectLang(instBurst));
+          const lastAsst = [...instRows].reverse().find((m) => m.role === "assistant")?.content ?? null;
+          const repetido = !!(lastAsst && isConsecutiveDuplicate([{ role: "assistant", content: lastAsst }], reply));
+          if (repetido) {
+            console.log("[WA] instalacao: handoff já enviado na mensagem anterior — não repete, só avisa o dono");
+          } else {
+            const sent = await sendWhatsAppMessage(phone, reply);
+            if (!sent.ok) await reportSendFailure("whatsapp", phone, sent.error ?? "unknown");
+            else await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: reply });
+            console.log(`[WA] instalacao: dúvida → handoff ao Ozzi enviado=${sent.ok}`);
+          }
+        }
+        try {
+          await notifyOwners({
+            platform: "WhatsApp",
+            clientName: conv.name ?? conv.username ?? null,
+            clientId: phone,
+            recentMessages: instRows.slice(-8).map((m) => ({ role: m.role, content: m.content })),
+            alert: INSTALL_STAGE_ALERT,
+          });
+        } catch (err) {
+          console.error("[WA] instalacao: notify error:", err);
+        }
+        return;
+      }
     }
 
     // ── Cliente de FOLLOW-UP DE ORÇAMENTO respondeu ────────────────────────
