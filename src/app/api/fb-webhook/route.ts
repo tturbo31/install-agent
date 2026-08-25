@@ -5,12 +5,12 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert } from "@/lib/scheduler";
+import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -76,6 +76,16 @@ async function processBookingCommand(
   }
   const bookingMatch = aiResponse.match(/\[BOOK:(\{[\s\S]*?\})\]/);
   if (!bookingMatch) return { response: aiResponse, booked: false };
+
+  // REPAIR guard: we do NOT do repairs of any kind, so a [BOOK] while the
+  // client's standing request is a repair is always wrong (PRITI BUDHRANI, IG
+  // 2026-08-24: "These tiles are damaged so we would like to replace them" was
+  // booked as a tile visit). Decline instead of booking; the flag clears only
+  // when the client pivots to a whole new floor.
+  if (repairRequestActive(history)) {
+    console.warn(`[FB] booking blocked — the client asked for a REPAIR (we do not do repairs); sending the decline`);
+    return { response: repairDeclineMessage(lang), booked: false };
+  }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
@@ -1406,6 +1416,14 @@ async function handleFbMessage(body: Record<string, unknown>) {
           return;
         }
       }
+    }
+
+    // REPAIR backstop (Priti Budhrani, IG 2026-08-24): while the client's
+    // standing request is a repair, a visit offer, a booking-details ask or a
+    // [BOOK] from the model is replaced by the deterministic decline.
+    if (!isBookingConfirmed && repairVisitOfferLeak(history, safeResponse)) {
+      console.warn("[FB] repair request — model offered a visit / asked for booking details; replacing with the repair decline");
+      safeResponse = repairDeclineMessage(lang);
     }
 
     const { response: afterBooking, booked } = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling, history);

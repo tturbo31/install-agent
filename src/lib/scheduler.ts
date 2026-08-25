@@ -1549,6 +1549,17 @@ export function needNameMessage(lang: Lang): string {
     : "Last thing! What name should I put the visit under?";
 }
 
+// We do NOT do repairs of any kind (owner rule 2026-08-25, Priti Budhrani case:
+// a "replace the damaged tiles" request was booked as a visit). Sent by the
+// webhooks when a [BOOK], visit offer or booking-details ask leaks through while
+// the client's standing request is a repair (ai.repairRequestActive).
+export function repairDeclineMessage(lang: Lang): string {
+  if (lang === "pt") return "No momento só fazemos instalações completas, não fazemos reparos de nenhum tipo. Trabalhamos com projetos acima de 500 pés quadrados. Se um dia precisar de um piso novo, é só me chamar!";
+  return lang === "es"
+    ? "Por el momento solo hacemos instalaciones completas, no hacemos reparaciones de ningún tipo. Trabajamos con proyectos de más de 500 pies cuadrados. Si algún día necesita un piso nuevo, con gusto le ayudo."
+    : "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!";
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with
