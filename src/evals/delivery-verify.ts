@@ -134,7 +134,14 @@ function main() {
   ck("dream cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/dream/route.ts")));
   ck("followup cron sweeps the outbox", /retryFailedSends\(\)/.test(read("src/app/api/followup/route.ts")));
   ck("retry gives up permanently on per-recipient errors (551 etc.)",
-    /isPerRecipientFailure\(channelOf\(conv\.igsid\)[\s\S]{0,200}?delete\(\)/.test(del) && /giving up permanently/.test(del));
+    /isPerRecipientFailure\(channelOf\(conv\.igsid\)[\s\S]{0,900}?delete\(\)/.test(del) && /giving up permanently/.test(del));
+  // 2026-08-26 lost-reply review: the refusal right after an ad tap is transient —
+  // a fresh reply is retried for 90 min before it is dropped, and the drop is traced.
+  ck("per-recipient failure on a fresh reply is kept for the next sweeps (90 min)",
+    /PER_RECIPIENT_GIVEUP_MIN = 90/.test(del) && /ageMin < PER_RECIPIENT_GIVEUP_MIN/.test(del) && /keeping for the next sweep/.test(del));
+  ck("giving up leaves a persisted undeliverable| trace", /recordUndeliverable\(conv\.igsid/.test(del) && /undeliverable\|/.test(del));
+  ck("last Graph error persisted per client + calm alert throttled per client",
+    /recordSendFailure\(channel, clientId, errorMsg\)/.test(del) && /sendfail-last\|/.test(del) && /-recipient-\$\{clientId\}/.test(del));
 
   // ── 6c. Ambiguous 200 "Permissions error" (2026-08-15, emone455) ──────────
   // Meta reuses code 200 for "the token lost a permission" (real outage) and

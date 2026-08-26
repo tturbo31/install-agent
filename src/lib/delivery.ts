@@ -145,9 +145,11 @@ export async function reportSendFailure(
 ): Promise<void> {
   console.error(`🚨 [DELIVERY] ${channel} send FAILED for ${clientId}: ${errorMsg}`);
   const perRecipient = await isPerRecipientFailure(channel, errorMsg);
+  await recordSendFailure(channel, clientId, errorMsg);
   // Separate throttle slots: a calm "1 client unreachable" note must never burn
-  // the hour in which a real outage would have screamed.
-  const slot = perRecipient ? `${channel}-recipient` : channel;
+  // the hour in which a real outage would have screamed — and one unreachable
+  // client must not hide the next one (the per-recipient slot is per CLIENT).
+  const slot = perRecipient ? `${channel}-recipient-${clientId}` : channel;
   if (!(await shouldAlert("sendfail", slot, ALERT_EVERY_MS))) return;
   const label = CHANNEL_LABEL[channel] ?? channel;
   const msg = perRecipient
@@ -157,8 +159,8 @@ export async function reportSendFailure(
         `Nao consegui entregar a resposta para: ${clientId}`,
         `Erro: ${errorMsg.slice(0, 250)}`,
         ``,
-        `Provavel conta desativada, bloqueio ou janela de 24h vencida. O canal esta funcionando normalmente para os outros clientes.`,
-        `Vou tentar de novo automaticamente por 48h; se nao der, responda pelo app.`,
+        `Provavel conta desativada, bloqueio, janela de 24h vencida ou o Messenger ainda nao liberou a conversa (comum logo depois do clique no anuncio). O canal esta funcionando normalmente para os outros clientes.`,
+        `Vou tentar de novo automaticamente a cada 10 min por ate 90 min; se nao der, responda pelo app (a caixa de entrada da pagina costuma entregar).`,
       ].join("\n")
     : [
         `🚨 OzziFloors - ENTREGA FALHANDO no ${label}!`,
@@ -246,6 +248,33 @@ export async function releaseSendClaim(messageId: string): Promise<void> {
 const RETRY_SWEEP_GAP_MS = 10 * 60 * 1000; // sweep at most every 10 min
 const RETRY_WINDOW_H = 48; // give up after 48h (reply is stale by then)
 const RETRY_BATCH = 10;
+// A per-recipient refusal (551 / 10 / 100 / 24, or 200 with a healthy channel)
+// is retried for this long before the reply is dropped as undeliverable.
+const PER_RECIPIENT_GIVEUP_MIN = 90;
+
+// Persisted traces (platform_settings keys) — the Graph error text otherwise
+// only ever appears in a throttled WhatsApp note (2026-08-26 lost-reply review).
+async function recordSendFailure(channel: string, clientId: string, errorMsg: string): Promise<void> {
+  try {
+    const prefix = `sendfail-last|${channel}|${clientId}|`;
+    const { data: old } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", `${prefix}%`);
+    for (const r of old ?? []) await supabaseAdmin.from("platform_settings").delete().eq("platform", r.platform);
+    await supabaseAdmin
+      .from("platform_settings")
+      .insert({ platform: `${prefix}${errorMsg.replace(/\s+/g, " ").slice(0, 90)}|${new Date().toISOString()}`, paused: false });
+  } catch {
+    /* best-effort */
+  }
+}
+async function recordUndeliverable(igsid: string, errorMsg: string): Promise<void> {
+  try {
+    await supabaseAdmin
+      .from("platform_settings")
+      .insert({ platform: `undeliverable|${igsid}|${errorMsg.replace(/\s+/g, " ").slice(0, 90)}|${new Date().toISOString()}`, paused: false });
+  } catch {
+    /* best-effort */
+  }
+}
 
 // ─── Auto-retry outbox ──────────────────────────────────────────────────────
 // A reply whose send failed definitively is stored with SEND_FAILED_DB_SUFFIX
@@ -310,14 +339,27 @@ export async function retryFailedSends(): Promise<void> {
         console.log(`[DELIVERY] retry ${conv.igsid}: DELIVERED`);
         continue;
       }
-      // Per-recipient errors never heal (blocked/deactivated/window) — give up
-      // NOW instead of re-pinging the owner hourly for 48h (2026-07-23 review:
-      // two 551 "person isn't available" rows kept the calm alert firing). A
-      // 200 counts here only once the probe says the channel itself is fine.
+      // Per-recipient errors (blocked/deactivated/window) USED to mean "give up
+      // NOW" (2026-07-23 review: two 551 rows kept the calm alert firing for
+      // 48h). 2026-08-26 showed they are often TRANSIENT right after an ad tap:
+      // 7 Messenger/IG replies in a week were refused by Meta seconds after the
+      // client's FAQ tap, the outbox deleted them on the first retry, and a
+      // manual page-inbox reply minutes or hours later DID deliver (Wilmar
+      // Campos, fb_28351138704524233, fb_28074065932234682). So a fresh reply
+      // keeps retrying for PER_RECIPIENT_GIVEUP_MIN and only then is dropped —
+      // with a persisted trace, since the deleted row used to be the only one.
+      // A 200 counts here only once the probe says the channel itself is fine.
       if (await isPerRecipientFailure(channelOf(conv.igsid), String(r.error ?? ""))) {
+        const ageMin = (Date.now() - Date.parse(m.created_at)) / 60_000;
+        if (ageMin < PER_RECIPIENT_GIVEUP_MIN) {
+          await releaseSendClaim(m.id);
+          console.log(`[DELIVERY] retry ${conv.igsid}: unreachable for now (${r.error ?? "?"}), ${Math.round(ageMin)} min old — keeping for the next sweep`);
+          continue;
+        }
         await supabaseAdmin.from("instagram_messages").delete().eq("id", m.id);
         await releaseSendClaim(m.id);
-        console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${r.error ?? "?"}) — giving up permanently`);
+        await recordUndeliverable(conv.igsid, String(r.error ?? "?"));
+        console.log(`[DELIVERY] retry ${conv.igsid}: unreachable (${r.error ?? "?"}) for ${Math.round(ageMin)} min — giving up permanently`);
         continue;
       }
       // Nothing reached the client, so hand the reply back to the next sweep.
