@@ -16,6 +16,10 @@ import { createHmac } from "crypto";
 // column): "sendfail|<channel>|<lastAlertISO>".
 
 const ALERT_EVERY_MS = 60 * 60 * 1000; // max 1 owner alert per channel per hour
+// One unreachable client = ONE calm note a day, even though the outbox keeps
+// retrying that client for 90 min (the hourly slot produced two notes for the
+// same person on 2026-08-26).
+const RECIPIENT_ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
 const OWNER_PHONES = ["15616748334", "556294554477"];
 
 const CHANNEL_LABEL: Record<string, string> = {
@@ -150,7 +154,7 @@ export async function reportSendFailure(
   // the hour in which a real outage would have screamed — and one unreachable
   // client must not hide the next one (the per-recipient slot is per CLIENT).
   const slot = perRecipient ? `${channel}-recipient-${clientId}` : channel;
-  if (!(await shouldAlert("sendfail", slot, ALERT_EVERY_MS))) return;
+  if (!(await shouldAlert("sendfail", slot, perRecipient ? RECIPIENT_ALERT_EVERY_MS : ALERT_EVERY_MS))) return;
   const label = CHANNEL_LABEL[channel] ?? channel;
   const msg = perRecipient
     ? [

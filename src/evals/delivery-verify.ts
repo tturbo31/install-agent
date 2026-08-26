@@ -142,6 +142,8 @@ function main() {
   ck("giving up leaves a persisted undeliverable| trace", /recordUndeliverable\(conv\.igsid/.test(del) && /undeliverable\|/.test(del));
   ck("last Graph error persisted per client + calm alert throttled per client",
     /recordSendFailure\(channel, clientId, errorMsg\)/.test(del) && /sendfail-last\|/.test(del) && /-recipient-\$\{clientId\}/.test(del));
+  ck("calm per-client note at most once a day (retry window must not double it)",
+    /RECIPIENT_ALERT_EVERY_MS = 24 \* 60 \* 60 \* 1000/.test(del) && /perRecipient \? RECIPIENT_ALERT_EVERY_MS : ALERT_EVERY_MS/.test(del));
 
   // ── 6c. Ambiguous 200 "Permissions error" (2026-08-15, emone455) ──────────
   // Meta reuses code 200 for "the token lost a permission" (real outage) and
@@ -163,7 +165,7 @@ function main() {
   ck("WhatsApp has no probe, so it keeps the loud reading",
     /if \(channel === "whatsapp"\) return false;/.test(del));
   ck("calm note and channel siren use SEPARATE throttle slots",
-    /\$\{channel\}-recipient/.test(del) && /shouldAlert\("sendfail", slot, ALERT_EVERY_MS\)/.test(del));
+    /\$\{channel\}-recipient/.test(del) && /shouldAlert\("sendfail", slot, (?:ALERT_EVERY_MS|perRecipient \? RECIPIENT_ALERT_EVERY_MS : ALERT_EVERY_MS)\)/.test(del));
   ck("repeated identical question never gets silence (rule 35)",
     /REPEATED IDENTICAL QUESTION RULE/.test(read("src/lib/ai.ts")));
 
