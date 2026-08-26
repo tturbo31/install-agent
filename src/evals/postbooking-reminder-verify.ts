@@ -251,10 +251,15 @@ async function main() {
   }
   ck("fb: replay gated pelo admin secret", /isDashboardAuthorized\(req\.headers\.get\("x-ozzi-replay"\)\)/.test(files.fb) && /opts\?\.replay/.test(files.fb));
   ck("ig: replay gated pelo admin secret", /isDashboardAuthorized\(req\.headers\.get\("x-ozzi-replay"\)\)/.test(files.ig) && /opts\?\.replay/.test(files.ig));
+  // 1º deploy (26/08 22:04): o replay morria no dedup por mid ANTES do insert (updated_at nem mexeu).
+  ck("fb: dedup por mid deixa o replay passar", /if \(already && !opts\?\.replay\) return;/.test(files.fb));
+  ck("ig: dedup por mid deixa o replay passar", /if \(alreadyProcessed && !opts\?\.replay\) return;/.test(files.ig));
   const delivery = readFileSync(join(process.cwd(), "src/lib/delivery.ts"), "utf-8");
   ck("delivery: checa a thread na Meta antes de reenviar", /pageRepliedAfter\(/.test(delivery) && /me\/conversations/.test(delivery));
   ck("delivery: cada bolha tratada uma vez (lostreply| claim)", /lostreply\|/.test(delivery));
   ck("delivery: WhatsApp só alerta (sem replay)", /channel === "whatsapp"/.test(delivery));
+  ck("delivery: base URL nunca cai em localhost em produção", /PRODUCTION_BASE_URL = "https:\/\/instagram-dm-agent-chi\.vercel\.app"/.test(delivery) && /allowLocal \|\| !isLocalhost\(u\)/.test(delivery));
+  ck("delivery: resultado de cada bolha vai para o banco", /lostreply-result\|/.test(delivery));
 
   console.log(`\n${failures === 0 ? c.green(`ALL ${total} CHECKS PASSED`) : c.red(`${failures} of ${total} CHECKS FAILED`)}\n`);
   process.exit(failures === 0 ? 0 : 1);

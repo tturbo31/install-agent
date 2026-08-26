@@ -580,13 +580,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // storage, and the later enrichment update still target the right row.
     const messageMid = messaging.message?.mid ?? `syn_${senderIgsid}_${Date.now()}`;
 
-    // Skip duplicates
+    // Skip duplicates (Meta re-delivers). A replay from the lost-reply recovery
+    // is the one caller that WANTS an already-stored bubble processed again.
     const { data: alreadyProcessed } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("instagram_msg_id", messageMid)
       .maybeSingle();
-    if (alreadyProcessed) return;
+    if (alreadyProcessed && !opts?.replay) return;
 
     // ── Find or create conversation ──────────────────────────────────────
     let { data: conversation } = await supabaseAdmin

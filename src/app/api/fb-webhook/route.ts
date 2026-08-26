@@ -514,13 +514,14 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       return;
     }
 
-    // Deduplicate
+    // Deduplicate (Meta re-delivers). A replay from the lost-reply recovery is
+    // the one caller that WANTS an already-stored bubble processed again.
     const { data: already } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
       .eq("instagram_msg_id", msgId)
       .maybeSingle();
-    if (already) return;
+    if (already && !opts?.replay) return;
 
     // Find or create conversation (igsid = "fb_{psid}")
     const fbIgsid = `fb_${psid}`;

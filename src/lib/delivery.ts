@@ -424,15 +424,33 @@ async function pageRepliedAfter(
 // Where to reach our own webhooks. NEXT_PUBLIC_APP_URL is "http://localhost:3000"
 // in the env file, so on Vercel the platform-provided production domain wins;
 // localhost is only acceptable when we are not running on Vercel at all.
-function selfBaseUrl(): string {
-  const onVercel = !!process.env.VERCEL;
+// Vercel only exposes VERCEL_* at runtime when "system environment variables"
+// is enabled for the project, so the known production domain is the fallback;
+// localhost is acceptable only outside production (local dev server).
+const PRODUCTION_BASE_URL = "https://instagram-dm-agent-chi.vercel.app";
+export function selfBaseUrl(): string {
+  const isLocalhost = (u: string) => /localhost|127\.0\.0\.1/.test(u);
+  const allowLocal = process.env.NODE_ENV !== "production" && !process.env.VERCEL;
   const candidates = [
+    process.env.OZZI_SELF_URL ?? "",
     process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "",
-    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "",
     process.env.NEXT_PUBLIC_APP_URL ?? "",
+    PRODUCTION_BASE_URL,
   ];
-  const pick = candidates.find((u) => u && !(onVercel && /localhost|127\.0\.0\.1/.test(u))) ?? "";
+  const pick = candidates.find((u) => u && (allowLocal || !isLocalhost(u))) ?? PRODUCTION_BASE_URL;
   return pick.replace(/\/+$/, "");
+}
+
+// Outcome of each handled bubble, persisted because the Vercel logs are not at
+// hand when a lost reply is investigated: lostreply-result|<msgId>|<outcome>.
+async function recordLostReplyOutcome(messageId: string, outcome: string): Promise<void> {
+  try {
+    await supabaseAdmin
+      .from("platform_settings")
+      .insert({ platform: `lostreply-result|${messageId}|${outcome}|${new Date().toISOString()}`.slice(0, 250), paused: false });
+  } catch {
+    /* best-effort */
+  }
 }
 
 // Re-post the stored inbound to our own webhook (admin-gated replay header +
@@ -469,9 +487,10 @@ async function replayInbound(channel: "facebook" | "instagram", row: LostReplyRo
   if (appSecret) headers["x-hub-signature-256"] = "sha256=" + createHmac("sha256", appSecret).update(raw, "utf8").digest("hex");
   try {
     const res = await fetch(base + path, { method: "POST", headers, body: raw });
+    if (!res.ok) console.error(`[DELIVERY] lost-reply replay POST ${base + path} -> HTTP ${res.status}`);
     return res.ok;
   } catch (err) {
-    console.error("[DELIVERY] lost-reply replay POST failed:", err);
+    console.error(`[DELIVERY] lost-reply replay POST ${base + path} failed:`, err);
     return false;
   }
 }
@@ -541,6 +560,7 @@ export async function recoverLostReplies(): Promise<void> {
       if (channel === "whatsapp") {
         console.warn(`[DELIVERY] lost reply on WhatsApp ${r.igsid} ("${preview}") — owner alert`);
         report.push(`- WhatsApp ${r.igsid.slice(3)}: "${preview}" — sem resposta, responda pelo app`);
+        await recordLostReplyOutcome(newest.id, "wa-alert");
         continue;
       }
       const thread = await pageRepliedAfter(channel, r.igsid, Date.parse(newest.created_at));
@@ -549,15 +569,18 @@ export async function recoverLostReplies(): Promise<void> {
         // the panel and the history guards see the real exchange.
         await supabaseAdmin.from("instagram_messages").insert({ conversation_id: r.conversationId, role: "assistant", content: thread.text });
         console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid}: thread shows it delivered — history repaired`);
+        await recordLostReplyOutcome(newest.id, "delivered-repaired");
         continue;
       }
       if (thread.state === "unknown") {
         console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid} ("${preview}") — thread check failed, owner alert`);
         report.push(`- ${CHANNEL_LABEL[channel]} ${r.igsid}: "${preview}" — sem resposta, responda pelo app`);
+        await recordLostReplyOutcome(newest.id, "thread-unknown-alert");
         continue;
       }
       const ok = await replayInbound(channel, r);
       console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid} ("${preview}") — replay ${ok ? "requested" : "FAILED"}`);
+      await recordLostReplyOutcome(newest.id, ok ? "replayed" : `replay-failed@${selfBaseUrl()}`);
       report.push(`- ${CHANNEL_LABEL[channel]} ${r.igsid}: "${preview}" — ${ok ? "resposta reenviada automaticamente" : "reenvio falhou, responda pelo app"}`);
     }
     if (report.length && (await shouldAlert("lostreply", "alert", LOST_REPLY_ALERT_EVERY_MS))) {
