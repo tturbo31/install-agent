@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
@@ -20,7 +20,7 @@ import { trackConversationMetrics } from "@/lib/metrics";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
-import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal } from "@/lib/quote-reply";
+import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal, quoteHandoffActive, isTalkToOzziRequest, talkToOzziLang, talkToOzziMessage, QUOTE_HANDOFF_SUFFIX, QUOTE_TALK_TO_OZZI_ALERT, QUOTE_AFTER_HANDOFF_ALERT } from "@/lib/quote-reply";
 import { findRecentInstallationConfirmation, isInstallAck, installHandoffMessage, INSTALL_STAGE_ALERT } from "@/lib/instalacao";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
@@ -918,10 +918,6 @@ async function handleWaMessage(body: Record<string, unknown>) {
             "followup_respondeu",
             isQuoteRefusal(rawText) ? { telefone: phone, recusou: true } : { telefone: phone }
           );
-          if (isPureClosing(rawText)) {
-            console.log("[WA] quote-reply: fechamento puro, ficando em silêncio");
-            return;
-          }
           const { data: recentMsgs } = await supabaseAdmin
             .from("instagram_messages")
             .select("role, content")
@@ -929,10 +925,49 @@ async function handleWaMessage(body: Record<string, unknown>) {
             .order("created_at", { ascending: false })
             .limit(12);
           const historico = (recentMsgs ?? []).reverse();
-          const reply = await composeQuoteReply({ ctx: quoteCtx, history: historico, clientText: rawText });
+          const quoteBurst = unansweredUserBurst(historico) || rawText;
+          // REGRA DO DONO (26/08/2026): "ok" / obrigado / 👍 ENCERRA a conversa
+          // na hora — só um 👍 de volta, nenhuma frase. Era o loop "Ok" →
+          // "Sounds good, Ozzi will be in touch!" → "Okay" → "Sounds good,
+          // we'll be in touch!" (Dary, Edna, Burt, Jale, Angie: 5 clientes de
+          // follow-up em 10 dias). Vale para o burst inteiro não respondido.
+          if (isAckOnlyBurst(historico) || isPureClosing(rawText)) {
+            await sendWhatsAppReaction(phone, messageId, "👍");
+            console.log("[WA] quote-reply: ack/fechamento — só 👍, nada de texto");
+            return;
+          }
+          // Depois do repasse ao Ozzi ("vou repassar para o Ozzi") a conversa é
+          // dele: o bot NÃO responde mais nada, só avisa o dono do que chegou.
+          if (quoteHandoffActive(historico)) {
+            console.log("[WA] quote-reply: repasse ao Ozzi já feito — silêncio, avisando o dono");
+            await notifyOwners({
+              platform: "WhatsApp",
+              clientName: conv.name ?? conv.username ?? null,
+              clientId: phone,
+              recentMessages: historico.slice(-8),
+              alert: QUOTE_AFTER_HANDOFF_ALERT,
+            }).catch((e) => console.error("[WA] quote-reply notify (pós-repasse) error:", e));
+            return;
+          }
+          // "Quero falar com o Ozzi" / "me liga": UMA frase fixa (sem modelo) e
+          // o dono é avisado. O que o cliente mandar depois cai no silêncio acima.
+          const reply = isTalkToOzziRequest(quoteBurst)
+            ? { text: talkToOzziMessage(talkToOzziLang(quoteBurst, quoteCtx.idioma)), notifyOwner: true, source: "talk-to-ozzi" as const }
+            : await composeQuoteReply({ ctx: quoteCtx, history: historico, clientText: rawText });
+          if (reply.reactOnly) {
+            await sendWhatsAppReaction(phone, messageId, "👍");
+            console.log("[WA] quote-reply: modelo pediu [REACT_ONLY] — só 👍");
+            return;
+          }
           const sent = await sendWhatsAppMessage(phone, reply.text);
           if (sent.ok) {
-            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: reply.text });
+            // Repasse ao Ozzi fica marcado no banco (sufixo nunca enviado) para
+            // o silêncio pós-repasse não depender de regex sobre o texto.
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conv.id,
+              role: "assistant",
+              content: reply.notifyOwner ? reply.text + QUOTE_HANDOFF_SUFFIX : reply.text,
+            });
             await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
             if (reply.notifyOwner) {
               await notifyOwners({
@@ -940,7 +975,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
                 clientName: conv.username ?? null,
                 clientId: phone,
                 recentMessages: [...historico.slice(-7), { role: "assistant", content: reply.text }],
-                alert: "Cliente de follow-up de orçamento precisa de você (negociação, dúvida ou quer fechar).",
+                alert:
+                  reply.source === "talk-to-ozzi"
+                    ? QUOTE_TALK_TO_OZZI_ALERT
+                    : "Cliente de follow-up de orçamento precisa de você (negociação, dúvida ou quer fechar). O agente NAO vai responder mais nada nesta conversa depois do repasse.",
               });
             }
             console.log(`[WA] quote-reply enviado (${reply.source}) notify=${reply.notifyOwner}`);
@@ -1449,7 +1487,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // of sending another text. Never overrides the post-booking flow. Burst-aware:
     // a trailing "thanks!" must NOT silence the model's answer to an earlier,
     // still-un-answered question that the 10s debounce folded into this turn.
-    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosingBurst(history))) {
+    // "ok"/"perfect"/👍 after a message of ours that asked nothing (or a second
+    // bare ack in a row) is the client closing the conversation — owner rule
+    // 26/08/2026, isAckClosingBurst: no more "Sounds good, Ozzi will be in touch".
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiResponse) || isPureClosingBurst(history) || isAckClosingBurst(history))) {
       // A rejection ("stop messaging me", "get away from me") gets NO 👍
       // either — a thumbs-up on a go-away message reads as mockery and still
       // notifies the client (2026-08-22). Total silence for those; the

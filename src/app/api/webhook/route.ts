@@ -22,6 +22,7 @@ import {
   containsBookingInfo,
   isAskingForBookingInfo,
   isPureClosingBurst,
+  isAckClosingBurst,
   detectAdFlooringType,
   adFlooringTypeNote,
   classifyAdCreativeType,
@@ -1595,8 +1596,11 @@ async function handleWebhook(body: WebhookPayload) {
     // sending another text. Never overrides the post-booking flow. Burst-aware:
     // a trailing "thanks!" must NOT silence the model's answer to an earlier,
     // still-un-answered question that the 10s debounce folded into this turn.
-    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiText) || isPureClosingBurst(history))) {
-      console.log("[IG] React-only (closing/thanks) — no text sent");
+    // "ok"/"perfect"/👍 after a message of ours that asked nothing (or a second
+    // bare ack in a row) is the client closing the conversation — owner rule
+    // 26/08/2026, isAckClosingBurst: no more "Sounds good, Ozzi will be in touch".
+    if (!isBookingConfirmed && (/\[REACT_ONLY\]/i.test(rawAiText) || isPureClosingBurst(history) || isAckClosingBurst(history))) {
+      console.log("[IG] React-only (closing/thanks/ack) — no text sent");
       return;
     }
 

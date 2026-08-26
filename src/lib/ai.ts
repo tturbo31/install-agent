@@ -847,7 +847,7 @@ const OWNER_PROMISE_PATTERNS: RegExp[] = [
   /\b(ozzi|the owner|our team|someone)\b[^.!?\n]{0,60}\b(will|is going to|going to)\b[^.!?\n]{0,40}\b(reach(?:ing)? out|call(?:ing)?|contact(?:ing)?|be in touch|get(?:ting)? in touch|text(?:ing)? you|follow(?:ing)? up|get(?:ting)? back)/i,
   /\bI'?ll (have|make sure|get|ask)\b[^.!?\n]{0,40}\b(ozzi|the owner|our team)\b/i,
   /\bflagging (this|it)\b[^.!?\n]{0,40}\b(for|to|as urgent)/i,
-  /\b(ozzi|el due[nñ]o|nuestro equipo|alguien)\b[^.!?\n]{0,60}(te (va a )?(llama|contacta|responde)|se pondr[aá] en contacto|estar[aá] esperando|devolver[aá] la llamada|te contacta)/i,
+  /\b(ozzi|el due[nñ]o|nuestro equipo|alguien)\b[^.!?\n]{0,60}(te (va a )?(llama|contacta|responde)|se pondr[aá] en contacto|se comunicar[aá]|se comunique|se va a comunicar|estar[aá] esperando|devolver[aá] la llamada|te contacta)/i,
   /\b(ozzi|o dono|nossa equipe|algu[eé]m)\b[^.!?\n]{0,60}(vai (te )?(ligar|contatar|responder)|entra(r[aá])? em contato)/i,
 ];
 export function promisesOwnerContact(text: string): boolean {
@@ -1833,6 +1833,106 @@ export function isPureClosingBurst(history: Array<{ role: string; content: strin
   return true;
 }
 
+// ─── Bare acknowledgment ("ok") = the conversation is over ──────────────────
+// OWNER RULE (2026-08-26): when the client answers "ok" / "okay" / "perfect" /
+// "got it" / a thumbs up / a thank-you, the bot STOPS. What was happening,
+// mostly on WhatsApp with quote-follow-up clients: we said "Ozzi will reach
+// out", the client typed "Ok", the bot answered "Sounds good, Ozzi will be in
+// touch!", the client typed "Okay" again and the bot spoke AGAIN (Dary, 26/08:
+// "Ok cool" → "Sounds good, talk soon!" → "Okay" → "Sounds good, we'll be in
+// touch!"; Edna, Burt, Jale: same shape — 7 such turns in 10 days).
+// isPureClosing deliberately left a bare "ok" to the model ("never silence a
+// client who is still deciding on a slot"); that safety is kept HERE by
+// context instead of by ignoring the word: an ack is only a closing when OUR
+// last message was not waiting for an answer (no question, no slot offer, no
+// name/address/phone ask) — or when the client already acked once and we
+// re-asked anyway (second "ok" in a row: stop, whatever we asked).
+//
+// Deliberately NOT acks: "yes", "sure", "claro", "dale", "sim" (affirmative
+// answers), "that works" (a slot acceptance), anything with a question word,
+// a day, a time, booking data, or product/scope substance.
+const ACK_TOKEN =
+  /^(?:ok(?:ay|ey|ie|i)?|oks|kk+|k|perfect[oa]?|perfeito|great|awesome|cool|nice|good|fine|alright|all\s+right|all\s+good|got\s+it|noted|understood|copy(?:\s+that)?|will\s+do|no\s+problem|np|no\s+worries|sounds?\s+(?:good|great|perfect|fine)|that'?s\s+(?:fine|great|perfect|good|ok(?:ay)?)|you\s+too|same\s+to\s+you|entendido|entiendo|vale|listo|de\s+acuerdo|est[aá]\s+bien|muy\s+bien|bien|genial|excelente|excellent|wonderful|igualmente|t[aá]\s+bom|beleza|blz|certo|combinado|tranquilo|fechado|ha+|haha+|lol|jaja+|rs+)(?=$|\s)/i;
+
+export function isBareAck(text: string): boolean {
+  const t = normalizeSmartPunct(text ?? "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  if (t.includes("?")) return false;
+  // Only emoji / symbols: 👍 🙏 ❤️ is an ack; bare punctuation ("...") is not.
+  if (!/[\p{L}\p{N}]/u.test(t)) return /\p{Extended_Pictographic}/u.test(t);
+  if (t.length > 60) return false;
+  if (QUESTION_SIGNALS.test(t) || BOOKING_INFO_SIGNALS.test(t) || SUBSTANTIVE_CONTENT.test(t)) return false;
+  // Each punctuation-separated chunk must be a run of ack words, optionally
+  // ending in a thank-you / farewell ("ok cool", "perfect, thank you!",
+  // "ok I'll call you tomorrow", "gracias 🙏").
+  const chunks = t
+    .replace(/[\p{Extended_Pictographic}️]/gu, " ")
+    .split(/[.!,;:…]+|\s{2,}/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+  if (chunks.length === 0) return false;
+  return chunks.every((chunk) => {
+    let rest = chunk;
+    for (;;) {
+      const m = rest.match(ACK_TOKEN);
+      if (!m) break;
+      rest = rest.slice(m[0].length).trim();
+    }
+    return rest === "" || isPureClosing(rest);
+  });
+}
+
+// Every un-answered client bubble in the current burst is a bare ack / closing.
+export function isAckOnlyBurst(history: Array<{ role: string; content: string }>): boolean {
+  if (!history || history.length === 0) return false;
+  if (history[history.length - 1].role !== "user") return false;
+  let saw = false;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "assistant") break;
+    if (history[i].role !== "user") continue;
+    const t = (history[i].content || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+    if (!t) continue;
+    saw = true;
+    if (!isBareAck(t)) return false;
+  }
+  return saw;
+}
+
+// A message of ours that names a day or a clock time is (or may be) a slot
+// offer even without a question mark — "Perfect" to it is an acceptance.
+const SLOT_MENTION = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta)\b/i;
+
+// Is OUR message still waiting for the client to answer something?
+export function botAwaitsAnswer(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return t.includes("?") || containsSchedulingOffer(t) || isAskingForBookingInfo(t) || SLOT_MENTION.test(t);
+}
+
+// The webhook decision: the client's burst is only "ok"/thanks AND either our
+// last message asked nothing, or the client had ALREADY answered our previous
+// message with a bare ack (we re-asked once — never a third time). First
+// contact (no assistant message yet) is never silenced: that is the opener's job.
+export function isAckClosingBurst(history: Array<{ role: string; content: string }>): boolean {
+  if (!isAckOnlyBurst(history)) return false;
+  let lastAsst = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "assistant") { lastAsst = i; break; }
+  }
+  if (lastAsst === -1) return false;
+  if (!botAwaitsAnswer(history[lastAsst].content)) return true;
+  // The client turn our last message answered: also a bare ack → stop the loop.
+  let prevAcks = 0;
+  for (let i = lastAsst - 1; i >= 0; i--) {
+    if (history[i].role === "assistant") break;
+    if (history[i].role !== "user") continue;
+    const t = (history[i].content || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+    if (!t) continue;
+    if (!isBareAck(t)) return false;
+    prevAcks++;
+  }
+  return prevAcks > 0;
+}
+
 // ─── Internal-monologue leak scrubber ───────────────────────────────────────
 // Three REAL leaks shipped to clients in the 2026-07-11..15 window:
 //   "…What's the full address so I can get you scheduled? Wait, let me handle
@@ -2277,7 +2377,7 @@ export async function getAIResponse(
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. Do not reveal the small-job surcharge.
 21. ANSWER PRODUCT QUESTIONS RULE: When the client asks a real question about the product, ALWAYS answer it directly and helpfully FIRST — never deflect a genuine product question to "browse our website". Key facts you can state: our luxury vinyl is 100% waterproof, has a stone composite (SPC) core, a 20-year warranty, is highly scratch and water resistant, performs great in humid and tropical climates, and can usually be installed right over existing tile. If they ask you to recommend something, give a brief direction based on their style and then invite them to browse for the exact look. If the client is OUTSIDE South Florida (another state, the Caribbean, the West Indies, another country) and is asking about the PRODUCT, still answer their product question helpfully; only mention that our installation service covers South Florida if they specifically ask US to install or visit. NEVER dismiss an out-of-area client with "we can't help you" — answer what they asked.
 20. TILE MATERIAL RULE: We do NOT sell tile material. If the client asks whether you offer, sell, have, or carry tile, or tile/porcelain that looks like wood (wood-look tile), respond with EXACTLY this and nothing more: "We don't sell tile materials. We only do the installation. However, you can find wood-look tiles at stores like Floor & Decor." Do NOT append, add, or tack on a luxury vinyl / LVP suggestion or any upsell after it — give only those sentences and stop. NEVER respond to a TILE question by pitching luxury vinyl wood-look as if it were the same thing. (Wood-look luxury VINYL is only the right answer when the client asks about vinyl or wood-look floors generally, not tile.)
-17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE.
+17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE. A bare "ok", "okay", "perfect", "great", "cool", "got it", "sounds good", "entendido", "listo", "beleza" sent after a message of yours that did NOT ask a question is a closing too: [REACT_ONLY]. And once you (or the system) told the client that Ozzi will reach out or be in touch, ANY acknowledgment or thanks that follows gets EXACTLY [REACT_ONLY]: never answer "Sounds good, Ozzi will be in touch soon" to an "ok". One handoff line is the END of the conversation, the client's "ok" does not reopen it.
 16. DATE INTEGRITY RULE: When you name a weekday to the client (Friday, viernes, etc.), the date MUST be the exact [YYYY-MM-DD] shown next to that same weekday in the REAL-TIME SCHEDULE. NEVER compute or guess a date yourself, and NEVER pair a weekday with a date from a different schedule line. Before writing [BOOK:...], re-read the schedule line for the weekday you promised and copy its [YYYY-MM-DD] and only a time listed on that line. Example: if the schedule shows "Friday ... [2026-06-05]: 9am, 1pm", then "Friday at 1pm" books date 2026-06-05 and time 13:00, NEVER 2026-06-06. Saturday is a different line with different times. If the time the client wants is not listed under the exact date you promised, tell them it is not open and offer a time that IS listed for that date.
 15. CLIENT AVAILABILITY RULE: If the client states when they are available (examples: "only after 6pm", "I'm only home after 6", "only on weekends", "evenings only", "I work until 5", "only Saturday", "only Sunday", "no mornings"), you MUST filter all slot options to ONLY those that match their constraint. NEVER propose a time that contradicts what the client said. Examples: if the client says "after 6pm", offer ONLY 6pm or later slots on weekdays. If they say "only weekends", offer ONLY Saturday or Sunday slots. If they say "after 6pm or weekends", that means weekdays ONLY after 6pm AND weekends at any time — do NOT offer a weekday slot before 6pm, but a Saturday or Sunday at any hour is fine. If no slots in the schedule match their constraint, acknowledge it directly and ask what flexibility they have. This rule overrides the general "offer 2 available slots" instruction — always honor the client's stated availability first.
 22. NO PRESSURE RULE: Propose the visit and offer time slots ONCE. After you have already proposed the visit, do NOT tack a scheduling push onto the end of every message ("what time works for you", "what day works", "so we can get started right away", or a list of slots). When the client asks an informational question (materials, specs, thickness, wear layer, lighting, timeline, etc.), ANSWER that question and stop, with no scheduling pressure appended. Re-offer specific slots or re-ask "what time works" ONLY when the client signals readiness to book or themselves asks about scheduling or availability. NEVER end two messages in a row with the same scheduling question, that is pressuring the client and is forbidden. When the client raises an obstacle ("I don't have access", "it's owner occupied", "I can't be there", "I'm just researching", "not this week"), acknowledge it and adapt, NEVER ignore it and keep offering the same slots; if a visit is genuinely blocked, hand to Ozzi with [NOTIFY_OWNER] instead of pushing.

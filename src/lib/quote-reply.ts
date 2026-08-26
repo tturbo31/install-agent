@@ -3,9 +3,11 @@ import { supabaseAdmin } from "@/lib/supabase";
 import {
   sanitizeOutbound,
   followupPolicyViolation,
+  financingApprovalNote,
   HEARTH_URL_PADRAO,
   type FollowupLang,
 } from "@/lib/quote-followup";
+import { normalizeSmartPunct, promisesOwnerContact } from "@/lib/ai";
 
 // ─── Replies to QUOTE FOLLOW-UP clients (2026-07-17) ────────────────────────
 // Before this module, a client who already had the in-person visit (booked →
@@ -78,6 +80,94 @@ export function isQuoteRefusal(text: string): boolean {
   return QUOTE_REFUSAL.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
 }
 
+// ─── "Quero falar com o Ozzi" → UMA frase fixa, e depois SILÊNCIO ───────────
+// REGRA DO DONO (26/08/2026). Para o cliente de follow-up de orçamento:
+//  • "ok" / obrigado / 👍 → a conversa acabou, o bot não manda mais nada
+//    (o webhook usa isAckOnlyBurst e só reage com 👍);
+//  • "quero falar com o Ozzi" / "me liga" → a resposta é exatamente "Claro,
+//    vou repassar para o Ozzi" (uma frase, sem modelo) e o dono é avisado;
+//  • depois desse repasse, QUALQUER coisa que o cliente mande fica sem
+//    resposta — o dono recebe o aviso e assume.
+// O que acontecia (Dary, Edna, Burt, Jale, 18–26/08): "Ozzi will reach out" →
+// "Ok" → "Sounds good, Ozzi will be in touch!" → "Okay" → "Sounds good, we'll
+// be in touch!" — o modelo respondia a cada "ok" e o cliente ficava preso num
+// loop de despedidas.
+//
+// O repasse fica MARCADO no banco (sufixo nunca enviado), para o silêncio
+// pós-repasse não depender de regex sobre o texto que o modelo escreveu.
+export const QUOTE_HANDOFF_MARK = "[SYSTEM: QUOTE_HANDOFF]";
+export const QUOTE_HANDOFF_SUFFIX = "\n\n" + QUOTE_HANDOFF_MARK;
+
+const TALK_TO_OZZI_EN =
+  /\b(?:talk|speak|chat)\s+(?:to|with)\s+(?:ozzi|ozi|ozzy|diego|someone|somebody|a\s+person|a\s+human|a\s+real\s+person|the\s+owner|him)\b|\b(?:can|could|would|please|have|get|tell|ask)\b[^.!?\n]{0,30}\b(?:ozzi|ozi|ozzy|diego|someone|somebody|he|him)\b[^.!?\n]{0,20}\b(?:call|phone|ring|reach\s+out\s+to|contact|get\s+in\s+touch\s+with)\s+(?:me|us)\b|\b(?:call|phone|ring)\s+(?:me|us)\b|\bgive\s+(?:me|us)\s+a\s+(?:call|ring)\b|\b(?:a\s+)?(?:phone\s+)?call\s+(?:would\s+be|is)\s+(?:better|easier)\b|\bi(?:'d|\s+would)\s+(?:rather|prefer\s+to)\s+(?:talk|speak|call)\b|\bwant\s+to\s+(?:talk|speak)\s+(?:to|with)\b|\b(?:number|phone)\b[^.!?\n]{0,20}\b(?:i|we)\s+can\s+call\b/i;
+const TALK_TO_OZZI_ES =
+  /\b(?:hablar|conversar|comunicar(?:me|nos)?|contactar(?:me|nos)?)\s+(?:con|a)\s+(?:ozzi|ozi|ozzy|diego|alguien|una\s+persona|el\s+due[ñn]o|un\s+humano|[ée]l)\b|\bque\s+(?:me\s+|nos\s+)?llame[ns]?\b|\b(?:me|nos)\s+(?:puede[ns]?\s+|pueden\s+|podr[ií]an?\s+)?llamar\b|\bll[aá]m(?:ame|anos|eme|enos)\b|\bp[aá]s(?:ame|eme)\s+con\b|\b(?:puede[ns]?|podr[ií]an?)\s+llamar(?:me|nos)\b|\bquiero\s+hablar\b|\bprefiero\s+(?:hablar|llamar|una\s+llamada)\b/i;
+const TALK_TO_OZZI_PT =
+  /\b(?:falar|conversar)\s+com\s+(?:o\s+)?(?:ozzi|ozi|ozzy|diego|algu[eé]m|uma\s+pessoa|o\s+dono|um\s+humano|ele)\b|\bme\s+lig(?:a|ue|uem)\b|\blig(?:a|ue|uem)\s+(?:pra|para)\s+mim\b|\bpode(?:m)?\s+(?:me\s+)?ligar\b|\bquero\s+falar\b|\bprefiro\s+(?:falar|ligar|uma\s+liga[çc][ãa]o)\b/i;
+// "Don't call me" / "no me llamen" / "para de ligar" is the opposite of a
+// call request — never answer it with "of course, Ozzi will call you".
+const NEGATED_CALL = /\b(?:don'?t|do\s+not|never|stop|quit|no\s+(?:me|nos)|n[aã]o\s+(?:me|nos)|dej[ae]\s+de|par[ae]\s+de)\b[^.!?\n]{0,12}\b(?:call|calling|phone|ring|contact|llam\w*|lig\w*|contact\w*)/i;
+
+export function isTalkToOzziRequest(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0];
+  if (!t.trim()) return false;
+  if (NEGATED_CALL.test(t) || isQuoteRefusal(t)) return false;
+  return TALK_TO_OZZI_EN.test(t) || TALK_TO_OZZI_ES.test(t) || TALK_TO_OZZI_PT.test(t);
+}
+
+export type HandoffLang = "en" | "es" | "pt";
+
+// Language of the request itself decides ("Dile que llame" is Spanish even
+// when the platform tagged the client as English); silence → the platform's.
+export function talkToOzziLang(text: string, fallback: FollowupLang): HandoffLang {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0];
+  if (TALK_TO_OZZI_PT.test(t)) return "pt";
+  if (TALK_TO_OZZI_ES.test(t)) return "es";
+  if (TALK_TO_OZZI_EN.test(t)) return "en";
+  return fallback;
+}
+
+// Exactly what the owner asked for: "Claro, vou repassar para o Ozzi." Nothing
+// sold, nothing asked, no time promised (would trip the scheduling detector).
+export function talkToOzziMessage(lang: HandoffLang): string {
+  if (lang === "es") return "Claro, le paso tu mensaje a Ozzi y él se comunicará contigo.";
+  if (lang === "pt") return "Claro, vou repassar para o Ozzi e ele entrará em contato com você.";
+  return "Of course, I'll pass this along to Ozzi and he will get in touch with you.";
+}
+
+export const QUOTE_TALK_TO_OZZI_ALERT =
+  "Cliente de follow-up de orcamento pediu para falar com voce. O agente so disse que vai repassar ao Ozzi e NAO vai responder mais nada nesta conversa. Responda voce.";
+export const QUOTE_AFTER_HANDOFF_ALERT =
+  "Cliente de follow-up de orcamento escreveu DEPOIS do repasse ao Ozzi. O agente ficou em silencio de proposito (depois do repasse nao manda mais nada). Responda voce.";
+
+// The fixed 2nd financing message ("As soon as your application is approved,
+// Ozzi will personally reach out...") promises owner contact but is a platform
+// push, not a handoff — a client answering it must still get a reply.
+export function isFinancingApprovalNote(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  return t === financingApprovalNote("en") || t === financingApprovalNote("es");
+}
+
+// Did we already hand this client to Ozzi since their last exchange? True when
+// the run of our messages right before the client's current burst carries the
+// QUOTE_HANDOFF marker, or (older rows, no marker) promises owner contact as a
+// REPLY to the client. A platform touch (QUOTE_FOLLOWUP marker) in that run
+// resets it: the client is answering the new touch, not the old handoff.
+export function quoteHandoffActive(history: Array<{ role: string; content: string }>): boolean {
+  let i = (history ?? []).length - 1;
+  while (i >= 0 && history[i].role === "user") i--;
+  if (i < 0) return false;
+  let promised = false;
+  let j = i;
+  for (; j >= 0 && history[j].role === "assistant"; j--) {
+    const c = history[j].content || "";
+    if (c.includes(QUOTE_HANDOFF_MARK)) return true;
+    if (c.includes(QUOTE_CTX_PREFIX)) return false;
+    if (!isFinancingApprovalNote(c) && promisesOwnerContact(c.split(/\n\n?\[SYSTEM:/)[0])) promised = true;
+  }
+  return promised && j >= 0 && history[j].role === "user";
+}
+
 const QUOTE_MODE_MAX_AGE_DAYS = 60;
 
 // Latest quote-follow-up marker in this conversation (≤60 days old), or null.
@@ -118,8 +208,10 @@ HARD RULES:
 12. If the client says they are not interested, hired someone else, or asks to stop: thank them graciously in one sentence, no selling, and end with [NOTIFY_OWNER].
 13. If the client asks who this is or who is texting: identify naturally as Ozzi Floors, the flooring company that gave them their quote, in the same sentence as the rest of your reply.
 14. Never pressure. Warm, helpful, zero pushiness.
+15. If the client's message is ONLY an acknowledgment or a thank-you ("ok", "okay", "perfect", "got it", "sounds good", "thanks", a thumbs up) with no question and no request, output EXACTLY [REACT_ONLY] and nothing else. Never answer "Sounds good, Ozzi will be in touch" to an "ok": once Ozzi's follow-up was promised, the conversation is over and the client's "ok" does not reopen it.
+16. If the client asks to talk to Ozzi or to a person, or asks to be called: ONE short sentence saying you will pass it along to Ozzi and he will get in touch with them, nothing else, no question, and end with [NOTIFY_OWNER].
 
-The ONLY tag you may output is [NOTIFY_OWNER], always at the very end when a rule above asks for it.`;
+The ONLY tags you may output are [NOTIFY_OWNER] (always at the very end, when a rule above asks for it) and [REACT_ONLY] (alone, rule 15).`;
 
 function buildUser(ctx: QuoteReplyCtx, history: Array<{ role: string; content: string }>, clientText: string): string {
   const lines = [
@@ -149,7 +241,9 @@ function getAnthropic(): Anthropic {
 export type QuoteReplyResult = {
   text: string;
   notifyOwner: boolean;
-  source: "ai" | "ai-retry" | "handoff";
+  // Model answered [REACT_ONLY]: the webhook reacts with 👍 and sends no text.
+  reactOnly?: boolean;
+  source: "ai" | "ai-retry" | "handoff" | "talk-to-ozzi";
 };
 
 // Fixed handoff used when the model is down or keeps violating the gate. It can
@@ -180,9 +274,15 @@ export async function composeQuoteReply(params: {
       });
       const block = res.content[0];
       const raw = block?.type === "text" ? block.text : "";
-      // Detect the tag BEFORE sanitizing (sanitizeOutbound strips every tag).
+      // Detect the tags BEFORE sanitizing (sanitizeOutbound strips every tag).
       const notifyOwner = /\[NOTIFY_OWNER\]/.test(raw);
       const text = sanitizeOutbound(raw);
+      // Rule 15: a bare [REACT_ONLY] (or a tag with nothing left around it) is
+      // a deliberate silence, never a failed attempt to retry into the handoff.
+      if (/\[REACT_ONLY\]/i.test(raw) && text.length < 5) {
+        console.log("[QUOTE-REPLY] react-only (attempt " + attempt + ")");
+        return { text: "", notifyOwner: false, reactOnly: true, source: attempt === 1 ? "ai" : "ai-retry" };
+      }
       if (text.length < 5) continue;
       const violation = followupPolicyViolation(text);
       if (violation) {
