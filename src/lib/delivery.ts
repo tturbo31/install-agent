@@ -1,6 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
+import { LEGACY_ADMIN_SECRET } from "@/lib/admin-auth";
+import { createHmac } from "crypto";
 
 // ─── Delivery-failure visibility ────────────────────────────────────────────
 // The 2026-07-22 outage: the IG token died and the bot kept "replying" into
@@ -324,6 +326,253 @@ export async function retryFailedSends(): Promise<void> {
     }
   } catch (err) {
     console.error("[DELIVERY] retry sweep error:", err);
+  }
+}
+
+// ─── Lost-reply recovery ─────────────────────────────────────────────────────
+// 2026-08-26 (Wilmar Campos, fb_27999916679658144, plus 6 more in a 7-day scan,
+// 5 of them Messenger ad-FAQ taps): the reply was generated — conversation_
+// metrics counted the turn, which only happens right before the send — but
+// nothing followed: no assistant row, no SEND_FAILED outbox row, no page
+// message in the Messenger thread. The webhook body runs in waitUntil after the
+// 200, so whatever kills it there leaves the client in total silence and the
+// panel showing an unanswered bubble; the owner answered by hand hours later.
+// This sweep is the net: a conversation with a counted turn and fewer stored
+// replies, whose newest message is a client bubble old enough that no handler
+// can still be working on it, is (a) checked against the real thread on Meta —
+// if the page did reply, the history is repaired and nothing is sent — and
+// otherwise (b) replayed through its own webhook so the normal flow answers it
+// (Messenger/Instagram), or (c) reported to the owner (WhatsApp has no thread
+// API in multi-device). Each client bubble is handled at most once.
+const LOST_REPLY_MIN_AGE_MS = 3 * 60_000;
+const LOST_REPLY_MAX_AGE_MS = 6 * 3_600_000;
+const LOST_REPLY_SWEEP_GAP_MS = 5 * 60_000;
+const LOST_REPLY_ALERT_EVERY_MS = 60 * 60_000;
+const LOST_REPLY_MAX_PER_SWEEP = 5;
+const IG_BUSINESS_ID = "1940528653163182";
+
+export interface LostReplyRow {
+  conversationId: string;
+  igsid: string;
+  mode: string;
+  totalTurns: number;
+  assistantReplies: number;
+  newest: { id: string; role: string; content: string; created_at: string; instagram_msg_id: string | null } | null;
+}
+
+// The newest message is a client bubble that has waited long enough to be sure
+// no live handler is still on it, and not so long that a reply would be stale.
+export function isUnansweredForAWhile(row: LostReplyRow, nowMs: number): boolean {
+  if (row.mode === "human") return false;
+  if (!row.newest || row.newest.role !== "user") return false;
+  const age = nowMs - Date.parse(row.newest.created_at);
+  return age >= LOST_REPLY_MIN_AGE_MS && age <= LOST_REPLY_MAX_AGE_MS;
+}
+
+// Pure selection (eval-covered): unanswered for a while AND a turn was counted
+// that never left a reply behind.
+export function pickLostReplyCandidates(rows: LostReplyRow[], nowMs: number): LostReplyRow[] {
+  return rows.filter((r) => isUnansweredForAWhile(r, nowMs) && r.totalTurns > r.assistantReplies);
+}
+
+async function claimLostReply(messageId: string): Promise<boolean> {
+  const { error } = await supabaseAdmin
+    .from("platform_settings")
+    .insert({ platform: `lostreply|${messageId}`, paused: false });
+  return !error;
+}
+
+type ThreadCheck = { state: "delivered"; text: string } | { state: "missing" } | { state: "unknown" };
+
+// Ask Meta whether the page/account already answered after the client's bubble.
+async function pageRepliedAfter(
+  channel: "facebook" | "instagram",
+  igsid: string,
+  clientAtMs: number
+): Promise<ThreadCheck> {
+  try {
+    const fields = encodeURIComponent("messages.limit(5){created_time,from,message}");
+    let url: string;
+    let clientId: string;
+    if (channel === "facebook") {
+      const { getFacebookPageToken } = await import("@/lib/fb-token");
+      clientId = igsid.slice(3);
+      url = `https://graph.facebook.com/v24.0/me/conversations?user_id=${encodeURIComponent(clientId)}&fields=${fields}&access_token=${encodeURIComponent(await getFacebookPageToken())}`;
+    } else {
+      const { getInstagramToken } = await import("@/lib/ig-token");
+      clientId = igsid;
+      url = `https://graph.instagram.com/v24.0/me/conversations?platform=instagram&user_id=${encodeURIComponent(clientId)}&fields=${fields}&access_token=${encodeURIComponent(await getInstagramToken())}`;
+    }
+    const res = await fetch(url);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: unknown;
+      data?: Array<{ messages?: { data?: Array<{ created_time?: string; from?: { id?: string }; message?: string }> } }>;
+    };
+    if (body.error || !Array.isArray(body.data) || body.data.length === 0) return { state: "unknown" };
+    const msgs = body.data[0]?.messages?.data ?? [];
+    const reply = msgs.find(
+      (m) => m.from?.id && m.from.id !== clientId && Date.parse(m.created_time ?? "") > clientAtMs - 1000 && (m.message ?? "").trim()
+    );
+    if (reply) return { state: "delivered", text: (reply.message ?? "").trim() };
+    return { state: "missing" };
+  } catch (err) {
+    console.error("[DELIVERY] lost-reply thread check failed:", err);
+    return { state: "unknown" };
+  }
+}
+
+// Where to reach our own webhooks. NEXT_PUBLIC_APP_URL is "http://localhost:3000"
+// in the env file, so on Vercel the platform-provided production domain wins;
+// localhost is only acceptable when we are not running on Vercel at all.
+function selfBaseUrl(): string {
+  const onVercel = !!process.env.VERCEL;
+  const candidates = [
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "",
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "",
+    process.env.NEXT_PUBLIC_APP_URL ?? "",
+  ];
+  const pick = candidates.find((u) => u && !(onVercel && /localhost|127\.0\.0\.1/.test(u))) ?? "";
+  return pick.replace(/\/+$/, "");
+}
+
+// Re-post the stored inbound to our own webhook (admin-gated replay header +
+// Meta signature when the app secret is configured) so the normal flow answers.
+async function replayInbound(channel: "facebook" | "instagram", row: LostReplyRow): Promise<boolean> {
+  const newest = row.newest;
+  if (!newest?.instagram_msg_id) return false;
+  const base = selfBaseUrl();
+  // The webhook checks this header with isDashboardAuthorized, which accepts
+  // the legacy literal when ADMIN_SECRET was never set (see admin-auth.ts).
+  const secret = process.env.ADMIN_SECRET || LEGACY_ADMIN_SECRET;
+  if (!base) {
+    console.error("[DELIVERY] lost-reply replay skipped: NEXT_PUBLIC_APP_URL / VERCEL_URL missing");
+    return false;
+  }
+  const ts = Date.parse(newest.created_at) || Date.now();
+  const text = newest.content.split(/\n\n?\[SYSTEM:/)[0];
+  const path = channel === "facebook" ? "/api/fb-webhook" : "/api/webhook";
+  const clientId = channel === "facebook" ? row.igsid.slice(3) : row.igsid;
+  const ownId = channel === "facebook" ? (process.env.FACEBOOK_PAGE_ID ?? "") : IG_BUSINESS_ID;
+  const payload = {
+    object: channel === "facebook" ? "page" : "instagram",
+    entry: [
+      {
+        id: ownId,
+        time: ts,
+        messaging: [{ sender: { id: clientId }, recipient: { id: ownId }, timestamp: ts, message: { mid: newest.instagram_msg_id, text } }],
+      },
+    ],
+  };
+  const raw = JSON.stringify(payload);
+  const headers: Record<string, string> = { "Content-Type": "application/json", "x-ozzi-replay": secret };
+  const appSecret = process.env.FACEBOOK_APP_SECRET;
+  if (appSecret) headers["x-hub-signature-256"] = "sha256=" + createHmac("sha256", appSecret).update(raw, "utf8").digest("hex");
+  try {
+    const res = await fetch(base + path, { method: "POST", headers, body: raw });
+    return res.ok;
+  } catch (err) {
+    console.error("[DELIVERY] lost-reply replay POST failed:", err);
+    return false;
+  }
+}
+
+export async function recoverLostReplies(): Promise<void> {
+  try {
+    // One sweep per 5 minutes across all instances: the detection itself costs
+    // a handful of queries and this runs on EVERY webhook POST of all three
+    // channels (unlike the outbox retry, an empty sweep here may burn the slot).
+    if (!(await shouldAlert("lostreply", "sweep", LOST_REPLY_SWEEP_GAP_MS))) return;
+    const now = Date.now();
+    const since = new Date(now - LOST_REPLY_MAX_AGE_MS).toISOString();
+    const { data: metrics } = await supabaseAdmin
+      .from("conversation_metrics")
+      .select("conversation_id, total_turns")
+      .gte("last_updated", since)
+      .limit(300);
+    if (!metrics?.length) return;
+    const rows: LostReplyRow[] = [];
+    for (let i = 0; i < metrics.length; i += 40) {
+      const chunk = metrics.slice(i, i + 40);
+      const ids = chunk.map((m) => String(m.conversation_id));
+      const [{ data: convs }, { data: msgs }] = await Promise.all([
+        supabaseAdmin.from("instagram_conversations").select("id, igsid, mode").in("id", ids),
+        supabaseAdmin
+          .from("instagram_messages")
+          .select("id, conversation_id, role, content, created_at, instagram_msg_id")
+          .in("conversation_id", ids)
+          .gte("created_at", since)
+          .order("created_at", { ascending: false })
+          .limit(2000),
+      ]);
+      const newestBy = new Map<string, LostReplyRow["newest"]>();
+      for (const m of msgs ?? []) if (!newestBy.has(m.conversation_id)) newestBy.set(m.conversation_id, m);
+      for (const c of convs ?? []) {
+        rows.push({
+          conversationId: c.id,
+          igsid: c.igsid,
+          mode: c.mode,
+          totalTurns: Number(chunk.find((m) => m.conversation_id === c.id)?.total_turns ?? 0),
+          assistantReplies: Number.MAX_SAFE_INTEGER, // counted below, only for the unanswered few
+          newest: newestBy.get(c.id) ?? null,
+        });
+      }
+    }
+    const waiting = rows.filter((r) => isUnansweredForAWhile(r, now));
+    if (!waiting.length) return;
+    for (const r of waiting) {
+      // Every stored reply counts, [Treino] included: an owner reply means a
+      // human is on it. A failed count must never look like a missing reply.
+      const { count, error } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id", { count: "exact", head: true })
+        .eq("conversation_id", r.conversationId)
+        .eq("role", "assistant");
+      r.assistantReplies = error || count === null ? Number.MAX_SAFE_INTEGER : count;
+    }
+    const candidates = pickLostReplyCandidates(waiting, now);
+    if (!candidates.length) return;
+    const report: string[] = [];
+    for (const r of candidates.slice(0, LOST_REPLY_MAX_PER_SWEEP)) {
+      const newest = r.newest;
+      if (!newest) continue;
+      if (!(await claimLostReply(newest.id))) continue; // handled by an earlier sweep
+      const channel = channelOf(r.igsid);
+      const preview = newest.content.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().slice(0, 60);
+      if (channel === "whatsapp") {
+        console.warn(`[DELIVERY] lost reply on WhatsApp ${r.igsid} ("${preview}") — owner alert`);
+        report.push(`- WhatsApp ${r.igsid.slice(3)}: "${preview}" — sem resposta, responda pelo app`);
+        continue;
+      }
+      const thread = await pageRepliedAfter(channel, r.igsid, Date.parse(newest.created_at));
+      if (thread.state === "delivered") {
+        // The reply DID reach the client; only the history lost it. Repair it so
+        // the panel and the history guards see the real exchange.
+        await supabaseAdmin.from("instagram_messages").insert({ conversation_id: r.conversationId, role: "assistant", content: thread.text });
+        console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid}: thread shows it delivered — history repaired`);
+        continue;
+      }
+      if (thread.state === "unknown") {
+        console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid} ("${preview}") — thread check failed, owner alert`);
+        report.push(`- ${CHANNEL_LABEL[channel]} ${r.igsid}: "${preview}" — sem resposta, responda pelo app`);
+        continue;
+      }
+      const ok = await replayInbound(channel, r);
+      console.warn(`[DELIVERY] lost reply on ${channel} ${r.igsid} ("${preview}") — replay ${ok ? "requested" : "FAILED"}`);
+      report.push(`- ${CHANNEL_LABEL[channel]} ${r.igsid}: "${preview}" — ${ok ? "resposta reenviada automaticamente" : "reenvio falhou, responda pelo app"}`);
+    }
+    if (report.length && (await shouldAlert("lostreply", "alert", LOST_REPLY_ALERT_EVERY_MS))) {
+      const msg = [
+        `⚠️ OzziFloors - resposta perdida detectada`,
+        ``,
+        `O bot gerou a resposta mas ela nunca saiu (nem ficou no historico):`,
+        ...report,
+        ``,
+        `Reenvio automatico = a mensagem do cliente foi reprocessada e respondida pelo fluxo normal.`,
+      ].join("\n");
+      await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+    }
+  } catch (err) {
+    console.error("[DELIVERY] lost-reply sweep error:", err);
   }
 }
 

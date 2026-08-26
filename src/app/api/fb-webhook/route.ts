@@ -3,14 +3,15 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog, retryFailedSends, watchWaQueue } from "@/lib/delivery";
+import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
+import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -145,6 +146,12 @@ async function processBookingCommand(
         notes: bookingData.notes,
         clientBurst: recentClientText(history),
       });
+      if (r.success && r.unchanged) {
+        // The [BOOK] named the slot the client already holds — nothing moved.
+        // Restate the real visit instead of "I couldn't lock in that exact time".
+        console.log("[FB] [BOOK] repeats the existing visit — restating it (nothing to move)");
+        return { response: visitDetailsMessage(lang, r.date ?? bookingData.date, r.time ?? bookingData.time), booked: false };
+      }
       if (r.success) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
         // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
@@ -364,7 +371,7 @@ async function processCancelCommand(
 }
 
 // ─── Main message handler ─────────────────────────────────────────────────
-async function handleFbMessage(body: Record<string, unknown>) {
+async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: boolean }) {
   try {
     const { data: fbSetting } = await supabaseAdmin
       .from("platform_settings")
@@ -618,7 +625,21 @@ async function handleFbMessage(body: Record<string, unknown>) {
       .single();
 
     if (insertErr && insertErr.code !== "23505") return;
-    const thisMessageId = insertedMsg?.id ?? "";
+    let thisMessageId = insertedMsg?.id ?? "";
+    // Replay (delivery.recoverLostReplies): the bubble is already stored, so the
+    // insert collides — adopt the stored row's id so the debounce/stale checks
+    // below treat this run as the live handler for that message.
+    if (!thisMessageId && opts?.replay && msgId) {
+      const { data: storedMsg } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("instagram_msg_id", msgId)
+        .eq("conversation_id", conv.id)
+        .maybeSingle();
+      thisMessageId = storedMsg?.id ?? "";
+      console.log(`[FB] replay of stored message ${thisMessageId || "(not found)"} — lost-reply recovery`);
+      if (!thisMessageId) return;
+    }
 
     await supabaseAdmin
       .from("instagram_conversations")
@@ -842,7 +863,10 @@ async function handleFbMessage(body: Record<string, unknown>) {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+      // isOpenSlotOffer, not containsSchedulingOffer: since 2026-08-25 the booking
+      // confirmation restates the day and time, and reading it as an offer put
+      // every post-booking message into RESCHEDULE MODE (Prince Cambow, 26/08).
+      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
     }
 
     // ── Correção de ENDEREÇO depois da visita marcada (caso Kristina, IG,
@@ -937,6 +961,47 @@ async function handleFbMessage(body: Record<string, unknown>) {
         });
       } catch (err) {
         console.error("FB visit-details notify error:", err);
+      }
+      return;
+    }
+
+    // ── Booked client asking to be warned before the visit ("Text me or call
+    //    me please 40 mins before") → ONE fixed line promising the 40-minute
+    //    text (owner rule 2026-08-26, Prince Cambow). The ask is noted on the
+    //    booking for the seller and the owner is notified. Runs after the
+    //    reschedule and visit-question checks, before the silent path. ──
+    if (isBooked && !engageReschedule && (isReminderRequest(rawText) || isReminderRequest(gateBurst))) {
+      const ack = reminderAckMessage(detectLang(`${rawText} ${gateBurst}`));
+      const { data: lastBotForAck } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!(lastBotForAck?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForAck.content }], ack))) {
+        const ackSent = await sendFacebookMessage(psid, ack);
+        if (ackSent.ok) {
+          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: ack });
+        }
+      }
+      waitUntil(appendUpcomingBookingNote(fbIgsid, `Cliente pediu aviso antes da visita: "${(gateBurst || rawText).replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Messenger",
+          clientName: (conv as Record<string, unknown>).username as string ?? null,
+          clientId: psid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("FB reminder-ack notify error:", err);
       }
       return;
     }
@@ -1464,7 +1529,15 @@ async function handleFbMessage(body: Record<string, unknown>) {
     // A failed send aborts the turn BEFORE the reply is stored — recording an
     // undelivered reply hides the outage and suppresses the re-send (see the
     // 2026-07-22 IG token incident). Owner already alerted inside the send.
-    const mainSent = await sendFacebookMessage(psid, outboundResponse);
+    let mainSent: { ok: boolean; error?: string };
+    try {
+      mainSent = await sendFacebookMessage(psid, outboundResponse);
+    } catch (sendErr) {
+      // A throw here used to skip BOTH the send and the outbox row — the client
+      // saw silence and nothing recorded it (lost-reply review, 2026-08-26).
+      console.error("[FB] final send THREW — treating as failed:", sendErr);
+      mainSent = { ok: false, error: String(sendErr).slice(0, 200) };
+    }
     if (!mainSent.ok) {
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
       // up to 48h (the 2026-07-22 14:38 UTC transient blip hit exactly here).
@@ -1544,10 +1617,17 @@ export async function POST(req: NextRequest) {
   const messaging = (body.entry as Record<string, unknown>[])?.[0];
   const sender = ((messaging?.messaging as Record<string, unknown>[])?.[0]?.sender as Record<string, unknown>)?.id;
   console.log("[FB webhook] Processing message from:", sender);
-  waitUntil(handleFbMessage(body));
+  // Lost-reply recovery re-posts a stored inbound with the admin secret in
+  // this header so the handler answers it again (see delivery.recoverLostReplies).
+  const replay = isDashboardAuthorized(req.headers.get("x-ozzi-replay"));
+  if (replay) console.log("[FB webhook] replay request (lost-reply recovery)");
+  waitUntil(handleFbMessage(body, { replay }));
   // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
   // whose delivery failed (self-throttled to 1 sweep / 10 min).
   waitUntil(retryFailedSends());
+  // Lost-reply net: a turn that reached the send stage but left no reply behind
+  // is replayed / reported (self-throttled to 1 sweep / 5 min).
+  waitUntil(recoverLostReplies());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());

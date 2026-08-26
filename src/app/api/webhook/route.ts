@@ -16,6 +16,8 @@ import {
   isRescheduleRequest,
   isCancelRequest,
   containsSchedulingOffer,
+  isOpenSlotOffer,
+  isReminderRequest,
   isJobSeeker,
   isLowCreditError,
   CREDIT_ALERT,
@@ -40,8 +42,9 @@ import {
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
+import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
+import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -51,7 +54,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog, retryFailedSends, watchWaQueue } from "@/lib/delivery";
+import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
 
@@ -183,6 +186,12 @@ async function processBookingCommand(
         notes: bookingData.notes,
         clientBurst: recentClientText(history),
       });
+      if (r.success && r.unchanged) {
+        // The [BOOK] named the slot the client already holds — nothing moved.
+        // Restate the real visit instead of "I couldn't lock in that exact time".
+        console.log("[IG] [BOOK] repeats the existing visit — restating it (nothing to move)");
+        return { response: visitDetailsMessage(lang, r.date ?? bookingData.date, r.time ?? bookingData.time), booked: false };
+      }
       if (r.success) {
         await supabaseAdmin
           .from("instagram_conversations")
@@ -421,7 +430,7 @@ async function processCancelCommand(
 }
 
 // ─── Core webhook handler ──────────────────────────────────────────────────
-async function handleWebhook(body: WebhookPayload) {
+async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) {
   try {
     const { data: igSetting } = await supabaseAdmin
       .from("platform_settings")
@@ -769,7 +778,21 @@ async function handleWebhook(body: WebhookPayload) {
       .single();
 
     if (insertErr && insertErr.code !== "23505") return;
-    const thisMessageId = insertedMsg?.id ?? "";
+    let thisMessageId = insertedMsg?.id ?? "";
+    // Replay (delivery.recoverLostReplies): the bubble is already stored, so the
+    // insert collides — adopt the stored row's id so the debounce/stale checks
+    // below treat this run as the live handler for that message.
+    if (!thisMessageId && opts?.replay && messageMid) {
+      const { data: storedMsg } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id")
+        .eq("instagram_msg_id", messageMid)
+        .eq("conversation_id", conversation.id)
+        .maybeSingle();
+      thisMessageId = storedMsg?.id ?? "";
+      console.log(`[IG] replay of stored message ${thisMessageId || "(not found)"} — lost-reply recovery`);
+      if (!thisMessageId) return;
+    }
 
     await supabaseAdmin
       .from("instagram_conversations")
@@ -1000,7 +1023,10 @@ async function handleWebhook(body: WebhookPayload) {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+      // isOpenSlotOffer, not containsSchedulingOffer: since 2026-08-25 the booking
+      // confirmation restates the day and time, and reading it as an offer put
+      // every post-booking message into RESCHEDULE MODE (Prince Cambow, FB 26/08).
+      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
     }
 
     // ── Correção de ENDEREÇO depois da visita marcada (caso Kristina, 2026-08-13).
@@ -1098,6 +1124,47 @@ async function handleWebhook(body: WebhookPayload) {
         });
       } catch (err) {
         console.error("Visit-details notify error:", err);
+      }
+      return;
+    }
+
+    // ── Booked client asking to be warned before the visit ("Text me or call
+    //    me please 40 mins before") → ONE fixed line promising the 40-minute
+    //    text (owner rule 2026-08-26, Prince Cambow). The ask is noted on the
+    //    booking for the seller and the owner is notified. Runs after the
+    //    reschedule and visit-question checks, before the silent path. ──
+    if (isBooked && !engageReschedule && (isReminderRequest(rawText) || isReminderRequest(gateBurst))) {
+      const ack = reminderAckMessage(detectLang(`${rawText} ${gateBurst}`));
+      const { data: lastBotForAck } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conversation.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!(lastBotForAck?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForAck.content }], ack))) {
+        const ackSent = await sendInstagramMessage(senderIgsid, ack);
+        if (ackSent.ok) {
+          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ack });
+        }
+      }
+      waitUntil(appendUpcomingBookingNote(senderIgsid, `Cliente pediu aviso antes da visita: "${(gateBurst || rawText).replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conversation.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "Instagram",
+          clientName: conversation.username ?? null,
+          clientId: senderIgsid,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("Reminder-ack notify error:", err);
       }
       return;
     }
@@ -1757,7 +1824,15 @@ async function handleWebhook(body: WebhookPayload) {
     // (dashboard showed "answered", client saw nothing, and the history-based
     // guards then suppressed the re-send). The owner was already alerted by
     // reportSendFailure inside the send; the next inbound regenerates fresh.
-    const mainSent = await sendInstagramMessage(senderIgsid, outboundResponse);
+    let mainSent: { ok: boolean; error?: string };
+    try {
+      mainSent = await sendInstagramMessage(senderIgsid, outboundResponse);
+    } catch (sendErr) {
+      // A throw here used to skip BOTH the send and the outbox row — the client
+      // saw silence and nothing recorded it (lost-reply review, 2026-08-26).
+      console.error("[IG] final send THREW — treating as failed:", sendErr);
+      mainSent = { ok: false, error: String(sendErr).slice(0, 200) };
+    }
     if (!mainSent.ok) {
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
       // up to 48h (a transient Graph blip on 2026-07-22 14:38 UTC left a client
@@ -1863,10 +1938,17 @@ export async function POST(req: NextRequest) {
   }
 
   console.log("[IG webhook] Processing message from:", messaging.sender?.id);
-  waitUntil(handleWebhook(body));
+  // Lost-reply recovery re-posts a stored inbound with the admin secret in
+  // this header so the handler answers it again (see delivery.recoverLostReplies).
+  const replay = isDashboardAuthorized(req.headers.get("x-ozzi-replay"));
+  if (replay) console.log("[IG webhook] replay request (lost-reply recovery)");
+  waitUntil(handleWebhook(body, { replay }));
   // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
   // whose delivery failed (self-throttled to 1 sweep / 10 min).
   waitUntil(retryFailedSends());
+  // Lost-reply net: a turn that reached the send stage but left no reply behind
+  // is replayed / reported (self-throttled to 1 sweep / 5 min).
+  waitUntil(recoverLostReplies());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());

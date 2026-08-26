@@ -561,6 +561,30 @@ export function containsSchedulingOffer(text: string): boolean {
   return isSchedulingPush(text || "");
 }
 
+// Our OWN lines that RESTATE the booked day and time are not offers. Since
+// 2026-08-25 the booking confirmation carries the slot ("Appointment confirmed
+// for Thursday, August 27 at 2pm"), so containsSchedulingOffer read it as an
+// open slot offer and EVERY post-booking message ("Perfect", "Text me or call
+// me please 40 mins before") flipped the booked client into RESCHEDULE MODE:
+// the model re-emitted [BOOK] for the very same slot, rescheduleClientBooking
+// failed against the client's own visit and the client got "Sorry, I couldn't
+// lock in that exact time" one minute after "Appointment confirmed" (Prince
+// Cambow, fb_27572562225755806, 2026-08-26). Covers the confirmation, the
+// reschedule success line and the visit-details restatement, in en/es/pt, in
+// any position (the confirmation may be prefixed by the answer to a question
+// sent in the same burst).
+const BOOKING_RESTATEMENT = /\b(?:appointment confirmed|cita confirmada|visita confirmada|your visit is confirmed|tu visita est[aá] confirmada|sua visita est[aá] confirmada|your visit has been rescheduled|tu visita qued[oó] reagendada|sua visita foi remarcada)\b/i;
+export function isBookingRestatement(text: string): boolean {
+  return BOOKING_RESTATEMENT.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
+}
+
+// An assistant message that offers/asks about a slot the client still has to
+// pick. This is what the webhooks must use to decide "a reschedule exchange is
+// in progress" — a restatement of the booked slot never is.
+export function isOpenSlotOffer(text: string): boolean {
+  return containsSchedulingOffer(text) && !isBookingRestatement(text);
+}
+
 // A lone surviving clause that opens with one of these connectors is a dangling
 // lead-in to the scheduling clause we just removed ("Since you get off at 5:30",
 // "So that we can get started", "And I have Monday open"), NOT a standalone
@@ -1335,7 +1359,7 @@ export function assertsExistingAppointment(burstText: string, lastAssistantText?
   const t = normalizeSmartPunct(burstText || "");
   if (!t.trim()) return false;
   if (APPOINTMENT_BELIEF_PATTERNS.some((p) => p.test(t))) return true;
-  const liveOffer = !!(lastAssistantText && containsSchedulingOffer(lastAssistantText));
+  const liveOffer = !!(lastAssistantText && isOpenSlotOffer(lastAssistantText));
   return !liveOffer && SLOT_ACCEPTANCE_PATTERNS.some((p) => p.test(t));
 }
 
@@ -1463,6 +1487,38 @@ export function isVisitDetailQuestion(text: string): boolean {
   const t = normalizeSmartPunct(text).split(/\n\n?\[SYSTEM:/)[0].trim();
   if (!t) return false;
   return VISIT_DETAIL_PATTERNS.some((p) => p.test(t));
+}
+
+// ─── Booked client asking to be warned before the visit ─────────────────────
+// Owner rule (2026-08-26, Prince Cambow, FB): after the visit is booked, a
+// request like "Text me or call me please 40 mins before" gets ONE fixed line
+// promising the 40-minute text (scheduler.reminderAckMessage) — never the
+// model, never silence, never the failure handoff. A thank-you / "ok" after the
+// booking still closes the conversation (the silent post-booking path).
+// The request needs an ASK verb (text/call/let me know/avísame/me avisa…) AND
+// a "before the visit" anchor (before you come, ahead of time, cuando estés en
+// camino, antes de chegar, "40 mins before"…), so "call me" alone, questions
+// about the visit (isVisitDetailQuestion runs first) and reschedule intents
+// (isRescheduleRequest runs first) never land here.
+const REMINDER_PATTERNS: RegExp[] = [
+  // EN: ask verb … "before you come / ahead of time / when you're on your way"
+  /\b(?:text|txt|call|ring|phone|message|msg|dm|notify|alert|warn|ping|buzz|contact|holler|hit\s+me\s+up|reach\s+out|let\s+me\s+know|give\s+me\s+a\s+(?:call|ring|text|shout|heads?\s*up)|heads?\s*up|confirm|remind)\b[^.!?\n]{0,60}(?:before\s+(?:you|u|he|they|someone|anyone|the\s+(?:visit|appointment|tech|guy|seller|team))\b|before\s+(?:coming|arriving|heading|leaving|showing\s+up|stopping\s+by|the\s+visit|the\s+appointment)|ahead\s+of\s+time|in\s+advance|beforehand|prior\s+to|with\s+(?:some\s+|a\s+little\s+|a\s+)?(?:notice|heads?\s*up|warning)|when\s+(?:you|u|you'?re|you\s+are|they|they'?re|he'?s|he\s+is)\s+(?:on\s+(?:your|the|his|their)\s+way|close|closer|near|nearby|almost\s+(?:here|there)|about\s+to|coming|heading\s+(?:over|out|my\s+way)|leaving|en\s+route|(?:about\s+|around\s+|like\s+|roughly\s+)?(?:\d+|a\s+few|some|ten|fifteen|twenty|thirty)\s+(?:mins?|minutes?)\s+(?:away|out)))/i,
+  // "40 mins before", "give me 30 minutes notice", "an hour ahead"
+  /\b(?:\d{1,3}|a\s+few|some|half\s+an?|an?|one|two|couple\s+(?:of\s+)?)\s*(?:mins?|minutes?|hrs?|hours?)\s+(?:before|ahead|prior|early|in\s+advance|notice|heads?\s*up|warning)\b/i,
+  // ES: "avísame / llámame / mándame un texto … antes de llegar / cuando estés en camino / con anticipación"
+  /\b(?:av[ií]s[aeo]\w*|ll[aá]m[aeo]\w*|escr[ií]b[aeo]\w*|m[aá]nd[aeo]\w*|env[ií][aeo]\w*|notif[ií]c\w*|confirm[aeo]\w*|mensaje|texto|llamada|llamadita|whatsapp)\b[^.!?\n]{0,60}\b(?:antes\b|con\s+(?:anticipaci[oó]n|antelaci[oó]n|tiempo)|cuando\s+(?:est[eé]n?|est[eé]s|vengan?|vayan?|salgan?)\s+(?:en\s+camino|de\s+camino|cerca|cerquita|saliendo|llegando|por\s+llegar|para\s+ac[aá]|en\s+ruta))/i,
+  /\b(?:\d{1,3}|unos|una|media)\s*(?:min|mins|minutos?|hora|horas)\s+antes\b/i,
+  // PT: "me avisa / me liga / manda mensagem … antes de chegar / quando estiver a caminho / com antecedência"
+  /\b(?:avis[aeo]\w*|lig[aeou]\w*|mand[aeo]\w*|envi[aeo]\w*|notific\w*|confirm[aeo]\w*|cham[aeo]\w*|mensagem|liga[cç][aã]o|texto|whatsapp|zap)\b[^.!?\n]{0,60}\b(?:antes\b|com\s+anteced[eê]ncia|quando\s+(?:estiver(?:em)?|tiver(?:em)?|for(?:em)?|vier(?:em)?)\s+(?:a\s+caminho|chegando|perto|pertinho|saindo|vindo|por\s+perto|de\s+sa[ií]da))/i,
+  /\b(?:\d{1,3}|uns|uma|meia)\s*(?:min|mins|minutos?|hora|horas)\s+antes\b/i,
+];
+export function isReminderRequest(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  // A client telling us THEY will call ("I'll call you before I leave") is not
+  // asking for a reminder.
+  if (/\b(?:i|we)(?:'ll|\s+will|\s+can|\s+am\s+going\s+to|\s+gonna)\s+(?:call|text|message|let\s+you\s+know)\b/i.test(t)) return false;
+  return REMINDER_PATTERNS.some((p) => p.test(t));
 }
 
 // System note injected when a stale booked flag was just reset: the client HAD
@@ -1905,6 +1961,9 @@ const SLOT_MENTION = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b(?:monday|tuesday|wed
 // Is OUR message still waiting for the client to answer something?
 export function botAwaitsAnswer(text: string): boolean {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  // A booking confirmation / restatement closes the exchange even though it
+  // names a day and a clock time — "Perfect" to it is the client signing off.
+  if (isBookingRestatement(t)) return false;
   return t.includes("?") || containsSchedulingOffer(t) || isAskingForBookingInfo(t) || SLOT_MENTION.test(t);
 }
 

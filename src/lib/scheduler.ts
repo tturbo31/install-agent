@@ -371,12 +371,30 @@ export async function cancelClientBooking(
 // ONLY deletes the old booking after the new one succeeds. If the new slot is
 // unavailable, the old booking is left untouched so the client is never left
 // without an appointment.
+// "14:00", "14:00:00" and "2pm" all name the same slot; dates compare as YYYY-MM-DD.
+function hhmm(time: string | null | undefined): string {
+  const t = (time ?? "").toString().trim().toLowerCase();
+  const ampm = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/);
+  if (ampm) {
+    let h = parseInt(ampm[1], 10) % 12;
+    if (ampm[3] === "pm") h += 12;
+    return `${String(h).padStart(2, "0")}:${ampm[2] ?? "00"}`;
+  }
+  const m = t.match(/^(\d{1,2}):(\d{2})/);
+  return m ? `${m[1].padStart(2, "0")}:${m[2]}` : t;
+}
+export function isSameBookingSlot(dateA: string | null | undefined, timeA: string | null | undefined, dateB: string, timeB: string): boolean {
+  const a = (dateA ?? "").toString().trim().slice(0, 10);
+  const b = (dateB ?? "").toString().trim().slice(0, 10);
+  return !!a && a === b && hhmm(timeA) === hhmm(timeB) && hhmm(timeA) !== "";
+}
+
 export async function rescheduleClientBooking(
   igsid: string,
   newDate: string,
   newTime: string,
   fallback?: { name?: string; phone?: string; address?: string; notes?: string; clientBurst?: string }
-): Promise<BookingResult & { rescheduled?: boolean }> {
+): Promise<BookingResult & { rescheduled?: boolean; unchanged?: boolean }> {
   try {
     const db = await getAuthenticatedClient();
     const today = easternTodayStr();
@@ -393,6 +411,18 @@ export async function rescheduleClientBooking(
     if (fetchErr) return { success: false, error: fetchErr.message };
     if (!olds || olds.length === 0) return { success: false, error: "no_booking_found" };
     const old = olds[0];
+
+    // SAME SLOT → nothing to move. The model re-emits [BOOK] with the day and
+    // time the client already holds (a post-booking "Perfect / text me 40 mins
+    // before" turn that landed in RESCHEDULE MODE — Prince Cambow, FB
+    // 2026-08-26). Trying to re-create that booking fails against the client's
+    // OWN visit ("No availability") and the client was told "I couldn't lock in
+    // that exact time" right after "Appointment confirmed". The visit stays as
+    // it is; callers restate it instead of apologising.
+    if (isSameBookingSlot(old.booking_date, old.booking_time, newDate, newTime)) {
+      console.log(`[reschedule] ${igsid}: [BOOK] repeats the existing visit ${old.booking_date} ${old.booking_time} — nothing to move`);
+      return { success: true, rescheduled: false, unchanged: true, bookingId: old.id, date: old.booking_date, time: hhmm(old.booking_time) };
+    }
 
     // 2. Pick a seller for the new slot.
     const future = new Date();
@@ -1419,6 +1449,17 @@ export function visitDetailsMessage(lang: Lang, dateStr: string, timeStr: string
   return `Your visit is confirmed for ${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}${atTime}. Ozzi will message you about 40 minutes before arriving, and if you need to move the visit just tell me the new day and time.`;
 }
 
+// Owner rule (2026-08-26, Prince Cambow): a booked client asking to be warned
+// before the visit ("Text me or call me please 40 mins before") gets exactly
+// this line — the platform's reminder goes out by text 40 minutes before the
+// seller arrives. One sentence, no dash, no emoji.
+export function reminderAckMessage(lang: Lang): string {
+  if (lang === "pt") return "Ok, eu te aviso por mensagem de texto 40 minutos antes de chegar.";
+  return lang === "es"
+    ? "Ok, te aviso por mensaje de texto 40 minutos antes de llegar."
+    : "Ok, I will text you 40 minutes before arriving.";
+}
+
 // ─── Language detection + localized booking messages ──────────────────────
 // Lightweight heuristic: decide whether the conversation is in Spanish,
 // Portuguese or English so canned confirmation/recovery messages match the
@@ -2002,6 +2043,32 @@ export async function applyPostBookingAddressCorrection(
   }
   console.warn(`[booking] address corrected for ${igsid}: "${booking.address}" -> "${corr.address}"`);
   return { kind: "unit", unit: corr.unit, address: corr.address, previousAddress: booking.address, bookingId: booking.id };
+}
+
+// Anota no booking (campo notes) um pedido feito DEPOIS da visita marcada —
+// "Text me or call me please 40 mins before" — para o vendedor ver no cartão.
+// Best-effort: nunca lança, nunca bloqueia a resposta ao cliente.
+export async function appendUpcomingBookingNote(igsid: string, note: string): Promise<boolean> {
+  try {
+    const clean = (note || "").replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!clean) return false;
+    const booking = await getUpcomingBookingRecord(igsid);
+    if (!booking) return false;
+    const db = await getAuthenticatedClient();
+    const { data: row } = await db.from("bookings").select("notes").eq("id", booking.id).maybeSingle();
+    const current = ((row?.notes ?? "") as string).toString();
+    if (current.includes(clean)) return true;
+    const merged = [current.trim(), clean].filter(Boolean).join(" | ").slice(0, 1000);
+    const { error } = await db.from("bookings").update({ notes: merged }).eq("id", booking.id);
+    if (error) {
+      console.error(`[booking] note append FAILED for ${igsid}: ${error.message}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("[booking] note append exception:", err);
+    return false;
+  }
 }
 
 // Confirmação curta ao cliente depois de trocar a unidade na visita marcada.

@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
-import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue } from "@/lib/delivery";
+import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
+import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -131,6 +131,12 @@ async function processBookingCommand(
         notes: bookingData.notes,
         clientBurst: recentClientText(history),
       });
+      if (r.success && r.unchanged) {
+        // The [BOOK] named the slot the client already holds — nothing moved.
+        // Restate the real visit instead of "I couldn't lock in that exact time".
+        console.log("[WA] [BOOK] repeats the existing visit — restating it (nothing to move)");
+        return { response: visitDetailsMessage(lang, r.date ?? bookingData.date, r.time ?? bookingData.time), booked: false };
+      }
       if (r.success) {
         await supabaseAdmin.from("instagram_conversations").update({ booking_confirmed: true }).eq("id", conversationId);
         // FUNIL: remarcação confirmada → agendamento_marcado com a NOVA data.
@@ -826,7 +832,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (lastAsst?.content && containsSchedulingOffer(lastAsst.content)) engageReschedule = true;
+      // isOpenSlotOffer, not containsSchedulingOffer: since 2026-08-25 the booking
+      // confirmation restates the day and time, and reading it as an offer put
+      // every post-booking message into RESCHEDULE MODE (Prince Cambow, FB 26/08).
+      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
     }
 
     // ── ETAPA DE INSTALAÇÃO: cliente respondeu ao aviso de véspera ─────────
@@ -1089,6 +1098,46 @@ async function handleWaMessage(body: Record<string, unknown>) {
         });
       } catch (err) {
         console.error("WA visit-details notify error:", err);
+      }
+      return;
+    }
+
+    // ── Booked client asking to be warned before the visit ("Text me or call
+    //    me please 40 mins before") → ONE fixed line promising the 40-minute
+    //    text (owner rule 2026-08-26, Prince Cambow). The ask is noted on the
+    //    booking for the seller and the owner is notified. Runs after the
+    //    reschedule and visit-question checks, before the silent path. ──
+    if (isBooked && !engageReschedule && (isReminderRequest(rawText) || isReminderRequest(gateBurst))) {
+      const ack = reminderAckMessage(detectLang(`${rawText} ${gateBurst}`));
+      const { data: lastBotForAck } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("content")
+        .eq("conversation_id", conv.id)
+        .eq("role", "assistant")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!(lastBotForAck?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForAck.content }], ack))) {
+        const ackSent = await sendWhatsAppMessage(phone, ack);
+        if (!ackSent.ok) await reportSendFailure("whatsapp", phone, ackSent.error ?? "unknown");
+        else await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: ack });
+      }
+      waitUntil(appendUpcomingBookingNote(waIgsid, `Cliente pediu aviso antes da visita: "${(gateBurst || rawText).replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
+      try {
+        const { data: recentMsgs } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("role, content")
+          .eq("conversation_id", conv.id)
+          .order("created_at", { ascending: false })
+          .limit(8);
+        await notifyOwners({
+          platform: "WhatsApp",
+          clientName: conv.username ?? null,
+          clientId: phone,
+          recentMessages: (recentMsgs ?? []).reverse(),
+        });
+      } catch (err) {
+        console.error("WA reminder-ack notify error:", err);
       }
       return;
     }
@@ -1642,7 +1691,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // A failed send aborts the turn BEFORE the reply is stored — recording an
     // undelivered reply hides the outage and suppresses the re-send (see the
     // 2026-07-22 IG token incident). reportSendFailure alerts the owner.
-    const mainSent = await sendWhatsAppMessage(phone, outboundResponse);
+    let mainSent: { ok: boolean; error?: string };
+    try {
+      mainSent = await sendWhatsAppMessage(phone, outboundResponse);
+    } catch (sendErr) {
+      // A throw here used to skip BOTH the send and the outbox row — the client
+      // saw silence and nothing recorded it (lost-reply review, 2026-08-26).
+      console.error("[WA] final send THREW — treating as failed:", sendErr);
+      mainSent = { ok: false, error: String(sendErr).slice(0, 200) };
+    }
     if (!mainSent.ok) {
       await reportSendFailure("whatsapp", phone, mainSent.error ?? "unknown");
       // Outbox: store marked as undelivered — retryFailedSends re-sends it for
@@ -1735,6 +1792,9 @@ export async function POST(req: NextRequest) {
   // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
   // whose delivery failed (self-throttled to 1 sweep / 10 min).
   waitUntil(retryFailedSends());
+  // Lost-reply net: a turn that reached the send stage but left no reply behind
+  // is replayed / reported (self-throttled to 1 sweep / 5 min).
+  waitUntil(recoverLostReplies());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());

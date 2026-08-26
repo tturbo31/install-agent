@@ -52,7 +52,9 @@ function main() {
     ["WhatsApp", "src/app/api/wa-webhook/route.ts"],
   ] as const) {
     const src = read(rel);
-    ck(`${label}: main send checked before storing`, /const mainSent = await send\w+Message\(/.test(src) && /if \(!mainSent\.ok\)/.test(src), rel);
+    // 2026-08-26: the send sits in a try/catch now ("let mainSent; try { mainSent = await ... }")
+    // so a thrown send still leaves an outbox row — the order (send → check → store) is unchanged.
+    ck(`${label}: main send checked before storing`, /mainSent = await send\w+Message\(/.test(src) && /if \(!mainSent\.ok\)/.test(src), rel);
     ck(`${label}: failed main send aborts BEFORE the insert`, /if \(!mainSent\.ok\) \{[\s\S]*?return;[\s\S]*?\}/.test(src), rel);
     ck(`${label}: paused-convo backlog alerts the owner`, /alertPausedBacklog\(\{/.test(src), rel);
   }
