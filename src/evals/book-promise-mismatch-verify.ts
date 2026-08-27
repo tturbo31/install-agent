@@ -171,7 +171,7 @@ async function main() {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports bookedSlotMismatchesPromise`, /bookedSlotMismatchesPromise/.test(src), rel);
     ck(`${name}: blocks on mismatch and re-offers the promised day's real times`,
-      /bookedSlotMismatchesPromise\(history,\s*bookingData\.date,\s*bookingData\.time\)[\s\S]{0,300}needTimeChoiceMessage\(lang,\s*pm\.promisedDate\s*\?\?\s*bookingData\.date\)/.test(src), rel);
+      /bookedSlotMismatchesPromise\(history,\s*bookingData\.date,\s*bookingData\.time\)[\s\S]{0,300}needTimeChoiceMessage\(lang,\s*pm\.promisedDate\s*\?\?\s*bookingData\.date(?:,\s*bookingData\.address)?\)/.test(src), rel);
     ck(`${name}: guard sits before createBooking`, src.indexOf("bookedSlotMismatchesPromise(history") < src.indexOf("createBooking("), rel);
   }
 

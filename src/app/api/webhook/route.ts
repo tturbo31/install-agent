@@ -157,7 +157,7 @@ async function processBookingCommand(
     // Messenger). Block and re-offer with that day's real open times.
     if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(history, bookingData.time)) {
       console.warn(`[IG] booking blocked — time ${bookingData.time} never appeared in the conversation; asking client to choose`);
-      return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+      return { response: await needTimeChoiceMessage(lang, bookingData.date, bookingData.address), booked: false };
     }
 
     // PROMISE-MATCH guard: the [BOOK] must honor the LAST concrete slot promise
@@ -169,7 +169,7 @@ async function processBookingCommand(
       const pm = bookedSlotMismatchesPromise(history, bookingData.date, bookingData.time);
       if (pm.mismatch) {
         console.warn(`[IG] booking blocked — ${pm.reason}; re-offering real times`);
-        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date), booked: false };
+        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date, bookingData.address), booked: false };
       }
     }
 
@@ -322,7 +322,7 @@ async function processBookingCommand(
       // Slot the client picked is full but OTHER slots may be open: offer the
       // soonest remaining one instead of handing off (never say it was "taken").
       // Keep the AI active so the client's next pick books normally.
-      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time);
+      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time, bookingData.address);
       if (recovery) {
         console.warn(`[IG] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
         return { response: recovery, booked: false };
@@ -1450,7 +1450,9 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // Only fetch availability when no booking is confirmed yet.
       // After booking, showing availability causes the AI to see the booked slot as
       // "taken" and generate "that slot just got taken" on follow-up messages.
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      // Rota (27/08/2026): o histórico deixa a agenda ordenar os horários pela
+      // localização do cliente (ou pedir o ZIP antes da oferta). Sem mudar o script.
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history, igsid: senderIgsid, rescheduling: isRescheduling });
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {

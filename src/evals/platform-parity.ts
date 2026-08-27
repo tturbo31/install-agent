@@ -98,6 +98,9 @@ const SHARED: Check[] = [
   // same message must never be sent twice in a row, on ANY send path (AI reply,
   // no-content canned line, outage handoff).
   { label: "Consecutive-duplicate send guard (3 paths)", test: (s) => (s.match(/isConsecutiveDuplicate\(/g) ?? []).length >= 3 },
+  // Route optimization (27/08/2026): schedule ordered by the client's location; canned recovery keeps the same count
+  { label: "Route-aware schedule (history passed to getRealAvailabilityContext)", test: (s) => /getRealAvailabilityContext\(\{ history, igsid: /.test(s) },
+  { label: "Route-aware canned recovery ([BOOK] address to needTimeChoice/slotConflictRecovery)", test: (s) => (s.match(/needTimeChoiceMessage\(lang, [^)]*bookingData\.address\)/g) ?? []).length === 2 && /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time, bookingData\.address\)/.test(s) },
 ];
 
 // ── INTENTIONAL per-platform differences (informational, NOT failures) ───────

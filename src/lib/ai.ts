@@ -1,3 +1,4 @@
+import { zipsInText, cityAliasZip } from "./geo/zip-geo";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
@@ -659,6 +660,16 @@ export function clientEngagedScheduling(userText: string): boolean {
 // the missing name/phone (often citing "Friday at 5pm") is not pressure, and
 // stripping it left the client unanswered until the owner stepped in manually.
 // Exported for the conversion-fixes eval guard.
+// Rota (27/08/2026): com a nota ZIP CODE FIRST, a proposta da visita pede o ZIP
+// em vez de listar horários ("...I bring the samples. What's the zip code of the
+// property?"). Não tem clock time nem "what time works", mas É a proposta da
+// visita — conta como push para o anti-pressão não deixar o próximo turno
+// informativo ganhar uma lista de horários.
+export function isVisitProposalWithZipAsk(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return /\b(?:visit|measure|samples?|estimate|visita|medir|muestras|amostras|or[cç]amento)\b/i.test(t) && /\bzip\b|c[oó]digo\s+postal/i.test(t) && /\?/.test(t);
+}
+
 export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
   // Look back over the last few assistant turns: once the visit/scheduling
   // was already pushed, the client may ask several info questions in a row,
@@ -667,14 +678,30 @@ export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
   const recentAssistantPushed = [...messages]
     .filter((m) => m.role === "assistant")
     .slice(-3)
-    .some((m) => isSchedulingPush(m.content));
+    .some((m) => isSchedulingPush(m.content) || isVisitProposalWithZipAsk(m.content));
   const lastMsg = messages[messages.length - 1];
+  // Resposta ao pedido de ZIP (rota, 27/08/2026): nossa última mensagem pediu o
+  // ZIP na proposta da visita e o cliente respondeu com o ZIP, a cidade ou uma
+  // resposta curta sem pergunta → o próximo turno DEVE oferecer os horários;
+  // isso é o fluxo, não pressão. Uma pergunta informativa ("is it waterproof?")
+  // continua protegida: a lista de horários colada nela é cortada.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  if (lastMsg?.role === "user" && lastAssistant && isVisitProposalWithZipAsk(lastAssistant.content) && isLocationAnswer(lastMsg.content)) {
+    return false;
+  }
   return (
     recentAssistantPushed &&
     lastMsg?.role === "user" &&
     !clientEngagedScheduling(lastMsg.content) &&
     !clientConfirmedSlot(messages)
   );
+}
+
+export function isLocationAnswer(userText: string): boolean {
+  const t = (userText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  if (zipsInText(t).length > 0 || cityAliasZip(t) !== null) return true;
+  return t.split(/\s+/).length <= 4 && !/\?/.test(t);
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
@@ -2072,6 +2099,17 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bnecesito\s+(?:confirmar|verificar|revisar)\s+cu[aá]l\b/.source,
     /\bdebo\s+(?:confirmar|preguntar|verificar|revisar)\b/.source,
     /\bespera,?\s+d[eé]jame\b|\bd[eé]jame\s+(?:recalcular|rehacer|corregir)\b/.source,
+    // ROUTE-NOTE leak (route-offer-verify, 2026-08-27): with the internal
+    // "ROUTE PRIORITY" schedule note in context the model narrated its slot
+    // selection to the client — "The client can only do mornings before noon,
+    // so from the schedule the matching slots are Monday at 9am or 11am … I
+    // need to offer exactly two. Tuesday 9am and 11am fit the route priority
+    // and the client's constraint best." None of these phrases is ever
+    // client-facing; the note's own labels least of all.
+    /\bthe\s+client(?:'s)?\s+(?:can|cannot|can'?t|only|needs?|prefers?|constraints?|is|was|has|hasn'?t|did|didn'?t)\b/.source,
+    /\bi\s+need\s+to\s+(?:offer|pick|choose|select|name|list)\b/.source,
+    /\bfits?\s+the\s+route\b|\broute\s+priorit(?:y|ies)\b|\boffer\s+first\b|\bthe\s+matching\s+slots?\b|\bfrom\s+the\s+schedule\s+(?:the|above|in\s+context)\b|\bexactly\s+two\s+(?:slots?|times?|options?)\b|\bzip\s+code\s+first\b/.source,
+    /\bprioridad\s+de\s+ruta\b|\bprioridade\s+de\s+rota\b|\bel\s+cliente\s+(?:s[oó]lo|solo|puede|necesita|prefiere)\b|\bo\s+cliente\s+(?:s[oó](?![a-z])|pode|precisa|prefere)(?![a-z])/.source,
   ].join("|"),
   "i"
 );

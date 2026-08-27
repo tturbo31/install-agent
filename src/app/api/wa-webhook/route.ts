@@ -102,7 +102,7 @@ async function processBookingCommand(
     // Messenger). Block and re-offer with that day's real open times.
     if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(history, bookingData.time)) {
       console.warn(`[WA] booking blocked — time ${bookingData.time} never appeared in the conversation; asking client to choose`);
-      return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+      return { response: await needTimeChoiceMessage(lang, bookingData.date, bookingData.address), booked: false };
     }
 
     // PROMISE-MATCH guard: the [BOOK] must honor the LAST concrete slot promise
@@ -114,7 +114,7 @@ async function processBookingCommand(
       const pm = bookedSlotMismatchesPromise(history, bookingData.date, bookingData.time);
       if (pm.mismatch) {
         console.warn(`[WA] booking blocked — ${pm.reason}; re-offering real times`);
-        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date), booked: false };
+        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date, bookingData.address), booked: false };
       }
     }
 
@@ -249,7 +249,7 @@ async function processBookingCommand(
     // soonest remaining one instead of handing off (never say it was "taken").
     // Keep the AI active so the client's next pick books normally.
     if (/^No availability/i.test(result.error ?? "")) {
-      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time);
+      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time, bookingData.address);
       if (recovery) {
         console.warn(`[WA] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
         return { response: recovery, booked: false };
@@ -1366,7 +1366,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
       // Only load availability when booking not yet confirmed
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      // Rota (27/08/2026): o histórico deixa a agenda ordenar os horários pela
+      // localização do cliente (ou pedir o ZIP antes da oferta). Sem mudar o script.
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history, igsid: waIgsid, rescheduling: isRescheduling });
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)

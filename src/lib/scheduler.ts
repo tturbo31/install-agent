@@ -1,4 +1,25 @@
 import { createClient } from "@supabase/supabase-js";
+import {
+  getRouteConfig,
+  rankSellersForSlot,
+  rankSlotsForDay,
+  pickSlotsByRoute,
+  travelMatrix,
+  buildRoutePriorityNote,
+  buildZipFirstNote,
+  zipAlreadyAskedInHistory,
+  clientLocationFromHistory,
+  locationFromAddress,
+  toExistingVisits,
+  logRouteDecision,
+  optionForLog,
+  slotMinutes,
+  estimateMinutes,
+  type DayRanking,
+  type ExistingVisit,
+  type RouteSeller,
+} from "./route-optimizer";
+import { type GeoPoint, geoKey, isServiceAreaZip } from "./geo/zip-geo";
 
 const SCHEDULER_URL = "https://wtyezgfzzetfrhoaqemt.supabase.co";
 const SCHEDULER_ANON_KEY =
@@ -153,6 +174,83 @@ function pickSellerForSlot(
   return candidates[0] ?? null;
 }
 
+// ─── Escolha de vendedor COM ROTA (regra do dono, 27/08/2026) ───────────────
+// pickSellerForSlot continua sendo a regra atual (o primeiro por priority entre
+// os livres). Esta versão pega EXATAMENTE os mesmos candidatos e, quando há mais
+// de um, deixa o Route Score (route-optimizer.ts) decidir: menor tempo vindo do
+// compromisso anterior + indo para o próximo, com penalidade de zigue-zague.
+// Empate dentro da tolerância → priority, como hoje. Qualquer erro (banco,
+// mapas, endereço sem ZIP) → pickSellerForSlot puro. Nunca devolve null quando
+// a regra atual devolveria alguém: a rota prioriza, jamais bloqueia.
+type SchedulerDb = Awaited<ReturnType<typeof getAuthenticatedClient>>;
+type VisitRow = { seller_id: string | null; booking_date: string; booking_time: string; address: string | null; email?: string | null };
+
+// Visitas fixas (com endereço) da janela. O booking do PRÓPRIO cliente (ia-<igsid>@)
+// fica de fora: numa remarcação o slot antigo dele ainda existe e, a 0 min de
+// distância, puxaria a escolha para o mesmo vendedor sem motivo.
+async function fetchVisitsWithAddress(db: SchedulerDb, from: string, to: string, excludeIgsid?: string | null): Promise<VisitRow[]> {
+  const { data, error } = await db
+    .from("bookings")
+    .select("seller_id,booking_date,booking_time,address,email")
+    .gte("booking_date", from)
+    .lte("booking_date", to)
+    .is("cancelled_at", null);
+  if (error) throw new Error(`bookings(address) fetch: ${error.message}`);
+  const own = excludeIgsid ? `ia-${excludeIgsid}@` : null;
+  return ((data ?? []) as VisitRow[]).filter((r) => !own || !(r.email ?? "").startsWith(own));
+}
+
+async function pickSellerForSlotRouted(
+  db: SchedulerDb,
+  sellers: Seller[],
+  bookings: BookingRow[],
+  dateStr: string,
+  slot: string,
+  daysOff: DaysOffSet,
+  ctx: { clientAddress?: string | null; igsid?: string | null; kind: "book" | "reschedule" }
+): Promise<Seller | null> {
+  const weekday = new Date(dateStr + "T12:00:00").getDay();
+  const candidates = sellers
+    .filter((s) => sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff))
+    .sort((a, b) => a.priority - b.priority);
+  if (candidates.length === 0) return null;
+  const cfg = getRouteConfig();
+  const client = locationFromAddress(ctx.clientAddress);
+  if (!cfg.enabled || candidates.length === 1 || !client) {
+    logRouteDecision({
+      kind: ctx.kind, igsid: ctx.igsid ?? null, date: dateStr, slot, zip: client?.zip ?? null, clientLabel: client?.label ?? null,
+      chosenSeller: candidates[0].name, chosenScore: null, chosenTier: null, provider: "none",
+      reason: !cfg.enabled ? "route optimization disabled" : candidates.length === 1 ? "single candidate (current rules)" : "client location unknown (no ZIP/city in address) → current priority order",
+      options: candidates.map((c) => ({ seller: c.name, priority: c.priority })),
+    }, cfg.enabled);
+    return candidates[0];
+  }
+  const started = Date.now();
+  try {
+    const rows = await fetchVisitsWithAddress(db, dateStr, dateStr, ctx.igsid);
+    const visits = toExistingVisits(rows);
+    const { ranked, matrix } = await rankSellersForSlot({ client, slot, candidates: candidates.map(asRouteSeller), visits, cfg });
+    const winner = ranked[0];
+    const seller = candidates.find((s) => s.id === winner.seller.id) ?? candidates[0];
+    const byPriority = candidates[0];
+    logRouteDecision({
+      kind: ctx.kind, igsid: ctx.igsid ?? null, date: dateStr, slot, zip: client.zip ?? null, clientLabel: client.label ?? null,
+      chosenSeller: seller.name, chosenScore: winner.route.score, chosenTier: winner.route.tier, provider: matrix.provider, fallback: matrix.fallbackReason ?? null,
+      reason: seller.id === byPriority.id
+        ? (winner.equivalentToBest && ranked.length > 1 && ranked[1].equivalentToBest ? "tie within tolerance → current priority rule" : "best route (also first by priority)")
+        : `best route beats priority order (${byPriority.name} would have been ${ranked.find((r) => r.seller.id === byPriority.id)?.route.score ?? "?"} min)`,
+      options: ranked.map(optionForLog), ms: Date.now() - started,
+    }, true);
+    return seller;
+  } catch (err) {
+    console.error("[route] seller pick failed — falling back to priority order:", err);
+    logRouteDecision({ kind: ctx.kind, igsid: ctx.igsid ?? null, date: dateStr, slot, zip: client.zip ?? null, chosenSeller: candidates[0].name, provider: "none", reason: `fallback: ${String((err as Error)?.message ?? err)}`, ms: Date.now() - started }, true);
+    return candidates[0];
+  }
+}
+
+const asRouteSeller = (s: Seller): RouteSeller => ({ id: s.id, name: s.name, priority: s.priority });
+
 // Minimum notice for a SAME-DAY visit, in Eastern minutes. A seller has to see
 // the booking, finish what they are doing and drive there; the platform’s
 // "40 minutes before" reminder also needs the booking to exist before that
@@ -238,7 +336,13 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       return { success: false, error: "No active sellers found." };
     }
 
-    const seller = pickSellerForSlot(sellers, bookings, req.bookingDate, req.bookingTime, daysOff);
+    // Rota (27/08/2026): mesmos candidatos da regra atual; entre eles, o de
+    // melhor deslocamento; empate → priority. Falha → regra atual.
+    const seller = await pickSellerForSlotRouted(db, sellers, bookings, req.bookingDate, req.bookingTime, daysOff, {
+      clientAddress: req.clientAddress,
+      igsid: req.igsid ?? null,
+      kind: "book",
+    });
 
     if (!seller) {
       return {
@@ -435,7 +539,11 @@ export async function rescheduleClientBooking(
     ]);
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
-    const seller = pickSellerForSlot(sellers, bookings, newDate, newTime, daysOff);
+    const seller = await pickSellerForSlotRouted(db, sellers, bookings, newDate, newTime, daysOff, {
+      clientAddress: old.address ?? fallback?.address ?? null,
+      igsid,
+      kind: "reschedule",
+    });
     if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
 
     // 3. Create the NEW booking (copy original details, fall back to provided values).
@@ -954,7 +1062,7 @@ export function bookedTimeSeenInConversation(
 
 // Sent when the client picked a day but the [BOOK] hour was never shown to them:
 // re-offer with that day's REAL open times so the pick that follows is explicit.
-export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promise<string> {
+export async function needTimeChoiceMessage(lang: Lang, dateStr: string, clientAddress?: string | null): Promise<string> {
   try {
     let slots = await getAvailableSlots(dateStr);
     if (dateStr === easternTodayStr()) {
@@ -965,7 +1073,7 @@ export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promis
         return h * 60 + min >= cutoff;
       });
     }
-    const times = slots.slice(0, 4).map(fmt12);
+    const times = (await routeOrderedSlots(dateStr, slots, clientAddress, 4)).map(fmt12);
     if (times.length > 0) {
       const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
       const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
@@ -1108,7 +1216,135 @@ export async function hasExistingBooking(igsid: string): Promise<boolean> {
   }
 }
 
-export async function getRealAvailabilityContext(): Promise<string> {
+// ─── Nota de rota para a OFERTA de horários (27/08/2026) ─────────────────────
+// Só entra quando o webhook passa contexto do cliente (history/endereço). Sem
+// opções (evals, chamadas antigas) o texto da agenda é byte-idêntico ao de antes.
+//  • Localização conhecida (ZIP digitado, endereço, cidade/bairro) → nota
+//    "ROUTE PRIORITY": os MESMOS horários das linhas acima, por dia, na ordem da
+//    melhor rota para a pior. O modelo continua oferecendo a mesma quantidade.
+//  • Localização desconhecida → nota "ZIP CODE FIRST" (configurável): pedir o
+//    ZIP na proposta da visita, uma vez só, sem travar a venda.
+// Qualquer erro → sem nota (comportamento atual). Nunca derruba a agenda.
+export interface AvailabilityContextOptions {
+  history?: Array<{ role: string; content: string }>;
+  clientAddress?: string | null;
+  igsid?: string | null;
+  rescheduling?: boolean; // cliente já agendado remarcando: endereço vem do booking, nunca ZIP-first
+}
+
+async function routeNoteForAvailability(
+  db: SchedulerDb,
+  opts: AvailabilityContextOptions,
+  windowDays: string[],
+  sellers: Seller[],
+  bookings: BookingRow[],
+  daysOff: DaysOffSet,
+  nowMinutesPlusNotice: number
+): Promise<string | null> {
+  const cfg = getRouteConfig();
+  if (!cfg.enabled) return null;
+  let client = locationFromAddress(opts.clientAddress) ?? clientLocationFromHistory(opts.history ?? []);
+  // Remarcação: a janela de 15 mensagens pode não conter mais o endereço que o
+  // cliente digitou ao agendar — ele está no booking. Nunca pedir ZIP a quem
+  // já tem visita marcada (a nota RESCHEDULE MODE diz "não peça o endereço").
+  if (!client && opts.rescheduling && opts.igsid) {
+    const rec = await getUpcomingBookingRecord(opts.igsid).catch(() => null);
+    client = locationFromAddress(rec?.address);
+    if (!client) return null;
+  }
+  // Fora da área atendida (ZIP não começa por 33): o prompt recusa a visita;
+  // não há rota a otimizar e nenhuma nota deve empurrar horários.
+  if (client?.zip && !isServiceAreaZip(client.zip)) return null;
+  if (!client) {
+    // Pedir o ZIP antes dos horários só faz sentido ANTES de o cliente escolher:
+    // se ele já nomeou/aceitou um dia ou hora, o fluxo normal segue (confirma o
+    // slot e pede nome + endereço com ZIP + telefone juntos). Deterministico —
+    // o modelo, com a nota no contexto, tendia a pedir o ZIP sozinho.
+    if (cfg.askZipBeforeOffer && opts.history && !clientAlreadyNamedSlot(opts.history)) {
+      return buildZipFirstNote(zipAlreadyAskedInHistory(opts.history));
+    }
+    return null;
+  }
+  const started = Date.now();
+  try {
+    // Só os dias que ENTRAM na nota (os primeiros noteDays com vaga): menos
+    // pontos na matriz (OSRM público aceita ~100), menos latência, e a nota
+    // nunca lista dias além disso mesmo.
+    const noteDays: Array<{ dateStr: string; displayDate: string; openBySlot: Map<string, RouteSeller[]> }> = [];
+    for (const dateStr of windowDays) {
+      if (noteDays.length >= cfg.noteDays) break;
+      const { weekday, month, day, year } = ymd(dateStr);
+      const isToday = dateStr === windowDays[0];
+      const openBySlot = new Map<string, RouteSeller[]>();
+      for (const s of sellers) for (const slot of s.time_slots) {
+        if (!sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) continue;
+        if (isToday && slotMinutes(slot) < nowMinutesPlusNotice) continue;
+        openBySlot.set(slot, [...(openBySlot.get(slot) ?? []), asRouteSeller(s)]);
+      }
+      if (openBySlot.size === 0) continue;
+      noteDays.push({ dateStr, displayDate: `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${dateStr}]`, openBySlot });
+    }
+    if (noteDays.length === 0) return null;
+    const rows = await fetchVisitsWithAddress(db, noteDays[0].dateStr, noteDays[noteDays.length - 1].dateStr, opts.igsid);
+    const visitsByDay = new Map<string, ExistingVisit[]>();
+    for (const r of rows) {
+      const list = visitsByDay.get(r.booking_date) ?? [];
+      list.push(...toExistingVisits([r]));
+      visitsByDay.set(r.booking_date, list);
+    }
+    // Uma matriz só: cliente + todos os pontos distintos das visitas desses dias.
+    const points: GeoPoint[] = [client];
+    const index = new Map<string, number>([[geoKey(client), 0]]);
+    for (const d of noteDays) for (const v of visitsByDay.get(d.dateStr) ?? []) {
+      if (!v.point) continue;
+      const k = geoKey(v.point);
+      if (!index.has(k)) { index.set(k, points.length); points.push(v.point); }
+    }
+    const matrix = await travelMatrix(points, cfg);
+    // Ponto fora do índice (não deveria acontecer) → estimativa, nunca 0 min.
+    const between = (a: GeoPoint, b: GeoPoint) => {
+      const ia = index.get(geoKey(a));
+      const ib = index.get(geoKey(b));
+      return ia === undefined || ib === undefined ? estimateMinutes(a, b, cfg) : matrix.minutes[ia][ib];
+    };
+
+    const days: DayRanking[] = [];
+    for (const d of noteDays) {
+      const ranked = rankSlotsForDay(client, d.openBySlot, visitsByDay.get(d.dateStr) ?? [], between, cfg);
+      days.push({ dateStr: d.dateStr, displayDate: d.displayDate, ranked });
+    }
+    const note = buildRoutePriorityNote(days, client, cfg, fmt12);
+    logRouteDecision({
+      kind: "offer", igsid: opts.igsid ?? null, zip: client.zip ?? null, clientLabel: client.label ?? null, date: windowDays[0],
+      provider: matrix.provider, fallback: matrix.fallbackReason ?? null, ms: Date.now() - started,
+      reason: note ? "route priority note added to the schedule" : "no open slots to rank",
+      presented: days.slice(0, cfg.noteDays).map((d) => `${d.dateStr}: ${d.ranked.slice(0, cfg.offerCount + cfg.expandCount).map((r) => `${r.slot}=${r.score}${r.bestSeller ? "/" + r.bestSeller.name : ""}`).join(" ")}`),
+    }, false);
+    return note;
+  } catch (err) {
+    console.error("[route] availability note failed — schedule sent without route ordering:", err);
+    logRouteDecision({ kind: "offer", igsid: opts.igsid ?? null, zip: client.zip ?? null, date: windowDays[0], provider: "none", reason: `fallback: ${String((err as Error)?.message ?? err)}`, ms: Date.now() - started }, false);
+    return null;
+  }
+}
+
+// O cliente já escolheu (clientConfirmedSlot) ou a mensagem mais recente dele
+// nomeia um dia/hora ("can you come Friday?", "a las 3pm") → nada de ZIP-first.
+export function clientAlreadyNamedSlot(history: Array<{ role: string; content: string }>): boolean {
+  if (clientConfirmedSlot(history)) return true;
+  for (const m of history) {
+    const t = (m.content || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+    // O bot já ofereceu horários → a fase "ZIP antes da oferta" já passou.
+    if (m.role === "assistant" && CLOCK_TIME_TOKEN.test(t)) { CLOCK_TIME_TOKEN.lastIndex = 0; return true; }
+    CLOCK_TIME_TOKEN.lastIndex = 0;
+    // O cliente nomeou um dia/hora em QUALQUER bolha ("can you come Saturday?"
+    // três mensagens atrás) → fluxo normal, sem ZIP-first.
+    if (m.role === "user" && (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_MONTH_DATE.test(t))) return true;
+  }
+  return false;
+}
+
+export async function getRealAvailabilityContext(opts?: AvailabilityContextOptions): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
 
@@ -1196,6 +1432,13 @@ export async function getRealAvailabilityContext(): Promise<string> {
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
 
+    // Rota (27/08/2026): nota interna de prioridade dos horários (ou pedido de
+    // ZIP) só quando o webhook passa o contexto do cliente. Sem opts → idêntico.
+    if (opts) {
+      const routeNote = await routeNoteForAvailability(db, opts, windowDays, sellers, bookings, daysOff, nowMinutesPlus30);
+      if (routeNote) lines.push("", routeNote);
+    }
+
     return lines.join("\n");
   } catch (err) {
     console.error("Failed to fetch availability:", err);
@@ -1279,7 +1522,8 @@ export async function slotConflictRecoveryMessage(
   lang: Lang,
   requestedDate?: string,
   history?: Array<{ role: string; content: string }>,
-  requestedTime?: string
+  requestedTime?: string,
+  clientAddress?: string | null
 ): Promise<string | null> {
   try {
     let msg: string | null = null;
@@ -1304,7 +1548,7 @@ export async function slotConflictRecoveryMessage(
             return h * 60 + min >= cutoff;
           });
         }
-        const times = slots.slice(0, 3).map(fmt12);
+        const times = (await routeOrderedSlots(requestedDate, slots, clientAddress, 3)).map(fmt12);
         if (times.length > 0) {
           const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
           const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
@@ -1324,7 +1568,7 @@ export async function slotConflictRecoveryMessage(
       const open = await getNextOpenSlots(21);
       if (open.length === 0) return null;
       const first = open[0];
-      const times = first.times.slice(0, 2).map(fmt12);
+      const times = (await routeOrderedSlots(first.dateStr, first.times, clientAddress, 2)).map(fmt12);
       if (lang === "pt") {
         const wd = DAY_NAMES_PT[first.weekday];
         const t = times.length >= 2 ? `${times[0]} ou ${times[1]}` : times[0];
@@ -1727,6 +1971,71 @@ export function aiOutageHandoffMessage(lang: Lang): string {
   return lang === "es"
     ? "Gracias por tu mensaje! Le aviso a nuestro equipo y alguien te contacta en seguida."
     : "Thanks for your message! Let me get our team to reach out, someone will get right back to you.";
+}
+
+// ─── Horários de um dia ordenados pela rota (mensagens enlatadas) ────────────
+// needTimeChoiceMessage / slotConflictRecoveryMessage sempre ofereceram os N
+// primeiros horários do dia em ordem cronológica. Com o endereço do cliente em
+// mãos (o [BOOK] já traz), os N escolhidos passam a ser os de melhor rota —
+// MESMA quantidade, apresentados em ordem cronológica. Sem localização ou com
+// qualquer erro → os N primeiros de sempre.
+async function routeOrderedSlots(
+  dateStr: string,
+  slots: string[],
+  clientAddress: string | null | undefined,
+  count: number
+): Promise<string[]> {
+  const base = slots.slice(0, count);
+  try {
+    const cfg = getRouteConfig();
+    if (!cfg.enabled || slots.length <= count) return base;
+    const client = locationFromAddress(clientAddress);
+    if (!client) return base;
+    const db = await getAuthenticatedClient();
+    const [{ data: sellersData }, { data: bookedData }, daysOff, rows] = await Promise.all([
+      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+      db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
+      getDaysOff(db, dateStr, dateStr),
+      fetchVisitsWithAddress(db, dateStr, dateStr),
+    ]);
+    const sellers = (sellersData ?? []) as Seller[];
+    const bookings = (bookedData ?? []) as BookingRow[];
+    const weekday = new Date(dateStr + "T12:00:00").getDay();
+    const wanted = new Set(slots);
+    const openBySlot = new Map<string, RouteSeller[]>();
+    for (const s of sellers) for (const slot of s.time_slots) {
+      if (!wanted.has(slot) || !sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) continue;
+      openBySlot.set(slot, [...(openBySlot.get(slot) ?? []), asRouteSeller(s)]);
+    }
+    // Um horário da lista que a leitura acima não confirmou continua na lista
+    // (a lista de entrada é a verdade do chamador): fica sem vendedor = neutro.
+    for (const slot of slots) if (!openBySlot.has(slot)) openBySlot.set(slot, sellers.map(asRouteSeller));
+    const visits = toExistingVisits(rows);
+    const points: GeoPoint[] = [client];
+    const index = new Map<string, number>([[geoKey(client), 0]]);
+    for (const v of visits) {
+      if (!v.point) continue;
+      const k = geoKey(v.point);
+      if (!index.has(k)) { index.set(k, points.length); points.push(v.point); }
+    }
+    const matrix = await travelMatrix(points, cfg);
+    const between = (a: GeoPoint, b: GeoPoint) => {
+      const ia = index.get(geoKey(a));
+      const ib = index.get(geoKey(b));
+      return ia === undefined || ib === undefined ? estimateMinutes(a, b, cfg) : matrix.minutes[ia][ib];
+    };
+    const ranked = rankSlotsForDay(client, openBySlot, visits, between, cfg);
+    const picked = pickSlotsByRoute(ranked, count);
+    logRouteDecision({
+      kind: "recovery", date: dateStr, zip: client.zip ?? null, clientLabel: client.label ?? null, provider: matrix.provider, fallback: matrix.fallbackReason ?? null,
+      reason: picked.join(",") === base.join(",") ? "route order = chronological order" : `route order picked ${picked.join(",")} instead of ${base.join(",")}`,
+      presented: picked, options: ranked.map((r) => ({ slot: r.slot, score: r.score, tier: r.tier, seller: r.bestSeller?.name ?? null })),
+    }, false);
+    return picked.length ? picked : base;
+  } catch (err) {
+    console.error("[route] routeOrderedSlots failed — using chronological order:", err);
+    return base;
+  }
 }
 
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {

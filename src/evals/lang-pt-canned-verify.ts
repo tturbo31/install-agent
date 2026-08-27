@@ -110,7 +110,7 @@ const ig = readFileSync(join(process.cwd(), "src/app/api/webhook/route.ts"), "ut
 const fb = readFileSync(join(process.cwd(), "src/app/api/fb-webhook/route.ts"), "utf8");
 const wa = readFileSync(join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf8");
 for (const [nome, src] of [["IG", ig], ["FB", fb], ["WA", wa]] as const) {
-  ck(`${nome}: slotConflictRecoveryMessage(lang, date, history, time)`, /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time\)/.test(src), "voltou à chamada sem contexto do dia pedido");
+  ck(`${nome}: slotConflictRecoveryMessage(lang, date, history, time)`, /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time(?:, bookingData\.address)?\)/.test(src), "voltou à chamada sem contexto do dia pedido");
   ck(`${nome}: lang usa o tipo Lang (com pt)`, /lang: Lang/.test(src), "tipo estreitado de volta a es|en");
 }
 
