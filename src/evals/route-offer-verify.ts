@@ -79,11 +79,17 @@ const CFG = getRouteConfig({});
 const cris: RouteSeller = { id: "c", name: "Cris", priority: 3 };
 const mk = (slot: string, score: number, rank: number): SlotRank => ({ slot, score, tier: score <= 30 ? "excellent" : score <= 45 ? "good" : score <= 60 ? "acceptable" : "low", bestSeller: cris, rank, equivalentToBest: rank === 1 });
 const days: DayRanking[] = [
-  { dateStr: d1, displayDate: display(d1), ranked: [mk("15:00", 22, 1), mk("17:00", 28, 2), mk("13:00", 55, 3), mk("09:00", 95, 4), mk("11:00", 110, 5)] },
-  { dateStr: d2, displayDate: display(d2), ranked: [mk("09:00", 18, 1), mk("11:00", 25, 2), mk("15:00", 70, 3), mk("13:00", 90, 4), mk("17:00", 120, 5)] },
+  { dateStr: d1, displayDate: display(d1), ranked: [mk("15:00", 22, 1), mk("17:00", 28, 2), mk("13:00", 55, 3), mk("09:00", 95, 4), mk("11:00", 110, 5)], capacity: 10, open: 5 },
+  { dateStr: d2, displayDate: display(d2), ranked: [mk("09:00", 18, 1), mk("11:00", 25, 2), mk("15:00", 70, 3), mk("13:00", 90, 4), mk("17:00", 120, 5)], capacity: 10, open: 7 },
+];
+// d1 praticamente cheio (9 de 10): o dia prioritário passa a ser d2; o 1pm que sobrou em d1 continua listado.
+const daysAlmostFull: DayRanking[] = [
+  { dateStr: d1, displayDate: display(d1), ranked: [mk("13:00", 55, 1)], capacity: 10, open: 1 },
+  { dateStr: d2, displayDate: display(d2), ranked: [mk("09:00", 18, 1), mk("11:00", 25, 2), mk("15:00", 70, 3), mk("13:00", 90, 4), mk("17:00", 120, 5)], capacity: 10, open: 7 },
 ];
 const WPB = zipCentroid("33401")!;
 const ROUTE_NOTE = buildRoutePriorityNote(days, WPB, CFG, fmt12)!;
+const ROUTE_NOTE_ALMOST_FULL = buildRoutePriorityNote(daysAlmostFull, WPB, CFG, fmt12)!;
 const PREFERRED = new Set(["3pm", "5pm", "9am", "11am"]); // offer-first de d1 ∪ d2
 const NOT_PREFERRED_D1 = ["9am", "11am", "1pm"];
 
@@ -105,7 +111,7 @@ async function run() {
   const c1 = clockTimes(t1);
   ck("T1: oferece horários (clock times presentes)", c1.length >= 1, t1);
   ck("T1: oferece exatamente DOIS horários (mesma quantidade de sempre)", new Set(c1).size === 2, `${c1.join(",")} | ${t1}`);
-  ck("T1: todos os horários oferecidos são 'offer first' (3pm/5pm no 1º dia, 9am/11am no 2º)", c1.every((t) => PREFERRED.has(t)), `${c1.join(",")} | ${t1}`);
+  ck("T1: DATA PRIMEIRO: os dois horários são do dia prioritário (1º dia, 50% ocupado): 3pm e 5pm", c1.every((t) => ["3pm", "5pm"].includes(t)) && PREFERRED.has(c1[0] ?? "3pm"), `${c1.join(",")} | ${t1}`);
   ck("T1: não oferece os horários de rota ruim do 1º dia (1pm) nem diz que faltam vagas", !/\b1\s*pm\b/i.test(t1) && !NO_AVAIL.test(t1), t1);
   ck("T1: nenhum vazamento de rota/distância", !LEAK.test(t1), t1);
 
@@ -191,6 +197,24 @@ async function run() {
   ck("T7: oferece horários logo após o ZIP", c7.length >= 1, t7);
   ck("T7: exatamente dois, todos 'offer first'", new Set(c7).size === 2 && c7.every((t) => PREFERRED.has(t)), `${c7.join(",")} | ${t7}`);
   ck("T7: não pede o ZIP de novo e não vaza rota", !/(?:what|which|cu[aá]l|qual)[^.?!]{0,40}\bzip|zip[^.?!]{0,30}\?/i.test(t7) && !LEAK.test(t7), t7);
+
+  console.log("\n━━ 8. DIA PRIORITÁRIO: 1º dia praticamente cheio → oferece o 2º dia (o que sobrou no 1º continua disponível) ━━");
+  const t8 = await ai([
+    { role: "user", content: "Hi, luxury vinyl for the whole house, about 1200 sqft, in West Palm Beach 33401." },
+    { role: "assistant", content: "For that size, I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. Which day works best for you?" },
+    { role: "user", content: `I'm flexible, any day and time works for me.${sys(ROUTE_NOTE_ALMOST_FULL)}` },
+  ]);
+  console.log("   →", t8.replace(/\s+/g, " ").slice(0, 300));
+  const c8 = clockTimes(t8);
+  ck("T8: oferece os dois 'offer first' do 2º dia (9am, 11am)", new Set(c8).size === 2 && c8.every((t) => ["9am", "11am"].includes(t)), `${c8.join(",")} | ${t8}`);
+  ck("T8: não diz que o 1º dia está cheio/ocupado e não vaza rota", !/\bfull\b|booked|busy|occupied|capacity/i.test(t8) && !LEAK.test(t8), t8);
+  const t8b = await ai([
+    { role: "user", content: "Hi, luxury vinyl for the whole house, about 1200 sqft, in West Palm Beach 33401." },
+    { role: "assistant", content: `For that size, I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. I have ${weekdayOf(d2)} at 9am or 11am, which works better for you?` },
+    { role: "user", content: `Can't do ${weekdayOf(d2)}. Anything on ${weekdayOf(d1)}?${sys(ROUTE_NOTE_ALMOST_FULL)}` },
+  ]);
+  console.log("   →", t8b.replace(/\s+/g, " ").slice(0, 300));
+  ck("T8b: cliente pede o 1º dia → o 1pm que sobrou é oferecido (nunca 'não tenho')", clockTimes(t8b).includes("1pm") && !NO_AVAIL.test(t8b), t8b);
 
   console.log(`\n${fail === 0 ? "✅" : "❌"} route-offer-verify: ${pass} passed, ${fail} failed`);
   if (fail) { console.log("FAILED:\n - " + fails.join("\n - ")); process.exit(1); }

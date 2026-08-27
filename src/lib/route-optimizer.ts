@@ -55,7 +55,11 @@ export interface RouteConfig {
   expandCount: number; // ROUTE_EXPAND_COUNT — quantas opções extras abrir quando o cliente recusa as primeiras
   askZipBeforeOffer: boolean; // ROUTE_ASK_ZIP_BEFORE_OFFER — sem ZIP/cidade conhecido, pedir o ZIP na proposta da visita
   noteDays: number; // ROUTE_NOTE_DAYS — quantos dias (com vaga) entram na nota de prioridade
-  overallDays: number; // ROUTE_OVERALL_DAYS — dias (com vaga) considerados na linha "Best overall" (cliente flexível)
+  overallDays: number; // ROUTE_OVERALL_DAYS — (legado) dias considerados quando ROUTE_FILL_FIRST=0
+  fillFirst: boolean; // ROUTE_FILL_FIRST — DATA PRIMEIRO: preencher o dia mais próximo antes de olhar rota de dias seguintes
+  targetNextDayFillRate: number; // ROUTE_TARGET_NEXT_DAY_FILL_RATE — 0..1; dia abaixo da meta = dia prioritário (padrão 0.9)
+  gapBonusMin: number; // ROUTE_GAP_BONUS_MIN — desconto (min) para um horário que fecha um BURACO entre duas visitas do vendedor
+  gapMaxScore: number; // ROUTE_GAP_MAX_SCORE — o bônus de buraco só vale se a rota for viável (score antes do bônus ≤ este valor)
   provider: "auto" | "google" | "osrm" | "estimate"; // ROUTE_PROVIDER
   googleKey: string | null; // GOOGLE_MAPS_API_KEY
   osrmUrl: string; // ROUTE_OSRM_URL
@@ -93,6 +97,10 @@ export function getRouteConfig(env: Record<string, string | undefined> = process
     askZipBeforeOffer: bool(env.ROUTE_ASK_ZIP_BEFORE_OFFER, true),
     noteDays: Math.max(1, Math.round(num(env.ROUTE_NOTE_DAYS, 10))),
     overallDays: Math.max(1, Math.round(num(env.ROUTE_OVERALL_DAYS, 3))),
+    fillFirst: bool(env.ROUTE_FILL_FIRST, true),
+    targetNextDayFillRate: Math.min(1, Math.max(0, num(env.ROUTE_TARGET_NEXT_DAY_FILL_RATE, 0.9))),
+    gapBonusMin: Math.max(0, num(env.ROUTE_GAP_BONUS_MIN, 15)),
+    gapMaxScore: num(env.ROUTE_GAP_MAX_SCORE, 60),
     provider: provider === "google" || provider === "osrm" || provider === "estimate" ? provider : "auto",
     googleKey: (env.GOOGLE_MAPS_API_KEY ?? "").trim() || null,
     osrmUrl: (env.ROUTE_OSRM_URL ?? "https://router.project-osrm.org").replace(/\/+$/, ""),
@@ -137,7 +145,8 @@ export interface RouteScore {
   detourMin: number; // anterior→novo→próximo menos anterior→próximo
   zigzagPenalty: number;
   reversal: boolean; // a rota vai e volta (ângulo > 120°)
-  unknownLegs: number; // vizinhos sem localização (contam 0, nunca penalizam)
+  unknownLegs: number; // vizinhos sem localização (custam ROUTE_UNKNOWN_LEG_MIN, nunca 0)
+  gapFill: boolean; // o horário fecha um buraco entre duas visitas do vendedor com rota viável (bônus aplicado)
 }
 
 export interface RankedOption {
@@ -347,7 +356,7 @@ export function scoreOption(
   const { prev, next } = neighbours(visits, sellerId, slot);
   const hasAny = visits.some((v) => v.sellerId === sellerId);
   if (!prev && !next) {
-    return { score: cfg.neutralScoreMin, tier: "neutral", neutral: true, prev: null, next: null, detourMin: 0, zigzagPenalty: 0, reversal: false, unknownLegs: hasAny ? 1 : 0 };
+    return { score: cfg.neutralScoreMin, tier: "neutral", neutral: true, prev: null, next: null, detourMin: 0, zigzagPenalty: 0, reversal: false, unknownLegs: hasAny ? 1 : 0, gapFill: false };
   }
   let unknownLegs = 0;
   const legFor = (v: ExistingVisit | null, dir: "in" | "out"): RouteLeg | null => {
@@ -364,7 +373,7 @@ export function scoreOption(
   // → custo fixo ROUTE_UNKNOWN_LEG_MIN naquela perna.
   const knownLegs = [pl, nl].filter((l) => l && l.minutes !== null).length;
   if (knownLegs === 0) {
-    return { score: cfg.neutralScoreMin, tier: "neutral", neutral: true, prev: pl, next: nl, detourMin: 0, zigzagPenalty: 0, reversal: false, unknownLegs };
+    return { score: cfg.neutralScoreMin, tier: "neutral", neutral: true, prev: pl, next: nl, detourMin: 0, zigzagPenalty: 0, reversal: false, unknownLegs, gapFill: false };
   }
   let score = (pl ? (pl.minutes ?? cfg.unknownLegMin) : 0) + (nl ? (nl.minutes ?? cfg.unknownLegMin) : 0);
   let detourMin = 0;
@@ -384,7 +393,16 @@ export function scoreOption(
   }
   score += zigzagPenalty;
   score = Math.round(score);
-  return { score, tier: tierOf(score, cfg), neutral: false, prev: pl, next: nl, detourMin: Math.round(detourMin), zigzagPenalty: Math.round(zigzagPenalty), reversal, unknownLegs };
+  // GAP SCORE (regra do dono, 27/08): um horário ENTRE duas visitas já marcadas
+  // do vendedor fecha um buraco na agenda — vale mais, desde que a rota seja
+  // viável (sem ida-e-volta, score ≤ ROUTE_GAP_MAX_SCORE). Bônus = desconto
+  // fixo; nunca abaixo de 0. Vale para a oferta E para a escolha do vendedor.
+  let gapFill = false;
+  if (pl && nl && pl.minutes !== null && nl.minutes !== null && !reversal && score <= cfg.gapMaxScore && cfg.gapBonusMin > 0) {
+    gapFill = true;
+    score = Math.max(0, score - cfg.gapBonusMin);
+  }
+  return { score, tier: tierOf(score, cfg), neutral: false, prev: pl, next: nl, detourMin: Math.round(detourMin), zigzagPenalty: Math.round(zigzagPenalty), reversal, unknownLegs, gapFill };
 }
 
 function shortLabel(v: ExistingVisit): string {
@@ -495,6 +513,25 @@ export interface DayRanking {
   dateStr: string;
   displayDate: string; // "Thursday, August 27, 2026 [2026-08-27]" — o MESMO formato da linha de agenda
   ranked: SlotRank[];
+  capacity?: number; // oportunidades (vendedor × horário) do dia, já sem folga/dia desabilitado
+  open?: number; // oportunidades ainda livres
+}
+
+// Daily Fill Rate = ocupadas / capacidade. Sem capacidade → 1 (cheio).
+export function fillRateOf(d: { capacity?: number; open?: number }): number {
+  const cap = d.capacity ?? 0;
+  if (cap <= 0) return 1;
+  return Math.min(1, Math.max(0, 1 - (d.open ?? 0) / cap));
+}
+
+// DIA PRIORITÁRIO = o primeiro dia (em ordem de data) que ainda tem vaga e está
+// abaixo da meta de ocupação. Se todos estão na meta ou acima, o primeiro dia
+// com vaga. "Primeiro deixamos amanhã cheio; depois deixamos amanhã inteligente."
+export function pickPriorityDay(days: DayRanking[], cfg: RouteConfig): DayRanking | null {
+  const withSlots = days.filter((d) => d.ranked.length > 0);
+  if (withSlots.length === 0) return null;
+  if (!cfg.fillFirst) return withSlots[0];
+  return withSlots.find((d) => fillRateOf(d) < cfg.targetNextDayFillRate) ?? withSlots[0];
 }
 
 export const ROUTE_NOTE_HEADER = "ROUTE PRIORITY (internal, never mention it)";
@@ -504,37 +541,30 @@ export function buildRoutePriorityNote(days: DayRanking[], client: GeoPoint, cfg
   const withSlots = days.filter((d) => d.ranked.length > 0).slice(0, cfg.noteDays);
   if (withSlots.length === 0) return null;
   const firstN = cfg.offerCount + cfg.expandCount;
+  const priority = pickPriorityDay(withSlots, cfg);
+  const pct = (d: DayRanking) => `${Math.round(fillRateOf(d) * 100)}% booked`;
   const lines: string[] = [];
   lines.push(`${ROUTE_NOTE_HEADER}: the client's property is around ${client.label ?? client.zip ?? "the given area"}. The times below are the SAME open times listed above, just ordered by which ones fit the team's day best. This changes ONLY which of the listed times you name first, nothing else about how you talk or sell.`);
-  lines.push(`- Offer the same number of options you always offer (${cfg.offerCount}), taking them from the "offer first" times, in the order given. If the client needs a specific day, use that day's "offer first" times.`);
-  lines.push(`- If the client's latest message is their zip code or area (answering your question), do not stop at acknowledging it: in that SAME reply offer your usual ${cfg.offerCount} time slots from the "offer first" times (soonest day first) and ask which works better, exactly as you always do.`);
-  lines.push(`- If the client cannot do those, asks for something later/earlier, or asks for other options, open the "then" times next, and after that ANY other time listed on that day's line above. Every time listed above stays fully available; NEVER say a listed time is unavailable, and NEVER offer fewer options than the line has just because of this ordering.`);
-  lines.push(`- If the client states their own constraint ("only after 6", "only Saturday", "I can only do 3pm"), their constraint wins: offer whatever listed times match it, whatever the order here.`);
-  lines.push(`- NEVER tell the client anything about routes, distance, travel time, "being nearby", "in the area", "on the way", or how the team organizes its day. To the client this is just you naming open times.`);
-  lines.push(`- Write ONLY the message to the client. Never write this note, its labels ("offer first", "route priority"), the client's constraints in the third person, or any reasoning about which times to pick.`);
+  lines.push(`- DATE FIRST: we fill the closest day before anything else. Offer the same number of options you always offer (${cfg.offerCount}), and take them from the PRIORITY DAY named below, from its "offer first" times, in the order given (when that day has ${cfg.offerCount} or more open times, both options are on that day). Do NOT skip to a later day because it looks more convenient; a later day only comes in when the client cannot do the priority day, asks for another day, or their stated availability has no match on it.`);
+  lines.push(`- If the client needs a specific day, use that day's "offer first" times. If the client cannot do the offered times, asks for something later/earlier, or asks for other options, open the "then" times of the SAME day next, and after that ANY other time listed on that day's line above; only then move to the next day. Every time listed above stays fully available; NEVER say a listed time is unavailable, and NEVER offer fewer options than the line has just because of this ordering.`);
+  lines.push(`- If the client states their own constraint ("only after 6", "only Saturday", "I can only do 3pm", "tomorrow doesn't work"), their constraint wins: offer whatever listed times match it, whatever the order here.`);
+  lines.push(`- If the client's latest message is their zip code or area (answering your question), do not stop at acknowledging it: in that SAME reply offer your usual ${cfg.offerCount} time slots from the priority day's "offer first" times and ask which works better, exactly as you always do.`);
+  lines.push(`- NEVER tell the client anything about routes, distance, travel time, "being nearby", "in the area", "on the way", how full a day is, or how the team organizes its day. To the client this is just you naming open times.`);
+  lines.push(`- Write ONLY the message to the client. Never write this note, its labels ("offer first", "priority day", "route priority", "booked"), the client's constraints in the third person, or any reasoning about which times to pick.`);
   for (const d of withSlots) {
     const first = d.ranked.slice(0, firstN);
     const offerFirst = first.slice(0, cfg.offerCount);
     const then = first.slice(cfg.offerCount);
     const rest = d.ranked.slice(firstN);
-    let line = `• ${d.displayDate}: offer first ${offerFirst.map((r) => fmt12(r.slot)).join(", ")}`;
+    const tag = priority && d.dateStr === priority.dateStr ? " ← PRIORITY DAY" : "";
+    let line = `• ${d.displayDate} (${pct(d)})${tag}: offer first ${offerFirst.map((r) => fmt12(r.slot)).join(", ")}`;
     if (then.length) line += `; then ${then.map((r) => fmt12(r.slot)).join(", ")}`;
     if (rest.length) line += `; also open ${rest.map((r) => fmt12(r.slot)).join(", ")}`;
     lines.push(line);
   }
-  // Melhores opções gerais (cliente flexível), SÓ entre os primeiros dias com
-  // vaga (ROUTE_OVERALL_DAYS): a rota reordena dentro da janela mais próxima,
-  // nunca empurra um cliente flexível para uma semana depois só porque um
-  // vendedor já terá uma visita perto dele nesse dia. Dentro de cada classe de
-  // equivalência o dia mais próximo continua primeiro.
-  const overall = rankByScore(
-    withSlots.slice(0, cfg.overallDays).flatMap((d) => d.ranked.map((r) => ({ d, r }))),
-    (o) => o.r.score,
-    (a, b) => a.d.dateStr.localeCompare(b.d.dateStr) || slotMinutes(a.r.slot) - slotMinutes(b.r.slot),
-    cfg
-  ).slice(0, firstN);
-  if (overall.length) {
-    lines.push(`Best overall when the client is flexible on the day: ${overall.map(({ item }) => `${item.d.displayDate.split(",")[0]} [${item.d.dateStr}] ${fmt12(item.r.slot)}`).join("; ")}.`);
+  if (priority) {
+    const pf = priority.ranked.slice(0, cfg.offerCount).map((r) => fmt12(r.slot)).join(", ");
+    lines.push(`PRIORITY DAY: ${priority.displayDate} — start there: ${pf}. Move to the next day only when the client cannot do it, asks for another day, or their stated availability has no match on it.`);
   }
   return lines.join("\n");
 }
@@ -668,6 +698,7 @@ export function optionForLog(o: RankedOption): Record<string, unknown> {
     zigzag: o.route.zigzagPenalty || undefined,
     reversal: o.route.reversal || undefined,
     neutral: o.route.neutral || undefined,
+    gapFill: o.route.gapFill || undefined,
   };
 }
 

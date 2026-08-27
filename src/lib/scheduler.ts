@@ -15,6 +15,7 @@ import {
   optionForLog,
   slotMinutes,
   estimateMinutes,
+  fillRateOf,
   type DayRanking,
   type ExistingVisit,
   type RouteSeller,
@@ -1291,19 +1292,27 @@ async function routeNoteForAvailability(
     // Só os dias que ENTRAM na nota (os primeiros noteDays com vaga): menos
     // pontos na matriz (OSRM público aceita ~100), menos latência, e a nota
     // nunca lista dias além disso mesmo.
-    const noteDays: Array<{ dateStr: string; displayDate: string; openBySlot: Map<string, RouteSeller[]> }> = [];
+    const noteDays: Array<{ dateStr: string; displayDate: string; openBySlot: Map<string, RouteSeller[]>; capacity: number; open: number }> = [];
     for (const dateStr of windowDays) {
       if (noteDays.length >= cfg.noteDays) break;
       const { weekday, month, day, year } = ymd(dateStr);
       const isToday = dateStr === windowDays[0];
       const openBySlot = new Map<string, RouteSeller[]>();
+      // Daily Fill Rate (regra do dono, 27/08): capacidade = oportunidades
+      // vendedor×horário do dia (vendedor ativo, dia habilitado, sem folga;
+      // hoje só os horários ainda ofertáveis); ocupadas = capacidade − livres.
+      let capacity = 0;
+      let open = 0;
       for (const s of sellers) for (const slot of s.time_slots) {
-        if (!sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) continue;
+        if (!s.active || !s.enabled_weekdays.includes(weekday) || daysOff.has(`${s.id}|${dateStr}`)) continue;
         if (isToday && slotMinutes(slot) < nowMinutesPlusNotice) continue;
+        capacity++;
+        if (!sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) continue;
+        open++;
         openBySlot.set(slot, [...(openBySlot.get(slot) ?? []), asRouteSeller(s)]);
       }
       if (openBySlot.size === 0) continue;
-      noteDays.push({ dateStr, displayDate: `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${dateStr}]`, openBySlot });
+      noteDays.push({ dateStr, displayDate: `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${dateStr}]`, openBySlot, capacity, open });
     }
     if (noteDays.length === 0) return null;
     const rows = await fetchVisitsWithAddress(db, noteDays[0].dateStr, noteDays[noteDays.length - 1].dateStr, opts.igsid);
@@ -1332,14 +1341,14 @@ async function routeNoteForAvailability(
     const days: DayRanking[] = [];
     for (const d of noteDays) {
       const ranked = rankSlotsForDay(client, d.openBySlot, visitsByDay.get(d.dateStr) ?? [], between, cfg);
-      days.push({ dateStr: d.dateStr, displayDate: d.displayDate, ranked });
+      days.push({ dateStr: d.dateStr, displayDate: d.displayDate, ranked, capacity: d.capacity, open: d.open });
     }
     const note = buildRoutePriorityNote(days, client, cfg, fmt12);
     logRouteDecision({
       kind: "offer", igsid: opts.igsid ?? null, zip: client.zip ?? null, clientLabel: client.label ?? null, date: windowDays[0],
       provider: matrix.provider, fallback: matrix.fallbackReason ?? null, ms: Date.now() - started,
       reason: note ? "route priority note added to the schedule" : "no open slots to rank",
-      presented: days.slice(0, cfg.noteDays).map((d) => `${d.dateStr}: ${d.ranked.slice(0, cfg.offerCount + cfg.expandCount).map((r) => `${r.slot}=${r.score}${r.bestSeller ? "/" + r.bestSeller.name : ""}`).join(" ")}`),
+      presented: days.slice(0, cfg.noteDays).map((d) => `${d.dateStr} fill=${Math.round(fillRateOf(d) * 100)}%: ${d.ranked.slice(0, cfg.offerCount + cfg.expandCount).map((r) => `${r.slot}=${r.score}${r.bestSeller ? "/" + r.bestSeller.name : ""}`).join(" ")}`),
     }, false);
     return note;
   } catch (err) {

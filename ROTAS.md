@@ -9,13 +9,22 @@ se comporta exatamente como antes.
 | Ponto | Antes | Agora |
 |---|---|---|
 | `[BOOK]` → `createBooking` / `rescheduleClientBooking` (`src/lib/scheduler.ts`) | primeiro vendedor livre por `priority` | mesmos candidatos (ativo, dia, horário, folga, slot livre); entre eles ganha o de **menor Route Score**; empate dentro da tolerância → `priority`. Invisível ao cliente. |
-| Oferta de horários (`getRealAvailabilityContext({ history })`) | lista dos horários abertos por dia | a mesma lista + nota interna **ROUTE PRIORITY** (quando o ZIP/cidade do cliente já é conhecido) ordenando os horários de cada dia da melhor rota para a pior. O modelo continua oferecendo **a mesma quantidade** de opções (2). |
+| Oferta de horários (`getRealAvailabilityContext({ history })`) | lista dos horários abertos por dia | a mesma lista + nota interna **ROUTE PRIORITY** (quando o ZIP/cidade do cliente já é conhecido): marca o **dia prioritário** (o mais próximo ainda abaixo da meta de ocupação) e ordena os horários de cada dia (buracos primeiro, depois melhor rota). O modelo continua oferecendo **a mesma quantidade** de opções (2), tiradas do dia prioritário. |
 | Sem ZIP/cidade conhecido | oferecia os horários direto | nota **ZIP CODE FIRST**: a proposta da visita pede o ZIP em uma pergunta curta (mesmo tom), uma vez só. Gate determinístico: não entra se o cliente já nomeou dia/hora em qualquer bolha, se o bot já ofereceu horários, se é remarcação (endereço vem do booking) ou se o ZIP conhecido é fora da área. Desligável (`ROUTE_ASK_ZIP_BEFORE_OFFER=0`). |
 | Mensagens enlatadas de recuperação (`needTimeChoiceMessage`, `slotConflictRecoveryMessage`) | primeiros N horários do dia | os N de melhor rota (mesma quantidade), apresentados em ordem cronológica. |
 
 Arquivos novos: `src/lib/route-optimizer.ts` (pontuação, provedores de tempo,
 notas, log), `src/lib/geo/zip-geo.ts` + `fl-zip-centroids.ts` (884 ZIPs
 33xxx/34xxx da Flórida com centroide, GeoNames; apelidos de cidade/bairro).
+
+## DATA PRIMEIRO, ROTA DEPOIS (regra do dono, 27/08)
+
+Ordem de decisão: **1. dia mais próximo com vaga** (abaixo da meta de ocupação) → **2. buracos entre visitas** (Gap Score) → **3. rota dentro desse dia** → **4. regra atual de distribuição** → **5. preferência declarada do cliente vence tudo**.
+
+* **Daily Fill Rate** = ocupadas ÷ capacidade (oportunidades vendedor × horário do dia, sem folga/dia desabilitado; hoje só os horários ainda ofertáveis).
+* **Dia prioritário** = o primeiro dia (por data) com vaga e Fill Rate < `ROUTE_TARGET_NEXT_DAY_FILL_RATE` (0,9). A nota marca esse dia ("← PRIORITY DAY") e manda o bot tirar dele as 2 opções; um dia depois só entra quando o cliente não pode, pede outro dia ou a restrição dele não bate. Nunca comparamos rota entre dias (o antigo "Best overall" saiu): 25 min de rota melhor depois de amanhã não empurram ninguém.
+* **Gap Score**: horário entre duas visitas já marcadas do mesmo vendedor, com rota viável (sem ida-e-volta, score ≤ `ROUTE_GAP_MAX_SCORE`), ganha desconto de `ROUTE_GAP_BONUS_MIN` (15) — vale na oferta e na escolha do vendedor no [BOOK].
+* Um dia "praticamente cheio" (na meta) continua listado com o que sobrou; nada é escondido.
 
 ## Route Score
 
@@ -59,7 +68,10 @@ Qualquer falha cai para o próximo nível e é registrada (`fallbackReason`).
 | `ROUTE_OFFER_COUNT` / `ROUTE_EXPAND_COUNT` | `2 / 2` | opções oferecidas / abertas na recusa (a nota lista "offer first", "then", "also open") |
 | `ROUTE_ASK_ZIP_BEFORE_OFFER` | `1` | pedir o ZIP na proposta da visita quando desconhecido |
 | `ROUTE_NOTE_DAYS` | `10` | dias com vaga que entram na nota |
-| `ROUTE_OVERALL_DAYS` | `3` | dias considerados na linha "Best overall" (cliente flexível) — a rota reordena dentro da janela próxima, nunca empurra para semanas depois |
+| `ROUTE_FILL_FIRST` | `1` | data primeiro: dia prioritário = primeiro dia com vaga abaixo da meta |
+| `ROUTE_TARGET_NEXT_DAY_FILL_RATE` | `0.9` | meta de ocupação do dia prioritário (0–1) |
+| `ROUTE_GAP_BONUS_MIN` / `ROUTE_GAP_MAX_SCORE` | `15 / 60` | bônus de buraco entre visitas / só se a rota for viável |
+| `ROUTE_OVERALL_DAYS` | `3` | legado (só com `ROUTE_FILL_FIRST=0`) |
 | `ROUTE_PROVIDER` | `auto` | `google` / `osrm` / `estimate` |
 | `GOOGLE_MAPS_API_KEY` | — | ativa o Google (Distance Matrix API habilitada no projeto) |
 | `ROUTE_OSRM_URL` | OSRM público | servidor OSRM próprio, se houver |

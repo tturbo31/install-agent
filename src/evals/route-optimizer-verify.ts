@@ -38,6 +38,7 @@ import {
   type RouteSeller,
   type RouteConfig,
   type DayRanking,
+  type SlotRank,
 } from "../lib/route-optimizer";
 import { zipCentroid, locationFromText, locationFromAddress, zipsInText, cityAliasZip, knownZipCount, haversineKm, type GeoPoint } from "../lib/geo/zip-geo";
 import { extractZip } from "../lib/scheduler";
@@ -354,6 +355,50 @@ async function run() {
     ck("nota ZIP-first: exceções para não perder a venda (dia/hora já pedido, endereço enviado)", /already named a specific day or time/.test(zipNote) && /full address/.test(zipNote));
     ck("nota ZIP-first (já perguntado): NÃO pergunta de novo, oferece os horários", /Do NOT ask for it again/.test(buildZipFirstNote(true)));
     ck("toExistingVisits resolve o ponto pelo endereço e ignora sem vendedor", (() => { const v = toExistingVisits([{ seller_id: "a", booking_time: "13:00:00", address: "5330 Lake Blvd, Delray Beach FL 33484" }, { seller_id: null, booking_time: "15:00", address: "x" }]); return v.length === 1 && v[0].time === "13:00" && v[0].point?.zip === "33484"; })());
+  }
+
+  console.log("\n━━ 6b. DATA PRIMEIRO (Fill Rate), Gap Score, dia prioritário (regra do dono 27/08) ━━");
+  {
+    const { fillRateOf, pickPriorityDay } = await import("../lib/route-optimizer");
+    const mk = (slot: string, score: number, rank: number): SlotRank => ({ slot, score, tier: tierOf(score, CFG), bestSeller: ALEX, rank, equivalentToBest: rank === 1 });
+    // Exemplo do pedido: amanhã 11am=40, 1pm=80, 3pm=25, 5pm=50, 7pm=95; depois de amanhã 11am=20, 1pm=22, 3pm=18.
+    const tomorrow: DayRanking = { dateStr: "2026-08-28", displayDate: "Friday, August 28, 2026 [2026-08-28]", ranked: [mk("15:00", 25, 1), mk("11:00", 40, 2), mk("17:00", 50, 3), mk("13:00", 80, 4), mk("19:00", 95, 5)], capacity: 10, open: 5 };
+    const dayAfter: DayRanking = { dateStr: "2026-08-29", displayDate: "Saturday, August 29, 2026 [2026-08-29]", ranked: [mk("15:00", 18, 1), mk("11:00", 20, 2), mk("13:00", 22, 3)], capacity: 10, open: 3 };
+    ck("Fill Rate: 5 livres de 10 = 50%; 0 capacidade = 100%", fillRateOf(tomorrow) === 0.5 && fillRateOf({ capacity: 0, open: 0 }) === 1);
+    ck("dia prioritário = amanhã (50% < meta 90%) mesmo com depois de amanhã tendo rotas melhores", pickPriorityDay([tomorrow, dayAfter], CFG)?.dateStr === "2026-08-28");
+    const fmt = (s: string) => { const [h, m] = s.split(":").map(Number); return `${h % 12 || 12}${m ? ":" + m : ""}${h >= 12 ? "pm" : "am"}`; };
+    const note = buildRoutePriorityNote([tomorrow, dayAfter], WPB, CFG, fmt)!;
+    ck("nota: amanhã marcado como PRIORITY DAY, com 'offer first 3pm, 11am; then 5pm, 1pm; also open 7pm' (ordem do exemplo do pedido)", /Friday, August 28, 2026 \[2026-08-28\] \(50% booked\) ← PRIORITY DAY: offer first 3pm, 11am; then 5pm, 1pm; also open 7pm/.test(note), note);
+    ck("nota: linha final aponta o dia prioritário e manda começar por ele (3pm, 11am)", /PRIORITY DAY: Friday, August 28, 2026 \[2026-08-28\] — start there: 3pm, 11am\./.test(note), note);
+    ck("nota: NÃO compara dias entre si ('Best overall' sumiu)", !/Best overall/.test(note));
+    ck("nota: proíbe pular para um dia depois por conveniência e diz quando o próximo dia entra", /Do NOT skip to a later day/.test(note) && /cannot do the priority day, asks for another day, or their stated availability has no match/.test(note));
+    ck("nota: restrição do cliente ('tomorrow doesn't work') vence", /tomorrow doesn't work/.test(note) && /their constraint wins/.test(note));
+    ck("nota: nunca falar de ocupação com o cliente", /how full a day is/.test(note));
+    // amanhã praticamente cheio (9 de 10) → dia prioritário passa a ser depois de amanhã; o horário que sobrou continua listado
+    const almostFull: DayRanking = { ...tomorrow, ranked: [mk("19:00", 95, 1)], capacity: 10, open: 1 };
+    ck("amanhã 90% ocupado (na meta) → dia prioritário = depois de amanhã", pickPriorityDay([almostFull, dayAfter], CFG)?.dateStr === "2026-08-29");
+    const note2 = buildRoutePriorityNote([almostFull, dayAfter], WPB, CFG, fmt)!;
+    ck("nota: o horário que sobrou amanhã continua listado (nunca some)", /\[2026-08-28\] \(90% booked\): offer first 7pm/.test(note2), note2);
+    ck("meta configurável: com ROUTE_TARGET_NEXT_DAY_FILL_RATE=0.95 amanhã (90%) volta a ser prioritário", pickPriorityDay([almostFull, dayAfter], { ...CFG, targetNextDayFillRate: 0.95 })?.dateStr === "2026-08-28");
+    ck("todos os dias na meta → o primeiro com vaga é o prioritário", pickPriorityDay([{ ...tomorrow, capacity: 10, open: 0, ranked: [] }, { ...dayAfter, capacity: 10, open: 1 }], CFG)?.dateStr === "2026-08-29");
+    ck("ROUTE_FILL_FIRST=0 → primeiro dia com vaga, sem olhar ocupação", pickPriorityDay([almostFull, dayAfter], { ...CFG, fillFirst: false })?.dateStr === "2026-08-28");
+    ck("25 min de rota melhor depois de amanhã NÃO empurram o cliente: amanhã (score 55) continua prioritário", pickPriorityDay([{ ...tomorrow, ranked: [mk("13:00", 55, 1)], open: 6 }, { ...dayAfter, ranked: [mk("13:00", 30, 1)] }], CFG)?.dateStr === "2026-08-28");
+    // GAP SCORE: 9am/11am ocupados, 1pm vazio, 3pm/5pm ocupados → 1pm fecha o buraco
+    const gapVisits = [V("alex", "09:00", MIAMI), V("alex", "11:00", MIAMI2), V("alex", "15:00", MIAMI), V("alex", "17:00", MIAMI2)];
+    const gap = scoreOption(P("33135"), gapVisits, "alex", "13:00", est, CFG);
+    const edge = scoreOption(P("33135"), gapVisits, "alex", "19:00", est, CFG);
+    ck("Gap Score: 1pm entre 11am e 3pm recebe o bônus (gapFill) e fica abaixo do 7pm (fim do dia)", gap.gapFill && !edge.gapFill && gap.score < edge.score, JSON.stringify({ gap, edge }));
+    ck("Gap Score não vale com ida-e-volta (Miami→WPB→Miami segue penalizado, sem bônus)", scoreOption(WPB, [V("alex", "11:00", MIAMI), V("alex", "15:00", MIAMI2)], "alex", "13:00", est, CFG).gapFill === false);
+    ck("Gap Score não vale quando a rota é inviável (score > ROUTE_GAP_MAX_SCORE)", scoreOption(P("33418"), [V("alex", "11:00", HOMESTEAD), V("alex", "15:00", HOMESTEAD)], "alex", "13:00", est, CFG).gapFill === false);
+    // Gap também decide o vendedor no [BOOK]: quem tem o buraco (rota viável) vence quem estenderia o dia
+    {
+      const visits = [V("alex", "11:00", MIAMI), V("alex", "15:00", MIAMI2), V("diego", "11:00", MIAMI)];
+      const { ranked } = await rankSellersForSlot({ client: P("33135"), slot: "13:00", candidates: [DIEGO, ALEX], visits, cfg: CFG });
+      ck("[BOOK]: Alexandre (1pm fecha o buraco 11am→3pm) vence Diego (1pm só estende o dia)", ranked[0].seller.name === "Alexandre" && ranked[0].route.gapFill, JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.route.gapFill])));
+    }
+    ck("config: padrões fillFirst=1, meta 0.9, gap bonus 15, gap max 60", CFG.fillFirst && CFG.targetNextDayFillRate === 0.9 && CFG.gapBonusMin === 15 && CFG.gapMaxScore === 60);
+    const sched2 = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
+    ck("agenda calcula capacidade/ocupação por dia (Fill Rate) e repassa à nota", /capacity\+\+;/.test(sched2) && /days\.push\(\{ dateStr: d\.dateStr, displayDate: d\.displayDate, ranked, capacity: d\.capacity, open: d\.open \}\)/.test(sched2));
   }
 
   console.log("\n━━ 7. Config ━━");
