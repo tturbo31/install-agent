@@ -2114,15 +2114,19 @@ const FOREIGN_PHONE = /(?:\b(?:at|on|to|al|en|no)\s+)?(?:\+?1[\s.\-]?)?\(?\d{3}\
 // intercept: the model answers via the INSTALLATION CONFIRMED prompt section
 // (caso Jean E Raymond, 2026-08-11: "See you tomorrow" após a confirmação levou
 // o handoff enlatado de visita em vez da continuidade natural).
+// Mesma regex de src/lib/instalacao.ts (INSTALL_CONFIRMATION_RE) — duplicada
+// aqui para não criar import circular (instalacao.ts importa de ai.ts).
+const INSTALL_CONFIRMATION_TEXT = /installation (?:is confirmed for|starts tomorrow)/i;
+
 export function hasInstallationConfirmation(messages: { role: string; content: string }[]): boolean {
-  return messages.some((m) => m.role === "assistant" && /installation is confirmed for/i.test(m.content));
+  return messages.some((m) => m.role === "assistant" && INSTALL_CONFIRMATION_TEXT.test(m.content));
 }
 
 // Extracts the allowed phone digits from installation-confirmation messages in
 // the history. Normalized the same way scrubForeignPhones normalizes matches.
 export function installConfirmationPhones(messages: ChatMessage[]): string[] {
   return messages
-    .filter((m) => m.role === "assistant" && /installation is confirmed for/i.test(m.content))
+    .filter((m) => m.role === "assistant" && INSTALL_CONFIRMATION_TEXT.test(m.content))
     .flatMap((m) => m.content.match(/\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/g) ?? [])
     .map((p) => p.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""));
 }

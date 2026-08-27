@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "crypto";
 import { sendWhatsAppMessage, notifyOwners } from "@/lib/whatsapp";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sanitizeInstallDate, formatInstallDateTime, installTimeAlert } from "@/lib/instalacao";
+import { sanitizeInstallDate, stripInstallTime, formatInstallDateTime, installTimeAlert, INSTALL_ARRIVAL_WINDOW } from "@/lib/instalacao";
 
 // ─── POST /api/confirmar-instalacao — confirmação de instalação via WhatsApp ─
 // Chamado por sistemas externos (ex.: Ozzi Plataforma) quando uma instalação é
@@ -28,6 +28,13 @@ import { sanitizeInstallDate, formatInstallDateTime, installTimeAlert } from "@/
 //   "Wednesday, August 26 at 5am" para uma instalação às 10am. Horário fora de
 //   7h–19h é REMOVIDO da mensagem (vai só a data), a resposta traz
 //   "horario_suspeito" e o dono recebe um alerta para confirmar a hora.
+//
+//   SEM HORÁRIO DO JOB (regra do dono 27/08/2026): o aviso de véspera dizia
+//   "confirmed for Wednesday, August 26 at 10am" — o horário do job NÃO deve
+//   aparecer. A mensagem agora diz que a instalação COMEÇA AMANHÃ e que a
+//   equipe chega entre 10am e 11am com os materiais. Qualquer horário no texto
+//   (livre ou ISO) é removido; a guarda de 7h–19h continua só para ALERTAR o
+//   dono quando o job no app está com hora absurda (5am).
 //
 // Responses: 200 {"ok":true,...} | 400 campos inválidos | 401 token errado | 502 Z-API.
 export const maxDuration = 60;
@@ -76,21 +83,23 @@ function composeConfirmation(params: {
   const partes: string[] = [];
 
   partes.push(nomeCliente ? `Hi ${nomeCliente}! This is Ozzi Floors 😊` : `Hi! This is Ozzi Floors 😊`);
-  partes.push(`Great news — your flooring installation is confirmed for ${dataInstalacao}.`);
+  // Sem horário do job: "starts tomorrow" + data + janela de chegada da equipe.
+  partes.push(
+    `Just a quick reminder — your flooring installation starts tomorrow, ${dataInstalacao}. ` +
+      `Our installation team will arrive ${INSTALL_ARRIVAL_WINDOW} with the materials.`
+  );
 
   // Quem executa o serviço é a EQUIPE DE INSTALADORES; o vendedor que fez o
   // orçamento é só o CONTATO para dúvidas (regra do dono 2026-08-14). A versão
   // antiga dizia "<vendedor> will be taking care of your installation", o que
   // fazia o cliente entender que o representante de vendas faria a instalação.
-  const equipe = `Our installation team will be taking care of the job.`;
+  // (A equipe já foi nomeada como executora na frase de cima.)
   if (nomeVendedor && telefoneVendedor) {
-    partes.push(`${equipe} If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate, at ${telefoneVendedor}.`);
+    partes.push(`If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate, at ${telefoneVendedor}.`);
   } else if (nomeVendedor) {
-    partes.push(`${equipe} If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate.`);
+    partes.push(`If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate.`);
   } else if (telefoneVendedor) {
-    partes.push(`${equipe} If you have any questions, you can reach the sales rep who put together your estimate directly at ${telefoneVendedor}.`);
-  } else {
-    partes.push(equipe);
+    partes.push(`If you have any questions, you can reach the sales rep who put together your estimate directly at ${telefoneVendedor}.`);
   }
 
   partes.push(`See you soon! 🏠`);
@@ -193,7 +202,8 @@ export async function POST(req: NextRequest) {
   // placeholder vier como ISO, ele NÃO pode virar "at 5am" só por ser ISO.
   const viaIso = typeof body.data_instalacao_iso === "string" ? formatInstallDateTime(body.data_instalacao_iso) : null;
   const guarda = sanitizeInstallDate(viaIso ?? dataInstalacao!);
-  const dataFinal = guarda.text;
+  // Regra 27/08/2026: o horário do job NUNCA vai ao cliente, plausível ou não.
+  const dataFinal = stripInstallTime(guarda.text);
   if (guarda.horarioSuspeito) {
     console.warn(
       `[INSTALACAO] horario IMPLAUSIVEL "${guarda.horarioSuspeito}" em data_instalacao=${JSON.stringify(dataInstalacao)} ` +
@@ -276,6 +286,6 @@ export async function GET() {
     auth: "header Authorization: Bearer <token>",
     obrigatorios: ["telefone_cliente", "data_instalacao"],
     opcionais: ["data_instalacao_iso", "nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
-    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; horario fora de 7h-19h no texto livre e removido da mensagem",
+    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono",
   });
 }

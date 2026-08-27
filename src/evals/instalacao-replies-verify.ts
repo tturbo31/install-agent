@@ -13,7 +13,9 @@ import { join } from "path";
 import { getAIResponse, scrubForeignPhones, installConfirmationPhones, hasInstallationConfirmation, type ChatMessage } from "../lib/ai";
 import {
   sanitizeInstallDate,
+  stripInstallTime,
   formatInstallDateTime,
+  INSTALL_CONFIRMATION_RE,
   isInstallAck,
   installHandoffMessage,
   findRecentInstallationConfirmation,
@@ -43,7 +45,7 @@ const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, null, false)
 // Exatamente o que composeConfirmation() em /api/confirmar-instalacao produz.
 const CONFIRMATION =
   "Hi Sarah McKnight! This is Ozzi Floors 😊\n\n" +
-  "Great news — your flooring installation is confirmed for Wednesday, August 26 at 5am.\n\n" +
+  "Just a quick reminder — your flooring installation starts tomorrow, Wednesday, August 26. Our installation team will arrive between 10am and 11am with the materials.\n\n" +
   "Our installation team will be taking care of the job. If you have any questions, you can reach out directly to Alexandre, the sales rep who put together your estimate, at (561) 609-9025.\n\n" +
   "See you soon! 🏠";
 
@@ -120,7 +122,22 @@ async function main() {
   const placeholder = sanitizeInstallDate(formatInstallDateTime("2026-08-26T09:00:00Z") ?? "");
   ck("09:00Z (all_day do Lovable) formatado vira 5am e é cortado", placeholder.text === "Wednesday, August 26" && placeholder.horarioSuspeito === "5am", JSON.stringify(placeholder));
   ck("endpoint avisa o dono quando remove o horário", /notifyOwners\(/.test(rotaSrc) && /installTimeAlert\(/.test(rotaSrc));
-  ck("template nomeia a equipe de instalação como executora", /Our installation team will be taking care of the job/.test(rotaSrc));
+  ck("template nomeia a equipe de instalação como executora", /Our installation team will arrive/.test(rotaSrc));
+
+  // ── 3b. Regra do dono 27/08: SEM horário do job; "starts tomorrow" + chegada 10–11am
+  console.log("\n[3b] Aviso de véspera sem horário do job (regra 27/08/2026)");
+  ck("endpoint tira o horário do texto final", /stripInstallTime\(guarda\.text\)/.test(rotaSrc));
+  ck("template diz 'starts tomorrow'", /installation starts tomorrow, \$\{dataInstalacao\}/.test(rotaSrc));
+  ck("template usa a janela de chegada 10am–11am com materiais", /INSTALL_ARRIVAL_WINDOW\} with the materials/.test(rotaSrc));
+  ck("template NÃO tem mais 'confirmed for'", !/is confirmed for \$\{/.test(rotaSrc));
+  ck("'at 10am' (plausível) também sai", stripInstallTime("Wednesday, August 26 at 10am") === "Wednesday, August 26");
+  ck("'at 10:30am' sai", stripInstallTime("Friday, August 28 at 10:30am") === "Friday, August 28");
+  ck("'at 5am' sai", stripInstallTime("Wednesday, August 26 at 5am") === "Wednesday, August 26");
+  ck("ISO 14:00Z → só a data", stripInstallTime(formatInstallDateTime("2026-08-26T14:00:00.000Z") ?? "") === "Wednesday, August 26");
+  ck("sem horário → intacto", stripInstallTime("Monday, Aug 17") === "Monday, Aug 17");
+  ck("regex reconhece o aviso NOVO", INSTALL_CONFIRMATION_RE.test(CONFIRMATION));
+  ck("regex ainda reconhece o aviso ANTIGO (histórico)", INSTALL_CONFIRMATION_RE.test("Great news — your flooring installation is confirmed for Wednesday, August 26 at 10am."));
+  ck("aviso novo NÃO contém horário do job", !/\bat \d{1,2}(?::\d{2})?\s*[ap]m/i.test(CONFIRMATION.split("\n")[0]) && /starts tomorrow/.test(CONFIRMATION));
   const waSrc = readFileSync(join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf-8");
   ck("webhook: branch determinística da etapa de instalação", /findRecentInstallationConfirmation\(instRows\)/.test(waSrc));
   ck("webhook: ack → reação 👍", /isInstallAck\(instBurst\)[\s\S]{0,200}sendWhatsAppReaction\(phone, messageId, "👍"\)/.test(waSrc));

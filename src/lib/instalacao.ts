@@ -67,6 +67,24 @@ export function sanitizeInstallDate(raw: string): SanitizedInstallDate {
   return { text: cleaned || text, horarioSuspeito: token };
 }
 
+// Regra do dono 27/08/2026: o aviso de véspera NUNCA leva o horário do job.
+// O texto diz que a instalação começa amanhã e que a equipe chega entre 10am e
+// 11am com os materiais (INSTALL_ARRIVAL_WINDOW). Qualquer "at 9am"/"at 10:30am"
+// que venha do integrador (texto livre ou ISO) é removido — plausível ou não.
+export const INSTALL_ARRIVAL_WINDOW = "between 10am and 11am";
+
+export function stripInstallTime(raw: string): string {
+  const text = (raw ?? "").trim();
+  const m = text.match(TIME_TOKEN);
+  if (!m) return text;
+  const cleaned = (text.slice(0, m.index) + text.slice((m.index ?? 0) + m[0].length))
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([.,!?])/g, "$1")
+    .replace(/[,\s]+$/, "")
+    .trim();
+  return cleaned || text;
+}
+
 // "2026-08-26T14:00:00.000Z" → "Wednesday, August 26 at 10am" (Flórida).
 // Devolve null se o ISO for inválido — o chamador cai no texto livre.
 export function formatInstallDateTime(iso: string): string | null {
@@ -132,6 +150,10 @@ export function installTimeAlert(params: { nome: string | null; horarioSuspeito:
   );
 }
 
+// Reconhece o aviso NOSSO em qualquer versão: "installation is confirmed for"
+// (até 26/08/2026) e "installation starts tomorrow" (a partir de 27/08/2026).
+export const INSTALL_CONFIRMATION_RE = /installation (?:is confirmed for|starts tomorrow)/i;
+
 // A confirmação ainda vale como "etapa de instalação"? Só se foi enviada por
 // NÓS (role assistant) há no máximo INSTALL_STAGE_MAX_DAYS dias. Linhas sem
 // created_at (evals antigos) contam como recentes.
@@ -142,7 +164,7 @@ export function findRecentInstallationConfirmation(
 ): { content: string; created_at: string | null } | null {
   for (let i = (rows ?? []).length - 1; i >= 0; i--) {
     const m = rows[i];
-    if (m.role !== "assistant" || !/installation is confirmed for/i.test(m.content ?? "")) continue;
+    if (m.role !== "assistant" || !INSTALL_CONFIRMATION_RE.test(m.content ?? "")) continue;
     if (!m.created_at) return { content: m.content, created_at: null };
     const at = new Date(m.created_at).getTime();
     if (Number.isNaN(at)) return { content: m.content, created_at: m.created_at };
