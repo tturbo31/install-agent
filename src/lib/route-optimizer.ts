@@ -60,6 +60,10 @@ export interface RouteConfig {
   targetNextDayFillRate: number; // ROUTE_TARGET_NEXT_DAY_FILL_RATE — 0..1; dia abaixo da meta = dia prioritário (padrão 0.9)
   gapBonusMin: number; // ROUTE_GAP_BONUS_MIN — desconto (min) para um horário que fecha um BURACO entre duas visitas do vendedor
   gapMaxScore: number; // ROUTE_GAP_MAX_SCORE — o bônus de buraco só vale se a rota for viável (score antes do bônus ≤ este valor)
+  preferredSellerFirst: boolean; // ROUTE_PREFERRED_SELLER_FIRST — encher primeiro a agenda do vendedor preferido (regra do dono: Alexandre)
+  preferredSellerName: string | null; // ROUTE_PREFERRED_SELLER — nome fixo; vazio = o vendedor de MENOR priority na plataforma
+  preferredSellerMaxScore: number; // ROUTE_PREFERRED_SELLER_MAX_SCORE — o preferido só passa na frente com rota viável (score ≤ este; nunca com ida-e-volta)
+  preferredSellerMaxExtraMin: number; // ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN — teto do sacrifício: preferido só passa na frente se não custar mais que isto a mais que a melhor alternativa
   provider: "auto" | "google" | "osrm" | "estimate"; // ROUTE_PROVIDER
   googleKey: string | null; // GOOGLE_MAPS_API_KEY
   osrmUrl: string; // ROUTE_OSRM_URL
@@ -101,6 +105,12 @@ export function getRouteConfig(env: Record<string, string | undefined> = process
     targetNextDayFillRate: Math.min(1, Math.max(0, num(env.ROUTE_TARGET_NEXT_DAY_FILL_RATE, 0.9))),
     gapBonusMin: Math.max(0, num(env.ROUTE_GAP_BONUS_MIN, 15)),
     gapMaxScore: num(env.ROUTE_GAP_MAX_SCORE, 60),
+    preferredSellerFirst: bool(env.ROUTE_PREFERRED_SELLER_FIRST, true),
+    // Regra do dono (27/08): "encher a agenda do Alexandre primeiro". Nome fixo
+    // por padrão (se ele for desativado, ninguém herda); "auto" = menor priority.
+    preferredSellerName: (env.ROUTE_PREFERRED_SELLER ?? "").trim() || "Alexandre",
+    preferredSellerMaxScore: num(env.ROUTE_PREFERRED_SELLER_MAX_SCORE, 60),
+    preferredSellerMaxExtraMin: num(env.ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN, 45),
     provider: provider === "google" || provider === "osrm" || provider === "estimate" ? provider : "auto",
     googleKey: (env.GOOGLE_MAPS_API_KEY ?? "").trim() || null,
     osrmUrl: (env.ROUTE_OSRM_URL ?? "https://router.project-osrm.org").replace(/\/+$/, ""),
@@ -155,6 +165,40 @@ export interface RankedOption {
   route: RouteScore;
   rank: number; // 1 = melhor
   equivalentToBest: boolean;
+  preferred: boolean; // vendedor preferido (agenda dele enche primeiro) com rota viável
+}
+
+// ─── Vendedor preferido (regra do dono, 27/08: "encher a agenda do Alexandre primeiro") ─
+// Por padrão é quem tem a MENOR priority na plataforma (hoje Alexandre = 1), ou
+// o nome fixado em ROUTE_PREFERRED_SELLER. Ele passa na frente de todos quando
+// está livre no horário e a rota é viável (score ≤ ROUTE_PREFERRED_SELLER_MAX_SCORE
+// e sem ida-e-volta). Se a rota dele for ruim, ele entra na fila normal: o
+// zigue-zague continua sendo evitado, e a venda nunca é perdida.
+export function preferredSellerIds(all: RouteSeller[] | undefined, cfg: RouteConfig): Set<string> {
+  // Sem a lista completa dos vendedores ativos não dá para saber quem é o
+  // preferido → ninguém (ordem pura por rota). Nunca "o melhor dos livres".
+  if (!cfg.preferredSellerFirst || !all || all.length === 0) return new Set();
+  const name = (cfg.preferredSellerName ?? "").trim().toLowerCase();
+  if (name && name !== "auto") {
+    // Nome fixo: se ele não está entre os ativos (desativado na plataforma),
+    // NINGUÉM herda a preferência — a regra é dele, não da posição.
+    return new Set(all.filter((s) => s.name.trim().toLowerCase() === name).map((s) => s.id));
+  }
+  const priorities = all.map((s) => Number(s.priority)).filter((p) => Number.isFinite(p));
+  if (priorities.length === 0) return new Set();
+  const min = Math.min(...priorities);
+  return new Set(all.filter((s) => Number(s.priority) === min).map((s) => s.id));
+}
+
+// O preferido só passa na frente com rota VIÁVEL: sem ida-e-volta, score ≤
+// ROUTE_PREFERRED_SELLER_MAX_SCORE, itinerário CONHECIDO (visitas dele sem ZIP
+// não viram "está perto"), e sem sacrificar mais de
+// ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN em relação à melhor alternativa.
+export function preferredRouteViable(route: RouteScore, cfg: RouteConfig, bestOtherScore?: number): boolean {
+  if (route.reversal || route.score > cfg.preferredSellerMaxScore) return false;
+  if (route.neutral && route.unknownLegs > 0) return false;
+  if (bestOtherScore !== undefined && route.score - bestOtherScore > cfg.preferredSellerMaxExtraMin) return false;
+  return true;
 }
 
 export type TravelProvider = "google" | "osrm" | "estimate" | "cache";
@@ -444,6 +488,7 @@ export interface RankSellersInput {
   candidates: RouteSeller[]; // JÁ filtrados pelas regras atuais (livres, ativos, sem folga)
   visits: ExistingVisit[]; // visitas fixas do dia (todos os vendedores), com point resolvido
   cfg: RouteConfig;
+  allSellers?: RouteSeller[]; // todos os ativos (para saber quem é o preferido = menor priority); default = candidates
 }
 
 export async function rankSellersForSlot(input: RankSellersInput): Promise<{ ranked: RankedOption[]; matrix: TravelMatrix }> {
@@ -452,8 +497,28 @@ export async function rankSellersForSlot(input: RankSellersInput): Promise<{ ran
   const matrix = await travelMatrix(points.list, cfg);
   const between = (a: GeoPoint, b: GeoPoint) => matrix.minutes[points.index(a)][points.index(b)];
   const scored = candidates.map((seller) => ({ seller, slot, route: scoreOption(client, visits, seller.id, slot, between, cfg) }));
-  const ranked = rankByScore(scored, (o) => o.route.score, (a, b) => a.seller.priority - b.seller.priority, cfg)
-    .map(({ item, rank, equivalentToBest }) => ({ ...item, rank, equivalentToBest }));
+  // O vendedor preferido (agenda dele enche primeiro) vem na frente quando está
+  // livre e a rota é viável; os demais seguem por rota (empate → priority).
+  const preferredIds = preferredSellerIds(input.allSellers, cfg);
+  const others = scored.filter((o) => !preferredIds.has(o.seller.id));
+  const bestOther = others.length ? Math.min(...others.map((o) => o.route.score)) : undefined;
+  const head = scored.filter((o) => preferredIds.has(o.seller.id) && preferredRouteViable(o.route, cfg, bestOther));
+  const tail = scored.filter((o) => !head.includes(o));
+  // Dentro de cada grupo: quem FECHA UM BURACO (gapFill, rota viável) vem antes
+  // — como chave de partição, não só como desconto: um desconto de 15 min se
+  // perdia dentro da tolerância de 15 e o buraco nunca decidia (revisão 27/08).
+  const byPriority = (a: { seller: RouteSeller }, b: { seller: RouteSeller }) => a.seller.priority - b.seller.priority;
+  const order = (list: typeof scored) => [
+    ...rankByScore(list.filter((o) => o.route.gapFill), (o) => o.route.score, byPriority, cfg),
+    ...rankByScore(list.filter((o) => !o.route.gapFill), (o) => o.route.score, byPriority, cfg),
+  ].map(({ item }) => item);
+  const headRanked = order(head).map((o) => ({ ...o, preferred: true }));
+  const tailRanked = order(tail).map((o) => ({ ...o, preferred: false }));
+  // equivalentToBest = a até `toleranceMin` da MELHOR pontuação entre todos
+  // (informativo, para o log e para "empate → regra atual"); a ordem já está decidida.
+  const best = Math.min(...scored.map((o) => o.route.score * cfg.routeWeight));
+  const eq = (o: { route: RouteScore }) => o.route.score * cfg.routeWeight - best <= cfg.toleranceMin;
+  const ranked: RankedOption[] = [...headRanked, ...tailRanked].map((o, i) => ({ ...o, rank: i + 1, equivalentToBest: eq(o) }));
   return { ranked, matrix };
 }
 
@@ -477,6 +542,8 @@ export interface SlotRank {
   bestSeller: RouteSeller | null;
   rank: number;
   equivalentToBest: boolean;
+  preferredOpen?: boolean; // o vendedor preferido está livre neste horário com rota viável → vem primeiro
+  gapFill?: boolean; // o horário fecha um buraco entre duas visitas do vendedor escolhido (rota viável)
 }
 
 export function rankSlotsForDay(
@@ -484,21 +551,38 @@ export function rankSlotsForDay(
   openBySlot: Map<string, RouteSeller[]>,
   visits: ExistingVisit[],
   minutesBetween: (a: GeoPoint, b: GeoPoint) => number,
-  cfg: RouteConfig
+  cfg: RouteConfig,
+  allSellers?: RouteSeller[]
 ): SlotRank[] {
+  // Quem é o preferido: só com a lista COMPLETA dos ativos (sem ela, ninguém —
+  // "o melhor dos livres" nunca vira preferido por acidente).
+  const preferredIds = preferredSellerIds(allSellers, cfg);
   const scored: Array<Omit<SlotRank, "rank" | "equivalentToBest">> = [];
   for (const [slot, sellers] of openBySlot) {
     if (sellers.length === 0) continue;
-    let best: { seller: RouteSeller; score: number } | null = null;
-    for (const s of [...sellers].sort((a, b) => a.priority - b.priority)) {
-      const r = scoreOption(client, visits, s.id, slot, minutesBetween, cfg);
-      if (!best || r.score < best.score - 1e-9) best = { seller: s, score: r.score };
-    }
-    if (best) scored.push({ slot, score: best.score, tier: tierOf(best.score, cfg), bestSeller: best.seller });
+    const routes = [...sellers].sort((a, b) => a.priority - b.priority).map((s) => ({ s, r: scoreOption(client, visits, s.id, slot, minutesBetween, cfg) }));
+    const pickBest = (list: typeof routes) => list.reduce<typeof routes[number] | null>((acc, x) => (!acc || x.r.score < acc.r.score - 1e-9 ? x : acc), null);
+    const nonPref = routes.filter((x) => !preferredIds.has(x.s.id));
+    const bestOther = pickBest(nonPref)?.r.score;
+    // Horário em que o preferido está livre com rota viável → o horário vale
+    // como dele (a agenda dele enche primeiro), mesmo que outro tenha rota melhor.
+    const preferredBest = pickBest(routes.filter((x) => preferredIds.has(x.s.id) && preferredRouteViable(x.r, cfg, bestOther)));
+    const pick = preferredBest ?? pickBest(routes);
+    if (pick) scored.push({ slot, score: pick.r.score, tier: tierOf(pick.r.score, cfg), bestSeller: pick.s, preferredOpen: !!preferredBest, gapFill: pick.r.gapFill });
   }
-  // Empate dentro da tolerância → ordem cronológica (a regra atual: o mais cedo primeiro).
-  return rankByScore(scored, (o) => o.score, (a, b) => slotMinutes(a.slot) - slotMinutes(b.slot), cfg)
-    .map(({ item, rank, equivalentToBest }) => ({ ...item, rank, equivalentToBest }));
+  // Grupos, nesta ordem: horários do preferido que fecham buraco → do preferido
+  // → que fecham buraco → demais. Dentro de cada grupo por rota; empate dentro
+  // da tolerância → ordem cronológica (regra atual).
+  const chrono = (a: { slot: string }, b: { slot: string }) => slotMinutes(a.slot) - slotMinutes(b.slot);
+  const groups = [
+    scored.filter((o) => o.preferredOpen && o.gapFill),
+    scored.filter((o) => o.preferredOpen && !o.gapFill),
+    scored.filter((o) => !o.preferredOpen && o.gapFill),
+    scored.filter((o) => !o.preferredOpen && !o.gapFill),
+  ];
+  const ordered = groups.flatMap((g) => rankByScore(g, (o) => o.score, chrono, cfg).map(({ item }) => item));
+  const best = scored.length ? Math.min(...scored.map((o) => o.score * cfg.routeWeight)) : 0;
+  return ordered.map((item, i) => ({ ...item, rank: i + 1, equivalentToBest: item.score * cfg.routeWeight - best <= cfg.toleranceMin }));
 }
 
 // Devolve os `count` melhores slots por rota, apresentados em ORDEM CRONOLÓGICA
@@ -699,6 +783,7 @@ export function optionForLog(o: RankedOption): Record<string, unknown> {
     reversal: o.route.reversal || undefined,
     neutral: o.route.neutral || undefined,
     gapFill: o.route.gapFill || undefined,
+    preferred: o.preferred || undefined,
   };
 }
 

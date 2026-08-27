@@ -230,16 +230,18 @@ async function pickSellerForSlotRouted(
   try {
     const rows = await fetchVisitsWithAddress(db, dateStr, dateStr, ctx.igsid);
     const visits = toExistingVisits(rows);
-    const { ranked, matrix } = await rankSellersForSlot({ client, slot, candidates: candidates.map(asRouteSeller), visits, cfg });
+    const { ranked, matrix } = await rankSellersForSlot({ client, slot, candidates: candidates.map(asRouteSeller), visits, cfg, allSellers: sellers.map(asRouteSeller) });
     const winner = ranked[0];
     const seller = candidates.find((s) => s.id === winner.seller.id) ?? candidates[0];
     const byPriority = candidates[0];
     logRouteDecision({
       kind: ctx.kind, igsid: ctx.igsid ?? null, date: dateStr, slot, zip: client.zip ?? null, clientLabel: client.label ?? null,
       chosenSeller: seller.name, chosenScore: winner.route.score, chosenTier: winner.route.tier, provider: matrix.provider, fallback: matrix.fallbackReason ?? null,
-      reason: seller.id === byPriority.id
-        ? (winner.equivalentToBest && ranked.length > 1 && ranked[1].equivalentToBest ? "tie within tolerance → current priority rule" : "best route (also first by priority)")
-        : `best route beats priority order (${byPriority.name} would have been ${ranked.find((r) => r.seller.id === byPriority.id)?.route.score ?? "?"} min)`,
+      reason: winner.preferred
+        ? `preferred seller (fill ${seller.name}'s agenda first; ${winner.route.neutral ? "no visits yet that day (neutral)" : `route viable, ${winner.route.score} min`}${winner.route.gapFill ? ", fills a gap" : ""})`
+        : seller.id === byPriority.id
+          ? (winner.equivalentToBest && ranked.length > 1 && ranked[1].equivalentToBest ? "tie within tolerance → current priority rule" : "best route (also first by priority)")
+          : `best route beats priority order (${byPriority.name} would have been ${ranked.find((r) => r.seller.id === byPriority.id)?.route.score ?? "?"} min)`,
       options: ranked.map(optionForLog), ms: Date.now() - started,
     }, true);
     return seller;
@@ -1340,7 +1342,7 @@ async function routeNoteForAvailability(
 
     const days: DayRanking[] = [];
     for (const d of noteDays) {
-      const ranked = rankSlotsForDay(client, d.openBySlot, visitsByDay.get(d.dateStr) ?? [], between, cfg);
+      const ranked = rankSlotsForDay(client, d.openBySlot, visitsByDay.get(d.dateStr) ?? [], between, cfg, sellers.map(asRouteSeller));
       days.push({ dateStr: d.dateStr, displayDate: d.displayDate, ranked, capacity: d.capacity, open: d.open });
     }
     const note = buildRoutePriorityNote(days, client, cfg, fmt12);
@@ -2038,8 +2040,10 @@ async function routeOrderedSlots(
       openBySlot.set(slot, [...(openBySlot.get(slot) ?? []), asRouteSeller(s)]);
     }
     // Um horário da lista que a leitura acima não confirmou continua na lista
-    // (a lista de entrada é a verdade do chamador): fica sem vendedor = neutro.
-    for (const slot of slots) if (!openBySlot.has(slot)) openBySlot.set(slot, sellers.map(asRouteSeller));
+    // (a lista de entrada é a verdade do chamador): recebe um vendedor SINTÉTICO
+    // neutro (sem visitas, nunca o preferido), não a lista de vendedores reais.
+    const UNCONFIRMED: RouteSeller = { id: "__unconfirmed__", name: "?", priority: Number.MAX_SAFE_INTEGER };
+    for (const slot of slots) if (!openBySlot.has(slot)) openBySlot.set(slot, [UNCONFIRMED]);
     const visits = toExistingVisits(rows);
     const points: GeoPoint[] = [client];
     const index = new Map<string, number>([[geoKey(client), 0]]);
@@ -2054,7 +2058,7 @@ async function routeOrderedSlots(
       const ib = index.get(geoKey(b));
       return ia === undefined || ib === undefined ? estimateMinutes(a, b, cfg) : matrix.minutes[ia][ib];
     };
-    const ranked = rankSlotsForDay(client, openBySlot, visits, between, cfg);
+    const ranked = rankSlotsForDay(client, openBySlot, visits, between, cfg, sellers.map(asRouteSeller));
     const picked = pickSlotsByRoute(ranked, count);
     logRouteDecision({
       kind: "recovery", date: dateStr, zip: client.zip ?? null, clientLabel: client.label ?? null, provider: matrix.provider, fallback: matrix.fallbackReason ?? null,

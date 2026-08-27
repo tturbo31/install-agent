@@ -2110,6 +2110,9 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bi\s+need\s+to\s+(?:offer|pick|choose|select|name|list)\b/.source,
     /\bfits?\s+the\s+route\b|\broute\s+priorit(?:y|ies)\b|\boffer\s+first\b|\bthe\s+matching\s+slots?\b|\bfrom\s+the\s+schedule\s+(?:the|above|in\s+context)\b|\bexactly\s+two\s+(?:slots?|times?|options?)\b|\bzip\s+code\s+first\b/.source,
     /\bprioridad\s+de\s+ruta\b|\bprioridade\s+de\s+rota\b|\bel\s+cliente\s+(?:s[oó]lo|solo|puede|necesita|prefiere)\b|\bo\s+cliente\s+(?:s[oó](?![a-z])|pode|precisa|prefere)(?![a-z])/.source,
+    // DATE-FIRST note labels (2026-08-27): "priority day", "70% booked", "fill
+    // rate", "preferred seller" and their ES/PT forms are never client-facing.
+    /\bpriority\s+day\b|\bd[ií]a\s+prioritari[oa]\b|\bdia\s+priorit[áa]ri[oa]\b|\bfill\s+rate\b|\bpreferred\s+seller\b|\bvendedor\s+prefer(?:ido|ente)\b|\b\d{1,3}\s?%\s+(?:booked|full|reserved|ocupad[oa]|reservad[oa]|llen[oa]|chei[oa])\b/.source,
   ].join("|"),
   "i"
 );

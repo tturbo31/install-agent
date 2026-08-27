@@ -19,12 +19,14 @@ notas, log), `src/lib/geo/zip-geo.ts` + `fl-zip-centroids.ts` (884 ZIPs
 
 ## DATA PRIMEIRO, ROTA DEPOIS (regra do dono, 27/08)
 
-Ordem de decisão: **1. dia mais próximo com vaga** (abaixo da meta de ocupação) → **2. buracos entre visitas** (Gap Score) → **3. rota dentro desse dia** → **4. regra atual de distribuição** → **5. preferência declarada do cliente vence tudo**.
+Ordem de decisão: **1. dia mais próximo com vaga** (abaixo da meta de ocupação) → **2. horários em que o VENDEDOR PREFERIDO (Alexandre) está livre com rota viável** → **3. buracos entre visitas** (Gap Score) → **4. rota dentro desse dia** → **5. regra atual de distribuição** → **6. preferência declarada do cliente vence tudo**.
 
 * **Daily Fill Rate** = ocupadas ÷ capacidade (oportunidades vendedor × horário do dia, sem folga/dia desabilitado; hoje só os horários ainda ofertáveis).
 * **Dia prioritário** = o primeiro dia (por data) com vaga e Fill Rate < `ROUTE_TARGET_NEXT_DAY_FILL_RATE` (0,9). A nota marca esse dia ("← PRIORITY DAY") e manda o bot tirar dele as 2 opções; um dia depois só entra quando o cliente não pode, pede outro dia ou a restrição dele não bate. Nunca comparamos rota entre dias (o antigo "Best overall" saiu): 25 min de rota melhor depois de amanhã não empurram ninguém.
 * **Gap Score**: horário entre duas visitas já marcadas do mesmo vendedor, com rota viável (sem ida-e-volta, score ≤ `ROUTE_GAP_MAX_SCORE`), ganha desconto de `ROUTE_GAP_BONUS_MIN` (15) — vale na oferta e na escolha do vendedor no [BOOK].
 * Um dia "praticamente cheio" (na meta) continua listado com o que sobrou; nada é escondido.
+* **Vendedor preferido** (regra do dono, 27/08: encher a agenda do Alexandre primeiro): por padrão quem tem a menor `priority` na plataforma (Alexandre = 1), ou o nome em `ROUTE_PREFERRED_SELLER`. Na oferta, os horários em que ele está livre vêm primeiro no dia; no `[BOOK]`, ele é escolhido sempre que está livre e a rota é viável (score ≤ `ROUTE_PREFERRED_SELLER_MAX_SCORE`, sem ida-e-volta). Rota ruim, itinerário desconhecido (visitas dele sem ZIP) ou sacrifício acima de `ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN` → ele entra na fila normal (o zigue-zague continua evitado); ocupado ou desativado → os demais por rota, sem "herdar" a preferência.
+* **Gap Score é chave de ordenação**, não só desconto: dentro de cada grupo (preferido / demais), os horários e vendedores que fecham um buraco vêm primeiro (o desconto de 15 min se perdia na tolerância de 15).
 
 ## Route Score
 
@@ -64,13 +66,17 @@ Qualquer falha cai para o próximo nível e é registrada (`fallbackReason`).
 | `ROUTE_ZIGZAG_FREE_MIN` / `ROUTE_ZIGZAG_WEIGHT` / `ROUTE_ZIGZAG_RETURN_PENALTY` | `15 / 1 / 20` | penalidade de zigue-zague |
 | `ROUTE_NEUTRAL_SCORE` | `30` | vendedor sem visita no dia |
 | `ROUTE_UNKNOWN_LEG_MIN` | `20` | custo de uma perna cujo vizinho não tem ZIP/cidade (nunca 0) |
-| `ROUTE_WEIGHT` | `1` | `0` = só a regra atual de distribuição |
+| `ROUTE_WEIGHT` | `1` | `0` = rota não pesa (a preferência do vendedor segue valendo; para desligá-la use `ROUTE_PREFERRED_SELLER_FIRST=0`) |
 | `ROUTE_OFFER_COUNT` / `ROUTE_EXPAND_COUNT` | `2 / 2` | opções oferecidas / abertas na recusa (a nota lista "offer first", "then", "also open") |
 | `ROUTE_ASK_ZIP_BEFORE_OFFER` | `1` | pedir o ZIP na proposta da visita quando desconhecido |
 | `ROUTE_NOTE_DAYS` | `10` | dias com vaga que entram na nota |
 | `ROUTE_FILL_FIRST` | `1` | data primeiro: dia prioritário = primeiro dia com vaga abaixo da meta |
 | `ROUTE_TARGET_NEXT_DAY_FILL_RATE` | `0.9` | meta de ocupação do dia prioritário (0–1) |
 | `ROUTE_GAP_BONUS_MIN` / `ROUTE_GAP_MAX_SCORE` | `15 / 60` | bônus de buraco entre visitas / só se a rota for viável |
+| `ROUTE_PREFERRED_SELLER_FIRST` | `1` | encher primeiro a agenda do vendedor preferido |
+| `ROUTE_PREFERRED_SELLER` | `Alexandre` | nome do preferido (se ele for desativado, ninguém herda); `auto` = menor `priority` na plataforma |
+| `ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN` | `45` | teto do sacrifício: o preferido só passa na frente se não custar mais que isto a mais que a melhor alternativa |
+| `ROUTE_PREFERRED_SELLER_MAX_SCORE` | `60` | o preferido só passa na frente com rota viável (≤ este score, sem ida-e-volta) |
 | `ROUTE_OVERALL_DAYS` | `3` | legado (só com `ROUTE_FILL_FIRST=0`) |
 | `ROUTE_PROVIDER` | `auto` | `google` / `osrm` / `estimate` |
 | `GOOGLE_MAPS_API_KEY` | — | ativa o Google (Distance Matrix API habilitada no projeto) |

@@ -401,6 +401,100 @@ async function run() {
     ck("agenda calcula capacidade/ocupação por dia (Fill Rate) e repassa à nota", /capacity\+\+;/.test(sched2) && /days\.push\(\{ dateStr: d\.dateStr, displayDate: d\.displayDate, ranked, capacity: d\.capacity, open: d\.open \}\)/.test(sched2));
   }
 
+  console.log("\n━━ 6c. VENDEDOR PREFERIDO: encher a agenda do Alexandre primeiro (regra do dono 27/08) ━━");
+  {
+    const { preferredSellerIds } = await import("../lib/route-optimizer");
+    const ALL = [ALEX, DIEGO, CRIS];
+    ck("preferido por padrão = menor priority (Alexandre)", [...preferredSellerIds(ALL, CFG)].join() === "alex");
+    ck("ROUTE_PREFERRED_SELLER=Cris → Cris (nome, case-insensitive)", [...preferredSellerIds(ALL, { ...CFG, preferredSellerName: "CRIS" })].join() === "cris");
+    ck("nome fixo que não está entre os ativos (Alexandre desativado) → NINGUÉM herda a preferência", preferredSellerIds([DIEGO, CRIS], CFG).size === 0 && preferredSellerIds(ALL, { ...CFG, preferredSellerName: "Fulano" }).size === 0);
+    ck("ROUTE_PREFERRED_SELLER=auto → menor priority", [...preferredSellerIds(ALL, { ...CFG, preferredSellerName: "auto" })].join() === "alex");
+    ck("sem a lista de ativos (allSellers ausente) → ninguém preferido", preferredSellerIds(undefined, CFG).size === 0);
+    ck("padrão de produção: nome 'Alexandre', teto de sacrifício 45 min", CFG.preferredSellerName === "Alexandre" && CFG.preferredSellerMaxExtraMin === 45);
+    // Revisão 27/08: Alexandre com visitas SEM ZIP (itinerário desconhecido) não é "rota viável"
+    {
+      const visits = [{ sellerId: "alex", time: "11:00", point: null, address: "sem zip" }, { sellerId: "alex", time: "15:00", point: null, address: "sem zip" }, V("cris", "11:00", P("33409"))];
+      const { ranked } = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [ALEX, CRIS], visits, cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre com visitas sem ZIP (neutro por desconhecimento) NÃO passa na frente de Chris a 10 min", ranked[0].seller.name === "Cris" && !ranked.some((r) => r.preferred), JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+    }
+    // Revisão 27/08: teto do sacrifício (ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN=45)
+    {
+      const ok = await rankSellersForSlot({ client: P("33020"), slot: "13:00", candidates: [ALEX, DIEGO], visits: [V("alex", "11:00", P("33301")), V("diego", "11:00", P("33020"))], cfg: CFG, allSellers: ALL }); // Alex vem de Fort Lauderdale (~25), Diego já em Hollywood
+      ck("[BOOK] sacrifício pequeno (Alexandre ~25 vs Diego ~5) → Alexandre", ok.ranked[0].seller.name === "Alexandre" && ok.ranked[0].preferred, JSON.stringify(ok.ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+      const big = await rankSellersForSlot({ client: P("33020"), slot: "13:00", candidates: [ALEX, DIEGO], visits: [V("alex", "11:00", P("33301")), V("alex", "15:00", P("33301")), V("diego", "11:00", P("33020"))], cfg: { ...CFG, preferredSellerMaxExtraMin: 20 }, allSellers: ALL });
+      ck("[BOOK] teto configurável: com MAX_EXTRA=20 o mesmo Alexandre (~50) perde para Diego (~5)", big.ranked[0].seller.name === "Diego" && !big.ranked[0].preferred, JSON.stringify(big.ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+    }
+    // Revisão 27/08: Gap Score como chave de partição (o desconto de 15 se perdia na tolerância de 15)
+    {
+      const visits = [V("alex", "13:00", P("33409")), V("alex", "17:00", P("33401"))];
+      const open = new Map<string, RouteSeller[]>([["09:00", [ALEX]], ["11:00", [ALEX]], ["15:00", [ALEX]], ["19:00", [ALEX]]]);
+      const ranked = rankSlotsForDay(P("33405"), open, visits, est, CFG, ALL);
+      ck("OFERTA: o horário que fecha o buraco (3pm entre 1pm e 5pm) vem PRIMEIRO, mesmo com 9am/11am/7pm a poucos minutos", ranked[0].slot === "15:00" && ranked[0].gapFill === true, JSON.stringify(ranked.map((r) => [r.slot, r.score, r.gapFill])));
+      const visits2 = [V("diego", "11:00", P("33409")), V("cris", "11:00", P("33409")), V("cris", "15:00", P("33401"))];
+      const { ranked: r2 } = await rankSellersForSlot({ client: P("33405"), slot: "13:00", candidates: [DIEGO, CRIS], visits: visits2, cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Chris (1pm fecha buraco 11am→3pm) vence Diego (1pm só estende o dia) mesmo com scores parecidos e priority pior", r2[0].seller.name === "Cris" && r2[0].route.gapFill, JSON.stringify(r2.map((r) => [r.seller.name, r.route.score, r.route.gapFill])));
+    }
+    {
+      const { stripReasoningLeak } = require("../lib/ai") as { stripReasoningLeak: (t: string) => string };
+      const leaked = "Saturday is the priority day, it's only 70% booked. I have Saturday at 9am or 1pm, which works better for you?";
+      const out = stripReasoningLeak(leaked);
+      ck("stripReasoningLeak remove 'priority day' / '70% booked' e mantém a oferta", !/priority day|70% booked/i.test(out) && /Saturday at 9am or 1pm/.test(out), out);
+      ck("stripReasoningLeak (es): 'día prioritario' / '80% ocupado' saem", !/prioritario|80% ocupado/i.test(stripReasoningLeak("El sábado es el día prioritario, está 80% ocupado. Tengo el sábado a las 9am o 1pm, ¿cuál te queda mejor?")));
+    }
+    ck("recuperação: horário não confirmado recebe vendedor sintético neutro (nunca 'Alexandre livre')", /__unconfirmed__/.test(readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8")));
+    ck("ROUTE_PREFERRED_SELLER_FIRST=0 → ninguém preferido", preferredSellerIds(ALL, { ...CFG, preferredSellerFirst: false }).size === 0);
+    // [BOOK]: Alexandre livre com rota viável (bom, 30-45 min) vence Chris com rota excelente
+    {
+      const visits = [V("alex", "11:00", P("33435")), V("cris", "11:00", P("33409"))]; // cliente WPB: Alex vem de Boynton (~30, viável), Chris já está em WPB (~10)
+      const { ranked } = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [CRIS, ALEX], visits, cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre livre + rota viável → Alexandre primeiro mesmo com Chris a 10 min", ranked[0].seller.name === "Alexandre" && ranked[0].preferred && ranked[0].route.score <= CFG.preferredSellerMaxScore, JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+      ck("[BOOK] Chris continua como opção (rank 2, não preferido)", ranked[1].seller.name === "Cris" && !ranked[1].preferred);
+      const far = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [CRIS, ALEX], visits: [V("alex", "11:00", FTL), V("cris", "11:00", P("33409"))], cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre com rota acima do limite (Fort Lauderdale→WPB ≈ 68 > 60) NÃO passa na frente; Chris vence", far.ranked[0].seller.name === "Cris" && !far.ranked[1].preferred, JSON.stringify(far.ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+      const wide = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [CRIS, ALEX], visits: [V("alex", "11:00", FTL), V("cris", "11:00", P("33409"))], cfg: { ...CFG, preferredSellerMaxScore: 90, preferredSellerMaxExtraMin: 90 }, allSellers: ALL });
+      ck("[BOOK] ROUTE_PREFERRED_SELLER_MAX_SCORE=90 + MAX_EXTRA=90 → o mesmo caso volta a ser do Alexandre (limites configuráveis)", wide.ranked[0].seller.name === "Alexandre" && wide.ranked[0].preferred);
+    }
+    // [BOOK]: Alexandre com zigue-zague (Miami→WPB→Miami) NÃO passa na frente
+    {
+      const visits = [V("alex", "11:00", MIAMI), V("alex", "15:00", MIAMI2), V("cris", "11:00", BOCA), V("cris", "15:00", DELRAY)];
+      const { ranked } = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [ALEX, CRIS], visits, cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre em ida-e-volta → Cris primeiro; Alexandre segue disponível (rank 2, sem preferência)", ranked[0].seller.name === "Cris" && ranked[1].seller.name === "Alexandre" && !ranked[1].preferred, JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+    }
+    // [BOOK]: Alexandre ocupado no horário → Diego NÃO herda a preferência; rota decide
+    {
+      const visits = [V("diego", "11:00", HOMESTEAD), V("cris", "11:00", P("33409"))];
+      const { ranked } = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [DIEGO, CRIS], visits, cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre ocupado → Diego não vira 'preferido'; Chris (WPB) vence Diego (Homestead) por rota", ranked[0].seller.name === "Cris" && ranked.every((r) => !r.preferred), JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.preferred])));
+    }
+    // [BOOK]: Alexandre sem visita no dia (neutro 30) → viável → preferido
+    {
+      const { ranked } = await rankSellersForSlot({ client: WPB, slot: "13:00", candidates: [CRIS, ALEX], visits: [V("cris", "11:00", P("33409"))], cfg: CFG, allSellers: ALL });
+      ck("[BOOK] Alexandre com agenda vazia (neutro) → preferido (enche a agenda dele primeiro)", ranked[0].seller.name === "Alexandre" && ranked[0].preferred && ranked[0].route.neutral);
+    }
+    // OFERTA: horários em que o Alexandre está livre vêm primeiro no dia
+    {
+      const visits = [V("alex", "11:00", P("33409")), V("cris", "09:00", P("33409")), V("cris", "13:00", P("33409"))];
+      const open = new Map<string, RouteSeller[]>([["09:00", [ALEX]], ["13:00", [ALEX]], ["15:00", [ALEX, CRIS]], ["17:00", [CRIS]], ["19:00", [CRIS]]]);
+      const ranked = rankSlotsForDay(WPB, open, visits, est, CFG, ALL);
+      const pref = ranked.filter((r) => r.preferredOpen).map((r) => r.slot);
+      ck("OFERTA: os horários livres do Alexandre (9am, 1pm, 3pm) vêm antes dos que só o Chris tem (5pm, 7pm)", pref.length === 3 && ranked.slice(0, 3).every((r) => r.preferredOpen) && ranked.slice(3).every((r) => !r.preferredOpen), JSON.stringify(ranked.map((r) => [r.slot, r.score, r.bestSeller?.name, r.preferredOpen])));
+      ck("OFERTA: dentro dos horários do Alexandre, buraco/rota mandam (1pm entre 11am e ... ou 9am antes de 11am)", ["09:00", "13:00"].includes(ranked[0].slot), JSON.stringify(ranked.slice(0, 3)));
+      ck("OFERTA: bestSeller dos horários preferidos é o Alexandre", ranked.filter((r) => r.preferredOpen).every((r) => r.bestSeller?.name === "Alexandre"));
+      ck("OFERTA: nada some — os 5 horários continuam listados", ranked.length === 5);
+    }
+    // OFERTA: onde a rota do Alexandre é ida-e-volta, o horário não é 'dele'
+    {
+      const visits = [V("alex", "11:00", MIAMI), V("alex", "15:00", MIAMI2), V("cris", "11:00", BOCA)];
+      const open = new Map<string, RouteSeller[]>([["13:00", [ALEX, CRIS]]]);
+      const r = rankSlotsForDay(WPB, open, visits, est, CFG, ALL);
+      ck("OFERTA: Alexandre em ida-e-volta no 1pm → horário fica com o Chris (não preferido)", r[0].bestSeller?.name === "Cris" && !r[0].preferredOpen, JSON.stringify(r));
+    }
+    ck("config: padrões preferredSellerFirst=1, nome 'Alexandre', max 60", CFG.preferredSellerFirst && CFG.preferredSellerName === "Alexandre" && CFG.preferredSellerMaxScore === 60);
+    const sched3 = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
+    ck("scheduler passa TODOS os ativos ao ranking (quem é o preferido) no [BOOK], na oferta e na recuperação", /rankSellersForSlot\(\{[^}]*allSellers: sellers\.map\(asRouteSeller\) \}\)/.test(sched3) && (sched3.match(/rankSlotsForDay\([^;]*sellers\.map\(asRouteSeller\)\)/g) ?? []).length === 2);
+    ck("log do [BOOK] explica a escolha pelo preferido", /preferred seller \(fill/.test(sched3));
+  }
+
   console.log("\n━━ 7. Config ━━");
   {
     const d = getRouteConfig({});
