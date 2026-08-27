@@ -38,13 +38,14 @@ import {
   questionSwallowedByBooking,
   assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak,
   hasInstallationConfirmation,
+  isBarePreBookingText,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -132,6 +133,16 @@ async function processBookingCommand(
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
+
+    // PHONE-DIGITS guard: the number must be one the client typed — the model
+    // re-types digits and transposes them (Shaeleen replay, 2026-08-27).
+    {
+      const rp = reconcileBookingPhone(bookingData.phone, history);
+      if (rp.corrected) {
+        console.warn("[IG] booking phone corrected: " + rp.reason);
+        bookingData.phone = rp.phone;
+      }
+    }
 
     // DETERMINISTIC weekday↔date guard: the model sometimes writes the wrong
     // day's date for the weekday the client picked (a "Thursday" visit was
@@ -338,8 +349,12 @@ async function processBookingCommand(
       return { response: `${bookingFailureHandoffMessage(lang)}[NOTIFY_OWNER]`, booked: false };
     }
   } catch (err) {
-    console.error("Booking parse error:", err);
-    return { response: aiResponse.replace(/\[BOOK:\{[\s\S]*?\}\]/, "").trim(), booked: false };
+    // A [BOOK] tag WAS here (the model was booking) and it could not be used.
+    // Shipping the bare pre-booking line ("Perfect, see you then!") would tell
+    // the client the visit is set when nothing was written (Shaeleen, IG
+    // 2026-08-26). Hand it to Ozzi instead, with the owner alert.
+    console.error("Booking parse error — [BOOK] unusable, handing off to owner:", err);
+    return { response: bookingFailureHandoffMessage(lang) + "[NOTIFY_OWNER]", booked: false };
   }
 }
 
@@ -1780,7 +1795,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       safeAiText = repairDeclineMessage(lang);
     }
 
-    const { response: afterBookingText, booked } = await processBookingCommand(
+    const bookingStep = await processBookingCommand(
       safeAiText,
       conversation.id,
       senderIgsid,
@@ -1789,6 +1804,21 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       isRescheduling,
       history
     );
+    let afterBookingText = bookingStep.response;
+    const booked = bookingStep.booked;
+    // BARE-CONFIRMATION backstop (Shaeleen Herrera-Garcia, IG 2026-08-26): the
+    // model's pre-booking line ("Perfect, see you then!") only means something
+    // when a visit was actually written. About to go out ALONE — the [BOOK] tag
+    // lost, stripped or never emitted — it must never ship: the client waited
+    // at home for a 7pm visit nobody had in the system. A booked client in
+    // RESCHEDULE MODE gets the real visit restated; anyone else gets the neutral
+    // Ozzi-confirms line, and the owner is alerted to set the visit by hand.
+    if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBookingText)) {
+      console.warn("[IG] bare confirmation with no booking behind it (" + JSON.stringify(afterBookingText) + ") — replacing with the owner handoff");
+      afterBookingText = isRescheduling && bookedVisit
+        ? visitDetailsMessage(lang, bookedVisit.date, bookedVisit.time) + "[NOTIFY_OWNER]"
+        : bookingUnverifiedHandoffMessage(lang) + "[NOTIFY_OWNER]";
+    }
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id, conversation.username ?? null, lang);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
     const finalResponse = stripForbiddenTags(afterNotify);

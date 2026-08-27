@@ -731,6 +731,51 @@ export function detectLargeLeadSqft(text: string): number | null {
 // $1,000+ figure from the reply whenever the client has signaled a large
 // project, so no big total can ship even if the model or a future learning
 // regresses again. Per-sqft rates ($5, $4.50) are unaffected.
+// ─── Tag protection for sentence-level scrubbers ───────────────────────────
+// [BOOK:{...}] carries free text ("notes"), so a scrubber that judges sentences
+// sees the JSON as one more sentence. On 2026-08-26 (Shaeleen Herrera-Garcia,
+// IG) the notes tripped REASONING_LEAK_SENTENCE and stripReasoningLeak deleted
+// the WHOLE tag: "Perfect, see you then!" went out with no visit behind it, the
+// client waited at home for a 7pm visit nobody had in the system, and the bot
+// then told her the slot had "filled up". Every scrubber that drops sentences
+// or clauses runs on the prose only: tags are swapped for opaque placeholders
+// (bracketed, so existing "[" checks keep treating them as tags) and restored.
+const PROTECTED_TAG = /\[BOOK:\{[\s\S]*?\}\]|\[(?:CANCEL_BOOKING|NOTIFY_OWNER|REACT_ONLY)\]/g;
+const TAG_PLACEHOLDER = /\[#TAG(\d+)#\]/g;
+export function withTagsProtected(text: string, fn: (prose: string) => string): string {
+  const tags: string[] = [];
+  const masked = text.replace(PROTECTED_TAG, (t) => {
+    tags.push(t);
+    return "[#TAG" + (tags.length - 1) + "#]";
+  });
+  if (tags.length === 0) return fn(text);
+  return fn(masked).replace(TAG_PLACEHOLDER, (_m, i: string) => tags[Number(i)] ?? "");
+}
+
+// True when the reply is nothing but the short line the model writes in front
+// of [BOOK:...] ("Perfect, see you then!", "All set!"). Without a booking behind
+// it that line is a promise the client acts on. Whitelist-style: the whole text
+// must be made of these tokens AND carry a "visit is set" one, so "Perfect,
+// what's the address?" or "Sounds good, Ozzi will be in touch" never match.
+// Tags are ignored (a [NOTIFY_OWNER] may ride along).
+const BARE_CONFIRM_TOKEN =
+  "(?:perfect|perfecto|perfeito|great|awesome|wonderful|excellent|done|listo|genial|feito|combinado|sounds good|you'?re all set|you are all set|all set|tudo certo|see you (?:then|soon|there)|nos vemos(?: entonces| pronto| ah[ií])?|hasta (?:entonces|pronto)|at[eé] (?:l[aá]|logo|breve)|you'?re welcome|thank you|thanks|gracias|obrigad[oa])";
+const BARE_CONFIRM_RE = new RegExp("^(?:" + BARE_CONFIRM_TOKEN + "[\\s,.!]*){1,4}$", "i");
+// No \b: JS word boundaries are ASCII-only, so "até lá!" never closed one after
+// the "á". The whole-text whitelist above already guarantees only tokens remain.
+const VISIT_SET_TOKEN = /(?:see you|all set|nos vemos|hasta (?:entonces|pronto)|at[eé] (?:l[aá]|logo|breve)|tudo certo|listo|combinado)/i;
+export function isBarePreBookingText(text: string): boolean {
+  const t = (text ?? "")
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/[’‘]/g, "'")
+    .replace(/[¡¿]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t || t.length > 60) return false;
+  if (!VISIT_SET_TOKEN.test(t)) return false;
+  return BARE_CONFIRM_RE.test(t);
+}
+
 const BIG_DOLLAR = /\$\s?\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\$\s?\d{4,}/;
 
 export function conversationHasLargeLead(messages: ChatMessage[]): boolean {
@@ -744,6 +789,11 @@ export function conversationHasLargeLead(messages: ChatMessage[]): boolean {
 }
 
 export function stripLargeLeadPrices(text: string): string {
+  // Tags are masked first: a "$" total inside [BOOK] notes must never break
+  // the JSON (a half tag = parse error = no visit).
+  return withTagsProtected(text, (prose) => stripLargeLeadPricesProse(prose));
+}
+function stripLargeLeadPricesProse(text: string): string {
   if (!BIG_DOLLAR.test(text)) return text;
   const sentences = text.split(/(?<=[.!?])\s+/);
   const kept: string[] = [];
@@ -2118,15 +2168,21 @@ const REASONING_LEAK_SENTENCE = new RegExp(
 );
 
 export function stripReasoningLeak(text: string): string {
-  if (!REASONING_LEAK_SENTENCE.test(text)) return text;
-  // Sentence split that never breaks inside a decimal price ("$4.50").
-  const parts = text.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [text];
-  const kept = parts.filter((s) => !REASONING_LEAK_SENTENCE.test(s));
-  const result = kept.join("").replace(/[ \t]{2,}/g, " ").trim();
-  const substance = result.replace(/\[[^\]]*\]/g, "").trim();
-  if (substance.length < 20) return text;
-  console.log("[AI] reasoning-leak scrubber: removed internal monologue sentence(s) from the reply");
-  return result;
+  // Tags ([BOOK:{...}] and friends) are masked first: the JSON "notes" once
+  // matched a leak pattern and the WHOLE tag was deleted, shipping "Perfect,
+  // see you then!" with no visit behind it (Shaeleen Herrera-Garcia, IG
+  // 2026-08-26). Only the prose is ever judged sentence by sentence.
+  return withTagsProtected(text, (prose) => {
+    if (!REASONING_LEAK_SENTENCE.test(prose)) return prose;
+    // Sentence split that never breaks inside a decimal price ("$4.50").
+    const parts = prose.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [prose];
+    const kept = parts.filter((s) => !REASONING_LEAK_SENTENCE.test(s));
+    const result = kept.join("").replace(/[ \t]{2,}/g, " ").trim();
+    const substance = result.replace(/\[[^\]]*\]/g, "").trim();
+    if (substance.length < 20) return prose;
+    console.log("[AI] reasoning-leak scrubber: removed internal monologue sentence(s) from the reply");
+    return result;
+  });
 }
 
 // ─── Foreign-phone scrubber ────────────────────────────────────────────────

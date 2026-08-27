@@ -1807,6 +1807,55 @@ export function bookingFailureHandoffMessage(lang: Lang): string {
     : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
 }
 
+// Sent when the model wrote its pre-booking line ("Perfect, see you then!") but
+// NO visit was written — the [BOOK] tag was lost, unusable or never emitted
+// (Shaeleen Herrera-Garcia, IG 2026-08-26: she waited at home for a 7pm visit
+// nobody had in the system). Neutral on purpose: never "locked in", and not the
+// failure line either (the owner may have set the visit by hand); Ozzi confirms
+// and the owner is alerted with the conversation.
+export function bookingUnverifiedHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Deixa eu pedir para o Ozzi confirmar os detalhes da sua visita diretamente, em breve ele te contata.";
+  return lang === "es"
+    ? "Déjame pedirle a Ozzi que confirme los detalles de tu visita directamente, en breve te contacta."
+    : "Let me have Ozzi confirm your visit details directly, you'll hear back shortly.";
+}
+
+// The phone in [BOOK] must be one the CLIENT typed. The model re-types the
+// digits and transposes them: in 5 of 8 replays of the Shaeleen turn (IG,
+// 2026-08-26, the client typed 305-431-3770) it wrote 3053413770 — a visit the
+// seller could never confirm by phone. Deterministic: when the client typed at
+// least one real number in this conversation and the tag's digits match none of
+// them, use the LAST number the client typed. No client-typed number (WhatsApp
+// chat id, number given by voice) → the tag's value stands.
+const TYPED_PHONE = /(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/g;
+function phoneDigits(s: string | null | undefined): string {
+  return (s ?? "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+}
+export function reconcileBookingPhone(
+  phone: string | null | undefined,
+  history?: Array<{ role: string; content: string }>
+): { phone: string | null | undefined; corrected: boolean; reason?: string } {
+  if (!history || history.length === 0) return { phone, corrected: false };
+  const typed: string[] = [];
+  for (const m of history) {
+    if (m.role !== "user") continue;
+    const text = (m.content || "").split(/\n\n?\[SYSTEM:/)[0];
+    for (const cand of text.match(TYPED_PHONE) ?? []) {
+      const d = phoneDigits(cand);
+      if (d.length === 10) typed.push(d);
+    }
+  }
+  if (typed.length === 0) return { phone, corrected: false };
+  const tagDigits = phoneDigits(phone);
+  if (tagDigits && typed.includes(tagDigits)) return { phone, corrected: false };
+  const last = typed[typed.length - 1];
+  return {
+    phone: last,
+    corrected: true,
+    reason: "tag phone " + JSON.stringify(phone ?? null) + " is not a number the client typed; using " + last,
+  };
+}
+
 // Placeholder names the AI drops into [BOOK] when it does not know the real one.
 // These must never be saved as the booking name when we have the actual profile
 // name on file.
