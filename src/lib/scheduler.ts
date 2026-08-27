@@ -830,7 +830,7 @@ export function reconcileOfferedDates(
   const year = ymd(todayStr).year;
 
   // Returns the corrected day-of-month, or null when we should not touch it.
-  const fixDay = (weekdayWord: string, monthWord: string, dayNum: number): number | null => {
+  const fixDay = (weekdayWord: string, monthWord: string, dayNum: number): { day: number; month: number } | null => {
     const wantWeekday = weekdayOf(weekdayWord);
     const month = monthIndexOf(monthWord);
     if (wantWeekday === null || month === null) return null;
@@ -856,22 +856,43 @@ export function reconcileOfferedDates(
     const forward = (((wantWeekday - have) % 7) + 7) % 7;
     const delta = forward <= 3 ? forward : forward - 7;
     const snapped = new Date(stated.getTime() + delta * 86400000);
-    if (snapped.getUTCMonth() !== month) return null; // would cross the month — leave it
-    if (snapped.toISOString().slice(0, 10) < todayStr) return null; // never point at the past
-    return snapped.getUTCDate();
+    const snappedStr = snapped.toISOString().slice(0, 10);
+    if (snappedStr < todayStr) return null; // never point at the past
+    // Crossing the month IS allowed, as long as the snapped date stays inside
+    // the offer window: "Monday September 1st" said on Aug 27 (Sept 1, 2026 is
+    // a Tuesday) means Monday August 31. Leaving it untouched shipped "Monday
+    // September 1st at 9am or 11am" to a client, the [BOOK] landed on Tuesday
+    // the 1st and she had to ask "is the appointment on Monday or Tuesday?"
+    // (Rupinder Nagra, Messenger 2026-08-27). The month word is rewritten in
+    // the language of the weekday word.
+    if (snappedStr > addDaysStr(todayStr, 21)) return null;
+    return { day: snapped.getUTCDate(), month: snapped.getUTCMonth() };
+  };
+  const monthWordFor = (weekdayWord: string, originalMonthWord: string, monthIdx: number): string => {
+    const lang = /^(?:segunda|ter[cç]a|quarta|quinta|sexta)/i.test(weekdayWord)
+      ? "pt"
+      : /^(?:lunes|martes|mi[eé]rcoles|jueves|viernes)/i.test(weekdayWord)
+        ? "es"
+        : /^(?:s[áa]bado|domingo)/i.test(weekdayWord)
+          ? (/(?:eiro|embro|outubro|mar[cç]o|maio|junho|julho|setembro)/i.test(originalMonthWord) ? "pt" : "es")
+          : "en";
+    const name = (lang === "pt" ? MONTH_NAMES_PT : lang === "es" ? MONTH_NAMES_ES : MONTH_NAMES)[monthIdx];
+    return /^[A-Z]/.test(originalMonthWord) ? name.charAt(0).toUpperCase() + name.slice(1) : name;
   };
 
   let out = text.replace(OFFER_WD_MONTH_DAY, (whole, wd, sep, mo, gap, day, suffix) => {
     const fixed = fixDay(wd, mo, Number(day));
     if (fixed === null) return whole;
-    corrections.push(`${wd} ${mo} ${day} -> ${fixed}`);
-    return `${wd}${sep}${mo}${gap}${fixed}${suffix ? ordinalSuffix(fixed) : ""}`;
+    const moOut = fixed.month === monthIndexOf(mo) ? mo : monthWordFor(wd, mo, fixed.month);
+    corrections.push(`${wd} ${mo} ${day} -> ${moOut} ${fixed.day}`);
+    return `${wd}${sep}${moOut}${gap}${fixed.day}${suffix ? ordinalSuffix(fixed.day) : ""}`;
   });
   out = out.replace(OFFER_WD_DAY_MONTH, (whole, wd, gap, day, mid, mo) => {
     const fixed = fixDay(wd, mo, Number(day));
     if (fixed === null) return whole;
-    corrections.push(`${wd} ${day} de ${mo} -> ${fixed}`);
-    return `${wd}${gap}${fixed}${mid}${mo}`;
+    const moOut = fixed.month === monthIndexOf(mo) ? mo : monthWordFor(wd, mo, fixed.month);
+    corrections.push(`${wd} ${day} de ${mo} -> ${fixed.day} de ${moOut}`);
+    return `${wd}${gap}${fixed.day}${mid}${moOut}`;
   });
   return { text: out, corrections };
 }

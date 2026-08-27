@@ -156,6 +156,18 @@ console.log("\n3) DIA DA SEMANA × DATA NA OFERTA (4 casos reais na janela)");
   const past = reconcileOfferedDates("I had you down for Monday July 6 at 9am", "2026-08-01");
   ck("data no passado fica intocada", past.corrections.length === 0, past.text);
 
+  // Caso Rupinder Nagra (Messenger 27/08/2026): "Monday September 1st" (1/9 = terça)
+  // ficava intocado porque a data certa (31/08) cai no MÊS ANTERIOR; o [BOOK] foi
+  // para terça e a cliente perguntou "Monday or Tuesday?". Agora cruza o mês
+  // dentro da janela, reescrevendo o mês no idioma do dia da semana.
+  const cross = reconcileOfferedDates("No problem, I have Monday September 1st at 9am or 11am, which works better for you?", "2026-08-27");
+  ck("Rupinder: 'Monday September 1st' vira 'Monday August 31st'", /Monday August 31st at 9am/.test(cross.text), cross.text);
+  ck("Rupinder (es): 'lunes 1 de septiembre' vira 'lunes 31 de agosto'", /lunes 31 de agosto/.test(reconcileOfferedDates("Tengo el lunes 1 de septiembre a las 9am", "2026-08-27").text));
+  ck("Rupinder (pt): 'segunda 1 de setembro' vira 'segunda 31 de agosto'", /segunda 31 de agosto/.test(reconcileOfferedDates("Tenho segunda 1 de setembro às 9am", "2026-08-27").text));
+  ck("cruza para frente: 'Wednesday August 31' vira 'Wednesday September 2'", /Wednesday September 2 at/.test(reconcileOfferedDates("Wednesday August 31 at 3pm", "2026-08-27").text));
+  ck("correto continua intocado: 'Tuesday September 1st' / 'Monday September 7th'", reconcileOfferedDates("Tuesday September 1st at 9am", "2026-08-27").corrections.length === 0 && reconcileOfferedDates("Monday September 7th", "2026-08-27").corrections.length === 0);
+  ck("fora da janela continua intocado mesmo cruzando mês: 'Monday October 5th'", reconcileOfferedDates("Monday October 5th", "2026-08-27").corrections.length === 0);
+
   const wa = fs.readFileSync(path.join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf-8");
   const fb = fs.readFileSync(path.join(process.cwd(), "src/app/api/fb-webhook/route.ts"), "utf-8");
   const ig = fs.readFileSync(path.join(process.cwd(), "src/app/api/webhook/route.ts"), "utf-8");
