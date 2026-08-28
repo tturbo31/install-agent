@@ -477,12 +477,33 @@ export function canalDe(igsid: string): "instagram" | "whatsapp" | "facebook" {
 const FONE_US = /(?<!\d)(?:\+?1[\s.\-]?)?\(?([2-9]\d{2})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})(?!\d)/;
 const FONE_E164 = /(?<!\d)\+(\d{10,15})(?!\d)/;
 
+// NOSSOS PROPRIOS NUMEROS nunca sao telefone de cliente (28/08/2026).
+// Caso real: o cliente mandou a foto do NOSSO anuncio, a analise automatica
+// descreveu a peca — com o telefone da Ozzi dentro — e a conciliacao ia
+// costurar 561-674-8334 no lead dele. Como a plataforma agrupa PESSOA pelos
+// 10 ultimos digitos do telefone, isso fundiria clientes diferentes num so e
+// embaralharia o criativo de cada um.
+const NOSSOS_NUMEROS = ["5616748334", "5614724610", "556294554477"];
+
+// TEXTO GERADO PELO SISTEMA nao e fala do cliente. Alem do bloco [SYSTEM:...],
+// as analises de imagem e as legendas de anuncio compartilhado chegam entre
+// colchetes na mesma linha ("[Floor plan analysis: ...]", "[Client replied to
+// our ad]") — e trazem numeros do NOSSO material.
+const semBlocosDoSistema = (t: string) => stripSys(t).replace(/\[[^\]]*\]/g, " ");
+
+/** Telefone de verdade: 10 a 15 digitos (EUA tem 10; com o pais, 11). */
+export function pareceTelefone(valor: string | null | undefined): boolean {
+  const d = (valor ?? "").replace(/\D/g, "");
+  return d.length >= 10 && d.length <= 15 && !/^0+$/.test(d.slice(-10));
+}
+
 export function extrairTelefone(texto: string): string | null {
-  const t = stripSys(texto);
+  const t = semBlocosDoSistema(texto);
+  const nosso = (d: string) => NOSSOS_NUMEROS.some((n) => d.endsWith(n));
   const e164 = t.match(FONE_E164);
-  if (e164) return `+${e164[1]}`;
+  if (e164 && !nosso(e164[1])) return `+${e164[1]}`;
   const us = t.match(FONE_US);
-  if (us) return `+1${us[1]}${us[2]}${us[3]}`;
+  if (us && !nosso(`${us[1]}${us[2]}${us[3]}`)) return `+1${us[1]}${us[2]}${us[3]}`;
   return null;
 }
 
@@ -501,8 +522,16 @@ export function telefoneDoContato(igsid: string, msgs: MsgRow[], extra?: string 
   if (extra) {
     const tel = extrairTelefone(extra);
     if (tel) return tel;
-    const digitos = (extra.match(/\d/g) || []).length;
-    if (digitos >= 7 && extra.length <= 25) return extra; // telefone cru (booking.phone)
+    // TELEFONE CRU (booking.phone) — mas so se PARECER telefone (28/08/2026).
+    // A regra antiga era "7+ digitos e ate 25 caracteres", e foi por ela que
+    // entraram 12 leads com "telefone" 15001600, 23501000, 20051500... — os
+    // numeros do preco do anuncio ("1000 sq.ft. ... $2,350") virando a
+    // identidade da pessoa. Custo real: o lead COM anuncio ficava com um
+    // telefone que nao e o dela, a visita marcada no calendario (com o
+    // telefone certo) nunca casava com ele, e a visita aparecia SEM CRIATIVO
+    // mesmo com o clique rastreado — e o merge fill-if-empty nunca corrigia,
+    // porque o campo ja estava "preenchido".
+    if (pareceTelefone(extra)) return extra;
   }
   return null;
 }
