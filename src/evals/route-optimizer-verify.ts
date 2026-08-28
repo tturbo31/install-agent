@@ -236,7 +236,11 @@ async function run() {
   {
     const visits = [V("alex", "11:00", MIAMI), V("alex", "15:00", MIAMI2), V("cris", "11:00", BOCA), V("cris", "15:00", DELRAY)];
     const open = new Map<string, RouteSeller[]>([["09:00", [ALEX, CRIS]], ["13:00", [ALEX, CRIS]], ["17:00", [ALEX, CRIS]], ["19:00", [CRIS]]]);
-    const ranked = rankSlotsForDay(WPB, open, visits, est, CFG);
+    // Regra do dono (28/08): por padrão (earliestFirst) a ORDEM oferecida é a do relógio; a rota só escolhe o vendedor.
+    // Os checks C4 abaixo provam a matemática da rota com ROUTE_EARLIEST_FIRST=0.
+    ck("REGRA DO DONO 28/08 (padrão earliestFirst): ordem do relógio (9am, 1pm, 5pm, 7pm), a rota só escolhe o vendedor", rankSlotsForDay(WPB, open, visits, est, CFG).map((r) => r.slot).join(",") === "09:00,13:00,17:00,19:00", JSON.stringify(rankSlotsForDay(WPB, open, visits, est, CFG).map((r) => r.slot)));
+    ck("padrão earliestFirst: bestSeller/score continuam calculados por horário (para o [BOOK] e o log)", rankSlotsForDay(WPB, open, visits, est, CFG).every((r) => r.bestSeller && Number.isFinite(r.score)));
+    const ranked = rankSlotsForDay(WPB, open, visits, est, { ...CFG, earliestFirst: false });
     // 17:00 (Cris após Delray, rumo norte) e 09:00 (Cris antes de Boca) são as
     // duas boas; 13:00 entre Boca e Delray é um desvio (vai a WPB e volta) e
     // 19:00 depois de Delray só com Cris também. Dentro da tolerância, a regra
@@ -368,8 +372,11 @@ async function run() {
     ck("dia prioritário = amanhã (50% < meta 90%) mesmo com depois de amanhã tendo rotas melhores", pickPriorityDay([tomorrow, dayAfter], CFG)?.dateStr === "2026-08-28");
     const fmt = (s: string) => { const [h, m] = s.split(":").map(Number); return `${h % 12 || 12}${m ? ":" + m : ""}${h >= 12 ? "pm" : "am"}`; };
     const note = buildRoutePriorityNote([tomorrow, dayAfter], WPB, CFG, fmt)!;
-    ck("nota: amanhã marcado como PRIORITY DAY, com 'offer first 3pm, 11am; then 5pm, 1pm; also open 7pm' (ordem do exemplo do pedido)", /Friday, August 28, 2026 \[2026-08-28\] \(50% booked\) ← PRIORITY DAY: offer first 3pm, 11am; then 5pm, 1pm; also open 7pm/.test(note), note);
-    ck("nota: linha final aponta o dia prioritário e manda começar por ele (3pm, 11am)", /PRIORITY DAY: Friday, August 28, 2026 \[2026-08-28\] — start there: 3pm, 11am\./.test(note), note);
+    // Regra do dono (28/08): os PRIMEIROS horários do dia primeiro (11am, 1pm, 3pm...), a rota não reordena.
+    ck("nota (regra 28/08): amanhã = PRIORITY DAY com os PRIMEIROS horários primeiro: 'offer first 11am, 1pm; then 3pm, 5pm; also open 7pm'", /Friday, August 28, 2026 \[2026-08-28\] \(50% booked\) ← PRIORITY DAY: offer first 11am, 1pm; then 3pm, 5pm; also open 7pm/.test(note), note);
+    ck("nota (ROUTE_EARLIEST_FIRST=0, legado): ordem por rota 'offer first 3pm, 11am; then 5pm, 1pm; also open 7pm'", /\(50% booked\) ← PRIORITY DAY: offer first 3pm, 11am; then 5pm, 1pm; also open 7pm/.test(buildRoutePriorityNote([tomorrow, dayAfter], WPB, { ...CFG, earliestFirst: false }, fmt)!));
+    ck("nota: diz que os PRIMEIROS horários do dia vêm primeiro (sem buraco)", /EARLIEST open times of the priority day first/.test(note) && /offer 9am before 11am before 1pm/.test(note), note);
+    ck("nota: linha final aponta o dia prioritário e manda começar pelos primeiros horários (11am, 1pm)", /PRIORITY DAY: Friday, August 28, 2026 \[2026-08-28\] — start there: 11am, 1pm\./.test(note), note);
     ck("nota: NÃO compara dias entre si ('Best overall' sumiu)", !/Best overall/.test(note));
     ck("nota: proíbe pular para um dia depois por conveniência e diz quando o próximo dia entra", /Do NOT skip to a later day/.test(note) && /cannot do the priority day, asks for another day, or their stated availability has no match/.test(note));
     ck("nota: restrição do cliente ('tomorrow doesn't work') vence", /tomorrow doesn't work/.test(note) && /their constraint wins/.test(note));
@@ -398,7 +405,7 @@ async function run() {
       const { ranked } = await rankSellersForSlot({ client: P("33135"), slot: "13:00", candidates: [DIEGO, ALEX], visits, cfg: CFG });
       ck("[BOOK]: Alexandre (1pm fecha o buraco 11am→3pm) vence Diego (1pm só estende o dia)", ranked[0].seller.name === "Alexandre" && ranked[0].route.gapFill, JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.route.gapFill])));
     }
-    ck("config: padrões fillFirst=1, meta 1 (qualquer vaga = dia prioritário), gap bonus 15, gap max 60", CFG.fillFirst && CFG.targetNextDayFillRate === 1 && CFG.gapBonusMin === 15 && CFG.gapMaxScore === 60);
+    ck("config: padrões fillFirst=1, meta 1 (qualquer vaga = dia prioritário), gap bonus 15, gap max 60", CFG.fillFirst && CFG.earliestFirst && CFG.targetNextDayFillRate === 1 && CFG.gapBonusMin === 15 && CFG.gapMaxScore === 60);
     ck("meta 1 aceita por env (ROUTE_TARGET_NEXT_DAY_FILL_RATE=0.9 ainda funciona)", getRouteConfig({ ROUTE_TARGET_NEXT_DAY_FILL_RATE: "0.9" }).targetNextDayFillRate === 0.9 && getRouteConfig({}).targetNextDayFillRate === 1);
     const sched2 = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
     ck("agenda: regra SOONEST DAY FIRST fixa no bloco da agenda (vale sem ZIP/sem nota de rota)", /SOONEST DAY FIRST/.test(sched2) && /take your two options from the FIRST line above that has open times, today if today still has times listed/.test(sched2) && /Never skip a day that has open times because a later day has more of them/.test(sched2));
@@ -434,8 +441,9 @@ async function run() {
     {
       const visits = [V("alex", "13:00", P("33409")), V("alex", "17:00", P("33401"))];
       const open = new Map<string, RouteSeller[]>([["09:00", [ALEX]], ["11:00", [ALEX]], ["15:00", [ALEX]], ["19:00", [ALEX]]]);
-      const ranked = rankSlotsForDay(P("33405"), open, visits, est, CFG, ALL);
-      ck("OFERTA: o horário que fecha o buraco (3pm entre 1pm e 5pm) vem PRIMEIRO, mesmo com 9am/11am/7pm a poucos minutos", ranked[0].slot === "15:00" && ranked[0].gapFill === true, JSON.stringify(ranked.map((r) => [r.slot, r.score, r.gapFill])));
+      ck("OFERTA (padrão, regra 28/08): 9am vem primeiro mesmo com o 3pm fechando buraco — ordem do relógio", rankSlotsForDay(P("33405"), open, visits, est, CFG, ALL)[0].slot === "09:00");
+      const ranked = rankSlotsForDay(P("33405"), open, visits, est, { ...CFG, earliestFirst: false }, ALL);
+      ck("OFERTA (ROUTE_EARLIEST_FIRST=0): o horário que fecha o buraco (3pm entre 1pm e 5pm) vem PRIMEIRO, mesmo com 9am/11am/7pm a poucos minutos", ranked[0].slot === "15:00" && ranked[0].gapFill === true, JSON.stringify(ranked.map((r) => [r.slot, r.score, r.gapFill])));
       const visits2 = [V("diego", "11:00", P("33409")), V("cris", "11:00", P("33409")), V("cris", "15:00", P("33401"))];
       const { ranked: r2 } = await rankSellersForSlot({ client: P("33405"), slot: "13:00", candidates: [DIEGO, CRIS], visits: visits2, cfg: CFG, allSellers: ALL });
       ck("[BOOK] Chris (1pm fecha buraco 11am→3pm) vence Diego (1pm só estende o dia) mesmo com scores parecidos e priority pior", r2[0].seller.name === "Cris" && r2[0].route.gapFill, JSON.stringify(r2.map((r) => [r.seller.name, r.route.score, r.route.gapFill])));

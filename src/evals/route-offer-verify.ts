@@ -90,8 +90,9 @@ const daysAlmostFull: DayRanking[] = [
 const WPB = zipCentroid("33401")!;
 const ROUTE_NOTE = buildRoutePriorityNote(days, WPB, CFG, fmt12)!;
 const ROUTE_NOTE_ALMOST_FULL = buildRoutePriorityNote(daysAlmostFull, WPB, CFG, fmt12)!;
-const PREFERRED = new Set(["3pm", "5pm", "9am", "11am"]); // offer-first de d1 ∪ d2
-const NOT_PREFERRED_D1 = ["9am", "11am", "1pm"];
+// Regra do dono (28/08): os PRIMEIROS horários do dia primeiro — offer-first = 9am, 11am em qualquer dia; a rota só escolhe o vendedor.
+const PREFERRED = new Set(["9am", "11am"]); // offer-first de d1 e d2 (ordem do relógio)
+const NOT_PREFERRED_D1 = ["1pm", "3pm", "5pm"];
 
 const sys = (...parts: string[]) => `\n\n[SYSTEM: ${[getEasternDateContext(), scheduleBlock(), ...parts].join("\n\n")}]`;
 const clockTimes = (t: string) => [...t.matchAll(/\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi)].map((m) => `${parseInt(m[1], 10)}${m[2].toLowerCase()}`);
@@ -111,8 +112,8 @@ async function run() {
   const c1 = clockTimes(t1);
   ck("T1: oferece horários (clock times presentes)", c1.length >= 1, t1);
   ck("T1: oferece exatamente DOIS horários (mesma quantidade de sempre)", new Set(c1).size === 2, `${c1.join(",")} | ${t1}`);
-  ck("T1: DATA PRIMEIRO: os dois horários são do dia prioritário (1º dia, 50% ocupado): 3pm e 5pm", c1.every((t) => ["3pm", "5pm"].includes(t)) && PREFERRED.has(c1[0] ?? "3pm"), `${c1.join(",")} | ${t1}`);
-  ck("T1: não oferece os horários de rota ruim do 1º dia (1pm) nem diz que faltam vagas", !/\b1\s*pm\b/i.test(t1) && !NO_AVAIL.test(t1), t1);
+  ck("T1: DATA PRIMEIRO + PRIMEIROS HORÁRIOS (regra 28/08): os dois horários são os primeiros do dia prioritário: 9am e 11am", c1.every((t) => ["9am", "11am"].includes(t)) && PREFERRED.has(c1[0] ?? "9am"), `${c1.join(",")} | ${t1}`);
+  ck("T1: não pula para horários mais tarde do 1º dia (1pm/3pm/5pm) nem diz que faltam vagas", !/\b(?:1|3|5)\s*pm\b/i.test(t1) && !NO_AVAIL.test(t1), t1);
   ck("T1: nenhum vazamento de rota/distância", !LEAK.test(t1), t1);
 
   console.log("\n━━ 2. Restrição do cliente vence a ordem de rota ━━");
@@ -130,12 +131,12 @@ async function run() {
   console.log("\n━━ 3. Cliente recusa os dois primeiros → abre os demais horários ━━");
   const t3 = await ai([
     { role: "user", content: "Hi, luxury vinyl for the whole house, about 1200 sqft, in West Palm Beach 33401." },
-    { role: "assistant", content: `For that size I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. I have ${weekdayOf(d1)} at 3pm or 5pm, which works better for you?` },
-    { role: "user", content: `Neither works for me that day. Do you have anything earlier on ${weekdayOf(d1)}?${sys(ROUTE_NOTE)}` },
+    { role: "assistant", content: `For that size I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. I have ${weekdayOf(d1)} at 9am or 11am, which works better for you?` },
+    { role: "user", content: `Neither works for me that day. Do you have anything later on ${weekdayOf(d1)}?${sys(ROUTE_NOTE)}` },
   ]);
   console.log("   →", t3.replace(/\s+/g, " ").slice(0, 300));
   const c3 = clockTimes(t3);
-  ck("T3: abre horários mais cedo do MESMO dia (1pm/9am/11am), que continuavam disponíveis", c3.length >= 1 && c3.some((t) => NOT_PREFERRED_D1.includes(t)), `${c3.join(",")} | ${t3}`);
+  ck("T3: abre os horários seguintes do MESMO dia (1pm/3pm/5pm), que continuavam disponíveis", c3.length >= 1 && c3.some((t) => NOT_PREFERRED_D1.includes(t)), `${c3.join(",")} | ${t3}`);
   ck("T3: não diz que não há disponibilidade", !NO_AVAIL.test(t3), t3);
   ck("T3: nenhum vazamento de rota", !LEAK.test(t3), t3);
 
