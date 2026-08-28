@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { supabaseAdmin } from "@/lib/supabase";
 import { isStrongAdminSecret } from "@/lib/admin-auth";
 import {
@@ -88,10 +89,12 @@ async function recordInHistory(phone: string, text: string): Promise<boolean> {
     }
     if (!conv) return false;
 
+    // Gravar EXATAMENTE o que foi enviado (sendXMessage limpa ¿¡ — regra do dono
+    // 28/08); texto diferente do eco = "[Treino]" + conversa pausada.
     const { error } = await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
-      content: text,
+      content: stripInvertedPunctuation(text),
     });
     if (error) {
       console.error("[ENVIAR] history insert failed:", error.message);

@@ -931,7 +931,12 @@ const SLOT_TIME_REF = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\ba\
 const LETS_DO_HOUR = /\blet'?s\s+do\s+(?:it\s+at\s+)?(\d{1,2})(?::\d{2})?\b/i;
 // "3" / "the 6" / "26th at 6" / "a las 6" as the WHOLE reply (or its tail).
 const BARE_HOUR_PICK = /^\s*(?:the\s+|el\s+|la\s+|las\s+|a\s+las?\s+)?(\d{1,2})\s*[.!]*\s*$|\b(?:at|a\s+las?|[àa]s)\s+(\d{1,2})\s*[.!]*\s*$/i;
-const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])\b/i;
+// O \b final do JS é ASCII e NUNCA fecha depois de letra acentuada: "amanhã",
+// "sábado", "mañana" e "miércoles" simplesmente não casavam, então um cliente
+// PT/ES que confirmava o dia por extenso não era reconhecido como tendo
+// escolhido (bloqueava o [BOOK], repetia a pergunta e disparava o ZIP-first).
+// (?![a-zà-ÿ]) é o mesmo idioma já usado no resto do arquivo. Verificado 28/08.
+const SLOT_DAY_REF = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|hoje|amanh[ãa])(?![a-zà-ÿ])/i;
 const SLOT_ORDINAL = /\b(?:the\s+)?(?:first|second|1st|2nd)\b|\b(?:el\s+|la\s+)?(?:primer[oa]?|segund[oa]?)\b|\bese\s+(?:horario|d[ií]a)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/i;
 const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfeito|claro|dale|vale|de acuerdo|works|sounds good|let'?s do it|hag[aá]moslo|me funciona|funciona|pode ser|combinado|est[aá]\s+bien|est[áa]\s+perfecto)\b/i;
 // "September 2nd" / "2 de septiembre" — a month-name date is a day reference
@@ -1091,7 +1096,7 @@ export async function needTimeChoiceMessage(lang: Lang, dateStr: string, clientA
     let slots = await getAvailableSlots(dateStr);
     if (dateStr === easternTodayStr()) {
       const nowET = easternNowHM();
-      const cutoff = nowET.hour * 60 + nowET.minute + 30;
+      const cutoff = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
       slots = slots.filter((s) => {
         const [h, min] = s.split(":").map(Number);
         return h * 60 + min >= cutoff;
@@ -1455,7 +1460,7 @@ export async function getRealAvailabilityContext(opts?: AvailabilityContextOptio
         "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. If that line has only one open time, offer it plus the first open time of the next line that has any. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
-        "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 3pm, or Thursday at 9am or 11am — which works?'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
+        "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
         "\n- A SUMMARY OF availability is not a list of times and is equally FORBIDDEN. Never write 'Sunday with several options', 'Tuesday has plenty of availability', 'Wednesday has full availability from 9am to 7pm', 'both with plenty of times to choose from', or anything similar: a range or a count lets the client answer '10am' or '2pm' — hours that are not on the line and do not exist — and you then have to walk it back. Spell out the actual open times, comma-separated, for every day you name, however many there are." +
         "\n- If the same weekday appears on more than one line (e.g. two Tuesdays), use the SOONEST one, UNLESS the client says 'next week' or names a specific date, then use that line instead." +
         "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
@@ -1575,7 +1580,7 @@ export async function slotConflictRecoveryMessage(
         });
         if (requestedDate === easternTodayStr()) {
           const nowET = easternNowHM();
-          const cutoff = nowET.hour * 60 + nowET.minute + 30;
+          const cutoff = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
           slots = slots.filter((s) => {
             const [h, min] = s.split(":").map(Number);
             return h * 60 + min >= cutoff;

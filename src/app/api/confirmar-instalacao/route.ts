@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, timingSafeEqual } from "crypto";
 import { sendWhatsAppMessage, notifyOwners } from "@/lib/whatsapp";
+import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sanitizeInstallDate, stripInstallTime, formatInstallDateTime, installTimeAlert, INSTALL_ARRIVAL_WINDOW } from "@/lib/instalacao";
 
@@ -138,10 +139,11 @@ async function recordInHistory(phone: string, text: string): Promise<boolean> {
     }
     if (!conv) return false;
 
+    // Gravar EXATAMENTE o que foi enviado (sendWhatsAppMessage limpa ¿¡).
     const { error } = await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conv.id,
       role: "assistant",
-      content: text,
+      content: stripInvertedPunctuation(text),
     });
     if (error) {
       console.error("[INSTALACAO] history insert failed:", error.message);

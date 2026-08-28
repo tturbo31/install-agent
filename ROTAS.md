@@ -9,9 +9,9 @@ se comporta exatamente como antes.
 | Ponto | Antes | Agora |
 |---|---|---|
 | `[BOOK]` → `createBooking` / `rescheduleClientBooking` (`src/lib/scheduler.ts`) | primeiro vendedor livre por `priority` | mesmos candidatos (ativo, dia, horário, folga, slot livre); entre eles ganha o de **menor Route Score**; empate dentro da tolerância → `priority`. Invisível ao cliente. |
-| Oferta de horários (`getRealAvailabilityContext({ history })`) | lista dos horários abertos por dia | a mesma lista + nota interna **ROUTE PRIORITY** (quando o ZIP/cidade do cliente já é conhecido): marca o **dia prioritário** (o mais próximo ainda abaixo da meta de ocupação) e ordena os horários de cada dia (buracos primeiro, depois melhor rota). O modelo continua oferecendo **a mesma quantidade** de opções (2), tiradas do dia prioritário. |
+| Oferta de horários (`getRealAvailabilityContext({ history })`) | lista dos horários abertos por dia | a mesma lista + nota interna **ROUTE PRIORITY** (quando o ZIP/cidade do cliente já é conhecido): marca o **dia prioritário** (o mais próximo com QUALQUER vaga) e lista os horários de cada dia **em ordem do relógio** — regra do dono 28/08: os PRIMEIROS horários primeiro, para não deixar buraco. O modelo continua oferecendo **a mesma quantidade** de opções (2), tiradas do dia prioritário. A rota **não** reordena a oferta; ela só escolhe o vendedor no `[BOOK]`. |
 | Sem ZIP/cidade conhecido | oferecia os horários direto | nota **ZIP CODE FIRST**: a proposta da visita pede o ZIP em uma pergunta curta (mesmo tom), uma vez só. Gate determinístico: não entra se o cliente já nomeou dia/hora em qualquer bolha, se o bot já ofereceu horários, se é remarcação (endereço vem do booking) ou se o ZIP conhecido é fora da área. Desligável (`ROUTE_ASK_ZIP_BEFORE_OFFER=0`). |
-| Mensagens enlatadas de recuperação (`needTimeChoiceMessage`, `slotConflictRecoveryMessage`) | primeiros N horários do dia | os N de melhor rota (mesma quantidade), apresentados em ordem cronológica. |
+| Mensagens enlatadas de recuperação (`needTimeChoiceMessage`, `slotConflictRecoveryMessage`) | primeiros N horários do dia | os N PRIMEIROS horários do dia (com `ROUTE_EARLIEST_FIRST=1`, o padrão); com a flag em `0`, os N de melhor rota. Em ambos os casos em ordem cronológica e respeitando os 120 min de antecedência de hoje. |
 
 Arquivos novos: `src/lib/route-optimizer.ts` (pontuação, provedores de tempo,
 notas, log), `src/lib/geo/zip-geo.ts` + `fl-zip-centroids.ts` (884 ZIPs
@@ -25,7 +25,7 @@ Ordem de decisão: **1. dia mais próximo com vaga** (abaixo da meta de ocupaç�
 * **Dia prioritário** = o primeiro dia (por data) com vaga e Fill Rate < `ROUTE_TARGET_NEXT_DAY_FILL_RATE` (0,9). A nota marca esse dia ("← PRIORITY DAY") e manda o bot tirar dele as 2 opções; um dia depois só entra quando o cliente não pode, pede outro dia ou a restrição dele não bate. Nunca comparamos rota entre dias (o antigo "Best overall" saiu): 25 min de rota melhor depois de amanhã não empurram ninguém.
 * **Gap Score**: horário entre duas visitas já marcadas do mesmo vendedor, com rota viável (sem ida-e-volta, score ≤ `ROUTE_GAP_MAX_SCORE`), ganha desconto de `ROUTE_GAP_BONUS_MIN` (15) — vale na oferta e na escolha do vendedor no [BOOK].
 * Um dia "praticamente cheio" (na meta) continua listado com o que sobrou; nada é escondido.
-* **Vendedor preferido** (regra do dono, 27/08: encher a agenda do Alexandre primeiro): por padrão quem tem a menor `priority` na plataforma (Alexandre = 1), ou o nome em `ROUTE_PREFERRED_SELLER`. Na oferta, os horários em que ele está livre vêm primeiro no dia; no `[BOOK]`, ele é escolhido sempre que está livre e a rota é viável (score ≤ `ROUTE_PREFERRED_SELLER_MAX_SCORE`, sem ida-e-volta). Rota ruim, itinerário desconhecido (visitas dele sem ZIP) ou sacrifício acima de `ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN` → ele entra na fila normal (o zigue-zague continua evitado); ocupado ou desativado → os demais por rota, sem "herdar" a preferência.
+* **Vendedor preferido** (regra do dono, 27/08: encher a agenda do Alexandre primeiro): por padrão quem tem a menor `priority` na plataforma (Alexandre = 1), ou o nome em `ROUTE_PREFERRED_SELLER`. Desde 28/08 isto vale SÓ no `[BOOK]` (a oferta é sempre cronológica): ele é escolhido sempre que está livre e a rota é viável (score ≤ `ROUTE_PREFERRED_SELLER_MAX_SCORE`, sem ida-e-volta). Rota ruim, itinerário desconhecido (visitas dele sem ZIP) ou sacrifício acima de `ROUTE_PREFERRED_SELLER_MAX_EXTRA_MIN` → ele entra na fila normal (o zigue-zague continua evitado); ocupado ou desativado → os demais por rota, sem "herdar" a preferência.
 * **Gap Score é chave de ordenação**, não só desconto: dentro de cada grupo (preferido / demais), os horários e vendedores que fecham um buraco vêm primeiro (o desconto de 15 min se perdia na tolerância de 15).
 
 ## Route Score
@@ -71,7 +71,8 @@ Qualquer falha cai para o próximo nível e é registrada (`fallbackReason`).
 | `ROUTE_ASK_ZIP_BEFORE_OFFER` | `1` | pedir o ZIP na proposta da visita quando desconhecido |
 | `ROUTE_NOTE_DAYS` | `10` | dias com vaga que entram na nota |
 | `ROUTE_FILL_FIRST` | `1` | data primeiro: dia prioritário = primeiro dia com vaga abaixo da meta |
-| `ROUTE_TARGET_NEXT_DAY_FILL_RATE` | `0.9` | meta de ocupação do dia prioritário (0–1) |
+| `ROUTE_TARGET_NEXT_DAY_FILL_RATE` | `1` | meta de ocupação do dia prioritário (0–1). **1 = qualquer vaga no dia mais próximo o torna prioritário** (regra do dono 28/08: nenhum horário vago fica para trás) |
+| `ROUTE_EARLIEST_FIRST` | `1` | dentro do dia, os **primeiros horários** vêm primeiro (ordem do relógio) e a rota só escolhe o vendedor no `[BOOK]`. `0` = ordem por rota (comportamento de 27/08) |
 | `ROUTE_GAP_BONUS_MIN` / `ROUTE_GAP_MAX_SCORE` | `15 / 60` | bônus de buraco entre visitas / só se a rota for viável |
 | `ROUTE_PREFERRED_SELLER_FIRST` | `1` | encher primeiro a agenda do vendedor preferido |
 | `ROUTE_PREFERRED_SELLER` | `Alexandre` | nome do preferido (se ele for desativado, ninguém herda); `auto` = menor `priority` na plataforma |

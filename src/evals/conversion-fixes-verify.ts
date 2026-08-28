@@ -176,7 +176,12 @@ check("informational question with no timing words still does NOT engage schedul
     const lines = readFileSync(join(process.cwd(), f), "utf-8").split(/\r?\n/);
     lines.forEach((line, i) => {
       if (!/[¿¡]/.test(line)) return;
-      const regexOrComment = /^\s*\/\//.test(line) || /\.(?:match|test|replace)\(|new RegExp|^\s*(?:const|let)\s+[A-Z_]+\s*=\s*\//.test(line) || /\/[^/"`]*[¿¡][^/"`]*\/[gimsuy]*/.test(line);
+      // Um fragmento de regex construída com new RegExp em VÁRIAS linhas não tem
+      // "new RegExp" na própria linha (SOONEST_OR_DEFER_TO_US, ai.ts): sintaxe de
+      // regex ((?: , (?! , \s , classe de caractere escapada) nunca aparece numa
+      // mensagem para o cliente, então serve de marca de "isto é detecção".
+      const regexSyntax = /\(\?:|\(\?!|\(\?=|\\\\?s|\[\^/.test(line);
+      const regexOrComment = /^\s*\/\//.test(line) || regexSyntax || /\.(?:match|test|replace)\(|new RegExp|^\s*(?:const|let)\s+[A-Z_]+\s*=\s*\//.test(line) || /\/[^/"`]*[¿¡][^/"`]*\/[gimsuy]*/.test(line);
       if (!regexOrComment && !/never use the inverted marks/.test(line)) offenders.push(f + ":" + (i + 1));
     });
   }

@@ -178,6 +178,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage } from "@/lib/facebook";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { removeDashes, removeEmojis, stripWrappingQuotes, isHostileRejection } from "@/lib/ai";
 import { promisesDiscount } from "@/lib/quote-followup";
 
@@ -352,7 +353,11 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       // FOLLOWUP_MARKER dedup can never let a second nudge through. O sufixo
       // [SYSTEM: FOLLOWUP_NUDGE] (só no banco) garante o dedup mesmo com texto
       // personalizado pela IA.
-      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: text + FOLLOWUP_DB_SUFFIX });
+      // O texto GRAVADO tem que ser idêntico ao ENVIADO: sendXMessage passa por
+      // stripInvertedPunctuation (regra do dono 28/08, espanhol sem ¿¡) e o eco
+      // do Messenger/IG volta já limpo — sem limpar aqui, norm() não bate, o
+      // followup vira "[Treino]" e a conversa é pausada (mode=human).
+      await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: stripInvertedPunctuation(text) + FOLLOWUP_DB_SUFFIX });
       await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: true });
       console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}) to ${name}`);

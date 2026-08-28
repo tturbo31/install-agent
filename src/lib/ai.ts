@@ -648,6 +648,39 @@ export function stripSchedulingPush(text: string): string {
 // [SYSTEM: ...] note (which contains availability slots) is excluded so its
 // am/pm tokens never count as the client engaging scheduling.
 // Exported for the conversion-fixes eval guard.
+// "Você escolhe" / "o mais cedo possível" — a resposta mais comum a "qual dia
+// funciona melhor?" É engajamento de agenda tanto quanto dizer uma hora, e sem
+// isto o guard anti-pressão apaga o horário da resposta (verificado 28/08: 32 de
+// 33 frases reais falhavam). Sem \b: o word boundary do JS é ASCII e nunca fecha
+// depois de "amanhã"/"possível" — mesmo idioma usado no resto do arquivo.
+const SOONEST_OR_DEFER_TO_US = new RegExp(
+  "(?:^|[\\s.,!?;:¡¿'()\\-])(?:" +
+    [
+      // inglês: deixa a escolha conosco / o quanto antes
+      "flexible", "i'?m\\s+flexible", "im\\s+flexible",
+      "whatever\\s+(?:works|day|time|is\\s+(?:best|soonest|earliest|easier)|you\\s+have)",
+      "whichever(?:\\s+(?:works|is\\s+(?:best|easier)|you\\s+(?:have|prefer)))?",
+      "either(?:\\s+(?:one|day|time|works|is\\s+fine))?",
+      "up\\s+to\\s+you", "you\\s+(?:choose|pick|decide|tell\\s+me)",
+      "does(?:n'?t|\\s+not)\\s+matter", "no\\s+preference",
+      "as\\s+early\\s+as\\s+(?:possible|you\\s+can)", "as\\s+soon\\s+as\\s+possible",
+      "right\\s+away", "the\\s+sooner\\s+the\\s+better",
+      "(?:i'?m|i\\s+am|im)\\s+(?:free|available|open|around)",
+      // espanhol
+      "el\\s+m[áa]s\\s+pronto(?:\\s+posible)?", "lo\\s+m[áa]s\\s+pronto(?:\\s+posible)?",
+      "cualquier\\s+horario", "cualquier\\s+d[ií]a", "cuando\\s+(?:puedas|pueda|quieras)",
+      "estoy\\s+(?:libre|disponible)", "lo\\s+que\\s+sea\\s+mejor", "el\\s+que\\s+sea",
+      "cuando\\s+gustes", "t[uú]\\s+decides", "como\\s+prefieras",
+      // português
+      "amanh[ãa]", "o\\s+mais\\s+cedo(?:\\s+poss[íi]vel)?", "quanto\\s+antes",
+      "qualquer\\s+(?:hor[áa]rio|dia|hora)", "quando\\s+(?:puder|voc[êe]\\s+puder|quiser)",
+      "estou\\s+(?:livre|dispon[íi]vel)", "voc[êe]\\s+escolhe", "o\\s+que\\s+for\\s+melhor",
+      "tanto\\s+faz", "pode\\s+ser\\s+qualquer",
+    ].join("|") +
+    ")(?![a-zà-ÿ])",
+  "i"
+);
+
 export function clientEngagedScheduling(userText: string): boolean {
   const clientText = userText.split(/\n\n?\[SYSTEM:/)[0];
   // Includes timing-adjustment phrases ("can you come earlier", "anything before
@@ -663,6 +696,7 @@ export function clientEngagedScheduling(userText: string): boolean {
   // counted as engaging scheduling, so the anti-pressure strip deleted the very
   // slot sentence the client asked for and shipped "Does that work, or would
   // you prefer something Tuesday?" with no time in it.
+  if (SOONEST_OR_DEFER_TO_US.test(clientText)) return true;
   return /\b(?:asap|as\s+soon\s+as\s+(?:possible|you\s+can)|soonest|earliest|anytime|any\s+(?:time|day|days|hour)|whenever|today|tonight|this\s+week|all\s+week|free\s+(?:all|any|every|this)\b|available\s+(?:all|any|every|this)\b|hoy|hoje|amanh[ãa]|lo\s+antes\s+posible|cuanto\s+antes|cualquier\s+(?:d[ií]a|hora|momento)|qualquer\s+(?:dia|hora|momento)|o\s+quanto\s+antes|esta\s+semana|toda\s+la\s+semana|a\s+semana\s+toda)\b|(?:\bwhat|which)\s+(?:time|day)|\bgood\s+time\b|\bwhen\s+can\s+(?:you|u|someone)\b|\bcome\s+(?:out|by|over|see|take\s+a\s+look)\b|\b(?:next|this)\s+week\b|schedul|appointment|availab|\bbook\b|\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:get|gets|getting)\s+off\b|\boff\s+(?:at|about|around|by|work)\b|\bafter\s+work\b|\bget\s+home\b|\bfinish(?:ed)?\s+(?:work|at|by)\b|\bdone\s+(?:at|by|with\s+work)\b|\bfree\s+(?:after|at|around|by)\b|\bleave\s+work\b|works\s+for\s+me|let'?s\s+do|that\s+works|sounds\s+good|morning|afternoon|evening|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(?:earlier|sooner|later)\b|\b(?:before|after)\b|can\s+you\s+(?:come|do|make|swing|stop)|any(?:thing)?\s+(?:earlier|sooner|else|other\s+time)|\b(?:hoy|mañana|ma[ñn]ana|tarde|noche|hora|cita|disponible|temprano|m[aá]s\s+tarde|puede\s+ser|no\s+puedo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\bduring\s+the\s+week\b|\bweek\s*days?\b|\bweekends?\b|\bi\s+work\b|\bwork(?:ing)?\s+(?:all\s+)?(?:day|days|week)\b|\bonly\s+(?:on\s+)?(?:weekends?|saturdays?|sundays?|evenings?|nights?|mornings?)\b|\bdays?\s+off\b|\bfin(?:es)?\s+de\s+semana\b|\bentre\s+semana\b|\bd[ií]as?\s+de\s+semana\b/i.test(clientText);
 }
 
@@ -1001,11 +1035,10 @@ export function recapForDuplicateReply(history: ChatMessage[], reply: string): s
     (m) => m.role === "assistant" && allPrefixes.some((p) => m.content.startsWith(p))
   ).length;
   if (recapsSent >= RECAP_CAP) return null;
-  const lang: "en" | "es" | "pt" = /[¿¡]|\b(hola|precio|instalaci[oó]n|cu[aá]l|gracias)\b/i.test(reply)
-    ? "es"
-    : /\b(voc[eê]|or[cç]amento|obrigad|instala[cç][aã]o)\b/i.test(reply)
-      ? "pt"
-      : "en";
+  // O idioma vem de detectLang (acentos + vocabulário), NUNCA de "¿": desde a
+  // regra do dono de 28/08 nenhuma resposta nossa em espanhol tem sinal
+  // invertido, e o heurístico antigo prefixava espanhol com texto em inglês.
+  const lang: "en" | "es" | "pt" = detectLang(reply);
   const prefix = RECAP_PREFIXES[lang][recapsSent] ?? RECAP_PREFIXES[lang][RECAP_PREFIXES[lang].length - 1];
   return prefix + reply;
 }
@@ -2237,6 +2270,12 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     // DATE-FIRST note labels (2026-08-27): "priority day", "70% booked", "fill
     // rate", "preferred seller" and their ES/PT forms are never client-facing.
     /\bpriority\s+day\b|\bd[ií]a\s+prioritari[oa]\b|\bdia\s+priorit[áa]ri[oa]\b|\bfill\s+rate\b|\bpreferred\s+seller\b|\bvendedor\s+prefer(?:ido|ente)\b|\b\d{1,3}\s?%\s+(?:booked|full|reserved|ocupad[oa]|reservad[oa]|llen[oa]|chei[oa])\b/.source,
+    // SOONEST-DAY / EARLIEST-FIRST note vocabulary (2026-08-28): the note now
+    // says "no empty hours", "fills from the first hour", "owner's rule",
+    // "soonest day first". None of it is client-facing. "The earliest I have
+    // is Monday at 9am" IS client-facing and must survive — hence the narrow
+    // phrasing (no bare "earliest").
+    /\bno\s+empty\s+hours\b|\bempty\s+hours\b|\bno\s+holes\b|\bsoonest\s+day\s+first\b|\bowner'?s\s+rule\b|\bregra\s+do\s+dono\b|\bregla\s+del\s+due[ñn]o\b|\bfills?\s+from\s+the\s+first\s+hour\b|\bfill\s+from\s+the\s+first\s+hour\b|\bdate\s+first\b/.source,
   ].join("|"),
   "i"
 );

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { sendFacebookMessage } from "@/lib/facebook";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { stripInvertedPunctuation } from "@/lib/outbound-text";
 
 export async function POST(
   req: NextRequest,
@@ -53,9 +54,12 @@ export async function POST(
   const { data: message, error: msgError } = await supabaseAdmin
     .from("instagram_messages")
     .insert({
+      // O dono pode digitar "¿" no painel; o envio limpa (regra 28/08), então o
+      // banco tem que guardar o texto limpo — senão o eco do Messenger/IG não
+      // bate com esta linha e a própria resposta dele vira "[Treino]".
       conversation_id: id,
       role: "assistant",
-      content: body.text,
+      content: stripInvertedPunctuation(body.text),
     })
     .select()
     .single();
