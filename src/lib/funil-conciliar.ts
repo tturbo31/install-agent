@@ -587,11 +587,18 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       return Number.isFinite(t) ? t - MARGEM_MARCA_MS : Date.now(); // sem data conhecida, nunca pular
     };
 
+    // conversa PARADA desde a marca: entrou na fila só pela fatia do dia. Para
+    // ela a pergunta é uma só — "o lead continua com o anúncio?" — e a resposta
+    // vem da conferência. Reler a conversa seria procurar telefone novo numa
+    // conversa que não teve mensagem nova.
+    const soReconferencia = new Set<string>();
     const ids = todosIds.filter((id) => {
       const marca = marcados.get(id);
       if (marca === undefined) return true; // nunca conferido
       if (atividadeDe(id) > marca) return true; // conversa se mexeu depois da marca
-      return reverificar(id); // a fatia do dia
+      if (!reverificar(id)) return false;
+      soReconferencia.add(id); // a fatia do dia, sem novidade na conversa
+      return true;
     });
     out.jaConciliados = todosIds.length - ids.length;
     out.reverificados = ids.filter((id) => marcados.has(id)).length;
@@ -649,6 +656,14 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       // decide-se aqui, sem tocar no banco. O custo da rodada passa a ser
       // proporcional aos FUROS, e nao ao historico inteiro.
       if (estado?.temAdId === true && estado?.temTelefone === true) {
+        out.comAtribuicao++;
+        marcasNovas.push(id);
+        continue;
+      }
+
+      // re-conferência de conversa parada: o anúncio continua no lead e não há
+      // mensagem nova onde procurar telefone. Nada a ler, nada a reparar.
+      if (soReconferencia.has(id) && estado?.temAdId === true) {
         out.comAtribuicao++;
         marcasNovas.push(id);
         continue;
@@ -774,13 +789,25 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     // plataforma acabou de confirmar resolvido nesta rodada.
     if (!dry) {
       try {
-        // a marca anterior sai antes (o epoch mora DENTRO da chave, então
-        // regravar sem apagar deixaria duas marcas da mesma conversa)
-        const paraLimpar = [...marcasNovas.filter((id) => marcados.has(id)), ...marcasCaidas];
-        for (const id of paraLimpar) {
-          await supabaseAdmin.from("platform_settings").delete().like("platform", `${MARCA_OK}${id}::%`);
+        // A marca anterior sai antes de a nova entrar (o epoch mora DENTRO da
+        // chave). Só quando ela MUDOU: re-conferência de conversa parada
+        // reescreve o mesmo valor, e apagar+gravar 345 chaves à toa custava
+        // 17,2s da rodada. Delete em lote pela chave exata (sabemos qual é).
+        const chavesVelhas: string[] = [];
+        for (const id of marcasNovas) {
+          const antiga = marcados.get(id);
+          if (antiga !== undefined && antiga !== atividadeDe(id)) chavesVelhas.push(`${MARCA_OK}${id}::${antiga}`);
         }
-        const linhas = marcasNovas.map((id) => ({ platform: `${MARCA_OK}${id}::${atividadeDe(id)}`, paused: false }));
+        for (const id of marcasCaidas) {
+          const antiga = marcados.get(id);
+          if (antiga !== undefined) chavesVelhas.push(`${MARCA_OK}${id}::${antiga}`);
+        }
+        for (let i = 0; i < chavesVelhas.length; i += 100) {
+          await supabaseAdmin.from("platform_settings").delete().in("platform", chavesVelhas.slice(i, i + 100));
+        }
+        const linhas = marcasNovas
+          .filter((id) => marcados.get(id) !== atividadeDe(id))
+          .map((id) => ({ platform: `${MARCA_OK}${id}::${atividadeDe(id)}`, paused: false }));
         for (let i = 0; i < linhas.length; i += 500) {
           await supabaseAdmin
             .from("platform_settings")
