@@ -1,0 +1,11 @@
+# Scripts de diagnostico/teste NUNCA entram no build (28/08/2026).
+# Motivo: eles sao rodados a mao com tsx e ficam soltos na pasta; um unico
+# arquivo tmp-* com import de dev (ex.: "dotenv", que nem esta instalado)
+# derrubava o `npm run build` da Vercel e travava o deploy de um conserto de
+# producao. O build so precisa de src/ e public/.
+scripts
+*.tmp.mjs
+tmp-*.js
+tmp-*.mjs
+tmp-*.json
+dev-http.txt
