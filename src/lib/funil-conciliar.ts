@@ -30,6 +30,21 @@ import { enviarEventoFunil } from "@/lib/plataforma";
 import { canalDe, extrairTelefone, persistirAnuncioDaConversa, type ContratoAnuncio, type ReferralIG } from "@/lib/funil";
 
 const PREFIXO = "funil_adx_";
+// MARCA DE "JA CONCILIADO" (28/08/2026). O contrato cujo lead ja tem anuncio E
+// telefone esta resolvido para sempre (o merge do outro lado e fill-if-empty e
+// idempotente) — mas a rodada continuava perguntando por ele a cada 8 horas.
+// Com 2.708 contratos isso era: 28 consultas de conversa + 4 chamadas de
+// conferencia + a leitura da caixa-preta, toda rodada, para achar ~17 furos.
+// O custo crescia com o HISTORICO e ja tinha estourado o timeout de 120s da
+// auditoria. A marca faz o custo crescer com os FUROS.
+// prefixo escolhido para NAO colidir: em SQL LIKE o "_" e curinga de 1 char,
+// entao um "funil_adxok_" seria devolvido tambem pelo paginar("funil_adx_%")
+// que le os contratos. "funil_conc_" nao casa com nenhum padrao existente.
+const MARCA_OK = "funil_conc_";
+// A marca nunca vira ponto cego: uma fatia dela e re-conferida em toda rodada
+// (o lead pode ser fundido/apagado depois). 1/8 por dia => todo contrato
+// marcado volta a ser conferido a cada 8 dias, e o resumo DIZ quantos foram.
+const DIVISOR_REVERIFICACAO = 8;
 const TETO_REPAROS = 60; // por rodada; o resto fica para a próxima (2x/dia)
 const TETO_RESGATES = 25; // contratos reconstruídos da caixa-preta por rodada
 
@@ -85,6 +100,13 @@ export type ResumoConciliacao = {
   // nenhuma rotina a usava: gravação de contrato que falhasse num blip do
   // banco era perda permanente)
   resgatadosDaCaixaPreta?: number;
+  // contratos pulados por ja estarem conciliados numa rodada anterior, e
+  // quantos deles foram re-conferidos mesmo assim nesta (28/08/2026)
+  jaConciliados?: number;
+  reverificados?: number;
+  // onde a rodada gastou o tempo, em segundos (28/08/2026). Sem isto a
+  // degradacao de 120s ficou invisivel ate abortar por timeout.
+  tempos?: Record<string, number>;
   // contrato SEM ad_id (clique via shortlink/m.me): a plataforma nunca terá
   // `temAdId` para ele — com lead existindo, dá-se por resolvido em vez de
   // "furo eterno" reparado em vão toda rodada consumindo o teto (10/08/2026)
@@ -197,12 +219,15 @@ const mediana = (arr: number[]): number | null => {
 // a prova de que a caixa-preta está viva e a base para o teto de silêncio de
 // cada canal. Vai no retorno porque quem vigia (a plataforma) não tem acesso a
 // este banco.
-async function saudeDaCaptura(): Promise<Pick<ResumoConciliacao, "capturaRaw" | "gcHorasAtras">> {
+// `chavesJaLidas` (28/08/2026): a caixa-preta tem ~9,7 MB e era paginada DUAS
+// vezes por chamada — uma aqui e outra no resgate — porque o corpo do webhook
+// mora dentro da propria chave. Quem ja leu passa a lista adiante.
+async function saudeDaCaptura(chavesJaLidas?: string[]): Promise<Pick<ResumoConciliacao, "capturaRaw" | "gcHorasAtras">> {
   const ultimas: Record<"ig" | "fb" | "wa", number> = { ig: 0, fb: 0, wa: 0 };
   const eventos: Record<"ig" | "fb" | "wa", number[]> = { ig: [], fb: [], wa: [] };
   const vistos = new Set<string>();
   try {
-    for (const chave of await paginar("funil_raw_%")) {
+    for (const chave of chavesJaLidas ?? (await paginar("funil_raw_%"))) {
       // um POST = um grupo de chunks (canal, epoch, rand): contar chunk seria
       // contar o mesmo webhook várias vezes e encurtar os intervalos
       const m = chave.match(/^funil_raw_(ig|fb|wa)_(\d{10,})_([a-z0-9]{4})_/);
@@ -351,11 +376,12 @@ function extrairReferralDeRaw(canal: "ig" | "fb" | "wa", corpo: string, epoch: n
 
 async function resgatarDaCaixaPreta(
   contratos: Map<string, ContratoAnuncio>,
-  dry: boolean
+  dry: boolean,
+  chavesRaw: string[]
 ): Promise<{ candidatos: number; resgatados: number }> {
   // 1. reconstrói as capturas (agrupa os chunks pela chave)
   const grupos = new Map<string, { canal: "ig" | "fb" | "wa"; epoch: number; partes: Array<{ i: number; chunk: string }> }>();
-  for (const chave of await paginar("funil_raw_%")) {
+  for (const chave of chavesRaw) {
     const m = chave.match(/^funil_raw_(ig|fb|wa)_(\d{10,})_([a-z0-9]{4})_(\d+)of(\d+)(?:_s0)?(?:_trunc)?::([\s\S]*)$/);
     if (!m) continue;
     const id = `${m[1]}_${m[2]}_${m[3]}`;
@@ -440,6 +466,14 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     gcHorasAtras: null,
   };
 
+  const t0 = Date.now();
+  const tempos: Record<string, number> = {};
+  let marco = Date.now();
+  const marcar = (passo: string) => {
+    tempos[passo] = Math.round((Date.now() - marco) / 100) / 10;
+    marco = Date.now();
+  };
+
   try {
     // 1) contratos (o clique mais ANTIGO vence, como no placar)
     const contratos = new Map<string, ContratoAnuncio>();
@@ -454,26 +488,70 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         /* chave ilegível: nada a conciliar */
       }
     }
+    marcar("contratos");
+
+    // A caixa-preta é lida UMA vez e servida aos dois passos que precisam dela
+    // (resgate e saúde). Antes eram duas paginações de ~9,7 MB por chamada.
+    let chavesRaw: string[] = [];
+    try {
+      chavesRaw = await paginar("funil_raw_%");
+    } catch (err) {
+      console.warn("[CONCILIA] leitura da caixa-preta falhou:", String(err).slice(0, 120));
+    }
+    marcar("caixa_preta");
+
     // 1b) RESGATE DA CAIXA-PRETA: referral gravado no raw sem contrato — o
     // clique cuja persistência falhou (blip do banco, canal pausado, return
     // sem persistir de versão antiga) volta à vida aqui, e o loop abaixo já o
     // concilia nesta mesma rodada. Em dry só conta.
     try {
-      const resgate = await resgatarDaCaixaPreta(contratos, dry);
+      const resgate = await resgatarDaCaixaPreta(contratos, dry, chavesRaw);
       out.resgatadosDaCaixaPreta = dry ? resgate.candidatos : resgate.resgatados;
     } catch (err) {
       console.warn("[CONCILIA] resgate da caixa-preta falhou:", String(err).slice(0, 120));
     }
+    marcar("resgate");
 
     out.contratos = contratos.size;
     if (contratos.size === 0) {
-      Object.assign(out, await saudeDaCaptura());
+      Object.assign(out, await saudeDaCaptura(chavesRaw));
       out.ok = true;
+      out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
+      return out;
+    }
+
+    // 1c) O QUE JÁ ESTÁ CONCILIADO NÃO SE PERGUNTA DE NOVO (28/08/2026).
+    // Contrato marcado = a plataforma já respondeu "tem anúncio E tem
+    // telefone" numa rodada anterior; do outro lado o merge é fill-if-empty,
+    // então isso não se desfaz sozinho. O que PODE desfazer (fusão de leads,
+    // exclusão) é coberto pela re-conferência de 1/8 por dia — nunca por fé.
+    const marcados = new Set<string>();
+    try {
+      for (const chave of await paginar(`${MARCA_OK}%`)) marcados.add(chave.slice(MARCA_OK.length));
+    } catch (err) {
+      console.warn("[CONCILIA] leitura das marcas falhou:", String(err).slice(0, 120));
+    }
+    const diaDoAno = Math.floor(Date.now() / 864e5);
+    const somaSimples = (t: string) => {
+      let h = 0;
+      for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 100000;
+      return h;
+    };
+    const reverificar = (id: string) => somaSimples(id) % DIVISOR_REVERIFICACAO === diaDoAno % DIVISOR_REVERIFICACAO;
+
+    const todosIds = [...contratos.keys()];
+    const ids = todosIds.filter((id) => !marcados.has(id) || reverificar(id));
+    out.jaConciliados = todosIds.length - ids.length;
+    out.reverificados = ids.filter((id) => marcados.has(id)).length;
+    out.comAtribuicao = out.jaConciliados; // pulado por marca = atribuído
+    if (ids.length === 0) {
+      Object.assign(out, await saudeDaCaptura(chavesRaw));
+      out.ok = true;
+      out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
       return out;
     }
 
     // 2) conversas
-    const ids = [...contratos.keys()];
     const convs = new Map<string, ConvRow>();
     for (let i = 0; i < ids.length; i += 100) {
       const { data } = await supabaseAdmin
@@ -494,16 +572,21 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         telefone: canal === "whatsapp" ? `+${igsid.slice(3).replace(/\D/g, "")}` : undefined,
       };
     });
+    marcar("conversas");
     const conferido = await conferirNaPlataforma(identidades);
+    marcar("conferencia");
     if (!conferido) {
-      Object.assign(out, await saudeDaCaptura());
+      Object.assign(out, await saudeDaCaptura(chavesRaw));
       out.erro = "plataforma não respondeu a conferência — nada foi reparado";
+      out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
       return out;
     }
 
     // 4) reparo do que ficou para trás
     let reparosFeitos = 0;
     let consultasMensagens = 0; // contratos que precisaram ler a conversa
+    const marcasNovas: string[] = []; // contratos que passam a ser pulados
+    const marcasCaidas: string[] = []; // re-conferidos que voltaram a ter furo
     const teto = opcoes?.teto ?? TETO_REPAROS;
     for (const id of ids) {
       const estado = conferido.get(id);
@@ -526,6 +609,7 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       // proporcional aos FUROS, e nao ao historico inteiro.
       if (estado?.temAdId === true && estado?.temTelefone === true) {
         out.comAtribuicao++;
+        if (!marcados.has(id)) marcasNovas.push(id);
         continue;
       }
 
@@ -588,6 +672,10 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         continue;
       }
 
+      // re-conferido que VOLTOU a ter furo (lead fundido/apagado depois da
+      // marca): a marca cai agora, senão o furo ficaria escondido por 8 dias
+      if (marcados.has(id)) marcasCaidas.push(id);
+
       if (!faltaTelefone) out.furos++;
       const furo: FuroConciliacao = {
         conversa: id,
@@ -634,16 +722,43 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       out.detalhes.push(furo);
     }
 
-    Object.assign(out, await saudeDaCaptura());
+    marcar("reparos");
+
+    // grava as marcas SÓ agora (nunca em dry): o contrato marcado é o que a
+    // plataforma acabou de confirmar resolvido nesta rodada.
+    if (!dry) {
+      try {
+        for (let i = 0; i < marcasNovas.length; i += 500) {
+          await supabaseAdmin
+            .from("platform_settings")
+            .upsert(
+              marcasNovas.slice(i, i + 500).map((id) => ({ platform: `${MARCA_OK}${id}`, paused: false })),
+              { onConflict: "platform", ignoreDuplicates: true }
+            );
+        }
+        for (const id of marcasCaidas) {
+          await supabaseAdmin.from("platform_settings").delete().eq("platform", `${MARCA_OK}${id}`);
+        }
+      } catch (err) {
+        console.warn("[CONCILIA] gravação das marcas falhou:", String(err).slice(0, 120));
+      }
+    }
+    marcar("marcas");
+
+    Object.assign(out, await saudeDaCaptura(chavesRaw));
     out.ok = true;
+    marcar("saude");
+    out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
     console.log(
       `[CONCILIA] ${out.contratos} contratos · ${out.comAtribuicao} já atribuídos · ${out.cliquesSemMensagem} clique sem mensagem · ` +
         `${out.furos} furo(s) · ${out.reparados} reparado(s) · ${out.naoReparados} não reparado(s) · ` +
-        `${consultasMensagens} conversa(s) lida(s) de ${ids.length} contrato(s)`
+        `${out.jaConciliados} pulado(s) por marca (${out.reverificados} re-conferido(s)) · ` +
+        `${consultasMensagens} conversa(s) lida(s) de ${ids.length} pendente(s) · ${JSON.stringify(out.tempos)}`
     );
     return out;
   } catch (err) {
     out.erro = String(err instanceof Error ? err.message : err).slice(0, 300);
+    out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
     return out;
   }
 }
