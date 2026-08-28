@@ -592,6 +592,7 @@ export function isOpenSlotOffer(text: string): boolean {
 // thought. Emitting it produces the broken fragment "...all in one price. Since
 // you get off at 5:30." Drop it instead.
 const LEADING_CONNECTOR = /^(?:since|because|so|as|when|if|while|after|before|once|and|but|or|plus|also|that\s+way|so\s+that|which\s+is\s+why|therefore|then)\b/i;
+const QUESTION_LEAD_IN = /^(?:does|do|would|could|can|will|is|are|what|which|when|how)\b[^?]*$/i;
 
 // A sentence that asks for the client's contact/booking data (name, phone,
 // address) is DATA COLLECTION, not scheduling pressure — it must survive the
@@ -617,7 +618,13 @@ export function stripSchedulingPush(text: string): string {
     // Split on comma+SPACE only — the thousands separator inside "1,500 sqft"
     // has no space after it and must never be treated as a clause boundary
     // (a "1, 500 sqft" mangle shipped to a real client, 2026-07-28).
-    const clauses = s.split(/,\s+/).filter((cl) => cl.includes("[") || CONTACT_ASK.test(cl) || !isSchedulingPush(cl));
+    const clauses = s
+      .split(/,\s+/)
+      .filter((cl) => cl.includes("[") || CONTACT_ASK.test(cl) || !isSchedulingPush(cl))
+      // A short question lead-in whose times were just removed ("Does tomorrow
+      // work" from "Does tomorrow work, 9am or 1pm?") is a headless fragment,
+      // not information: it shipped as "Does tomorrow work." (27/08/2026).
+      .filter((cl) => !(cl.trim().length < 45 && QUESTION_LEAD_IN.test(cl.trim())));
     // If the only thing left is a single leading-connector clause, it is
     // usually a dangling lead-in to the removed scheduling clause. Drop it when
     // SHORT ("Since you get off at 5:30.") — but a substantive clause is the
@@ -683,6 +690,42 @@ export function clientAlreadyGaveZip(messages: Array<{ role: string; content: st
     (m) => m.role === "user" && zipsInText((m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ")).length > 0
   );
 }
+// SHOWROOM (caso WA 27/08/2026): o cliente perguntou "Do you have a showroom"
+// e o modelo respondeu "We don't have a showroom". Regra do dono: a resposta é
+// SIM, temos o MOBILE showroom (sem loja física, levamos as amostras até a casa).
+// isShowroomQuestion detecta a pergunta (EN/ES/PT); fixShowroomDenial troca a
+// frase de negação por essa resposta quando a reply nega e não cita "mobile".
+const SHOWROOM_WORD = /\b(?:show\s*rooms?|store|shop|warehouse|storefront|physical\s+location|tiendas?|local|almac[eé]n|bodega|lojas?|loja\s+f[ií]sica)\b/i;
+export function isShowroomQuestion(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0];
+  if (!SHOWROOM_WORD.test(t)) return false;
+  return /\b(?:do|does|did|have|has|got|is|are|where|any|there)\b[^.!?\n]{0,60}\b(?:show\s*rooms?|store|shop|warehouse|storefront|physical\s+location)\b|\b(?:show\s*rooms?|store|shop|warehouse)\b[^.!?\n]{0,30}\?|\b(?:tienen?|hay|d[oó]nde|cu[aá]l\s+es)\b[^.!?\n]{0,40}\b(?:show\s*rooms?|tiendas?|local|almac[eé]n|bodega)\b|\b(?:t[eê]m|tem|voc[eê]s?|onde|qual)\b[^.!?\n]{0,40}\b(?:show\s*rooms?|lojas?)\b|\b(?:come|go|visit|stop)\s+(?:by|to|in)?\s*(?:your|the|a)\s+(?:show\s*rooms?|store|shop|warehouse)\b/i.test(t);
+}
+const SHOWROOM_DENIAL = /[^.!?\n]*\b(?:(?:don'?t|do\s+not|doesn'?t|does\s+not|no)\s+(?:currently\s+|actually\s+)?(?:have|got)\s+(?:a|an|any)?\s*(?:physical\s+|traditional\s+)?(?:show\s*rooms?|store|shop|warehouse|storefront)|(?:we|there)(?:'re|'s|\s+are|\s+is)\s+(?:not|no)\s+(?:a\s+)?(?:physical\s+|traditional\s+)?(?:show\s*rooms?|store|shop|warehouse|storefront)|no\s+(?:tenemos|contamos\s+con|hay)\s+(?:un\s+|una\s+)?(?:show\s*rooms?|tiendas?|local|almac[eé]n)|n[aã]o\s+(?:temos|tem)\s+(?:um\s+|uma\s+)?(?:show\s*rooms?|lojas?))\b[^.!?\n]*[.!?]?/i;
+const SHOWROOM_ANSWER: Record<string, string> = {
+  en: "Yes, we have a mobile showroom: we don't have a physical store, I bring all the samples right to your home so you can compare them on your own floor, free of charge.",
+  es: "Sí, tenemos un showroom móvil: no tenemos tienda física, te llevo todas las muestras a tu casa para que las compares en tu propio piso, sin costo.",
+  pt: "Sim, temos um showroom móvel: não temos loja física, eu levo todas as amostras até a sua casa para você comparar no seu próprio piso, sem custo.",
+};
+export function fixShowroomDenial(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  return withTagsProtected(text, (prose) => {
+    if (/\bmobile\s+show\s*room|show\s*room\s+m[oó]vi[l]?/i.test(prose)) return prose;
+    if (!SHOWROOM_DENIAL.test(prose)) return prose;
+    const answer = SHOWROOM_ANSWER[lang] ?? SHOWROOM_ANSWER.en;
+    let out = prose.replace(SHOWROOM_DENIAL, answer);
+    // Sobrou uma explicação redundante da mesma coisa ("but that's actually the
+    // better setup: I come directly to your property, bring all the samples…")?
+    // Apaga a frase seguinte que só repete amostras/visita, mantendo a pergunta.
+    const idx = out.indexOf(answer);
+    if (idx >= 0) {
+      const after = out.slice(idx + answer.length);
+      const redundant = after.match(/^\s*(?:but\s+)?[^.!?\n]*\b(?:samples|muestras|amostras|come\s+(?:directly\s+)?to\s+your|property)\b[^.!?\n]*[.!?]/i);
+      if (redundant) out = out.slice(0, idx + answer.length) + " " + after.slice(redundant[0].length).trimStart();
+    }
+    return out.replace(/[ \t]{2,}/g, " ").trim();
+  });
+}
+
 const ZIP_REASK_FRAGMENT = /,?\s*(?:(?:along\s+)?with|including|plus|and)\s+(?:the|its|your)?\s*(?:zip\s*code|zip|postal\s+code)\b|,?\s*(?:con|incluyendo)\s+(?:el|su)?\s*c[oó]digo\s+postal\b|,?\s*(?:com|incluindo)\s+(?:o|seu)?\s*(?:zip\s*code|cep|c[oó]digo\s+postal)\b/gi;
 export function stripZipReask(text: string): string {
   return withTagsProtected(text, (prose) =>
@@ -2669,6 +2712,18 @@ export async function getAIResponse(
       if (noReask !== cleaned) {
         cleaned = noReask;
         console.log("[AI] zip re-ask backstop: client already typed the zip, dropped 'with the zip code' from the details ask");
+      }
+    }
+
+    // Showroom: nunca "we don't have a showroom" — temos o MOBILE showroom.
+    {
+      const lastUser = [...(messages ?? [])].reverse().find((m) => m.role === "user");
+      if (lastUser && isShowroomQuestion(lastUser.content || "")) {
+        const fixed = fixShowroomDenial(cleaned, detectLang(lastUser.content || ""));
+        if (fixed !== cleaned) {
+          cleaned = fixed;
+          console.log("[AI] showroom backstop: replaced 'no showroom' denial with the mobile showroom answer");
+        }
       }
     }
 

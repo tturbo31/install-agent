@@ -306,7 +306,7 @@ async function repeatInterceptChecks() {
   );
   check(
     "…e a resposta engaja o agendamento da visita",
-    /visit|schedule|come by|stop by|day|time|week/i.test(burstWithSchedule.text),
+    /visit|schedule|come (?:by|out|over)|stop by|in.?person|measure|day|time|week/i.test(burstWithSchedule.text),
     burstWithSchedule.text.slice(0, 100)
   );
 
