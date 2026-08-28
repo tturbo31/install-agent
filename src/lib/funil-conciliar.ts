@@ -503,6 +503,7 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
 
     // 4) reparo do que ficou para trás
     let reparosFeitos = 0;
+    let consultasMensagens = 0; // contratos que precisaram ler a conversa
     const teto = opcoes?.teto ?? TETO_REPAROS;
     for (const id of ids) {
       const estado = conferido.get(id);
@@ -511,13 +512,36 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       const canal = canalDe(igsid);
       const ct = contratos.get(id) as ContratoAnuncio;
 
+      // ATALHO DO JA RESOLVIDO (28/08/2026) — o passo que quebrou o auto-curador.
+      // A varredura fazia UMA consulta de mensagens POR CONTRATO *antes* de
+      // decidir se havia algo a reparar. Com 2.705 contratos, 2.687 deles ja
+      // atribuidos e com telefone, a rodada gastava 2.687 idas ao banco para
+      // achar ~18 furos: medido em 120,1s — exatamente o timeout que a auditoria
+      // da plataforma usa. A chamada ABORTAVA em toda rodada da manha e da
+      // tarde, o reparo numero 1 do rastreio (contrato -> lead) nao rodava, e
+      // ainda queimava 120s do orcamento de 210s da auditoria, o que deixava o
+      // detetive de IA sem folga para investigar um caso novo sequer.
+      // Contrato ja atribuido E com telefone no lead nao tem nada a costurar:
+      // decide-se aqui, sem tocar no banco. O custo da rodada passa a ser
+      // proporcional aos FUROS, e nao ao historico inteiro.
+      if (estado?.temAdId === true && estado?.temTelefone === true) {
+        out.comAtribuicao++;
+        continue;
+      }
+
+      // So quem ainda pode gerar reparo paga a consulta. E `role=user` foi para
+      // o filtro do BANCO: assim o limite de 400 vale para as mensagens do
+      // CLIENTE (antes, 400 linhas de qualquer papel podiam nao conter nenhuma
+      // dele, e o telefone digitado na conversa ficava fora do corte).
+      consultasMensagens++;
       const { data: msgs } = await supabaseAdmin
         .from("instagram_messages")
         .select("role, content, created_at")
         .eq("conversation_id", id)
+        .eq("role", "user")
         .order("created_at", { ascending: true })
         .limit(400);
-      const doCliente = (msgs ?? []).filter((m) => m.role === "user");
+      const doCliente = msgs ?? [];
       if (doCliente.length === 0) {
         // clique sem conversa não é lead — criar um seria inventar cliente
         out.cliquesSemMensagem++;
@@ -614,7 +638,8 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     out.ok = true;
     console.log(
       `[CONCILIA] ${out.contratos} contratos · ${out.comAtribuicao} já atribuídos · ${out.cliquesSemMensagem} clique sem mensagem · ` +
-        `${out.furos} furo(s) · ${out.reparados} reparado(s) · ${out.naoReparados} não reparado(s)`
+        `${out.furos} furo(s) · ${out.reparados} reparado(s) · ${out.naoReparados} não reparado(s) · ` +
+        `${consultasMensagens} conversa(s) lida(s) de ${ids.length} contrato(s)`
     );
     return out;
   } catch (err) {
