@@ -160,6 +160,9 @@ check("'I work all day' engages scheduling", clientEngagedScheduling("I work all
 check("'my day off is friday' engages scheduling", clientEngagedScheduling("my day off is friday"));
 check("'solo fines de semana' engages scheduling", clientEngagedScheduling("solo fines de semana"));
 check("'no puedo entre semana' engages scheduling", clientEngagedScheduling("no puedo entre semana"));
+// "Soonest" phrases (28/08/2026, route-offer-verify T9): the anti-pressure strip used to delete the slot sentence for a client asking for the earliest visit.
+for (const t of ["Any day works, whatever is soonest.", "asap please", "the earliest you have", "anytime", "any day", "whenever works for you", "today if possible", "I'm free all week", "lo antes posible", "cuanto antes", "cualquier día", "o quanto antes", "qualquer dia", "hoje se der"]) check(`'${t}' (soonest/any day) engages scheduling`, clientEngagedScheduling(t));
+check("informational question with no timing words still does NOT engage scheduling", !clientEngagedScheduling("Is the vinyl waterproof and how thick is it?"));
 check(
   "Plain info question does NOT engage scheduling",
   !clientEngagedScheduling("What is the wear layer thickness?"),

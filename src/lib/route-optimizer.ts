@@ -57,7 +57,7 @@ export interface RouteConfig {
   noteDays: number; // ROUTE_NOTE_DAYS — quantos dias (com vaga) entram na nota de prioridade
   overallDays: number; // ROUTE_OVERALL_DAYS — (legado) dias considerados quando ROUTE_FILL_FIRST=0
   fillFirst: boolean; // ROUTE_FILL_FIRST — DATA PRIMEIRO: preencher o dia mais próximo antes de olhar rota de dias seguintes
-  targetNextDayFillRate: number; // ROUTE_TARGET_NEXT_DAY_FILL_RATE — 0..1; dia abaixo da meta = dia prioritário (padrão 0.9)
+  targetNextDayFillRate: number; // ROUTE_TARGET_NEXT_DAY_FILL_RATE — 0..1; dia abaixo da meta = dia prioritário (padrão 1: QUALQUER vaga no dia mais próximo o torna prioritário — regra do dono 28/08: nenhum horário vago fica para trás)
   gapBonusMin: number; // ROUTE_GAP_BONUS_MIN — desconto (min) para um horário que fecha um BURACO entre duas visitas do vendedor
   gapMaxScore: number; // ROUTE_GAP_MAX_SCORE — o bônus de buraco só vale se a rota for viável (score antes do bônus ≤ este valor)
   preferredSellerFirst: boolean; // ROUTE_PREFERRED_SELLER_FIRST — encher primeiro a agenda do vendedor preferido (regra do dono: Alexandre)
@@ -102,7 +102,9 @@ export function getRouteConfig(env: Record<string, string | undefined> = process
     noteDays: Math.max(1, Math.round(num(env.ROUTE_NOTE_DAYS, 10))),
     overallDays: Math.max(1, Math.round(num(env.ROUTE_OVERALL_DAYS, 3))),
     fillFirst: bool(env.ROUTE_FILL_FIRST, true),
-    targetNextDayFillRate: Math.min(1, Math.max(0, num(env.ROUTE_TARGET_NEXT_DAY_FILL_RATE, 0.9))),
+    // Regra do dono (28/08): o dia mais próximo com QUALQUER vaga é o prioritário
+    // (meta 1). A meta de 0.9 deixava a última vaga de hoje/amanhã para trás.
+    targetNextDayFillRate: Math.min(1, Math.max(0, num(env.ROUTE_TARGET_NEXT_DAY_FILL_RATE, 1))),
     gapBonusMin: Math.max(0, num(env.ROUTE_GAP_BONUS_MIN, 15)),
     gapMaxScore: num(env.ROUTE_GAP_MAX_SCORE, 60),
     preferredSellerFirst: bool(env.ROUTE_PREFERRED_SELLER_FIRST, true),
@@ -611,6 +613,8 @@ export function fillRateOf(d: { capacity?: number; open?: number }): number {
 // DIA PRIORITÁRIO = o primeiro dia (em ordem de data) que ainda tem vaga e está
 // abaixo da meta de ocupação. Se todos estão na meta ou acima, o primeiro dia
 // com vaga. "Primeiro deixamos amanhã cheio; depois deixamos amanhã inteligente."
+// Com a meta padrão 1 (28/08) isto é simplesmente: hoje se hoje ainda tem vaga,
+// senão amanhã, e assim por diante — a rota só ordena os horários DENTRO do dia.
 export function pickPriorityDay(days: DayRanking[], cfg: RouteConfig): DayRanking | null {
   const withSlots = days.filter((d) => d.ranked.length > 0);
   if (withSlots.length === 0) return null;
@@ -630,6 +634,7 @@ export function buildRoutePriorityNote(days: DayRanking[], client: GeoPoint, cfg
   const lines: string[] = [];
   lines.push(`${ROUTE_NOTE_HEADER}: the client's property is around ${client.label ?? client.zip ?? "the given area"}. The times below are the SAME open times listed above, just ordered by which ones fit the team's day best. This changes ONLY which of the listed times you name first, nothing else about how you talk or sell.`);
   lines.push(`- DATE FIRST: we fill the closest day before anything else. Offer the same number of options you always offer (${cfg.offerCount}), and take them from the PRIORITY DAY named below, from its "offer first" times, in the order given (when that day has ${cfg.offerCount} or more open times, both options are on that day). Do NOT skip to a later day because it looks more convenient; a later day only comes in when the client cannot do the priority day, asks for another day, or their stated availability has no match on it.`);
+  lines.push(`- NO EMPTY HOURS: the team's day must not be left with open hours while a later day gets booked. If the priority day has fewer than ${cfg.offerCount} open times, offer ALL of its open times and take the remaining option from the NEXT day that has open times (its "offer first" times). When the client asks for a later day, "next week", a weekend or an evening, use the SOONEST listed day that matches, never a later one.`);
   lines.push(`- If the client needs a specific day, use that day's "offer first" times. If the client cannot do the offered times, asks for something later/earlier, or asks for other options, open the "then" times of the SAME day next, and after that ANY other time listed on that day's line above; only then move to the next day. Every time listed above stays fully available; NEVER say a listed time is unavailable, and NEVER offer fewer options than the line has just because of this ordering.`);
   lines.push(`- If the client states their own constraint ("only after 6", "only Saturday", "I can only do 3pm", "tomorrow doesn't work"), their constraint wins: offer whatever listed times match it, whatever the order here.`);
   lines.push(`- If the client's latest message is their zip code or area (answering your question), do not stop at acknowledging it: in that SAME reply offer your usual ${cfg.offerCount} time slots from the priority day's "offer first" times and ask which works better, exactly as you always do.`);

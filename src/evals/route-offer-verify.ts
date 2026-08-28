@@ -206,7 +206,9 @@ async function run() {
   ]);
   console.log("   →", t8.replace(/\s+/g, " ").slice(0, 300));
   const c8 = clockTimes(t8);
-  ck("T8: oferece os dois 'offer first' do 2º dia (9am, 11am)", new Set(c8).size === 2 && c8.every((t) => ["9am", "11am"].includes(t)), `${c8.join(",")} | ${t8}`);
+  // Regra do dono (28/08): nenhuma vaga fica para trás → o 1pm que sobrou no 1º dia
+  // é a primeira opção, e a segunda é o "offer first" do 2º dia (9am).
+  ck("T8: REGRA 28/08: oferece o 1pm que sobrou no 1º dia + o primeiro do 2º dia (9am)", new Set(c8).size === 2 && c8.includes("1pm") && c8.every((t) => ["1pm", "9am", "11am"].includes(t)), `${c8.join(",")} | ${t8}`);
   ck("T8: não diz que o 1º dia está cheio/ocupado e não vaza rota", !/\bfull\b|booked|busy|occupied|capacity/i.test(t8) && !LEAK.test(t8), t8);
   const t8b = await ai([
     { role: "user", content: "Hi, luxury vinyl for the whole house, about 1200 sqft, in West Palm Beach 33401." },
@@ -215,6 +217,31 @@ async function run() {
   ]);
   console.log("   →", t8b.replace(/\s+/g, " ").slice(0, 300));
   ck("T8b: cliente pede o 1º dia → o 1pm que sobrou é oferecido (nunca 'não tenho')", clockTimes(t8b).includes("1pm") && !NO_AVAIL.test(t8b), t8b);
+
+  console.log("\n━━ 9. SEM nota de rota (ZIP desconhecido, cliente já escolheu o dia): a regra fixa SOONEST DAY FIRST da agenda basta ━━");
+  // Agenda com a MESMA regra fixa da produção: 1º dia só com 1pm, 2º dia cheio de vagas.
+  const soonestRule = "- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day. If that line has only one open time, offer it plus the first open time of the next line that has any. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them.";
+  const scheduleOneLeft = [
+    "REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):",
+    `• ${display(d1)}: 1pm`,
+    `• ${display(d2)}: ${SLOTS.map(fmt12).join(", ")}`,
+    "",
+    "IMPORTANT — read carefully before offering any time:",
+    "- ONLY offer times listed above. Never mention a time shown as 'fully booked'.",
+    soonestRule,
+    "- When you name a weekday to the client, you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line.",
+  ].join("\n");
+  const t9 = await ai([
+    { role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." },
+    { role: "assistant", content: "For that size, I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. Which day works best for you?" },
+    { role: "user", content: `Any day works, whatever is soonest.\n\n[SYSTEM: ${getEasternDateContext()}\n\n${scheduleOneLeft}]` },
+  ]);
+  console.log("   →", t9.replace(/\s+/g, " ").slice(0, 300));
+  const c9 = clockTimes(t9);
+  ck("T9: a única vaga do 1º dia (1pm) é oferecida, não pulada", c9.includes("1pm"), `${c9.join(",")} | ${t9}`);
+  // O modelo às vezes oferece só a vaga mais próxima ("1pm, that's the soonest I have open") — aceitável; o que não pode é inventar horário ou passar de dois.
+  ck("T9: no máximo dois horários e nenhum inventado (o 2º, se houver, vem do 2º dia)", new Set(c9).size <= 2 && c9.every((t) => ["1pm", ...SLOTS.map(fmt12)].includes(t)), `${c9.join(",")} | ${t9}`);
+  ck("T9: não vaza a regra ('soonest day first', 'empty hours', 'owner')", !/soonest day first|empty hours|owner'?s rule/i.test(t9) && !LEAK.test(t9), t9);
 
   console.log(`\n${fail === 0 ? "✅" : "❌"} route-offer-verify: ${pass} passed, ${fail} failed`);
   if (fail) { console.log("FAILED:\n - " + fails.join("\n - ")); process.exit(1); }

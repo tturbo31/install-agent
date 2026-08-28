@@ -376,9 +376,11 @@ async function run() {
     ck("nota: nunca falar de ocupação com o cliente", /how full a day is/.test(note));
     // amanhã praticamente cheio (9 de 10) → dia prioritário passa a ser depois de amanhã; o horário que sobrou continua listado
     const almostFull: DayRanking = { ...tomorrow, ranked: [mk("19:00", 95, 1)], capacity: 10, open: 1 };
-    ck("amanhã 90% ocupado (na meta) → dia prioritário = depois de amanhã", pickPriorityDay([almostFull, dayAfter], CFG)?.dateStr === "2026-08-29");
+    ck("REGRA DO DONO 28/08: amanhã 90% ocupado (1 vaga) CONTINUA prioritário com a meta padrão (1): nenhuma vaga fica para trás", pickPriorityDay([almostFull, dayAfter], CFG)?.dateStr === "2026-08-28");
+    ck("meta antiga 0.9 (só por env): amanhã 90% ocupado → dia prioritário = depois de amanhã", pickPriorityDay([almostFull, dayAfter], { ...CFG, targetNextDayFillRate: 0.9 })?.dateStr === "2026-08-29");
+    ck("nota: NO EMPTY HOURS — dia prioritário com menos de 2 vagas oferece todas + a primeira do dia seguinte; 'next week' = o dia mais próximo que bate", /NO EMPTY HOURS/.test(note) && /offer ALL of its open times and take the remaining option from the NEXT day/.test(note) && /use the SOONEST listed day that matches, never a later one/.test(note), note);
     const note2 = buildRoutePriorityNote([almostFull, dayAfter], WPB, CFG, fmt)!;
-    ck("nota: o horário que sobrou amanhã continua listado (nunca some)", /\[2026-08-28\] \(90% booked\): offer first 7pm/.test(note2), note2);
+    ck("nota: o horário que sobrou amanhã continua listado (nunca some)", /\[2026-08-28\] \(90% booked\) ← PRIORITY DAY: offer first 7pm/.test(note2), note2);
     ck("meta configurável: com ROUTE_TARGET_NEXT_DAY_FILL_RATE=0.95 amanhã (90%) volta a ser prioritário", pickPriorityDay([almostFull, dayAfter], { ...CFG, targetNextDayFillRate: 0.95 })?.dateStr === "2026-08-28");
     ck("todos os dias na meta → o primeiro com vaga é o prioritário", pickPriorityDay([{ ...tomorrow, capacity: 10, open: 0, ranked: [] }, { ...dayAfter, capacity: 10, open: 1 }], CFG)?.dateStr === "2026-08-29");
     ck("ROUTE_FILL_FIRST=0 → primeiro dia com vaga, sem olhar ocupação", pickPriorityDay([almostFull, dayAfter], { ...CFG, fillFirst: false })?.dateStr === "2026-08-28");
@@ -396,8 +398,12 @@ async function run() {
       const { ranked } = await rankSellersForSlot({ client: P("33135"), slot: "13:00", candidates: [DIEGO, ALEX], visits, cfg: CFG });
       ck("[BOOK]: Alexandre (1pm fecha o buraco 11am→3pm) vence Diego (1pm só estende o dia)", ranked[0].seller.name === "Alexandre" && ranked[0].route.gapFill, JSON.stringify(ranked.map((r) => [r.seller.name, r.route.score, r.route.gapFill])));
     }
-    ck("config: padrões fillFirst=1, meta 0.9, gap bonus 15, gap max 60", CFG.fillFirst && CFG.targetNextDayFillRate === 0.9 && CFG.gapBonusMin === 15 && CFG.gapMaxScore === 60);
+    ck("config: padrões fillFirst=1, meta 1 (qualquer vaga = dia prioritário), gap bonus 15, gap max 60", CFG.fillFirst && CFG.targetNextDayFillRate === 1 && CFG.gapBonusMin === 15 && CFG.gapMaxScore === 60);
+    ck("meta 1 aceita por env (ROUTE_TARGET_NEXT_DAY_FILL_RATE=0.9 ainda funciona)", getRouteConfig({ ROUTE_TARGET_NEXT_DAY_FILL_RATE: "0.9" }).targetNextDayFillRate === 0.9 && getRouteConfig({}).targetNextDayFillRate === 1);
     const sched2 = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
+    ck("agenda: regra SOONEST DAY FIRST fixa no bloco da agenda (vale sem ZIP/sem nota de rota)", /SOONEST DAY FIRST/.test(sched2) && /take your two options from the FIRST line above that has open times, today if today still has times listed/.test(sched2) && /Never skip a day that has open times because a later day has more of them/.test(sched2));
+    const aiSrc2 = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
+    ck("prompt: regra 33 (dois horários) manda tirar os dois do dia MAIS PRÓXIMO com vaga", /Both options come from the SOONEST day in the schedule that has open times/.test(aiSrc2));
     ck("agenda calcula capacidade/ocupação por dia (Fill Rate) e repassa à nota", /capacity\+\+;/.test(sched2) && /days\.push\(\{ dateStr: d\.dateStr, displayDate: d\.displayDate, ranked, capacity: d\.capacity, open: d\.open \}\)/.test(sched2));
   }
 
