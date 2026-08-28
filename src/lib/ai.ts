@@ -670,6 +670,30 @@ export function isVisitProposalWithZipAsk(text: string): boolean {
   return /\b(?:visit|measure|samples?|estimate|visita|medir|muestras|amostras|or[cç]amento)\b/i.test(t) && /\bzip\b|c[oó]digo\s+postal/i.test(t) && /\?/.test(t);
 }
 
+// ZIP já digitado pelo cliente (caso Adelyn, IG 27/08/2026): o bot pediu o
+// ZIP para posicionar a visita, a cliente mandou "33176", escolheu "1pm" e o
+// pedido de dados ainda dizia "the full property address with the zip code".
+// O prompt e a nota de rota agora instruem o modelo; este backstop apaga o
+// trecho "with/including the zip code" (EN/ES/PT) do pedido quando algum ZIP
+// já está numa bolha do cliente. Só mexe no pedido de dados, nunca numa pergunta
+// isolada de ZIP ("What's the zip code for that address?") nem nas tags.
+const CLIENT_SYSTEM_BRACKETS = /\[(?:Client (?:shared|replied)|Floor plan analysis|Image|Photo|Attachment|Sticker|Video)[^\]]*\]/gi;
+export function clientAlreadyGaveZip(messages: Array<{ role: string; content: string }>): boolean {
+  return (messages ?? []).some(
+    (m) => m.role === "user" && zipsInText((m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ")).length > 0
+  );
+}
+const ZIP_REASK_FRAGMENT = /,?\s*(?:(?:along\s+)?with|including|plus|and)\s+(?:the|its|your)?\s*(?:zip\s*code|zip|postal\s+code)\b|,?\s*(?:con|incluyendo)\s+(?:el|su)?\s*c[oó]digo\s+postal\b|,?\s*(?:com|incluindo)\s+(?:o|seu)?\s*(?:zip\s*code|cep|c[oó]digo\s+postal)\b/gi;
+export function stripZipReask(text: string): string {
+  return withTagsProtected(text, (prose) =>
+    prose
+      .replace(ZIP_REASK_FRAGMENT, "")
+      .replace(/\(\s*\)/g, "")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\s+([,.!?])/g, "$1")
+  );
+}
+
 export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
   // Look back over the last few assistant turns: once the visit/scheduling
   // was already pushed, the client may ask several info questions in a row,
@@ -2638,6 +2662,15 @@ export async function getAIResponse(
     // Exception: the seller's number our own installation confirmation already
     // gave this client (the prompt directs reschedules/changes to that contact).
     cleaned = scrubForeignPhones(cleaned, installConfirmationPhones(messages));
+
+    // ZIP já dado pelo cliente → o pedido de dados não repete "with the zip code".
+    if (isAskingForBookingInfo(cleaned) && /zip|postal|\bcep\b/i.test(cleaned) && clientAlreadyGaveZip(messages)) {
+      const noReask = stripZipReask(cleaned);
+      if (noReask !== cleaned) {
+        cleaned = noReask;
+        console.log("[AI] zip re-ask backstop: client already typed the zip, dropped 'with the zip code' from the details ask");
+      }
+    }
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {

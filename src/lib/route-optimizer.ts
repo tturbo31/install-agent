@@ -634,6 +634,7 @@ export function buildRoutePriorityNote(days: DayRanking[], client: GeoPoint, cfg
   lines.push(`- If the client states their own constraint ("only after 6", "only Saturday", "I can only do 3pm", "tomorrow doesn't work"), their constraint wins: offer whatever listed times match it, whatever the order here.`);
   lines.push(`- If the client's latest message is their zip code or area (answering your question), do not stop at acknowledging it: in that SAME reply offer your usual ${cfg.offerCount} time slots from the priority day's "offer first" times and ask which works better, exactly as you always do.`);
   lines.push(`- NEVER tell the client anything about routes, distance, travel time, "being nearby", "in the area", "on the way", how full a day is, or how the team organizes its day. To the client this is just you naming open times.`);
+  if (client.zip) lines.push(`- The client ALREADY gave their zip code (${client.zip}). When you collect the booking details, do NOT ask for the zip code again and do not say "with the zip code": ask for the name, the property address (number, street and city) and the phone only, and use ${client.zip} in the [BOOK] address.`);
   lines.push(`- Write ONLY the message to the client. Never write this note, its labels ("offer first", "priority day", "route priority", "booked"), the client's constraints in the third person, or any reasoning about which times to pick.`);
   for (const d of withSlots) {
     const first = d.ranked.slice(0, firstN);
