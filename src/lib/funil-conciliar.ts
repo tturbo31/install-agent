@@ -135,7 +135,14 @@ async function paginar(like: string): Promise<string[]> {
   return chaves;
 }
 
-type ConvRow = { id: string; igsid: string; name: string | null; username: string | null; created_at: string | null };
+type ConvRow = {
+  id: string;
+  igsid: string;
+  name: string | null;
+  username: string | null;
+  created_at: string | null;
+  updated_at?: string | null; // decide se a conversa se mexeu desde a marca
+};
 
 // A rota da plataforma corta em 1000 identidades por chamada — e em 10/08/2026
 // já eram 959 contratos numa chamada só. O corte era SILENCIOSO: o excedente
@@ -521,16 +528,47 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     }
 
     // 1c) O QUE JÁ ESTÁ CONCILIADO NÃO SE PERGUNTA DE NOVO (28/08/2026).
-    // Contrato marcado = a plataforma já respondeu "tem anúncio E tem
-    // telefone" numa rodada anterior; do outro lado o merge é fill-if-empty,
-    // então isso não se desfaz sozinho. O que PODE desfazer (fusão de leads,
-    // exclusão) é coberto pela re-conferência de 1/8 por dia — nunca por fé.
-    const marcados = new Set<string>();
+    //
+    // A marca é uma MARCA D'ÁGUA: `funil_conc_<conversa>::<epoch da última
+    // atividade quando foi conferida>`. Ela existe porque o passo caro não era
+    // a conferência, e sim a leitura da CONVERSA: o lead de IG/FB nasce sem
+    // telefone (a Meta não dá o número), então `temTelefone` é falso na maioria
+    // dos contratos e a rodada relia a conversa inteira de ~2.100 pessoas, toda
+    // vez, procurando um telefone que o cliente nunca digitou. Medido: 87,9s de
+    // 102,7s da chamada.
+    //
+    // Conversa sem mensagem nova desde a última conferência não pode ter
+    // telefone novo — nada mudou, nada a reconferir. Conversa que se mexeu
+    // volta para a fila automaticamente.
+    const marcados = new Map<string, number>();
     try {
-      for (const chave of await paginar(`${MARCA_OK}%`)) marcados.add(chave.slice(MARCA_OK.length));
+      for (const chave of await paginar(`${MARCA_OK}%`)) {
+        const corpo = chave.slice(MARCA_OK.length);
+        const sep = corpo.indexOf("::");
+        if (sep === -1) continue;
+        marcados.set(corpo.slice(0, sep), Number(corpo.slice(sep + 2)) || 0);
+      }
     } catch (err) {
       console.warn("[CONCILIA] leitura das marcas falhou:", String(err).slice(0, 120));
     }
+    marcar("marcas_lidas");
+
+    // 2) conversas — de TODOS os contratos: é o `updated_at` delas que decide
+    // quem entra na fila (e a leitura é barata: ~2s em lotes de 100).
+    const todosIds = [...contratos.keys()];
+    const convs = new Map<string, ConvRow>();
+    for (let i = 0; i < todosIds.length; i += 100) {
+      const { data } = await supabaseAdmin
+        .from("instagram_conversations")
+        .select("id, igsid, name, username, created_at, updated_at")
+        .in("id", todosIds.slice(i, i + 100));
+      for (const c of (data ?? []) as ConvRow[]) convs.set(c.id, c);
+    }
+    marcar("conversas");
+
+    // a re-conferência periódica continua existindo: fusão de leads e exclusão
+    // podem desfazer a atribuição sem mexer na conversa. 1/8 por dia = todo
+    // contrato marcado volta à fila a cada 8 dias, e o resumo diz quantos.
     const diaDoAno = Math.floor(Date.now() / 864e5);
     const somaSimples = (t: string) => {
       let h = 0;
@@ -538,9 +576,23 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       return h;
     };
     const reverificar = (id: string) => somaSimples(id) % DIVISOR_REVERIFICACAO === diaDoAno % DIVISOR_REVERIFICACAO;
+    // Margem de 60s (medido: o `updated_at` da conversa fica ate ~21s atras da
+    // ultima mensagem). Marcar 1 minuto ANTES da atividade conhecida so pode
+    // causar uma releitura a mais; marcar depois esconderia a mensagem para
+    // sempre — e o erro caro e esse.
+    const MARGEM_MARCA_MS = 60_000;
+    const atividadeDe = (id: string): number => {
+      const c = convs.get(id);
+      const t = Date.parse(String(c?.updated_at ?? c?.created_at ?? ""));
+      return Number.isFinite(t) ? t - MARGEM_MARCA_MS : Date.now(); // sem data conhecida, nunca pular
+    };
 
-    const todosIds = [...contratos.keys()];
-    const ids = todosIds.filter((id) => !marcados.has(id) || reverificar(id));
+    const ids = todosIds.filter((id) => {
+      const marca = marcados.get(id);
+      if (marca === undefined) return true; // nunca conferido
+      if (atividadeDe(id) > marca) return true; // conversa se mexeu depois da marca
+      return reverificar(id); // a fatia do dia
+    });
     out.jaConciliados = todosIds.length - ids.length;
     out.reverificados = ids.filter((id) => marcados.has(id)).length;
     out.comAtribuicao = out.jaConciliados; // pulado por marca = atribuído
@@ -549,16 +601,6 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       out.ok = true;
       out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };
       return out;
-    }
-
-    // 2) conversas
-    const convs = new Map<string, ConvRow>();
-    for (let i = 0; i < ids.length; i += 100) {
-      const { data } = await supabaseAdmin
-        .from("instagram_conversations")
-        .select("id, igsid, name, username, created_at")
-        .in("id", ids.slice(i, i + 100));
-      for (const c of (data ?? []) as ConvRow[]) convs.set(c.id, c);
     }
 
     // 3) uma pergunta só à plataforma
@@ -572,7 +614,6 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
         telefone: canal === "whatsapp" ? `+${igsid.slice(3).replace(/\D/g, "")}` : undefined,
       };
     });
-    marcar("conversas");
     const conferido = await conferirNaPlataforma(identidades);
     marcar("conferencia");
     if (!conferido) {
@@ -609,7 +650,7 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       // proporcional aos FUROS, e nao ao historico inteiro.
       if (estado?.temAdId === true && estado?.temTelefone === true) {
         out.comAtribuicao++;
-        if (!marcados.has(id)) marcasNovas.push(id);
+        marcasNovas.push(id);
         continue;
       }
 
@@ -656,6 +697,11 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
       const faltaTelefone = Boolean(telefone) && estado?.temAdId === true && estado?.temTelefone === false;
       if (estado?.temAdId && !faltaTelefone) {
         out.comAtribuicao++;
+        // conversa lida e sem telefone novo a costurar: marca a água aqui.
+        // Enquanto o cliente não escrever de novo, esta conversa não volta à
+        // fila — é este ramo (lead de IG/FB nasce sem telefone) que respondia
+        // por ~2.100 leituras de conversa por rodada.
+        marcasNovas.push(id);
         continue;
       }
       if (faltaTelefone) out.telefonesCosturados++;
@@ -728,16 +774,17 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     // plataforma acabou de confirmar resolvido nesta rodada.
     if (!dry) {
       try {
-        for (let i = 0; i < marcasNovas.length; i += 500) {
+        // a marca anterior sai antes (o epoch mora DENTRO da chave, então
+        // regravar sem apagar deixaria duas marcas da mesma conversa)
+        const paraLimpar = [...marcasNovas.filter((id) => marcados.has(id)), ...marcasCaidas];
+        for (const id of paraLimpar) {
+          await supabaseAdmin.from("platform_settings").delete().like("platform", `${MARCA_OK}${id}::%`);
+        }
+        const linhas = marcasNovas.map((id) => ({ platform: `${MARCA_OK}${id}::${atividadeDe(id)}`, paused: false }));
+        for (let i = 0; i < linhas.length; i += 500) {
           await supabaseAdmin
             .from("platform_settings")
-            .upsert(
-              marcasNovas.slice(i, i + 500).map((id) => ({ platform: `${MARCA_OK}${id}`, paused: false })),
-              { onConflict: "platform", ignoreDuplicates: true }
-            );
-        }
-        for (const id of marcasCaidas) {
-          await supabaseAdmin.from("platform_settings").delete().eq("platform", `${MARCA_OK}${id}`);
+            .upsert(linhas.slice(i, i + 500), { onConflict: "platform", ignoreDuplicates: true });
         }
       } catch (err) {
         console.warn("[CONCILIA] gravação das marcas falhou:", String(err).slice(0, 120));
