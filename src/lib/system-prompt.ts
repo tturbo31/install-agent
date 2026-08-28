@@ -16,7 +16,7 @@ export const WHAT_IS_INCLUDED_HARDWOOD_RESPONSE = "Hello, for hardwood our promo
 // want, so the client answers and the normal per-type flow continues. Language is
 // chosen from the greeting itself. No price, no dashes, no emoji.
 export const OPENER_EN = "Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?";
-export const OPENER_ES = "Hola, trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno. ¿Cuál te interesa?";
+export const OPENER_ES = "Hola, trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno. Cuál te interesa?";
 export const OPENER_PT = "Olá, trabalhamos com piso vinílico de luxo, tile e hardwood, e temos uma promoção em cada um. Qual é a sua preferência?";
 
 // LANGUAGE-REQUEST OPENERS (caso Pedro Sanchez, Messenger, 2026-08-25): the
@@ -28,7 +28,7 @@ export const OPENER_PT = "Olá, trabalhamos com piso vinílico de luxo, tile e h
 // These variants CONFIRM the language the client asked for and ask the type in
 // that language, in the same deterministic zero-token message. They name tile +
 // hardwood so assistantAlreadyAskedType() counts them as the one type-ask.
-export const OPENER_LANG_ES = "Claro, con gusto te atiendo en español. Trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno, ¿cuál te interesa?";
+export const OPENER_LANG_ES = "Claro, con gusto te atiendo en español. Trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno, cuál te interesa?";
 export const OPENER_LANG_PT = "Claro, com prazer te atendo em português. Trabalhamos com piso vinílico de luxo, tile e hardwood, e temos uma promoção em cada um, qual você prefere?";
 export const OPENER_LANG_EN = "Of course, English works. We work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each, which one are you interested in?";
 
@@ -52,9 +52,9 @@ export const WHAT_IS_INCLUDED_ASK_TYPE = "Hello! It depends on the floor you pic
 // AD_REPLY_NOTE rule), still deterministic and zero-token. They name tile +
 // hardwood so assistantAlreadyAskedType() counts them as the one allowed type-ask.
 export const OPENER_PROCESS_EN = "We move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?";
-export const OPENER_PROCESS_ES = "Movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+export const OPENER_PROCESS_ES = "Movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar. Cuál piso te interesa, tile, vinyl o hardwood?";
 export const OPENER_DISCOUNT_EN = "Yes, larger spaces get our best pricing, and the estimate visit is completely free. Which flooring are you thinking about, tile, vinyl, or hardwood?";
-export const OPENER_DISCOUNT_ES = "Sí, los espacios grandes tienen nuestro mejor precio, y la visita para el estimado es totalmente gratis. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+export const OPENER_DISCOUNT_ES = "Sí, los espacios grandes tienen nuestro mejor precio, y la visita para el estimado es totalmente gratis. Cuál piso te interesa, tile, vinyl o hardwood?";
 
 // "Where are you located?" as a typed first message (not a Meta button). The
 // generic opener used to steamroll it, and when the client re-sent the exact
@@ -63,7 +63,7 @@ export const OPENER_DISCOUNT_ES = "Sí, los espacios grandes tienen nuestro mejo
 // same deterministic message. They name tile + hardwood so
 // assistantAlreadyAskedType() counts them as the one allowed type-ask.
 export const OPENER_LOCATION_EN = "We are based in Miami and serve all of South Florida, from Homestead to Jupiter. Which flooring are you thinking about, tile, vinyl, or hardwood?";
-export const OPENER_LOCATION_ES = "Estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter. ¿Cuál piso te interesa, tile, vinyl o hardwood?";
+export const OPENER_LOCATION_ES = "Estamos en Miami y atendemos todo el sur de la Florida, desde Homestead hasta Jupiter. Cuál piso te interesa, tile, vinyl o hardwood?";
 export const OPENER_LOCATION_PT = "Estamos em Miami e atendemos todo o sul da Flórida, de Homestead até Jupiter. Qual piso você prefere, tile, vinyl ou hardwood?";
 
 // MULTI-FAQ BURST (2026-08-01 five-day review): Meta's ad quick-replies are
@@ -95,12 +95,12 @@ const AD_FAQ_FRAGMENTS: Record<"en" | "es", Record<AdFaqTopic, string>> = {
     inclusions: "la promo de vinyl ya incluye el material, la mano de obra y el quarter round, mientras que tile y hardwood cubren solo la mano de obra",
   },
 };
-const AD_FAQ_LEAD_IN = { en: "Great questions!", es: "¡Buenas preguntas!" };
+const AD_FAQ_LEAD_IN = { en: "Great questions!", es: "Buenas preguntas!" };
 // Names tile + hardwood so assistantAlreadyAskedType() counts it as the one
 // allowed type-ask, exactly like every single-topic opener above.
 const AD_FAQ_TYPE_ASK = {
   en: "Which one are you interested in, tile, vinyl, or hardwood?",
-  es: "¿Cuál te interesa, tile, vinyl o hardwood?",
+  es: "Cuál te interesa, tile, vinyl o hardwood?",
 };
 
 // Builds the combined answer. Returns null for fewer than 2 distinct topics so
@@ -498,7 +498,7 @@ Example: "I'd love for you to see them in person! I bring all the samples to you
 
 (2c) SHOWROOM → the answer is YES, we have a MOBILE SHOWROOM. Whenever the client asks if we have a showroom, a store, a shop, a warehouse or a physical location where they can go see the floors ("do you have a showroom", "where is your showroom", "can I come see the floors", "tienen showroom", "tienen tienda", "vocês têm loja/showroom"), NEVER say "we don't have a showroom" or "no showroom". Say: yes, we have a mobile showroom, we don't have a physical store, we bring all the samples right to your home so you can see and compare them on your own floor, free of charge. Then continue the normal flow (one area or the whole house, or propose the visit at 500+ sqft). If they insist on visiting a store, repeat kindly that it is a mobile showroom only and offer the free visit.
 Example: "Yes, we have a mobile showroom: we don't have a physical store, I bring all the samples right to your home so you can compare them on your own floor, free of charge. Is it just one area or the whole house?"
-Spanish example: "Sí, tenemos un showroom móvil: no tenemos tienda física, te llevo todas las muestras a tu casa para que las compares en tu propio piso, sin costo. ¿Es solo un área o toda la casa?"
+Spanish example: "Sí, tenemos un showroom móvil: no tenemos tienda física, te llevo todas las muestras a tu casa para que las compares en tu propio piso, sin costo. Es solo un área o toda la casa?"
 
 IS IT REALLY VINYL: Some of the floors we advertise have a marble finish (or other premium looks) but are STILL luxury vinyl. If the client asks whether it is really vinyl, or seems surprised that a marble-look floor is vinyl, confirm clearly: yes, even the marble finish floors are luxury vinyl, waterproof and highly resistant with a 20-year warranty.
 

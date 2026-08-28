@@ -10,9 +10,19 @@
 // Remove (não trunca): alertas ao dono citam transcrições que podem conter um
 // marcador no MEIO do texto, e cortar dali em diante engoliria o resto do alerta.
 export function stripInternalMarkers(text: string): string {
-  return (text || "")
-    .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*|SEND_FAILED)\]/g, "")
-    .trim();
+  return stripInvertedPunctuation(
+    (text || "")
+      .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*|SEND_FAILED)\]/g, "")
+      .trim()
+  );
+}
+
+// Regra do dono (28/08/2026): em espanhol a pontuação é como no português — só
+// o "?" / "!" de fechamento, nunca os invertidos "¿" / "¡". Vale para o modelo
+// e para todo enlatado; aplicado no envio dos 3 canais (backstop) e no
+// getAIResponse (o que fica no banco também sai limpo).
+export function stripInvertedPunctuation(text: string): string {
+  return (text || "").replace(/[¿¡]/g, "");
 }
 
 // Sufixo gravado quando o envio FALHOU em definitivo (incidente FB 2026-07-22

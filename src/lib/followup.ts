@@ -35,7 +35,7 @@ export function followupTemplate(lang: Lang): string {
   if (lang === "pt")
     return "Oi, passando só para saber se quer agendar sua visita gratuita de orçamento! Levo todas as amostras para você escolher o piso e já sair com o preço exato.";
   if (lang === "es")
-    return "Hola, solo para dar seguimiento, ¿quieres que agendemos tu visita gratis para el estimado? Llevo todas las muestras para que escojas tu piso y tengas el precio exacto al momento.";
+    return "Hola, solo para dar seguimiento, quieres que agendemos tu visita gratis para el estimado? Llevo todas las muestras para que escojas tu piso y tengas el precio exacto al momento.";
   return "Hi, just checking in, want me to get your free estimate visit scheduled? I bring all the samples so you can pick your floor and get the exact price on the spot.";
 }
 

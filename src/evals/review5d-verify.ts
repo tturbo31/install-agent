@@ -61,8 +61,9 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   ck("3 tópicos: uma única pergunta no fim", (String(three).match(/\?/g) ?? []).length === 1, String(three));
 
   const es = composeAdFaqOpener(["process", "discount"], "es");
-  ck("espanhol combina e abre com ¡", !!es && es.startsWith("¡") && /muebles/i.test(es) && /mejor precio/i.test(es), String(es));
-  ck("espanhol pergunta com ¿ de abertura", !!es && /¿[^?]*\?/.test(es), String(es));
+  // Regra do dono (28/08/2026): em espanhol a pontuação é como no português — sem ¡ / ¿, só ! e ? no final.
+  ck("espanhol combina os dois tópicos SEM ¡ de abertura", !!es && !/[¡¿]/.test(es) && /^Buenas preguntas!/.test(es) && /muebles/i.test(es) && /mejor precio/i.test(es), String(es));
+  ck("espanhol termina com a pergunta fechada por ? (sem ¿)", !!es && /\?\s*$/.test(es) && !/¿/.test(es), String(es));
 
   ck("1 tópico só NÃO combina (mantém o opener já testado)", composeAdFaqOpener(["process"], "en") === null);
   ck("0 tópicos → null", composeAdFaqOpener([], "en") === null);

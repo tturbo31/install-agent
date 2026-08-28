@@ -23,6 +23,7 @@ import {
   type ChatMessage,
 } from "@/lib/ai";
 import { OPENER_ES, OPENER_EN, OPENER_LOCATION_EN, OPENER_LOCATION_ES, WHAT_IS_INCLUDED_ASK_TYPE } from "@/lib/system-prompt";
+import { stripInvertedPunctuation, stripInternalMarkers } from "@/lib/outbound-text";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -163,6 +164,26 @@ check("'no puedo entre semana' engages scheduling", clientEngagedScheduling("no 
 // "Soonest" phrases (28/08/2026, route-offer-verify T9): the anti-pressure strip used to delete the slot sentence for a client asking for the earliest visit.
 for (const t of ["Any day works, whatever is soonest.", "asap please", "the earliest you have", "anytime", "any day", "whenever works for you", "today if possible", "I'm free all week", "lo antes posible", "cuanto antes", "cualquier día", "o quanto antes", "qualquer dia", "hoje se der"]) check(`'${t}' (soonest/any day) engages scheduling`, clientEngagedScheduling(t));
 check("informational question with no timing words still does NOT engage scheduling", !clientEngagedScheduling("Is the vinyl waterproof and how thick is it?"));
+
+// Regra do dono (28/08/2026): em espanhol NUNCA "¿" / "¡" — só "?" e "!" no final, como no português.
+{
+  check("stripInvertedPunctuation: apaga ¿ e ¡ e mantém o resto", stripInvertedPunctuation("¡Perfecto! ¿Cuál te queda mejor?") === "Perfecto! Cuál te queda mejor?");
+  check("stripInvertedPunctuation: não mexe em texto sem os sinais (nem em quebras de parágrafo)", stripInvertedPunctuation("Hola.\n\nQué tal?") === "Hola.\n\nQué tal?");
+  check("envio (stripInternalMarkers, 3 canais) também limpa ¿¡", stripInternalMarkers("¿Te funciona? [SYSTEM: FOLLOWUP_NUDGE]") === "Te funciona?");
+  const srcFiles = ["src/lib/scheduler.ts", "src/lib/system-prompt.ts", "src/lib/followup.ts", "src/lib/quote-followup.ts", "src/lib/route-optimizer.ts", "src/lib/ai.ts"];
+  const offenders: string[] = [];
+  for (const f of srcFiles) {
+    const lines = readFileSync(join(process.cwd(), f), "utf-8").split(/\r?\n/);
+    lines.forEach((line, i) => {
+      if (!/[¿¡]/.test(line)) return;
+      const regexOrComment = /^\s*\/\//.test(line) || /\.(?:match|test|replace)\(|new RegExp|^\s*(?:const|let)\s+[A-Z_]+\s*=\s*\//.test(line) || /\/[^/"`]*[¿¡][^/"`]*\/[gimsuy]*/.test(line);
+      if (!regexOrComment && !/never use the inverted marks/.test(line)) offenders.push(f + ":" + (i + 1));
+    });
+  }
+  check("nenhum enlatado/prompt em espanhol com ¿ ou ¡ (só regex de detecção pode ter)", offenders.length === 0, offenders.join(", "));
+  const aiSrc3 = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
+  check("prompt: regra 1b SPANISH PUNCTUATION presente", /1b\. SPANISH PUNCTUATION: never use the inverted marks/.test(aiSrc3));
+}
 check(
   "Plain info question does NOT engage scheduling",
   !clientEngagedScheduling("What is the wear layer thickness?"),

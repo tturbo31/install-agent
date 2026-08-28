@@ -1047,7 +1047,7 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
 export function needSlotConfirmationMessage(lang: Lang): string {
   if (lang === "pt") return "Perfeito! Só falta confirmar o dia e o horário, qual fica melhor para você para a visita?";
   return lang === "es"
-    ? "¡Perfecto! Solo me falta confirmar el día y la hora, ¿cuál te queda mejor para la visita?"
+    ? "Perfecto! Solo me falta confirmar el día y la hora, cuál te queda mejor para la visita?"
     : "Perfect! I just need to confirm the day and time, which works best for you for the visit?";
 }
 
@@ -1103,7 +1103,7 @@ export async function needTimeChoiceMessage(lang: Lang, dateStr: string, clientA
       const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
       if (lang === "pt") return `Perfeito! Para esse dia tenho disponível ${list}, qual horário fica melhor para você?`;
       return lang === "es"
-        ? `¡Perfecto! Para ese día tengo disponible ${list}, ¿a qué hora te queda mejor?`
+        ? `Perfecto! Para ese día tengo disponible ${list}, a qué hora te queda mejor?`
         : `Perfect! For that day I have ${list} available, which time works best for you?`;
     }
   } catch (err) {
@@ -1589,7 +1589,7 @@ export async function slotConflictRecoveryMessage(
             lang === "pt"
               ? `Esse horário exato eu não tenho disponível, mas nesse mesmo dia posso às ${list}. Qual fica melhor para você?`
               : lang === "es"
-                ? `Ese horario exacto no lo tengo disponible, pero ese mismo día puedo a las ${list}. ¿Cuál te queda mejor?`
+                ? `Ese horario exacto no lo tengo disponible, pero ese mismo día puedo a las ${list}. Cuál te queda mejor?`
                 : `That exact time isn't open on my end, but that same day I can do ${list}. Which works better for you?`;
         }
       } catch (err) {
@@ -1614,8 +1614,8 @@ export async function slotConflictRecoveryMessage(
         const t = times.length >= 2 ? `${times[0]} o ${times[1]}` : times[0];
         msg =
           times.length >= 2
-            ? `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Cuál te queda mejor?`
-            : `Lo más pronto que tengo disponible es el ${wd} a las ${t}. ¿Te funciona?`;
+            ? `Lo más pronto que tengo disponible es el ${wd} a las ${t}. Cuál te queda mejor?`
+            : `Lo más pronto que tengo disponible es el ${wd} a las ${t}. Te funciona?`;
       } else {
         const wd = DAY_NAMES[first.weekday];
         const t = times.length >= 2 ? `${times[0]} or ${times[1]}` : times[0];
@@ -1794,7 +1794,7 @@ export function bookingSuccessMessage(lang: Lang, dateStr?: string, timeStr?: st
 export function appointmentMismatchHandoffMessage(lang: Lang): string {
   if (lang === "pt") return "Obrigado! O Ozzi vai revisar pessoalmente os detalhes da sua visita e te confirma tudo em seguida.";
   return lang === "es"
-    ? "¡Gracias! Ozzi va a revisar personalmente los detalles de tu visita y te confirma todo enseguida."
+    ? "Gracias! Ozzi va a revisar personalmente los detalles de tu visita y te confirma todo enseguida."
     : "Thank you! Let me have Ozzi personally double check your visit details and confirm everything with you shortly.";
 }
 
@@ -1912,7 +1912,7 @@ export function clientProvidedName(name: string | null | undefined, history: Arr
 export function needNameMessage(lang: Lang): string {
   if (lang === "pt") return "Última coisinha! Em nome de quem eu coloco a visita?";
   return lang === "es"
-    ? "¡Última cosita! ¿A nombre de quién pongo la visita?"
+    ? "Última cosita! A nombre de quién pongo la visita?"
     : "Last thing! What name should I put the visit under?";
 }
 
@@ -1958,7 +1958,7 @@ export function isRealAddress(address?: string | null): boolean {
 export function needAddressMessage(lang: Lang): string {
   if (lang === "pt") return "Perfeito! Qual é o endereço completo da propriedade, com o zip code, para a visita?";
   return lang === "es"
-    ? "¡Perfecto! ¿Cuál es la dirección completa de la propiedad, con el código postal, para la visita?"
+    ? "Perfecto! Cuál es la dirección completa de la propiedad, con el código postal, para la visita?"
     : "Perfect! What's the full property address, including the zip code, for the visit?";
 }
 
@@ -2020,7 +2020,7 @@ export function bookingAddressHasZip(
 export function needZipMessage(lang: Lang): string {
   if (lang === "pt") return "Quase pronto! Qual é o zip code desse endereço?";
   return lang === "es"
-    ? "¡Casi listo! ¿Cuál es el código postal de esa dirección?"
+    ? "Casi listo! Cuál es el código postal de esa dirección?"
     : "Almost set! What's the zip code for that address?";
 }
 
@@ -2029,7 +2029,7 @@ export function needZipMessage(lang: Lang): string {
 export function needPhoneMessage(lang: Lang): string {
   if (lang === "pt") return "Quase pronto! Qual é o melhor número de telefone para eu confirmar a visita?";
   return lang === "es"
-    ? "¡Casi listo! ¿Cuál es el mejor número de teléfono para confirmarte la visita?"
+    ? "Casi listo! Cuál es el mejor número de teléfono para confirmarte la visita?"
     : "Almost set! What's the best phone number to reach you so I can lock in the visit?";
 }
 

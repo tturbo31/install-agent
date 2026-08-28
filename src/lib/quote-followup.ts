@@ -216,9 +216,9 @@ const SAFE_TEMPLATE: Record<FollowupLang, Record<FollowupStage, string>> = {
   },
   es: {
     D1: "Hola, solo para confirmar que recibiste tu cotización, cualquier duda me avisas.",
-    D3: "Hola, ¿pudiste revisar la cotización? Con gusto te aclaro cualquier detalle.",
-    D7: "Hola, tu cotización sigue en pie, ¿quieres seguir adelante o te aclaro algo primero?",
-    D14: "Hola, ¿hay algo que te detenga con la cotización? Con gusto te ayudo con lo que sea.",
+    D3: "Hola, pudiste revisar la cotización? Con gusto te aclaro cualquier detalle.",
+    D7: "Hola, tu cotización sigue en pie, quieres seguir adelante o te aclaro algo primero?",
+    D14: "Hola, hay algo que te detenga con la cotización? Con gusto te ayudo con lo que sea.",
     D30: "Hola, aquí estamos cuando estés listo, solo escríbeme y seguimos desde ahí.",
   },
 };
