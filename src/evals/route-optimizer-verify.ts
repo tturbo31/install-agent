@@ -564,7 +564,7 @@ async function run() {
       ck("isVisitProposalWithZipAsk: proposta+ZIP → true; pergunta de endereço com zip (Step 3) sem proposta → false", isVisitProposalWithZipAsk("For that size I need to visit and measure in person, I bring the samples. What's the zip code of the property?") && !isVisitProposalWithZipAsk("Can I have your name, the full property address with the zip code, and the best phone number?"));
     }
     ck("getAvailableSlots (lista bruta) inalterado: fallback fixo mantido", /return \["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"\];/.test(sched));
-    ck("sellerOpenForSlot (regras atuais) intacto", /s\.active &&\s*s\.enabled_weekdays\.includes\(weekday\) &&\s*s\.time_slots\.includes\(slot\) &&\s*!daysOff\.has/.test(sched));
+    ck("sellerOpenForSlot (regras atuais) intacto, agora com a grade do dia", /s\.active &&\s*s\.enabled_weekdays\.includes\(weekday\) &&\s*slotsForWeekday\(s, weekday\)\.includes\(slot\) &&\s*!daysOff\.has/.test(sched));
     for (const [name, file] of [["WhatsApp", "src/app/api/wa-webhook/route.ts"], ["Messenger", "src/app/api/fb-webhook/route.ts"], ["Instagram", "src/app/api/webhook/route.ts"]] as const) {
       const src = readFileSync(join(process.cwd(), file), "utf-8");
       ck(`[${name}] passa o histórico para a agenda (nota de rota / ZIP-first) + flag de remarcação`, /getRealAvailabilityContext\(\{ history, igsid: \w+, rescheduling: isRescheduling \}\)/.test(src));

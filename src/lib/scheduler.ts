@@ -35,6 +35,9 @@ export interface Seller {
   priority: number;
   enabled_weekdays: number[];
   time_slots: string[];
+  // Grade de horarios ESPECIFICA de um dia da semana ("0"=domingo ... "6"=sabado).
+  // Quando o dia aparece aqui, ela SUBSTITUI time_slots naquele dia.
+  weekday_time_slots?: Record<string, string[]> | null;
   active: boolean;
 }
 
@@ -80,6 +83,24 @@ async function getDaysOff(
   );
 }
 
+// Horarios do vendedor NAQUELE dia da semana. A Ozzi Plataforma guarda uma
+// grade padrao (time_slots) e, opcionalmente, uma grade por dia da semana
+// (weekday_time_slots: {"0":["09:00",...]}). Ate 2026-08-28 o agente lia SO a
+// grade padrao: o Diego trabalha 14/16/18/20 na semana mas 09..19 no DOMINGO,
+// e a agenda do bot oferecia domingo as 2pm, 4pm, 6pm e 8pm — horarios que nao
+// existem. Quem escolhia um deles recebia "Sorry, I couldn't lock in that exact
+// time in the system" porque o trigger da plataforma recusa o insert
+// (P0001 "Horario 14:00 indisponivel para este vendedor neste dia").
+// Caso Chanju-lyn Mwase, Messenger 2026-08-28: domingo 2pm, todos os dados
+// dados pela cliente, nenhuma visita gravada.
+// Semantica: se o dia estiver presente no override, ELE manda — inclusive uma
+// lista vazia, que significa "esse vendedor nao atende nesse dia".
+export function slotsForWeekday(s: Seller, weekday: number): string[] {
+  const override = s.weekday_time_slots?.[String(weekday)];
+  const list = Array.isArray(override) ? override : s.time_slots;
+  return (list ?? []).filter((t): t is string => typeof t === "string").map(hhmm);
+}
+
 // Regra única de "este vendedor pode atender (dia, horário)?" — usada tanto na
 // escolha de vendedor do [BOOK] quanto nas três leituras de disponibilidade.
 // Antes cada uma repetia o filtro por conta própria e nenhuma conhecia folga.
@@ -94,7 +115,7 @@ export function sellerOpenForSlot(
   return (
     s.active &&
     s.enabled_weekdays.includes(weekday) &&
-    s.time_slots.includes(slot) &&
+    slotsForWeekday(s, weekday).includes(slot) &&
     !daysOff.has(dayOffKey(s.id, dateStr)) &&
     !bookings.some(
       (b) => b.seller_id === s.id && b.booking_date === dateStr && b.booking_time === slot
@@ -110,7 +131,16 @@ export function isScheduleBlockedError(
   err: { code?: string | null; message?: string | null } | null | undefined
 ): boolean {
   if (!err) return false;
-  return err.code === "23514" || /de folga|day off|agendamento bloqueado/i.test(err.message ?? "");
+  // P0001 = RAISE EXCEPTION do trigger da plataforma. E assim que ela recusa um
+  // horario que nao existe na grade daquele dia ("Horario 14:00 indisponivel
+  // para este vendedor neste dia"). Do nosso lado isso e indisponibilidade: o
+  // webhook oferece os horarios REAIS em vez do handoff sem saida (caso Chanju,
+  // Messenger 2026-08-28).
+  return (
+    err.code === "23514" ||
+    err.code === "P0001" ||
+    /de folga|day off|agendamento bloqueado|indispon[ií]vel para este vendedor|hor[áa]rio .{0,12}indispon/i.test(err.message ?? "")
+  );
 }
 
 export interface BookingRequest {
@@ -325,7 +355,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,active")
+        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
@@ -536,7 +566,7 @@ export async function rescheduleClientBooking(
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
     const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
-      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
       getDaysOff(db, newDate, newDate),
     ]);
@@ -1310,7 +1340,7 @@ async function routeNoteForAvailability(
       // hoje só os horários ainda ofertáveis); ocupadas = capacidade − livres.
       let capacity = 0;
       let open = 0;
-      for (const s of sellers) for (const slot of s.time_slots) {
+      for (const s of sellers) for (const slot of slotsForWeekday(s, weekday)) {
         if (!s.active || !s.enabled_weekdays.includes(weekday) || daysOff.has(`${s.id}|${dateStr}`)) continue;
         if (isToday && slotMinutes(slot) < nowMinutesPlusNotice) continue;
         capacity++;
@@ -1396,7 +1426,7 @@ export async function getRealAvailabilityContext(opts?: AvailabilityContextOptio
     const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,active")
+        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
@@ -1419,7 +1449,7 @@ export async function getRealAvailabilityContext(opts?: AvailabilityContextOptio
 
       const slotSet = new Set<string>();
       sellers.forEach((s) => {
-        s.time_slots.forEach((slot) => {
+        slotsForWeekday(s, weekday).forEach((slot) => {
           if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
         });
       });
@@ -1506,7 +1536,7 @@ export async function getNextOpenSlots(
   const toStr = windowDays[windowDays.length - 1];
 
   const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
-    db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+    db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
     db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
     getDaysOff(db, fromStr, toStr),
   ]);
@@ -1521,7 +1551,7 @@ export async function getNextOpenSlots(
     const { weekday } = ymd(dateStr);
     const slotSet = new Set<string>();
     sellers.forEach((s) => {
-      s.time_slots.forEach((slot) => {
+      slotsForWeekday(s, weekday).forEach((slot) => {
         if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
       });
     });
@@ -2080,7 +2110,7 @@ async function routeOrderedSlots(
     if (!client) return base;
     const db = await getAuthenticatedClient();
     const [{ data: sellersData }, { data: bookedData }, daysOff, rows] = await Promise.all([
-      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,active").eq("active", true).order("priority", { ascending: true }),
+      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
       getDaysOff(db, dateStr, dateStr),
       fetchVisitsWithAddress(db, dateStr, dateStr),
@@ -2090,7 +2120,7 @@ async function routeOrderedSlots(
     const weekday = new Date(dateStr + "T12:00:00").getDay();
     const wanted = new Set(slots);
     const openBySlot = new Map<string, RouteSeller[]>();
-    for (const s of sellers) for (const slot of s.time_slots) {
+    for (const s of sellers) for (const slot of slotsForWeekday(s, weekday)) {
       if (!wanted.has(slot) || !sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) continue;
       openBySlot.set(slot, [...(openBySlot.get(slot) ?? []), asRouteSeller(s)]);
     }
@@ -2133,7 +2163,7 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,active")
+        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
         .order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
@@ -2147,7 +2177,7 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
 
     const slotSet = new Set<string>();
     sellers.forEach((s) => {
-      s.time_slots.forEach((slot) => {
+      slotsForWeekday(s, weekday).forEach((slot) => {
         if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
       });
     });
