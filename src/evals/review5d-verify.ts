@@ -62,7 +62,7 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
 
   const es = composeAdFaqOpener(["process", "discount"], "es");
   // Regra do dono (28/08/2026): em espanhol a pontuação é como no português — sem ¡ / ¿, só ! e ? no final.
-  ck("espanhol combina os dois tópicos SEM ¡ de abertura", !!es && !/[¡¿]/.test(es) && /^Buenas preguntas!/.test(es) && /muebles/i.test(es) && /mejor precio/i.test(es), String(es));
+  ck("espanhol combina os dois tópicos SEM ¡ e SEM abertura-carimbo (tom humano)", !!es && !/[¡¿]/.test(es) && !/^(?:buenas preguntas|great questions)/i.test(es) && /muebles/i.test(es) && /mejor precio/i.test(es), String(es));
   ck("espanhol termina com a pergunta fechada por ? (sem ¿)", !!es && /\?\s*$/.test(es) && !/¿/.test(es), String(es));
 
   ck("1 tópico só NÃO combina (mantém o opener já testado)", composeAdFaqOpener(["process"], "en") === null);
@@ -79,7 +79,7 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   const ai = fs.readFileSync(path.join(process.cwd(), "src/lib/ai.ts"), "utf-8");
   ck(
     "a combinada é consultada ANTES da cadeia de tópico único",
-    ai.indexOf("composeAdFaqOpener(topics, lang)") < ai.indexOf("if (AD_FAQ_PROCESS.test(burst)) {"),
+    ai.indexOf("composeAdFaqOpener(topics, lang)") > 0 && ai.indexOf("composeAdFaqOpener(topics, lang)") < ai.indexOf("if (!faqPlusTyped && AD_FAQ_PROCESS.test(burst)) {"),
     "a cadeia first-match-wins voltaria a engolir perguntas"
   );
 }

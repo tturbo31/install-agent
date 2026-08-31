@@ -2268,6 +2268,15 @@ export function parseStreetAddress(input?: string | null): ParsedStreetAddress |
   }
   if (toks.length < 3) return null;
 
+  // O endereço pode vir DEPOIS de palavras soltas ("Typo ⏎ It's 13155 Ixora
+  // Ct.") — Aron Mannis, FB 30/08/2026: o parse exigia o número da casa como
+  // PRIMEIRO token e a correção morria sem detecção nem alerta ao dono. Pula
+  // para o primeiro token que parece número de casa com rua+sufixo depois.
+  const startTok = toks.findIndex((t, idx) => /^\d{1,6}[a-z]?$/.test(t.norm) && idx + 2 < toks.length);
+  if (startTok < 0) return null;
+  if (startTok > 0) toks.splice(0, startTok);
+  if (toks.length < 3) return null;
+
   // O ZIP não faz parte da rua nem pode ser confundido com unidade.
   const zip = extractZip(s);
   const zipTok = zip ? toks.findIndex((t, i) => i > 0 && t.norm.replace(/-\d{4}$/, "") === zip) : -1;

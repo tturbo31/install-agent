@@ -95,7 +95,9 @@ const AD_FAQ_FRAGMENTS: Record<"en" | "es", Record<AdFaqTopic, string>> = {
     inclusions: "la promo de vinyl ya incluye el material, la mano de obra y el quarter round, mientras que tile y hardwood cubren solo la mano de obra",
   },
 };
-const AD_FAQ_LEAD_IN = { en: "Great questions!", es: "Buenas preguntas!" };
+// "Great questions!"/"Buenas preguntas!" removido (31/08/2026): a auditoria de 4
+// dias achou o carimbo abrindo a resposta combinada em 22+ conversas DEPOIS do
+// deploy do tom humano — a resposta agora vai direto ao ponto, sem abertura-reflexo.
 // Names tile + hardwood so assistantAlreadyAskedType() counts it as the one
 // allowed type-ask, exactly like every single-topic opener above.
 const AD_FAQ_TYPE_ASK = {
@@ -115,7 +117,7 @@ export function composeAdFaqOpener(topics: AdFaqTopic[], lang: "en" | "es"): str
   // string-replacing the joiner afterwards would rewrite the wrong clause.
   const body = `${parts.join(", ")}, ${lang === "es" ? "y" : "and"} ${last}`;
   const sentence = body.charAt(0).toUpperCase() + body.slice(1);
-  return `${AD_FAQ_LEAD_IN[lang]} ${sentence}. ${AD_FAQ_TYPE_ASK[lang]}`;
+  return `${sentence}. ${AD_FAQ_TYPE_ASK[lang]}`;
 }
 
 // Injected by the Instagram/Facebook webhooks ONLY when the client replied to an

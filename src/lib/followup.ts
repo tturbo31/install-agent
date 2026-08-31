@@ -86,8 +86,17 @@ export function isSchedulingAsk(text: string): boolean {
 // the client, so following up in a different language than the running
 // conversation is always wrong (caught on the 2026-07-09 dry run: a Spanish
 // lead whose last messages were just her address was about to get English).
-const PT_SIGNALS = /(?:^|[\s!.,?¡¿])(?:olá|oi|bom dia|boa (?:tarde|noite))(?![a-zà-ÿ])|[ãõç]|\b(?:você|voce|obrigad\w*|orçamento|orcamento|preciso de|banheiro|cozinha|amostras para você|gratuita)\b/i;
-const ES_SIGNALS = /[¿¡]|(?:^|[\s!.,?])(?:hola|buenas|buenos)(?![a-zà-ÿ])|\b(?:cu[aá]nto|cu[aá]ndo|precio|cuesta|necesito|quiero|busco|porcelanato|cer[aá]mica|cotizaci[oó]n|presupuesto|gracias|cita|pueden?|darme|horarios?|muestras|pie cuadrado|escoja?s?|viernes|jueves|lunes|martes|s[aá]bado|domingo)\b/i;
+// "gratuita" saiu da lista PT (31/08/2026): é a MESMA palavra em espanhol
+// ("la visita gratuita") e mandava conversa ES para o nudge em português.
+// \b do JS é ASCII: depois de "você" (ê) não há boundary, então a palavra que
+// segurava o PT nessas frases era justamente "gratuita" — âncoras acento-seguras.
+const PT_SIGNALS = /(?:^|[\s!.,?¡¿])(?:olá|oi|bom dia|boa (?:tarde|noite))(?![a-zà-ÿ])|[ãõç]|(?:^|[^a-zà-ÿ])(?:você|voce|obrigad\w*|orçamento|orcamento|preciso de|banheiro|cozinha|amostras para você)(?![a-zà-ÿ])/i;
+// Desde 28/08/2026 as respostas do bot em espanhol NÃO têm mais ¿ ¡ — este
+// detector dependia deles para reconhecer o idioma da NOSSA última resposta e
+// passou a devolver inglês para conversa em espanhol (fb 4125ccfb, 27/08:
+// "Parece que estás por tomar posesión…" → nudge em inglês). Marcadores do
+// vocabulário do próprio bot em ES cobrem o buraco.
+const ES_SIGNALS = /[¿¡]|(?:^|[\s!.,?])(?:hola|buenas|buenos)(?![a-zà-ÿ])|\b(?:cu[aá]nto|cu[aá]ndo|cu[aá]l|precio|cuesta|necesito|quiero|busco|porcelanato|cer[aá]mica|cotizaci[oó]n|presupuesto|gracias|cita|pueden?|darme|horarios?|muestras|pie cuadrado|pies\s+cuadrados|escoja?s?|viernes|jueves|lunes|martes|s[aá]bado|domingo|est[aá]s|qu[eé]\s+tipo|te\s+interesa|instalaci[oó]n|visita\s+gratis|c[oó]digo\s+postal|mano\s+de\s+obra|tambi[eé]n|ma[ñn]ana)\b/i;
 
 export function pickLang(userTexts: string[], lastBotText?: string): Lang {
   const blob = userTexts.slice(-6).join(" ");
@@ -337,7 +346,14 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       continue;
     }
     // IA personaliza a partir da conversa; template comprovado é o fallback.
-    const text = (await composeColdLeadNudge(messages, decision.lang)) ?? followupTemplate(decision.lang);
+    let text = (await composeColdLeadNudge(messages, decision.lang)) ?? followupTemplate(decision.lang);
+    // O modelo já escreveu o nudge em PORTUGUÊS para uma cliente de espanhol
+    // (Alicia, WA 27/08/2026: "Ficou com dúvida sobre instalar por cima da
+    // losa…"). Idioma errado = template comprovado no idioma certo.
+    if (decision.lang !== "pt" && PT_SIGNALS.test(text)) {
+      console.warn(`[FOLLOWUP] composed nudge came out in Portuguese for a ${decision.lang} conversation — using the template instead`);
+      text = followupTemplate(decision.lang);
+    }
     try {
       if (channel === "whatsapp") {
         const r = await sendWhatsAppMessage(conv.igsid.slice(3), text);
