@@ -5,7 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -1526,6 +1526,11 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // at home for a 7pm visit nobody had in the system. A booked client in
     // RESCHEDULE MODE gets the real visit restated; anyone else gets the neutral
     // Ozzi-confirms line, and the owner is alerted to set the visit by hand.
+    // "Saturday 9am is locked in!" sem [BOOK] gravado atrás: a promessa vira
+    // "penciled in" enquanto os dados ainda estão sendo coletados (Josue
+    // Gonzalez / wa_13057903205, semana de 29/08 — cliente acreditou num slot
+    // que nunca foi gravado).
+    if (!booked && !isBookingConfirmed) afterBooking = softenPrematureLockIn(afterBooking);
     if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBooking)) {
       console.warn("[FB] bare confirmation with no booking behind it (" + JSON.stringify(afterBooking) + ") — replacing with the owner handoff");
       afterBooking = isRescheduling && bookedVisit

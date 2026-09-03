@@ -39,6 +39,7 @@ import {
   assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
+  softenPrematureLockIn,
   type AdFlooringType,
 } from "@/lib/ai";
 import { WebhookPayload } from "@/lib/types";
@@ -1818,6 +1819,11 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // at home for a 7pm visit nobody had in the system. A booked client in
     // RESCHEDULE MODE gets the real visit restated; anyone else gets the neutral
     // Ozzi-confirms line, and the owner is alerted to set the visit by hand.
+    // "Saturday 9am is locked in!" sem [BOOK] gravado atrás: a promessa vira
+    // "penciled in" enquanto os dados ainda estão sendo coletados (Josue
+    // Gonzalez / wa_13057903205, semana de 29/08 — cliente acreditou num slot
+    // que nunca foi gravado).
+    if (!booked && !isBookingConfirmed) afterBookingText = softenPrematureLockIn(afterBookingText);
     if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBookingText)) {
       console.warn("[IG] bare confirmation with no booking behind it (" + JSON.stringify(afterBookingText) + ") — replacing with the owner handoff");
       afterBookingText = isRescheduling && bookedVisit

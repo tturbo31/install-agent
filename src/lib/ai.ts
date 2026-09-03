@@ -848,7 +848,9 @@ export function detectLargeLeadSqft(text: string): number | null {
 // then told her the slot had "filled up". Every scrubber that drops sentences
 // or clauses runs on the prose only: tags are swapped for opaque placeholders
 // (bracketed, so existing "[" checks keep treating them as tags) and restored.
-const PROTECTED_TAG = /\[BOOK:\{[\s\S]*?\}\]|\[(?:CANCEL_BOOKING|NOTIFY_OWNER|REACT_ONLY)\]/g;
+// "[BOOK: {" com espaço depois do dois-pontos também é tag (o modelo varia) —
+// sem o \s* o scrubber voltava a enxergar o JSON como prosa (review7d).
+const PROTECTED_TAG = /\[BOOK:\s*\{[\s\S]*?\}\]|\[(?:CANCEL_BOOKING|NOTIFY_OWNER|REACT_ONLY)\]/g;
 const TAG_PLACEHOLDER = /\[#TAG(\d+)#\]/g;
 export function withTagsProtected(text: string, fn: (prose: string) => string): string {
   const tags: string[] = [];
@@ -882,6 +884,22 @@ export function isBarePreBookingText(text: string): boolean {
   if (!t || t.length > 60) return false;
   if (!VISIT_SET_TOKEN.test(t)) return false;
   return BARE_CONFIRM_RE.test(t);
+}
+
+// ─── "Locked in" claim before the [BOOK] actually wrote ─────────────────────
+// The model says "Saturday September 5th at 9am is locked in!" while STILL
+// collecting name/address — there is no booking behind the claim. Two real
+// losses in one week (29/08–01/09/2026): Josue Gonzalez believed in a
+// Saturday-9am visit that was never recorded (he stalled at a ZIP re-ask and
+// nobody knew he was waiting), and wa_13057903205 lost the 9am slot between
+// the claim and the data collection, then walked ("Never mind"). Owner rule:
+// never claim a slot is secured before the booking writes. Rewrite only the
+// past-participle claim ("locked in") to the tentative "penciled in" — the
+// canned "lock in your best price / I'll lock that in" lines stay untouched.
+// Callers gate on "no [BOOK] succeeded this turn AND client not booked".
+export function softenPrematureLockIn(text: string): string {
+  if (!/\blocked\s+in\b/i.test(text || "")) return text;
+  return withTagsProtected(text, (prose) => prose.replace(/\b(?:all\s+)?locked\s+in\b/gi, "penciled in"));
 }
 
 const BIG_DOLLAR = /\$\s?\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\$\s?\d{4,}/;
@@ -1667,6 +1685,13 @@ const VISIT_DETAIL_PATTERNS: RegExp[] = [
   /\bwhat\s+time\b/i,
   /\bwhen\s+(?:is|are|will|do)\b[^.!?\n]{0,30}\b(?:visit|appointment|arrive|arriving|come|coming|you)\b/i,
   /\bconfirm\b[^.!?\n]{0,30}\b(?:visit|appointment|time|day|date)\b/i,
+  // "llamaba para confirmar la cita que tengo mañana" + a bare "Pls confirm"
+  // (Raul Gallon, WA 02/09/2026): \bconfirm\b never matches inside the ES/PT
+  // verb ("confirmar" keeps going after the m), and the bare English ask has
+  // no anchor word — both fell into the booked-silence while the client sat
+  // waiting for a yes the night before his visit.
+  /\bconfirmar?(?:me|em)?\b[^.!?\n]{0,40}\b(?:cita|visita|turno|agendamento|hor[aá]rio)\b/i,
+  /^\s*(?:pls|plz|please|por\s+favor)?[\s,]*confirm(?:ar|a|e|ame|eme|ed)?\s*(?:pls|plz|please|por\s+favor)?\s*[.!?\s]*$/i,
   // "Thank you Ozzi and see you on Tuesday at 4:00 pm. Right?" — a booked
   // client double-checking the slot got the booked-silence (fbcbac15,
   // 2026-08-23). Restating the real date/time is exactly the answer.
