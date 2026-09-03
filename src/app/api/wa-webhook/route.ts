@@ -4,10 +4,10 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -128,6 +128,14 @@ async function processBookingCommand(
       }
     }
 
+    // O id do chat só serve de telefone quando é um número de verdade: em GRUPO
+    // o waId é o ID do grupo ("120363...-group", 18 dígitos) e foi parar no
+    // scheduler como telefone da visita (Kendry, 01/09/2026 — visita sem número
+    // discável). Grupo → o telefone precisa ser digitado pelo cliente, como no
+    // Messenger/Instagram.
+    const waIdDigits = waId.replace(/\D/g, "");
+    const waIdIsDialable = !/-group\b/i.test(waId) && waIdDigits.length >= 10 && waIdDigits.length <= 15;
+
     // ── Reschedule: move the existing visit to the new date/time. Address/phone
     //    are copied from the saved booking, so only the new date/time are needed. ──
     if (isReschedule) {
@@ -136,7 +144,7 @@ async function processBookingCommand(
       }
       const r = await rescheduleClientBooking(`wa_${waId}`, bookingData.date, bookingData.time, {
         name: bookingData.name,
-        phone: (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : waId),
+        phone: (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : (waIdIsDialable ? waId : undefined)),
         address: bookingData.address,
         notes: bookingData.notes,
         clientBurst: recentClientText(history),
@@ -165,7 +173,12 @@ async function processBookingCommand(
     // so we only require the address. Use the number the client typed ONLY if it
     // is a real phone; otherwise fall back to the WhatsApp chat number so a stray
     // non-number (e.g. "Messenger") never overwrites the real, dialable number.
-    const clientPhone = (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : waId).slice(0, 30);
+    // Em GRUPO o chat id NÃO é telefone — sem número digitado, pedimos.
+    const clientPhone = (isRealPhoneNumber(bookingData.phone) ? bookingData.phone.trim() : (waIdIsDialable ? waId : "")).slice(0, 30);
+    if (!clientPhone) {
+      console.warn(`[WA] booking blocked — group chat without a typed phone (${waId}); asking for it`);
+      return { response: needPhoneMessage(lang), booked: false };
+    }
     // Address must be REAL — the model once wrote the literal "pending" to slip
     // past a bare empty-check (2026-07-17 review). Ask for it instead of
     // shipping a "confirmed" text without an actual booking behind it.
@@ -1689,6 +1702,11 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // at home for a 7pm visit nobody had in the system. A booked client in
     // RESCHEDULE MODE gets the real visit restated; anyone else gets the neutral
     // Ozzi-confirms line, and the owner is alerted to set the visit by hand.
+    // "Saturday 9am is locked in!" sem [BOOK] gravado atrás: a promessa vira
+    // "penciled in" enquanto os dados ainda estão sendo coletados — 2 visitas
+    // perdidas na semana de 29/08 (Josue Gonzalez / wa_13057903205) porque o
+    // cliente acreditou num slot que nunca existiu ou que escapou no meio.
+    if (!booked && !isBookingConfirmed) afterBooking = softenPrematureLockIn(afterBooking);
     if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBooking)) {
       console.warn("[WA] bare confirmation with no booking behind it (" + JSON.stringify(afterBooking) + ") — replacing with the owner handoff");
       afterBooking = isRescheduling && bookedVisit

@@ -118,7 +118,9 @@ export function sellerOpenForSlot(
     slotsForWeekday(s, weekday).includes(slot) &&
     !daysOff.has(dayOffKey(s.id, dateStr)) &&
     !bookings.some(
-      (b) => b.seller_id === s.id && b.booking_date === dateStr && b.booking_time === slot
+      // hhmm dos dois lados: a plataforma pode gravar "15:00:00" onde o bot
+      // grava "15:00" — comparação crua deixava a visita existente invisível.
+      (b) => b.seller_id === s.id && b.booking_date === dateStr && hhmm(b.booking_time) === hhmm(slot)
     )
   );
 }
@@ -313,6 +315,54 @@ export function sameDayBookingAlert(dateStr: string, timeStr: string, sellerName
   return `VISITA HOJE às ${fmt12(timeStr)} (daqui a ~${em}), marcada agora${sellerName ? ` para ${sellerName}` : ""}. Confirme que o vendedor viu a agenda.`;
 }
 
+// ─── Conferência pós-insert do slot (2026-09-02) ────────────────────────────
+// Mesmo com a leitura de ocupados sã, existe janela para visita dupla: outra
+// visita entra no slot entre a nossa leitura e o nosso INSERT (corrida), ou um
+// humano TRANSFERE/REMARCA uma visita para o slot minutos antes (Beverly foi
+// remarcada pelo Chris às 19:11 e o [BOOK] do Henry gravou às 19:25 no MESMO
+// slot do MESMO vendedor). Depois do insert, relemos o slot: se outra visita
+// ativa o ocupava ANTES da nossa (created/rescheduled/transferred mais antigo),
+// nós cedemos — apagamos o próprio insert e devolvemos a classe "No
+// availability" para o webhook oferecer horários reais. Se a conferência ou o
+// delete falharem, a visita FICA (visita dupla é recuperável pela equipe;
+// visita fantasma que o cliente acha que tem, não).
+async function insertLostSlotRace(
+  db: SchedulerDb,
+  bookingId: string,
+  sellerId: string,
+  dateStr: string,
+  timeStr: string
+): Promise<boolean> {
+  try {
+    const t = hhmm(timeStr);
+    const { data, error } = await db
+      .from("bookings")
+      .select("id,created_at,rescheduled_at,transferred_at")
+      .eq("seller_id", sellerId)
+      .eq("booking_date", dateStr)
+      .in("booking_time", [t, `${t}:00`])
+      .is("cancelled_at", null);
+    if (error || !data) return false;
+    const ours = data.find((b) => b.id === bookingId);
+    if (!ours) return false;
+    const occupiedSince = (b: { created_at: string; rescheduled_at?: string | null; transferred_at?: string | null }) =>
+      Math.max(...[b.created_at, b.rescheduled_at, b.transferred_at].filter(Boolean).map((x) => Date.parse(String(x))));
+    const ourSince = Date.parse(ours.created_at);
+    const rival = data.find((b) => b.id !== bookingId && occupiedSince(b) < ourSince);
+    if (!rival) return false;
+    const { error: delErr } = await db.from("bookings").delete().eq("id", bookingId);
+    if (delErr) {
+      console.error(`[slot-race] slot ${dateStr} ${t} já era de outra visita mas o rollback falhou — mantendo a nossa:`, delErr.message);
+      return false;
+    }
+    console.warn(`[slot-race] slot ${dateStr} ${t} (seller ${sellerId}) já estava ocupado desde antes do nosso insert — cedemos e vamos reofertar`);
+    return true;
+  } catch (err) {
+    console.error("[slot-race] conferência falhou — mantendo a visita:", err);
+    return false;
+  }
+}
+
 export async function createBooking(req: BookingRequest): Promise<BookingResult> {
   try {
     const db = await getAuthenticatedClient();
@@ -352,7 +402,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
 
-    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
@@ -361,6 +411,16 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
       getDaysOff(db, req.bookingDate, req.bookingDate),
     ]);
+
+    // A leitura de ocupados NUNCA pode falhar aberta aqui: com o RPC em erro,
+    // bookings=[] fazia TODO vendedor parecer livre e nasceu visita dupla no
+    // mesmo slot do mesmo vendedor (Beverly + Henry Ramos, 02/09/2026 15:00).
+    // Sem enxergar a agenda não se grava visita — o webhook faz handoff com
+    // alerta ao dono em vez de agendar às cegas.
+    if (bookedErr) {
+      console.error("[createBooking] get_booked_slots failed — refusing to book blind:", bookedErr.message);
+      return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
+    }
 
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
@@ -418,6 +478,12 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
         return { success: false, error: `No availability for ${req.bookingDate} at ${req.bookingTime}.` };
       }
       return { success: false, error: error.message };
+    }
+
+    // Corrida/transferência no meio do caminho: se outra visita ativa já
+    // ocupava o slot antes da nossa, cedemos e o webhook oferece horários reais.
+    if (await insertLostSlotRace(db, data.id, seller.id, req.bookingDate, req.bookingTime)) {
+      return { success: false, error: `No availability for ${req.bookingDate} at ${req.bookingTime}.` };
     }
 
     return {
@@ -565,11 +631,18 @@ export async function rescheduleClientBooking(
     const future = new Date();
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
-    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
       getDaysOff(db, newDate, newDate),
     ]);
+    // Fail-closed (2026-09-02): com o RPC em erro a lista vazia faria todo
+    // vendedor parecer livre e a remarcação criaria visita dupla. Sem enxergar
+    // a agenda, não movemos nada — a visita antiga fica intacta.
+    if (bookedErr) {
+      console.error("[reschedule] get_booked_slots failed — refusing to move blind:", bookedErr.message);
+      return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
+    }
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
     const seller = await pickSellerForSlotRouted(db, sellers, bookings, newDate, newTime, daysOff, {
@@ -619,6 +692,13 @@ export async function rescheduleClientBooking(
         return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
       }
       return { success: false, error: insErr?.message ?? "insert_failed" };
+    }
+
+    // Corrida/transferência: se o slot novo já era de outra visita ativa antes
+    // da nossa, desfazemos o insert e a visita ANTIGA fica como está (o cliente
+    // nunca perde a visita que já tinha).
+    if (await insertLostSlotRace(db, created.id, seller.id, newDate, newTime)) {
+      return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
     }
 
     // 4. New booking is in place — now remove the old one(s).
@@ -1423,7 +1503,7 @@ export async function getRealAvailabilityContext(opts?: AvailabilityContextOptio
     const fromStr = windowDays[0];
     const toStr = windowDays[windowDays.length - 1];
 
-    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
@@ -1432,6 +1512,11 @@ export async function getRealAvailabilityContext(opts?: AvailabilityContextOptio
       db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
       getDaysOff(db, fromStr, toStr),
     ]);
+
+    // Fail-closed (2026-09-02): com o RPC em erro, a lista vazia mostraria a
+    // agenda INTEIRA como livre e o bot ofereceria horários já ocupados. Melhor
+    // cair no catch e dizer que não conseguiu ler a agenda.
+    if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
@@ -1535,11 +1620,16 @@ export async function getNextOpenSlots(
   const fromStr = windowDays[0];
   const toStr = windowDays[windowDays.length - 1];
 
-  const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
+  const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
     db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
     db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
     getDaysOff(db, fromStr, toStr),
   ]);
+
+  // Fail-closed (2026-09-02): sem enxergar os ocupados, TODO slot pareceria
+  // livre — o chamador (recovery) tem try/catch e faz handoff em vez de
+  // oferecer horário fantasma.
+  if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
   const sellers = (sellersData ?? []) as Seller[];
   const bookings = (bookedData ?? []) as BookingRow[];
@@ -2160,7 +2250,7 @@ async function routeOrderedSlots(
 export async function getAvailableSlots(dateStr: string): Promise<string[]> {
   try {
     const db = await getAuthenticatedClient();
-    const [{ data: sellersData }, { data: bookedData }, daysOff] = await Promise.all([
+    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
         .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
@@ -2169,6 +2259,11 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
       db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
       getDaysOff(db, dateStr, dateStr),
     ]);
+
+    // Fail-closed (2026-09-02): sem os ocupados, todo horário da grade
+    // pareceria livre. Lista vazia → os chamadores caem no caminho seguro
+    // (needSlotConfirmationMessage / "mais cedo geral" / handoff).
+    if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
     const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
@@ -2183,8 +2278,12 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     });
 
     return Array.from(slotSet).sort();
-  } catch {
-    return ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"];
+  } catch (err) {
+    // NUNCA inventar horários no erro: a lista fixa 9/11/1/3/5/7 oferecia
+    // horário fantasma em dia lotado (e domingo nem tem essa grade). Vazio
+    // manda o chamador para o caminho seguro.
+    console.error("getAvailableSlots failed — returning none:", err);
+    return [];
   }
 }
 
@@ -2362,7 +2461,22 @@ export function detectAddressCorrection(
   for (const line of text.split(/[\n\r]+/)) {
     const cand = parseStreetAddress(line);
     if (!cand) continue;
-    if (!sameStreet(cand, booked)) return { kind: "moved", address: line.trim().slice(0, 300) };
+    if (!sameStreet(cand, booked)) {
+      // Transcrição de voz parte o número da casa ("siete 24 West Palmetto
+      // Park Road" = 724 W Palmetto Park Rd): a MESMA rua com o número gravado
+      // TERMINANDO no número recebido não é mudança de imóvel — é o cliente
+      // repetindo o próprio endereço em voz alta. Tratar como "moved" mandava
+      // "anoté la dirección nueva" a quem só pedia confirmação da visita
+      // (Raul Gallon, WA 02/09/2026).
+      const spokenSameHouse =
+        cand.street === booked.street &&
+        cand.suffix === booked.suffix &&
+        cand.house.length >= 2 &&
+        booked.house !== cand.house &&
+        booked.house.endsWith(cand.house);
+      if (spokenSameHouse) return null;
+      return { kind: "moved", address: line.trim().slice(0, 300) };
+    }
     if (cand.unit && cand.unit !== booked.unit) {
       return { kind: "unit", unit: cand.unit, previousUnit: booked.unit, address: withUnit(booked, cand.unit) };
     }
