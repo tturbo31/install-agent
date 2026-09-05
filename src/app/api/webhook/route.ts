@@ -14,6 +14,8 @@ import {
   detectLargeLeadSqft,
   isPureClosing,
   isRescheduleRequest,
+  isConditionalEarlierRequest,
+  stripConditionalEarlier,
   isCancelRequest,
   containsSchedulingOffer,
   isOpenSlotOffer,
@@ -46,7 +48,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -1049,6 +1051,51 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // confirmation restates the day and time, and reading it as an offer put
       // every post-booking message into RESCHEDULE MODE (Prince Cambow, FB 26/08).
       if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
+    }
+
+    // ── Pedido CONDICIONAL "se abrir um horário mais cedo, me avisa" (caso
+    //    Cleveland, WA 02/09): a frase casava com a sonda de slot, o modo
+    //    reschedule abria e o modelo lia o dia da PRÓPRIA visita do cliente
+    //    como "fully booked", empurrando-o para outro dia. Resposta fixa +
+    //    restate da visita real; se a rajada também tem remarcação DE VERDADE,
+    //    o condicional é descartado e o fluxo normal segue. ──
+    if (isBooked && bookedVisit) {
+      const condText = `${rawText}\n${gateBurst}`.trim();
+      if (isConditionalEarlierRequest(condText) && !isRescheduleRequest(stripConditionalEarlier(condText))) {
+        const ack = earlierSlotAckMessage(detectLang(condText), bookedVisit.date, bookedVisit.time);
+        const { data: lastBotForCond } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("content")
+          .eq("conversation_id", conversation.id)
+          .eq("role", "assistant")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!(lastBotForCond?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForCond.content }], ack))) {
+          const ackSent = await sendInstagramMessage(senderIgsid, ack);
+          if (ackSent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ack });
+          }
+        }
+        waitUntil(appendUpcomingBookingNote(senderIgsid, `Cliente pediu aviso se abrir horário mais cedo: "${condText.replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
+        try {
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conversation.id)
+            .order("created_at", { ascending: false })
+            .limit(8);
+          await notifyOwners({
+            platform: "Instagram",
+            clientName: conversation.username ?? null,
+            clientId: senderIgsid,
+            recentMessages: (recentMsgs ?? []).reverse(),
+          });
+        } catch (err) {
+          console.error("Earlier-slot ack notify error:", err);
+        }
+        return;
+      }
     }
 
     // ── Correção de ENDEREÇO depois da visita marcada (caso Kristina, 2026-08-13).

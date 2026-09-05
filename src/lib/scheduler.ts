@@ -1862,6 +1862,23 @@ export function reminderAckMessage(lang: Lang): string {
     : "Ok, I will text you 40 minutes before arriving.";
 }
 
+// Caso Cleveland (WA 02/09/2026): cliente recém-agendado pede "se abrir um
+// horário mais cedo, me avisa" e o modo reschedule o empurrava para FORA da
+// própria visita ("Thursday is fully booked" — a vaga era a dele). Resposta
+// fixa: promete o aviso e RESTATA a visita real, sem tocar na agenda.
+export function earlierSlotAckMessage(lang: Lang, dateStr: string, timeStr: string): string {
+  const { weekday, month, day } = ymd(dateStr);
+  const t = (timeStr || "").trim();
+  const time = /^\d{1,2}:\d{2}$/.test(t) ? fmt12(t) : t;
+  if (lang === "pt") {
+    return `Combinado! Se abrir um horário mais cedo eu te aviso na hora. Por enquanto sua visita segue confirmada para ${DAY_NAMES_PT[weekday]} dia ${day} de ${MONTH_NAMES_PT[month]}${time ? ` às ${time}` : ""}.`;
+  }
+  if (lang === "es") {
+    return `Claro! Si se abre un horario mas temprano te aviso enseguida. Por ahora tu visita sigue confirmada para el ${DAY_NAMES_ES[weekday]} ${day} de ${MONTH_NAMES_ES[month]}${time ? ` a las ${time}` : ""}.`;
+  }
+  return `Will do! If an earlier time opens up I'll let you know right away. For now you're all set for ${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}${time ? ` at ${time}` : ""}.`;
+}
+
 // ─── Language detection + localized booking messages ──────────────────────
 // Lightweight heuristic: decide whether the conversation is in Spanish,
 // Portuguese or English so canned confirmation/recovery messages match the

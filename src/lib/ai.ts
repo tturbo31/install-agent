@@ -1261,6 +1261,55 @@ const AD_FAQ_LOCATION = /\bwhere\b[^.!?\n]{0,40}\b(?:located|based|location)\b|\
 // inclusions line actually answered).
 const AD_FAQ_INCLUSIONS = /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i;
 
+// ─── FAQ repetida DIAS depois → re-resposta determinística ──────────────────
+// Pendência da revisão semanal de 03/09 fechada em 05/09: o mesmo botão de FAQ
+// re-enviado 1–4 DIAS depois ficava MUDO (fb_28139031199080435 4d,
+// fb_28089475887328093 1d, fb_26749299551427986 5d — 3 casos só nesta janela).
+// O intercepto de 15min deixava passar ("answering it fresh"), mas aí o modelo
+// ou devolvia [REACT_ONLY] (já respondeu 2×) ou regenerava o texto idêntico e o
+// guard de duplicata engolia. Cada re-envio é um toque deliberado do cliente
+// (mesma filosofia do ad-retap): responder SEMPRE, com lead-in rotativo para
+// nunca cair no guard de duplicata, sem modelo. Botões da Meta são EN/ES.
+const FAQ_REANSWER_LEADS = {
+  en: ["Of course!", "Sure thing, here it is again:", "Happy to go over it once more:"],
+  es: ["Claro!", "Con gusto te lo repito:", "Aqui va de nuevo:"],
+} as const;
+const FAQ_REANSWERS = {
+  en: {
+    process: "We move all the furniture, install the floors, add the quarter round, and clean everything up when we finish, usually 2 to 3 days in total.",
+    discount: "Yes, larger spaces get our best pricing, and the free estimate visit is where you get the exact number on the spot.",
+    location: "We're based in Miami and cover all of South Florida, from Homestead up to Jupiter.",
+    inclusions: "It depends on the floor you pick: our vinyl promo includes the flooring material, the installation labor, and the quarter round, while tile and hardwood cover the installation labor only and you supply the material.",
+  },
+  es: {
+    process: "Movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar, normalmente 2 a 3 dias en total.",
+    discount: "Si, los espacios grandes tienen nuestro mejor precio, y en la visita gratuita te doy el numero exacto en el momento.",
+    location: "Estamos en Miami y cubrimos todo el sur de la Florida, desde Homestead hasta Jupiter.",
+    inclusions: "Depende del piso que elijas: la promo de vinil incluye el material, la instalacion y el quarter round, mientras que tile y hardwood incluyen solo la mano de obra y tu pones el material.",
+  },
+} as const;
+const FAQ_REANSWER_TYPE_ASK = {
+  en: " Which flooring are you thinking about, tile, vinyl, or hardwood?",
+  es: " Cual te interesa, tile, vinil o hardwood?",
+} as const;
+
+export function cannedFaqReanswer(lastText: string, messages: ChatMessage[]): string | null {
+  const t = (lastText || "").trim();
+  if (!t) return null;
+  let fam: "process" | "discount" | "location" | "inclusions" | null = null;
+  if (AD_FAQ_PROCESS.test(t)) fam = "process";
+  else if (AD_FAQ_DISCOUNT.test(t)) fam = "discount";
+  else if (AD_FAQ_LOCATION.test(t)) fam = "location";
+  else if (AD_FAQ_INCLUSIONS.test(t)) fam = "inclusions";
+  if (!fam) return null;
+  const lang = detectLang(t) === "es" ? "es" : "en";
+  const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
+  const asks = messages.filter((m) => m.role === "user" && norm(m.content) === norm(lastText)).length;
+  const lead = FAQ_REANSWER_LEADS[lang][Math.max(0, asks - 1) % FAQ_REANSWER_LEADS[lang].length];
+  const typeAsk = conversationFlooringType(messages) ? "" : FAQ_REANSWER_TYPE_ASK[lang];
+  return `${lead} ${FAQ_REANSWERS[lang][fam]}${typeAsk}`;
+}
+
 // FAQ button + texto DIGITADO na mesma rajada (Emanuel "When can I get an
 // estimate?", Marta "Hola buenos días puedes dar más detalles", Lee "Is this
 // micro cement" — WA 27/08/2026; Jacintita "Su telefono", Martha — IG 30/08):
@@ -1527,12 +1576,66 @@ const RESCHEDULE_PATTERNS: RegExp[] = [
   /\b(?:wo\s?n'?t|will\s+not|would\s+not|wouldn'?t|can'?t|cannot|am\s+not\s+going\s+to|not\s+going\s+to)\b[^.!?\n]{0,28}\b(?:be\s+able\s+to|make\s+it|be\s+(?:there|home|around|available)|travel|attend|come\s+back|get\s+back)\b/i,
   // "no voy a estar / no estaré / não vou estar (en casa / aquí)" — same idea ES/PT.
   /\bno\s+(?:voy\s+a\s+)?estar[eé]?\b|\bno\s+estar[eé]\b|\bn[ãa]o\s+(?:vou\s+)?estar\b/i,
+  // "Is it possible to change it to 5pm?" (Yusimi, WA 03/09/2026, 2h38 antes da
+  // visita — TOTAL SILENCE): o padrão verbo+substantivo exige appointment/time/
+  // cita depois do verbo, e "it to 5pm" não tem substantivo nenhum. Verbo de
+  // mudança + "to" + hora/dia é remarcação mesmo sem nome de visita.
+  /\b(?:move|change|switch|push|shift|bump)\b[^.!?\n]{0,24}\bto\b[^.!?\n]{0,12}\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday|morning|afternoon|evening|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today)\b/i,
+  // "Podrías pasar a las 5:00 por favor" (Aida Álvarez, WA 01/09/2026, 1h antes
+  // da visita — TOTAL SILENCE; ela perdeu a visita das 3pm e passou 3 dias
+  // confusa): pedir que a gente VENHA em outra hora é remarcação em ES/PT,
+  // mesmo sem cambiar/mover. EN: "can you come at 5 instead" já casa acima.
+  // (\b é ASCII em JS: antes de "às" não há boundary — daí o lookbehind)
+  /\b(?:pasar?|pases?|pasa|pasen|venir|vengan?|vengas?|ven|llegar|lleguen?|llegues?|vayan?|vayas?|passar|passe|vir|venha|chegar|chegue)\b[^.!?\n]{0,20}(?:\ba\s+las?|(?<=\s)às?)\s*\d{1,2}(?::\d{2})?\b/i,
+  // "podrías venir más tarde / can you come earlier" — mesmo pedido sem hora.
+  /\b(?:pasar?|venir|vengas?|llegar|come|arrive|stop\s+by|passar|vir|chegar)\b[^.!?\n]{0,16}\b(?:m[áa]s\s+(?:tarde|temprano)|mais\s+(?:tarde|cedo)|(?:a\s+(?:little|bit)\s+)?(?:earlier|later|sooner))\b/i,
 ];
 
 export function isRescheduleRequest(text: string): boolean {
   const t = normalizeSmartPunct(text).trim();
   if (!t) return false;
   return RESCHEDULE_PATTERNS.some((p) => p.test(t));
+}
+
+// ─── "Se abrir um horário mais cedo, me avisa" (pedido CONDICIONAL) ─────────
+// CASO CLEVELAND (WA 02/09/2026): segundos depois do [BOOK] de quinta 8pm o
+// cliente escreveu "If anything changes and you have a eailer time - please
+// let me know." — um pedido FUTURO e condicional, não uma remarcação. Mas a
+// frase casou com a sonda de slot ("you have ... time"), o modo reschedule
+// abriu, o modelo leu a quinta como "fully booked" (a ÚLTIMA vaga era a visita
+// que o próprio cliente acabara de fechar!) e o EMPURROU para sexta 9am — dia
+// que o cliente tinha dito não poder. Um pedido condicional recebe UMA frase
+// fixa ("aviso se abrir algo antes") + restate da visita real, e NUNCA entra
+// no fluxo de remarcação. Se a rajada carrega TAMBÉM uma remarcação de
+// verdade, o condicional é removido e o resto segue o fluxo normal.
+const CONDITIONAL_EARLIER_PATTERNS: RegExp[] = [
+  // "if anything changes / opens up / frees up / comes up / gets cancelled"
+  /\bif\s+(?:anything|something|any\s+(?:time|slot|spot|opening)|an?\s+(?:earlier|sooner|different)\s+(?:time|slot|spot|opening|appointment))\b[^.!?\n]{0,50}\b(?:changes?|opens?(?:\s+up)?|frees?(?:\s+up)?|comes?\s+up|becomes?\s+available|cancel(?:s|led|lation)?)\b/i,
+  // "if you have/get/find an earlier ("eailer") time ... let me know"
+  /\bif\s+(?:you|u)\s+(?:have|get|find|see)\b[^.!?\n]{0,30}\b(?:earlier|eailer|sooner|before)\b[^.!?\n]{0,40}\b(?:let\s+me\s+know|tell\s+me|text\s+me|message\s+me|call\s+me)\b/i,
+  // "let me know / keep me posted if ... earlier/opens/cancellation"
+  /\b(?:let\s+me\s+know|keep\s+me\s+(?:posted|updated)|text\s+me|tell\s+me|av[ií]same|me\s+avisas?|me\s+avisa)\b[^.!?\n]{0,40}\b(?:if|si|se)\b[^.!?\n]{0,50}\b(?:earlier|sooner|eailer|opens?|frees?|available|cancel\w*|antes|m[áa]s\s+temprano|abre|libera|desocupa|mais\s+cedo|abrir|liberar|vagar)\b/i,
+  // ES: "si se abre/libera algo (más temprano) me avisas"
+  /\bsi\s+(?:se\s+)?(?:abre|libera|desocupa|cancelan?|sale|hay|tienes?|consigues?)\b[^.!?\n]{0,50}\b(?:antes|m[áa]s\s+temprano|otro\s+horario|un\s+horario|algo)\b/i,
+  // PT: "se abrir/vagar um horário mais cedo me avisa"
+  /\bse\s+(?:abrir|vagar|liberar|cancelar\w*|tiver|surgir)\b[^.!?\n]{0,50}\b(?:antes|mais\s+cedo|outro\s+hor[áa]rio|um\s+hor[áa]rio|algo)\b/i,
+];
+
+export function isConditionalEarlierRequest(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  return CONDITIONAL_EARLIER_PATTERNS.some((p) => p.test(t));
+}
+
+// Remove as frases condicionais para julgar o RESTO da rajada: "can we move to
+// Friday? and if anything opens earlier let me know" continua remarcação.
+export function stripConditionalEarlier(text: string): string {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return t
+    .split(/(?<=[.!?])\s+|\n+/)
+    .filter((s) => !CONDITIONAL_EARLIER_PATTERNS.some((p) => p.test(s)))
+    .join(" ")
+    .trim();
 }
 
 // ─── Cliente AFIRMA uma visita que o scheduler não enxerga ───────────────────
@@ -1968,6 +2071,12 @@ const POLITE_DECLINE_PATTERNS: RegExp[] = [
   /\b(?:don'?t|do\s+not|dont)\s+(?:need|want)\s+(?:any\s+|new\s+|a\s+)?floor(?:s|ing)?\b/i,
   /\b(?:don'?t|do\s+not|dont)\s+want\s+(?:nor|or)\s+need\b|\b(?:services?|products?)\s+(?:that\s+)?i\s+(?:don'?t|do\s+not|dont)\s+(?:want|need)\b/i,
   /^[\s.,!]*(?:no+[\s.,!]*)?(?:thank\s+(?:you|u)|thanks?)?[\s.,!]*not\s+(?:right\s+)?(?:now|today|yet|at\s+this\s+time|at\s+the\s+moment)\b[^a-z]*$/i,
+  // Revisão 5 dias 05/09: "I do not" sozinho, "No I don't thanks" e "I have no
+  // house." levaram o opener enlatado (fb_115760b0, fb_663bfb02, fb_d5868fe8 —
+  // dois viraram STOP na sequência). O "no" respondendo à pergunta implícita do
+  // anúncio é recusa mesmo sem objeto.
+  /^[\s.,!]*(?:no+[\s.,!]*)?i\s+(?:do\s+not|don'?t|dont)[\s.,!]*(?:thanks?|thank\s+(?:you|u)|ty|txs|thx)?[\s.,!]*$/i,
+  /^[\s.,!]*i\s+have\s+no\s+(?:house|home|casa)[\s.,!]*$/i,
 ];
 
 // ACCIDENTAL TAP — "Sorry, clicked by mistake" / "Hit by accident" / "Sorry MIs
@@ -2059,7 +2168,21 @@ export function isFirstContactRejection(burst: string): boolean {
   // matched nothing and the second bubble got the promo opener (fb 4d907e41,
   // 2026-08-24). Judge line by line when there is more than one.
   const lines = t.split("\n").map((l) => l.trim()).filter(Boolean);
-  if (lines.length > 1 && lines.every((l) => isHostileRejection(l) || POLITE_DECLINE_PATTERNS.some((p) => p.test(l)) || isAccidentalTap(l))) return true;
+  if (lines.length > 1) {
+    const isRejLine = (l: string) =>
+      isHostileRejection(l) || POLITE_DECLINE_PATTERNS.some((p) => p.test(l)) || isAccidentalTap(l);
+    if (lines.every(isRejLine)) return true;
+    // Rejeição já dada + só ruído curto sem substância no resto ("no thanks" ×2
+    // e dias depois "Don't knt" → o gibberish reabria o opener; fb_94076582,
+    // 05/09/2026). O sinal de interesse já foi checado no topo — uma linha
+    // curta que não pergunta nem nomeia nada não desfaz a recusa.
+    if (
+      lines.some(isRejLine) &&
+      lines.every((l) => isRejLine(l) || (l.length <= 30 && !SUBSTANTIVE_CONTENT.test(l)))
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -2531,6 +2654,15 @@ export async function getAIResponse(
           if (Number.isFinite(gapMin) && gapMin >= 0 && gapMin <= 15) {
             console.log("[AI] client repeated the exact message within 15min — REACT_ONLY (double-tap, no repeat)");
             return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
+          }
+          // FAQ conhecida re-enviada após a janela: resposta enlatada com
+          // lead-in rotativo — o caminho do modelo aqui terminava em silêncio
+          // ([REACT_ONLY] espontâneo ou texto idêntico engolido pelo guard de
+          // duplicata) em 3 conversas da janela 31/08–05/09.
+          const faqReanswer = cannedFaqReanswer(lastText, messages);
+          if (faqReanswer) {
+            console.log("[AI] repeated ad-FAQ after a gap — deterministic re-answer (no model, no dup-silence)");
+            return { text: faqReanswer, inputTokens: 0, outputTokens: 0 };
           }
           console.log("[AI] repeated question after a gap (or no timestamps) — answering it fresh");
         }
