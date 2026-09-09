@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
@@ -74,6 +74,15 @@ async function processBookingCommand(
   if (repairRequestActive(history)) {
     console.warn(`[WA] booking blocked — the client asked for a REPAIR (we do not do repairs); sending the decline`);
     return { response: repairDeclineMessage(lang), booked: false };
+  }
+  // FLOOR WE DO NOT DO guard (JuanCarlos Briones, IG 2026-09-05; Frank
+  // Fernandez, WA 2026-08-31): epoxy, concrete/cement, microcement, resin,
+  // pavers or terrazzo is never booked. A [BOOK] while that request stands (or
+  // while the client's photo of such a floor was never clarified) is replaced
+  // by the deterministic decline / clarification that names what we install.
+  if (unsupportedFloorStanding(history)) {
+    console.warn(`[WA] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
+    return { response: unsupportedFloorReply(history, lang), booked: false };
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
@@ -640,6 +649,17 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (imageUrl) {
       preFetchedImageBase64 = await downloadZApiImage(imageUrl).catch(() => null);
     }
+    // Analyze the photo BEFORE storing / debouncing (Briones, IG 2026-09-05):
+    // a second bubble within 10s makes this handler exit before the media step,
+    // so the analysis must already be in the stored row.
+    let preAnalysis: string | null = null;
+    if (preFetchedImageBase64) {
+      try {
+        const a = await analyzeImageFromBase64(preFetchedImageBase64);
+        if (a && !a.toLowerCase().includes("could not") && a.length > 20) preAnalysis = a;
+      } catch (err) { console.warn("[WA] pre-debounce image analysis failed:", err); }
+    }
+    const storedText = preAnalysis ? `[Floor plan analysis: ${preAnalysis}]` : rawText;
 
     // Store message immediately
     const { data: insertedMsg, error: insertErr } = await supabaseAdmin
@@ -647,7 +667,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       .insert({
         conversation_id: conv.id,
         role: "user",
-        content: rawText,
+        content: storedText,
         instagram_msg_id: messageId,
       })
       .select("id, created_at")
@@ -1264,7 +1284,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
 
     if (imageUrl && preFetchedImageBase64) {
       try {
-        const analysis = await analyzeImageFromBase64(preFetchedImageBase64);
+        const analysis = preAnalysis ?? await analyzeImageFromBase64(preFetchedImageBase64);
         if (analysis && !analysis.toLowerCase().includes("could not") && analysis.length > 20) {
           enrichedText = `[Floor plan analysis: ${analysis}]`;
           mediaProcessed = true;
@@ -1734,6 +1754,16 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (!isBookingConfirmed && repairVisitOfferLeak(history, safeResponse)) {
       console.warn("[WA] repair request — model offered a visit / asked for booking details; replacing with the repair decline");
       safeResponse = repairDeclineMessage(lang);
+    }
+
+    // FLOOR WE DO NOT DO backstop (Briones IG 2026-09-05, Frank Fernandez WA
+    // 2026-08-31): while the client asks for epoxy / concrete / microcement /
+    // pavers (or their photo shows one and it was never clarified), a visit
+    // offer, a slot offer, a booking-details ask or a [BOOK] from the model is
+    // replaced by the deterministic decline that names what we DO install.
+    if (!isBookingConfirmed && unsupportedFloorLeak(history, safeResponse)) {
+      console.warn("[WA] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
+      safeResponse = unsupportedFloorReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling, history);

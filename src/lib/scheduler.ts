@@ -2069,6 +2069,34 @@ export function repairDeclineMessage(lang: Lang): string {
     : "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!";
 }
 
+// We do NOT do epoxy, concrete/cement, microcement, resin, pavers or terrazzo
+// floors (owner rule 2026-09-09, JuanCarlos Briones / Frank Fernandez cases: a
+// paver-floor photo and an "Epoxy flooring / Self leveling concrete" request
+// were both booked as visits). Sent when a [BOOK], visit offer or booking-
+// details ask leaks through while the client's standing request is one of those
+// floors (ai.unsupportedFloorRequestActive). Names what we DO install (the same
+// list as CARPET INSTALLATION: vinyl, tile, hardwood, carpet). No dashes, no
+// ¿ ¡, usted register in Spanish (same as repairDeclineMessage). The closing
+// question must not read as a scheduling push ("work for you" trips
+// containsSchedulingOffer and the message would flag itself as a leak).
+export function unsupportedFloorDeclineMessage(lang: Lang): string {
+  if (lang === "pt") return "Esse tipo de piso não é algo que a gente faça, não trabalhamos com epóxi, concreto, cimento, microcimento nem pavers. O que instalamos é piso vinílico de luxo (acabamento madeira ou pedra, vai direto por cima da cerâmica existente), porcelanato e cerâmica, madeira maciça e carpete. Algum desses serviria pra você?";
+  return lang === "es"
+    ? "Ese tipo de piso no es algo que hagamos, no trabajamos con epoxy, concreto, cemento, microcemento ni pavers. Lo que instalamos es vinyl de lujo (acabado madera o piedra, va directo sobre la cerámica existente), porcelanato y cerámica, madera natural y alfombra. Alguno de esos le sirve?"
+    : "That's not something we do, we don't work with epoxy, concrete, cement, microcement or paver floors. What we install is luxury vinyl plank (wood or stone look, it goes right over existing tile), porcelain and ceramic tile, hardwood and carpet. Would one of those be a good fit for your space?";
+}
+
+// The client's PHOTO shows a concrete / paver / epoxy-type floor and they have
+// not named a floor we install (Briones: photo + "This" → booked). Sent when
+// the model offers slots, a visit or asks for booking details before clarifying
+// (ai.unsupportedImageClarifyPending). Two short sentences, no dashes.
+export function unsupportedImageClarifyMessage(lang: Lang): string {
+  if (lang === "pt") return "Só pra eu te orientar certo: pela foto, esse piso parece ser de concreto, pavers ou epóxi, e esse tipo de acabamento não é algo que a gente instale. O que instalamos é piso vinílico de luxo, porcelanato e cerâmica, madeira maciça e carpete, você quer colocar um desses?";
+  return lang === "es"
+    ? "Solo para orientarlo bien: por la foto, ese piso parece de concreto, pavers o epoxy, y ese tipo de acabado no es algo que instalemos. Lo que instalamos es vinyl de lujo, porcelanato y cerámica, madera natural y alfombra, quiere poner alguno de esos?"
+    : "Quick check so I point you the right way: from the photo, that looks like a concrete, paver or epoxy style floor, and that kind of finish isn't something we install. What we do is luxury vinyl plank, porcelain and ceramic tile, hardwood and carpet, are you looking to put one of those in?";
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with

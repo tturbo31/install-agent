@@ -2,7 +2,7 @@ import { zipsInText, cityAliasZip } from "./geo/zip-geo";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, detectLang, repairDeclineMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -1399,6 +1399,10 @@ export function isFlooringInquiry(text: string): boolean {
   if (SEE_OR_COLOR.test(t)) return false;
   if (OTHER_TOPIC.test(t)) return false;
   if (isRepairRequest(t)) return false;
+  // Epoxy / concrete / microcement words ("I saw the promotion for cement
+  // floors", "Do you do epoxy?") are answered by the model (correction or
+  // decline + what we do install), never by the canned type-ask opener.
+  if (mentionsUnsupportedFloor(t)) return false;
   if (PROMO_PRICE.test(t) || HOW_WORK.test(t)) return true;
   return FLOORING_CTX.test(t) && INQUIRY_INTENT.test(t);
 }
@@ -1440,8 +1444,9 @@ const NON_CLIENT_BUBBLE = /^\s*\[(?:Floor plan analysis|Image analysis|Image|Aud
 const NON_CLIENT_TAGS = /\[(?:Client replied to our ad|AD REPLY|Client shared a post)[^\]]*\]/gi;
 
 function clientTextForRepair(text: string): string {
-  const t = normalizeSmartPunct((text || "").split(/\n\n?\[SYSTEM:/)[0]);
-  if (NON_CLIENT_BUBBLE.test(t)) return "";
+  const t = normalizeSmartPunct((text || "").split(/\n\n?\[SYSTEM:/)[0])
+    .replace(/\n?\[(?:Floor plan analysis|Image analysis)\b[\s\S]*$/i, "");
+  if (!t.trim() || NON_CLIENT_BUBBLE.test(t)) return "";
   return t.replace(NON_CLIENT_TAGS, " ").trim();
 }
 
@@ -1498,6 +1503,294 @@ The client is asking to FIX or REPLACE damaged, broken, cracked, chipped or loos
 4. Only if the client clearly says they want a whole NEW floor installed (not the damaged pieces fixed) return to the normal flow.
 5. If earlier in this conversation a visit was already offered, a slot was "held" or the name, address or phone were collected for this repair, that was a MISTAKE: do NOT confirm it, do NOT write [BOOK:...], apologize briefly and give the decline above instead.
 6. Keep the figure as 500 square feet (pies cuadrados / pés quadrados), never convert it to square meters.`;
+
+// ─── Floors we do NOT do: epoxy, concrete/cement, microcement, resin, pavers, terrazzo ───
+// THE BUG (JuanCarlos Briones, IG 2026-09-05 → visit 09-09): "Need floor for new
+// restaurant" → opener → a PHOTO of a stone-paver floor (never analyzed: the IG
+// image prefetch used the dead env token, fixed in the webhook) + "This" → the
+// model wrote "for a restaurant that size I definitely need to come measure",
+// never learned the type, collected name/address/phone and booked a real visit
+// for a paver/cement floor we do not install. Same family: Frank Fernandez (WA
+// 08-31) "Epoxy flooring" → "Self leveling concrete." → the bot said "we don't
+// do that either" and STILL booked a visit; Arthur (WA 08-30) "epoxy egg shell
+// white" → visit push. Owner rule (2026-09-09): we install ONLY luxury vinyl
+// plank (wood or stone/tile look), porcelain/ceramic tile and hardwood (plus
+// carpet/laminate installation, unchanged). Epoxy, concrete/cement, microcement,
+// resin, pavers, terrazzo: NEVER a visit, never a [BOOK]; tell the client what
+// we do install. Three layers, mirroring the no-repairs guard: (1) prompt
+// section FLOORS WE DO NOT DO + rule 40, (2) CRITICAL block injected while the
+// request stands, (3) deterministic block of [BOOK] / visit offer / booking-
+// details ask in getAIResponse and in the three webhooks.
+// A "look" is not the material: "concrete look", "cement finish" is our stone-
+// finish vinyl or large-format tile, never a decline.
+// Only the concrete/cement words take the "look" exclusion ("concrete look",
+// "cement finish", "cement board"); "epoxy finish" / "microcement finish" IS
+// the unsupported floor.
+const UNSUPPORTED_FLOOR_TERM = /\b(?:(?:concrete|concreto|hormig[oó]n|cement(?:o|s)?|cimento)\b(?![\s-]*(?:look|looking|looks|finish|finished|style|styled|effect|colou?r|colored|tone|toned|gr[ae]y|vibe|aesthetic|pattern|design|inspired|like\b|boards?|backer))|(?:epox[yi]\w*|ep[oó]x[iy]\w*|resins?|resinas?|micro\s*-?\s*(?:cement\w*|cimento|cemento)|microtopping|micro\s*-?\s*topping|self\s*-?\s*level\w*|autonivel\w*|overlay|skim\s*-?\s*coat\w*|pavers?|adoqu[ií]n(?:es)?|adoquinado|paving\s+stones?|flagstones?|cobblestones?|terrazz?o|porcelanato\s+l[ií]quido|piso\s+3d|cimento\s+queimado)\b)/i;
+const UF_TERM_SRC = UNSUPPORTED_FLOOR_TERM.source.replace(/^\\b/, "");
+const UNSUPPORTED_FLOOR_TERM_G = new RegExp(UNSUPPORTED_FLOOR_TERM.source, "gi");
+// Types we DO install (for "the client named one of ours" — mixed messages and
+// pivots). Includes the "title(s)" autocorrect of tile(s) ("Title or epoxy").
+const SUPPORTED_FLOOR_MENTION = /\b(?:tiles?|titles?|v[iy]n[iy]ls?|vinilos?|vin[ií]licos?|lvp|lvt|spc|laminate[ds]?|laminad[oa]s?|hardwoods?|solid\s*(?:hard)?wood|engineered\s*(?:wood|hardwood|floors?|flooring)|wood(?:en)?\s+(?:floors?|flooring|planks?)|oak|porcelains?|porcelanatos?|ceramics?|cer[aâ]mic[ao]s?|azulejos?|losas?|losetas?|baldosas?|piso\s+flotante|carpets?|carpetes?|carpeting|alfombras?|moquetas?|alcatifas?|marble|m[aá]rmol|m[aá]rmore|travertin[eo]|planks?|madera|madeira|luxury\s+vinyl)\b/i;
+const SUP_SRC = SUPPORTED_FLOOR_MENTION.source.replace(/^\\b/, "");
+// The client is asking what the floor in our AD / VIDEO / POST is ("is that
+// microcement?", "the video shows epoxy", "I saw the promotion for cement
+// floors"). That floor is our vinyl over tile: the MODEL corrects it (prompt
+// rule THE FLOOR IN OUR ADS IS NOT CEMENT), it is never a decline.
+const AD_PRODUCT_REFERENCE = /\b(?:videos?|vids?|ads?|advert\w*|advertis\w*|commercials?|posts?|reels?|stor(?:y|ies)|promo(?:tions?)?|promoci[oó]n|anuncios?|comercial(?:es)?|publicaci[oó]n(?:es)?|v[ií]deos?|propaganda|an[uú]ncios?|you\s+(?:guys\s+)?(?:posted|showed|advertise[ds]?|put\s+up|are\s+doing|were\s+doing|did)|in\s+the\s+(?:picture|photo|pic|clip)|(?:que|q)\s+v[ií]\b|i\s+saw|vi\s+(?:que|el|la|un|una)\b)\b/i;
+// "Is this epoxy?", "looks like micro cement", "Esto es epoxy", "Eso no es
+// resina?", "como un cemento", "what's it made of? Microcement?": a GUESS about
+// a product, not a request for it.
+const UNSUPPORTED_GUESS_FORM = new RegExp(
+  [
+    String.raw`\b(?:is|was|isn'?t|are|aren'?t)\s+(?:this|that|it|these|those|the\s+\w+(?:\s+\w+)?)\s+(?:a\s+|an\s+|some\s+(?:sort|kind|type)\s+of\s+|really\s+|just\s+|like\s+|made\s+of\s+|apply\s+like\s+(?:a\s+)?)?(?:${UF_TERM_SRC})`,
+    String.raw`\b(?:this|that|it|esto|eso|isso|isto|ese|esa|este|esta|esse|essa)\s+(?:no\s+|não\s+|not\s+|one\s+)?(?:es|é|is|was|isn'?t|looks?\s+like|looked\s+like|seems?\s+like|appears?\s+to\s+be|parece|se\s+ve\s+como)\s+(?:un\s+|una\s+|um\s+|uma\s+|a\s+|an\s+|como\s+|tipo\s+|like\s+(?:a\s+|an\s+)?|some\s+(?:sort|kind|type)\s+of\s+|(?:one|1)\s+piece\s+|solid\s+)?(?:${UF_TERM_SRC})`,
+    String.raw`\b(?:looks?|looked|seems?|seemed|appears?|appeared)\s+(?:like|to\s+be)\b[^.!?\n]{0,25}\b(?:${UF_TERM_SRC})`,
+    String.raw`\b(?:como|like|as)\s+(?:un|una|um|uma|a|an|some)\s+(?:${UF_TERM_SRC})`,
+    String.raw`\bwhat\s+(?:is|kind\s+of|type\s+of|sort\s+of)\s+(?:that|this|the|it)\b[^.!?\n]{0,30}\b(?:${UF_TERM_SRC})`,
+    String.raw`\bwhat(?:'?s|\s+is)\s+(?:it|this|that)\s+made\s+(?:of|from)\b`,
+    String.raw`\b(?:qu[eé]|o\s+que)\s+(?:es|é|tipo\s+de|material|producto|produto)\b[^.!?\n]{0,30}\b(?:${UF_TERM_SRC})`,
+  ].join("|"),
+  "i"
+);
+// "Is pouring that concrete necessary?": a question about "that/this" floor
+// (the ad's) with no request verb.
+const DEMONSTRATIVE_UNSUPPORTED = new RegExp(String.raw`\b(?:that|this|the|ese|esa|eso|esto|esse|essa|isso)\s+(?:${UF_TERM_SRC})`, "i");
+// "cement over the tile", "micro cement over tile", "the cement one", "el de
+// cemento": this is how ad viewers describe the floor from our video (vinyl
+// poured/spread over old tile). The MODEL corrects it (THE FLOOR IN OUR ADS IS
+// NOT CEMENT) and keeps the lead; it is never a decline by itself. A client who
+// then insists on real microcement/epoxy is caught on that later message.
+const AD_FLOOR_PHRASING = new RegExp(
+  [
+    String.raw`\b(?:${UF_TERM_SRC})\b[^.!?\n]{0,30}?\b(?:over|on\s+(?:the\s+)?top\s+of|onto|on|sobre|encima\s+de(?:l)?|por\s+cima\s+d[oa]s?)\s+(?:the\s+|my\s+|our\s+|old\s+|existing\s+|current\s+|el\s+|la\s+|los\s+|las\s+|mi\s+|o\s+|a\s+|os\s+|as\s+|meu\s+|minha\s+)*(?:tiles?|ceramics?|cer[aâ]mic[ao]s?|porcelain|porcelanato|azulejos?|losas?|baldosas?|floor|piso|suelo|ch[aã]o)\b`,
+    String.raw`^\W*(?:the|el|la|lo|o|a|ese|esa|that|this)\s+(?:de\s+)?(?:${UF_TERM_SRC})(?:\s+(?:one|floor|look|style|finish))?\W*$`,
+  ].join("|"),
+  "i"
+);
+// The assistant already corrected the ad guess ("that's actually our luxury
+// vinyl with a stone finish") without declining: the lead is a vinyl lead now.
+const UNSUPPORTED_GUESS_FORM_G = new RegExp(UNSUPPORTED_GUESS_FORM.source, "gi");
+const AD_FLOOR_PHRASING_G = new RegExp(AD_FLOOR_PHRASING.source, "gi");
+const ASSISTANT_CORRECTED_TO_VINYL =/\b(?:that'?s\s+(?:actually\s+)?our|it'?s\s+(?:actually\s+)?our|is\s+(?:actually\s+)?our|what\s+you\s+saw\s+is|that\s+floor\s+is\s+our|es\s+(?:en\s+realidad\s+)?nuestro|ese\s+piso\s+es\s+nuestro|é\s+(?:na\s+verdade\s+)?o\s+nosso|esse\s+piso\s+é\s+o\s+nosso)\b[^.!?\n]{0,60}\b(?:vinyl|vinil|vin[ií]lico)/i;
+// The unsupported term names the EXISTING surface / subfloor, not the floor the
+// client wants ("bare concrete", "over the concrete", "concrete slab", "tengo
+// concreto", "the floor is concrete now", "there is no concrete floor"): our
+// floors go over concrete, this is a normal lead. Strip those phrases before
+// looking for a request. Up to three words may sit between the context word and
+// the term ("I have 13x18 ruff concrete"), none of them a request verb.
+const EXISTING_UNSUPPORTED_PRE = new RegExp(
+  String.raw`\b(?:over|on|onto|on\s+(?:the\s+)?top\s+of|above|atop|existing|bare|raw|exposed|unfinished|current|currently|now|already|it'?s|its|(?:i|we|they|it|which|that|this|house|home|room|garage|basement|floors?|flooring|slab|base|subfloor|surface|place|space|property|everything|piso|suelo|ch[aã]o|el\s+m[ií]o|la\s+m[ií]a|o\s+meu|a\s+minha|hoje|ahora|agora|right\s+now)\s+(?:currently\s+|already\s+|just\s+|still\s+|all\s+)?(?:have|has|had|got|is|are|was|were|es|est[aá]|é)|there'?s|there\s+is|with\s+(?:a|an)|not|no|isn'?t|sobre|encima\s+de(?:l)?|arriba\s+de(?:l)?|tiene|tengo|tenemos|ahora|actualmente|hay|es\s+de|tem|tenho|temos|agora|atualmente|em\s+cima\s+d[oa])(?:\s+(?!(?:want|wants|wanted|need|needs|looking|quiero|necesito|busco|prefer|like)\b)[^\s.,!?;]+){0,3}?\s+(?:${UF_TERM_SRC})(?:\s+(?:slab|subfloor|sub-?floor|base|pad|foundation|underneath|below|floors?|flooring|surface|piso|suelo|losa|ch[aã]o|contrapiso))?`,
+  "gi"
+);
+const EXISTING_UNSUPPORTED_POST = new RegExp(
+  String.raw`\b(?:${UF_TERM_SRC})\s+(?:slab|subfloor|sub-?floor|base|pad|foundation|underneath|below|contrapiso|now|right\s+now|currently|already|ahora|actualmente|agora|atualmente|debajo|abajo|embaixo)\b`,
+  "gi"
+);
+// Supported types that are NOT what the client wants: negated ("not tile", "no
+// quiero vinyl") or the EXISTING floor being covered ("over the tile", "I have
+// hardwood", "cement over tile"). Stripped before the "named one of ours" test.
+const NEGATED_SUPPORTED = new RegExp(
+  String.raw`\b(?:not|no|don'?t|dont|do\s+not|never|instead\s+of|rather\s+than|nor|neither|without|other\s+than|except|sin|no\s+quiero|nada\s+de|n[aã]o\s+quero|nem|tampoco)\b(?:\s+[^\s,.!?]+){0,4}?\s+(?:${SUP_SRC})`,
+  "gi"
+);
+const EXISTING_SUPPORTED = new RegExp(
+  String.raw`\b(?:have|has|had|got|existing|current|currently|old|remove|removing|removed|tear\s+out|rip\s+out|replace|replacing|cover|covering|covered|over|on|onto|on\s+(?:the\s+)?top\s+of|above|tengo|tiene|tenemos|quitar|sacar|cubrir|sobre|encima\s+de(?:l)?|tenho|tem|temos|tirar|cobrir|em\s+cima\s+d[oa])\b(?:\s+(?:the|my|our|your|this|that|these|those|existing|old|current|all|el|la|los|las|mi|mis|o|a|os|as|meu|minha|de))*\s+(?:${SUP_SRC})`,
+  "gi"
+);
+// Request forms: "I want / need / looking for epoxy", "do you do microcement",
+// "how much for epoxy", "quiero epoxi", "hacen microcemento", "fazem epóxi".
+const UNSUPPORTED_DESIRE = /\b(?:want|wanted|wanting|need|needed|looking\s+for|look\s+for|interested\s+in|prefer|thinking\s+(?:of|about)|considering|would\s+like|like\s+to\s+(?:do|get|have|install|put)|trying\s+to\s+(?:do|get|put|install)|going\s+for|go\s+with|do\s+you\s+(?:guys\s+)?(?:do|offer|install|work\s+with|make|have|handle|pour|apply|sell|use|cover)|can\s+you\s+(?:guys\s+)?(?:do|pour|apply|install|put|make|cover)|could\s+you\s+(?:do|pour|apply|install)|(?:you|u)\s+(?:guys\s+)?(?:do|doing|offer|install|work\s+with|pour|apply|use|make|sell|handle|cover)|how\s+much\s+(?:for|is|would|to\s+do|do\s+you\s+charge)|price\s+(?:for|of|on)|quote\s+(?:for|on)|cost\s+(?:for|of)|only\s+(?:need|want)|quiero|quisiera|queremos|necesito|necesitamos|busco|buscamos|estoy\s+buscando|estamos\s+buscando|estaba\s+buscando|me\s+interesa|nos\s+interesa|hacen|hace\s+usted|ustedes\s+hacen|trabajan\s+con|ofrecen|pueden\s+(?:hacer|poner|aplicar|instalar)|cu[aá]nto\s+(?:cuesta|cobran|sale|por)|precio\s+(?:de|para|del)|quero|queremos|preciso|precisamos|procuro|procurando|gostaria|fazem|voc[eê]s\s+fazem|trabalham\s+com|quanto\s+(?:custa|cobram|fica))\b/i;
+// The client is open to one of OUR floors again (clears the standing request):
+// names a type we install, asks what we recommend / offer, or wants to cover,
+// replace or change the pictured floor / install over it.
+const OPEN_TO_OUR_FLOORS = /\b(?:one\s+of\s+(?:yours|those|them|your\s+(?:floors|options|products))|your\s+(?:floors?|vinyl|options?|products?|promo(?:tion)?)|(?:that|this)\s+one|the\s+(?:first|second|third|last|other|wood|stone|marble)\s+(?:one|option|look)|(?:stone|wood|marble)[\s-]*look|(?:el|la|ese|esa|o|a)\s+(?:primer[oa]|segund[oa]|[uú]ltim[oa]|otr[oa]|primeir[oa]|outr[oa])|what\s+(?:do|would|can)\s+you\s+(?:recommend|suggest|offer|have|do)|whatever\s+you\s+(?:recommend|suggest)|options?|alternatives?|something\s+(?:else|similar|like\s+that|different)|cover(?:ing)?\s+(?:this|it|that|them)|(?:install(?:ed)?|put|lay|go(?:es)?)\s+(?:\w+\s+){0,2}?(?:over|on\s+top\s+of)\s+(?:this|it|that|these|those|the)|replace|change|redo|get\s+rid\s+of|qu[eé]\s+(?:me\s+)?(?:recomienda[ns]?|ofrecen|tienen)|opciones|alternativas?|algo\s+(?:parecido|similar|diferente)|cubrir|cambiar|reemplazar|sobre\s+(?:este|esto|eso|ese|esta)|encima\s+de\s+(?:este|esto|eso|ese|esta)|o\s+que\s+voc[eê]s?\s+(?:fazem|t[eê]m|recomenda)|op[çc][õo]es|alguma\s+coisa\s+(?:parecida|diferente)|cobrir|trocar|mudar|em\s+cima\s+(?:disso|desse|deste|dessa|desta)|how\s+much|price|pricing|cost|quote|estimate|cu[aá]nto|precio|presupuesto|cotizaci[oó]n|quanto|pre[çc]o|or[çc]amento)\b/i;
+const UNSUPPORTED_DECLINE_SAID = /\b(?:don'?t|do\s+not|not\s+something\s+we|isn'?t\s+something\s+we|is\s+not\s+something\s+we|we\s+only|outside\s+(?:of\s+)?what\s+we|we\s+(?:don'?t|do\s+not)\s+(?:do|offer|install|work)|no\s+(?:hacemos|trabajamos|ofrecemos|instalamos)|no\s+es\s+algo\s+que|n[aã]o\s+(?:fazemos|trabalhamos|instalamos)|n[aã]o\s+[eé]\s+algo\s+que|solo\s+(?:hacemos|instalamos|trabajamos)|s[oó]\s+(?:fazemos|instalamos|trabalhamos))\b/i;
+const SHORT_AFFIRMATIVE = /^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|sounds\s+good|that\s+works|that'?s\s+fine|let'?s\s+do\s+(?:it|that)|i'?m\s+open|s[ií]|claro|dale|est[aá]\s+bien|perfecto|de\s+acuerdo|sim|pode\s+ser|beleza|t[aá]\s+bom|pode)\b[\s!.,]*(?:please|por\s+favor)?[\s!.]*$/i;
+const UNSUPPORTED_AS_FLOOR = new RegExp(String.raw`\b(?:${UF_TERM_SRC})\s+(?:floors?|flooring|coating|finish|pisos?|suelos?|ch[aã]o)\b|\b(?:floors?|flooring|piso|suelo|ch[aã]o)\s+(?:de\s+|of\s+|in\s+|em\s+|with\s+|con\s+|com\s+)(?:${UF_TERM_SRC})`, "i");
+
+function clientTextOnly(text: string): string {
+  return clientTextForRepair(text);
+}
+
+// Any mention of an unsupported floor word in the client's own text: such a
+// first message ("I saw the promotion for cement floors", "Do you do epoxy?")
+// goes to the model (correction or decline), never to the canned type-ask.
+export function mentionsUnsupportedFloor(text: string): boolean {
+  const t = clientTextOnly(text);
+  return !!t && UNSUPPORTED_FLOOR_TERM.test(t);
+}
+
+// The client is asking us for a floor type we do NOT do.
+export function isUnsupportedFloorRequest(text: string): boolean {
+  const raw = clientTextOnly(text);
+  if (!raw) return false;
+  if (!UNSUPPORTED_FLOOR_TERM.test(raw)) return false;
+  // Talking about the floor in our ad/video is a QUESTION the model answers
+  // (it is our vinyl), never a request.
+  if (AD_PRODUCT_REFERENCE.test(raw)) return false;
+  // Guesses ("Esto es epoxy", "is this microcement") and ad-floor phrasings
+  // ("cement over the tile", "the cement one") are removed; only a term that
+  // SURVIVES can be a request ("Es concreto estampado, quiero poner epoxy").
+  const t0 = raw.replace(UNSUPPORTED_GUESS_FORM_G, " ").replace(AD_FLOOR_PHRASING_G, " ");
+  if (!UNSUPPORTED_FLOOR_TERM.test(t0)) return false;
+  const isQuestion = /\?\s*$/.test(raw.trim());
+  if (isQuestion && DEMONSTRATIVE_UNSUPPORTED.test(t0) && !UNSUPPORTED_DESIRE.test(t0)) return false;
+  // Existing surface / subfloor mentions are not the floor they want.
+  const t = t0.replace(EXISTING_UNSUPPORTED_PRE, " ").replace(EXISTING_UNSUPPORTED_POST, " ");
+  if (!UNSUPPORTED_FLOOR_TERM.test(t)) return false;
+  // A type we install in the same message (not negated, not the floor being
+  // covered) makes it a mixed message: the model handles it, the flag stays off.
+  // The unsupported phrases themselves are removed first, so "porcelanato
+  // líquido" (an epoxy product) never reads as "porcelanato".
+  const sup = t.replace(UNSUPPORTED_FLOOR_TERM_G, " ").replace(NEGATED_SUPPORTED, " ").replace(EXISTING_SUPPORTED, " ");
+  if (SUPPORTED_FLOOR_MENTION.test(sup)) return false;
+  if (UNSUPPORTED_DESIRE.test(t)) return true;
+  // Bare mention: "Epoxy", "Micro cemento", "Metallic resin", "Cement over
+  // tile", "Concrete floor for retail store" (typically the answer to "which
+  // type?"). A one-to-three-word QUESTION ("Microcement?", "Epoxy?") is the
+  // client asking what the ad's floor is, not a request.
+  const words = t.trim().split(/\s+/).filter((w) => /[a-zà-ÿ0-9]/i.test(w)).length;
+  if (words === 0) return false;
+  if (words <= 3 && isQuestion) return false;
+  if (words <= 8) return true;
+  // Longer sentence where the unsupported term is the floor itself.
+  return UNSUPPORTED_AS_FLOOR.test(t);
+}
+
+// The client names one of our floors or opens up to them again.
+function pivotsToSupportedFloor(text: string): boolean {
+  const t = clientTextOnly(text);
+  if (!t) return false;
+  if (SUPPORTED_FLOOR_MENTION.test(t.replace(NEGATED_SUPPORTED, " "))) return true;
+  return OPEN_TO_OUR_FLOORS.test(t);
+}
+
+// Conversation-level: the unsupported-floor request STANDS until the client
+// pivots to a floor we install (names it, asks what we recommend, wants to
+// cover/replace the pictured floor, or says yes to "would one of those work?").
+export function unsupportedFloorRequestActive(history: Array<{ role: string; content: string }>): boolean {
+  let active = false;
+  let prevAssistant = "";
+  for (const m of history ?? []) {
+    if (m.role === "assistant") {
+      prevAssistant = m.content || "";
+      // The bot corrected the ad guess to "our vinyl" (no decline) → vinyl lead.
+      if (active && ASSISTANT_CORRECTED_TO_VINYL.test(prevAssistant) && !UNSUPPORTED_DECLINE_SAID.test(prevAssistant)) active = false;
+      continue;
+    }
+    if (m.role !== "user") continue;
+    const t = clientTextOnly(m.content);
+    if (!t) continue;
+    if (isUnsupportedFloorRequest(t)) active = true;
+    else if (pivotsToSupportedFloor(t)) active = false;
+    else if (active && SHORT_AFFIRMATIVE.test(t) && UNSUPPORTED_DECLINE_SAID.test(prevAssistant) && UNSUPPORTED_FLOOR_TERM.test(prevAssistant)) active = false;
+  }
+  return active;
+}
+
+// ── Photo of a concrete / paver / epoxy-type floor ─────────────────────────
+// The vision step ends every analysis with "Floor type: X" (see
+// analyzeImageFromBase64). Older bubbles lack that line: fall back to a
+// conservative read of a photo whose SUBJECT is a floor / patio / balcony and
+// whose description names concrete / cement / epoxy / pavers as the floor
+// itself (no subfloor / installation-in-progress wording).
+const IMAGE_FLOOR_TYPE_LINE = /floor\s*type\s*:\s*\**\s*([^\n\]*]+)/i;
+const IMAGE_UNSUPPORTED_TYPE = /\b(?:concrete|cement|epoxy|micro\s*-?\s*cement\w*|microcemento|pavers?|flagstones?|cobblestones?|terrazz?o|resin)\b/i;
+const IMAGE_SUPPORTED_TYPE = /\b(?:tiles?|vinyl|laminate|hardwood|wood|carpet|marble|porcelain|ceramic|planks?|floor\s+plan|not\s+a\s+floor|subfloor|sub-?floor|unknown|other)\b/i;
+const IMAGE_SUBFLOOR_CTX = /\b(?:subfloor|sub-?floor|slab\s+(?:being|to\s+be|ready)|underlayment|primer|ready\s+for|prepared\s+for|awaiting|before\s+(?:install|laying)|installing|installation\s+in\s+progress|laying\s+(?:down|out)|worker|construction\s+site|under\s+construction|renovation\s+in\s+progress)\b/i;
+const IMAGE_IS_FLOOR_PHOTO = /\b(?:photo|photograph|image|picture)\s+of\s+(?:an?\s+|the\s+)?(?:(?:existing|current|old|outdoor|indoor|interior|exterior|covered|residential|commercial|bare|raw|stained|painted|polished|worn|weathered|large|small)\s+)*(?:\w+\s+){0,2}?(?:floors?|flooring|floor\s+surface|patio|balcony|terrace|deck|courtyard|garage\s+floor|driveway|pool\s+deck|slab)\b/i;
+export function imageAnalysisShowsUnsupportedFloor(text: string): boolean {
+  // The analysis block may follow the client's own caption in the same bubble
+  // (Instagram: "Here is my floor\n[Floor plan analysis: ...]").
+  const idx = (text || "").search(/\[(?:Floor plan analysis|Image analysis)\b/i);
+  if (idx < 0) return false;
+  const t = (text || "").slice(idx);
+  const line = t.match(IMAGE_FLOOR_TYPE_LINE);
+  if (line) {
+    const v = line[1].trim();
+    // A bare slab under renovation is a SUBFLOOR waiting for our floor, even
+    // when the vision line says "concrete".
+    if (IMAGE_UNSUPPORTED_TYPE.test(v) && !IMAGE_SUPPORTED_TYPE.test(v)) return !IMAGE_SUBFLOOR_CTX.test(t);
+    if (IMAGE_SUPPORTED_TYPE.test(v)) return false;
+  }
+  if (!IMAGE_IS_FLOOR_PHOTO.test(t)) return false;
+  if (IMAGE_SUBFLOOR_CTX.test(t)) return false;
+  const sentences = t.split(/[\n.]+/).filter((s) => IMAGE_UNSUPPORTED_TYPE.test(s));
+  if (!sentences.length) return false;
+  const floorish = sentences.filter((s) => /\b(?:floors?|flooring|surface|material|pavers?|terrace|balcony|patio|slab|deck|courtyard)\b/i.test(s));
+  if (!floorish.length) return false;
+  return !floorish.some((s) => /\b(?:tiles?|vinyl|laminate|hardwood|carpet|marble|porcelain|ceramic|planks?)\b/i.test(s));
+}
+
+// True while the client's most recent PHOTO shows a floor we do not install and
+// nobody has clarified yet: the client never named a floor we install, has not
+// asked for the unsupported floor in words either (that is the text flag), and
+// the bot has not yet said "we don't do concrete/epoxy/pavers".
+export function unsupportedImageClarifyPending(history: Array<{ role: string; content: string }>): boolean {
+  const h = history ?? [];
+  let imgIdx = -1;
+  for (let i = 0; i < h.length; i++) if (h[i].role === "user" && imageAnalysisShowsUnsupportedFloor(h[i].content)) imgIdx = i;
+  if (imgIdx < 0) return false;
+  for (const m of h) if (m.role === "user" && pivotsToSupportedFloor(m.content)) return false;
+  for (let i = imgIdx + 1; i < h.length; i++) {
+    const m = h[i];
+    if (m.role === "user" && isUnsupportedFloorRequest(m.content)) return false;
+    if (m.role === "assistant" && (IMAGE_UNSUPPORTED_TYPE.test(m.content) || /\bstone\b/i.test(m.content)) && UNSUPPORTED_DECLINE_SAID.test(m.content)) return false;
+  }
+  return true;
+}
+
+// What blocks a booking right now: the client asked for a floor we do not do
+// ("request"), or their photo shows one and it was never clarified ("image").
+export function unsupportedFloorStanding(history: Array<{ role: string; content: string }>): "request" | "image" | null {
+  if (unsupportedFloorRequestActive(history)) return "request";
+  if (unsupportedImageClarifyPending(history)) return "image";
+  return null;
+}
+
+// Post-model backstop while an unsupported floor stands: the model offered a
+// visit, offered slots, asked for the booking details, or wrote a [BOOK]. The
+// caller swaps the reply for unsupportedFloorReply (deterministic, EN/ES/PT).
+export function unsupportedFloorLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!unsupportedFloorStanding(history)) return false;
+  const t = aiText || "";
+  return /\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t);
+}
+
+export function unsupportedFloorReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
+  return unsupportedFloorStanding(history) === "image" ? unsupportedImageClarifyMessage(lang) : unsupportedFloorDeclineMessage(lang);
+}
+
+// The client's latest burst carries a photo the pipeline could NOT read (the
+// stored placeholder "[floor plan or photo]" survived: download or vision
+// failed). The model must never pretend it saw the image (Briones: "for a
+// restaurant that size I definitely need to come measure").
+export function lastBurstHasUnreadImage(history: Array<{ role: string; content: string }>): boolean {
+  const h = history ?? [];
+  let lastAssistant = -1;
+  for (let i = 0; i < h.length; i++) if (h[i].role === "assistant") lastAssistant = i;
+  const burst = h.slice(lastAssistant + 1).filter((m) => m.role === "user");
+  // A burst that also carries an analyzed photo is not "unread".
+  if (burst.some((m) => /\[(?:Floor plan analysis|Image analysis)\b/i.test(m.content || ""))) return false;
+  return burst.some((m) => /\[floor plan or photo\]/i.test(m.content || ""));
+}
+
+export const UNSUPPORTED_FLOOR_NOTE = `CRITICAL, FLOOR TYPE WE DO NOT DO (EPOXY / CONCRETE / CEMENT / MICROCEMENT / RESIN / PAVERS / TERRAZZO):
+The client is asking for a floor we do NOT install. We ONLY install luxury vinyl plank (wood look or stone/tile look, it goes right over existing tile), porcelain and ceramic tile, and hardwood (carpet and laminate installation too if they ask). We do NOT do epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, or terrazzo. Not even "to take a look".
+1. Say so politely, in one or two short sentences and in the client's language, name what we DO install, and ask if one of those would work for them. Example: "Epoxy isn't something we do, we install luxury vinyl plank (wood or stone look, it goes right over existing tile), porcelain and ceramic tile, hardwood and carpet. Would one of those be a good fit for your space?"
+2. NEVER offer, propose or set up a visit or estimate for that floor. NEVER ask for their name, address or phone. NEVER quote a price for it. NEVER say you need to see it in person. NEVER generate [BOOK:...].
+3. If the same message also asks something unrelated, answer that part normally.
+4. Only when the client clearly picks a floor we install (vinyl, tile, hardwood, carpet, laminate, "one of yours", "what do you recommend") return to the normal flow. A bare "yes" or "ok" to "would one of those work?" is NOT a floor: ask WHICH one (vinyl, tile or hardwood) in one short line, this single ask is allowed even if the type was asked earlier, and no visit, slot or price until a floor we install is named.
+5. If earlier in this conversation a visit was already offered, a slot was "held" or the name, address or phone were collected before they named this floor, that was a MISTAKE: do NOT confirm it, do NOT write [BOOK:...], apologize briefly and give the decline above instead.
+6. The floor in our ads and videos (the smooth grey/marble floor "poured" or "spread" over old tile, what clients call "cement over the tile" or "the cement one") is NOT cement, microcement, epoxy or resin: it is our luxury vinyl plank with a stone finish installed over the existing tile. If the client is asking about THAT floor, say so warmly ("that's actually our luxury vinyl with a stone finish, it goes right over your tile") and continue as a vinyl lead.
+7. If you already gave this decline earlier in the conversation and the client names another floor we do not do, do not repeat the whole list: one short line ("Self leveling concrete is in the same boat, we don't do that either. Vinyl, tile or hardwood, would any of those work?") and stop.`;
+
+export const UNSUPPORTED_IMAGE_NOTE = `CRITICAL, THE CLIENT'S PHOTO SHOWS A FLOOR WE DO NOT INSTALL:
+The photo analysis shows a concrete, cement, epoxy, microcement, paver, flagstone or terrazzo floor, and the client has NOT named a floor we install. We do NOT do those floors. Before ANY price, slot, visit or booking-details ask: say in the client's language that that kind of finish is not something we install, name what we DO install (luxury vinyl plank with wood or stone look, porcelain and ceramic tile, hardwood, carpet), and ask whether they want one of those (over or instead of that floor). Two short sentences. NEVER offer visit slots, NEVER ask for name, address or phone, NEVER generate [BOOK:...] in this turn. Never say "for a space that size" or infer the project size from the photo.`;
+
+export const UNREADABLE_IMAGE_NOTE = `CRITICAL, THE CLIENT SENT A PHOTO YOU CANNOT SEE:
+The latest client message contains "[floor plan or photo]" with no analysis: the image could not be read on our side, so you have NOT seen it. NEVER pretend you saw it, never describe it, never infer the floor type, the size of the space or its condition from it, never say "for a space that size". Say briefly that the photo did not come through on your side and ask what it shows (the floor they want, or the area to be done). If the flooring type is still unknown, ask which type they have in mind (luxury vinyl, tile or hardwood) in the SAME short message; this one re-ask is allowed even if the type was asked before, because their answer was the photo you could not see, so word it differently from the opener. Do NOT propose visit slots or ask for booking details in this turn unless the flooring type is already known from the client's own words.`;
 
 // A courtesy "thanks" that ALSO carries a real answer — a flooring type, a
 // room/scope, or a "yes please" to proceed — is the client ANSWERING our
@@ -2816,7 +3109,7 @@ export async function getAIResponse(
     const adContext = /\[AD REPLY:|\[Client replied to our ad\]|Client shared a post\/reel from our ad/i.test(lastMsg.content);
     const excludedTopic =
       SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
-      OTHER_TOPIC.test(t) || isRepairRequest(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
+      OTHER_TOPIC.test(t) || isRepairRequest(t) || mentionsUnsupportedFloor(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
@@ -2886,7 +3179,8 @@ export async function getAIResponse(
 36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, say Ozzi will personally contact them right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
-39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel, or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.`;
+39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel, or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.
+40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {
@@ -2897,6 +3191,27 @@ export async function getAIResponse(
   if (repairRequestActive(messages)) {
     console.log("[AI] Repair request active — injecting the no-repairs block");
     dynamicSystem += `\n\n---\n\n${REPAIR_REQUEST_NOTE}`;
+  }
+
+  // FLOOR WE DO NOT DO (epoxy / concrete / microcement / pavers) standing, or
+  // the client's photo shows one and it was never clarified → the block, read
+  // last (Briones IG 2026-09-05, Frank Fernandez WA 2026-08-31).
+  {
+    const uf = unsupportedFloorStanding(messages);
+    if (uf === "request") {
+      console.log("[AI] Unsupported floor request active — injecting the floors-we-do-not-do block");
+      dynamicSystem += `\n\n---\n\n${UNSUPPORTED_FLOOR_NOTE}`;
+    } else if (uf === "image") {
+      console.log("[AI] Client photo shows an unsupported floor, not yet clarified — injecting the clarify block");
+      dynamicSystem += `\n\n---\n\n${UNSUPPORTED_IMAGE_NOTE}`;
+    }
+  }
+
+  // A photo the pipeline could not read is in the latest burst → the model
+  // must not pretend it saw it (Briones: "for a restaurant that size").
+  if (lastBurstHasUnreadImage(messages)) {
+    console.log("[AI] Unread image placeholder in the latest burst — injecting the cannot-see-photo block");
+    dynamicSystem += `\n\n---\n\n${UNREADABLE_IMAGE_NOTE}`;
   }
 
   let response;
@@ -3048,6 +3363,18 @@ export async function getAIResponse(
       cleaned = repairDeclineMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
     }
 
+    // FLOOR WE DO NOT DO backstop inside the brain (Briones IG 2026-09-05,
+    // Frank Fernandez WA 2026-08-31): while the client asks for epoxy / concrete /
+    // microcement / pavers, or their photo shows such a floor and nobody has
+    // clarified yet, any [BOOK], slot or visit offer or booking-details ask is
+    // replaced by the deterministic decline / clarification that names what we
+    // DO install, for every caller of getAIResponse (the three webhooks keep
+    // their own copy of this guard as a second net).
+    if (unsupportedFloorLeak(messages, cleaned)) {
+      console.warn("[AI] unsupported floor — model offered a visit / details / [BOOK]; replaced with the floors-we-do-not-do reply");
+      cleaned = unsupportedFloorReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+    }
+
     // Regra do dono (28/08/2026): nada de ¿ / ¡ em espanhol — só ? e ! no final.
     cleaned = stripInvertedPunctuation(cleaned);
 
@@ -3103,7 +3430,9 @@ If it's a FLOOR PLAN:
 6. If total is over 500 sqft → state "LARGE PROJECT"
 
 If measurements are not visible, describe the rooms you can see.
-If it's a photo of existing floors: describe floor type and condition.
+If it's a photo of an existing floor: describe the floor type and its condition in one or two short factual lines. No cleaning, sealing, repair or renovation advice, no recommendations.
+
+ALWAYS finish with one final line in exactly this format: "Floor type: X" where X is ONE of: tile, vinyl plank, laminate, hardwood, carpet, marble, concrete, epoxy, microcement, pavers, terrazzo, subfloor, floor plan, not a floor, unknown. Rules: a floor plan drawing = "floor plan"; a photo that is not of a floor (a person, a product box, an ad graphic, a wall) = "not a floor"; a bare or rough concrete slab in a space under construction or renovation with no finished floor (a subfloor waiting for flooring) = "subfloor"; a FINISHED polished, stained, painted or sealed concrete/cement floor in a lived-in space = "concrete"; irregular or random-shaped stone or flagstone pieces set in mortar, brick or concrete pavers, or any sand-set outdoor paving (patio, driveway, pool deck) = "pavers"; epoxy or resin coatings = "epoxy"; a microcement / cement overlay = "microcement"; square or rectangular porcelain, ceramic or natural-stone TILE (including travertine or marble) laid in a regular grid with grout lines = "tile"; if you truly cannot tell = "unknown".
 
 Be specific and always calculate when dimensions are visible. Under 120 words.`,
             },

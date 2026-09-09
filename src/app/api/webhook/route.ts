@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
+import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
@@ -38,7 +39,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -133,6 +134,15 @@ async function processBookingCommand(
   if (repairRequestActive(history)) {
     console.warn(`[IG] booking blocked — the client asked for a REPAIR (we do not do repairs); sending the decline`);
     return { response: repairDeclineMessage(lang), booked: false };
+  }
+  // FLOOR WE DO NOT DO guard (JuanCarlos Briones, IG 2026-09-05; Frank
+  // Fernandez, WA 2026-08-31): epoxy, concrete/cement, microcement, resin,
+  // pavers or terrazzo is never booked. A [BOOK] while that request stands (or
+  // while the client's photo of such a floor was never clarified) is replaced
+  // by the deterministic decline / clarification that names what we install.
+  if (unsupportedFloorStanding(history)) {
+    console.warn(`[IG] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
+    return { response: unsupportedFloorReply(history, lang), booked: false };
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
@@ -712,7 +722,11 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!rawText) return;
 
     // ── Pre-fetch media BEFORE debounce (URLs expire fast) ───────────────
-    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
+    // The LIVE token (DB-first, self-refreshing). The env token died on
+    // 2026-07-21 (OAuth 190) and every IG image since then failed to download,
+    // so no photo was ever analyzed (JuanCarlos Briones, 2026-09-05: a paver
+    // floor photo stayed "[floor plan or photo]" and the visit got booked).
+    const igToken = await getInstagramToken();
     let preFetchedAudioBuffer: ArrayBuffer | null = null;
     let preFetchedAudioType = "audio/mp4";
     let preFetchedImageBase64: string | null = null;
@@ -789,13 +803,30 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       }
     }
 
+    // ── Analyze the photo BEFORE storing / debouncing ─────────────────────
+    // (JuanCarlos Briones, IG 2026-09-05): when a second bubble ("This") lands
+    // within the 10s debounce, this handler exits before the media step below
+    // ever runs, so an analysis done only after the debounce never happened and
+    // the row kept "[floor plan or photo]". Analyze now and store the analysis
+    // as the message text itself (what is stored is what the model reads).
+    let preAnalysis: string | null = null;
+    if (preFetchedImageBase64) {
+      try {
+        const a = await analyzeImageFromBase64(preFetchedImageBase64);
+        if (a && !a.toLowerCase().includes("could not") && !a.toLowerCase().includes("unavailable") && a.length > 20) preAnalysis = a;
+      } catch (err) { console.warn("[IG] pre-debounce image analysis failed:", err); }
+    }
+    const storedText = preAnalysis
+      ? (rawText === "[floor plan or photo]" ? `[Floor plan analysis: ${preAnalysis}]` : `${rawText}\n[Floor plan analysis: ${preAnalysis}]`)
+      : rawText;
+
     // ── Store message immediately ────────────────────────────────────────
     const { data: insertedMsg, error: insertErr } = await supabaseAdmin
       .from("instagram_messages")
       .insert({
         conversation_id: conversation.id,
         role: "user",
-        content: rawText,
+        content: storedText,
         instagram_msg_id: messageMid,
       })
       .select("id, created_at")
@@ -1296,9 +1327,9 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
 
     if (imageUrl || shareUrl) {
       try {
-        const analysis = preFetchedImageBase64
+        const analysis = preAnalysis ?? (preFetchedImageBase64
           ? await analyzeImageFromBase64(preFetchedImageBase64)
-          : null;
+          : null);
 
         if (
           analysis &&
@@ -1846,6 +1877,16 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && repairVisitOfferLeak(history, safeAiText)) {
       console.warn("[IG] repair request — model offered a visit / asked for booking details; replacing with the repair decline");
       safeAiText = repairDeclineMessage(lang);
+    }
+
+    // FLOOR WE DO NOT DO backstop (Briones IG 2026-09-05, Frank Fernandez WA
+    // 2026-08-31): while the client asks for epoxy / concrete / microcement /
+    // pavers (or their photo shows one and it was never clarified), a visit
+    // offer, a slot offer, a booking-details ask or a [BOOK] from the model is
+    // replaced by the deterministic decline that names what we DO install.
+    if (!isBookingConfirmed && unsupportedFloorLeak(history, safeAiText)) {
+      console.warn("[IG] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
+      safeAiText = unsupportedFloorReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(

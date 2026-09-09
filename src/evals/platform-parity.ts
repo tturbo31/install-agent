@@ -100,6 +100,10 @@ const SHARED: Check[] = [
   { label: "Consecutive-duplicate send guard (3 paths)", test: (s) => (s.match(/isConsecutiveDuplicate\(/g) ?? []).length >= 3 },
   // Route optimization (27/08/2026): schedule ordered by the client's location; canned recovery keeps the same count
   { label: "Route-aware schedule (history passed to getRealAvailabilityContext)", test: (s) => /getRealAvailabilityContext\(\{ history, igsid: /.test(s) },
+  { label: "Repair guard in processBookingCommand + post-model backstop", test: (s) => s.includes("repairRequestActive(history)") && /repairVisitOfferLeak\(history, (?:safeAiText|safeResponse)\)/.test(s) },
+  { label: "Unsupported-floor guard in processBookingCommand (epoxy/concrete/pavers never booked)", test: (s) => /if \(unsupportedFloorStanding\(history\)\)[\s\S]{0,400}unsupportedFloorReply\(history, lang\)/.test(s) },
+  { label: "Unsupported-floor post-model backstop (visit offer / details ask replaced)", test: (s) => /unsupportedFloorLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}unsupportedFloorReply\(history, lang\)/.test(s) },
+  { label: "Photo analyzed BEFORE the debounce and stored as the message text", test: (s) => /let preAnalysis: string \| null = null;[\s\S]{0,900}content: storedText,/.test(s) && /preAnalysis \?\?/.test(s) },
   { label: "Route-aware canned recovery ([BOOK] address to needTimeChoice/slotConflictRecovery)", test: (s) => (s.match(/needTimeChoiceMessage\(lang, [^)]*bookingData\.address\)/g) ?? []).length === 2 && /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time, bookingData\.address\)/.test(s) },
 ];
 
