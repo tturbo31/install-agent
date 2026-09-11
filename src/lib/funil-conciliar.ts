@@ -27,7 +27,7 @@
 // Idempotente por construção: rodar de novo com tudo conciliado repara zero.
 import { supabaseAdmin } from "@/lib/supabase";
 import { enviarEventoFunil } from "@/lib/plataforma";
-import { canalDe, extrairTelefone, persistirAnuncioDaConversa, type ContratoAnuncio, type ReferralIG } from "@/lib/funil";
+import { canalDe, extrairTelefone, persistirAnuncioDaConversa, isAdFaqButtonFunil, type ContratoAnuncio, type ReferralIG } from "@/lib/funil";
 
 const PREFIXO = "funil_adx_";
 // MARCA DE "JA CONCILIADO" (28/08/2026). O contrato cujo lead ja tem anuncio E
@@ -113,9 +113,86 @@ export type ResumoConciliacao = {
   semAdIdResolvidos?: number;
   detalhes: FuroConciliacao[];
   capturaRaw: CapturaCanal[];
+  // REFERRAL DO INSTAGRAM (11/09/2026): das conversas NOVAS de IG das últimas
+  // 72h (tirando as que são só um reel de terceiro compartilhado), quantas
+  // chegaram com o anúncio — ver saudeDoReferralIg. A plataforma vigia isto.
+  referralIg?: ReferralIg;
   gcHorasAtras: number | null;
   erro?: string;
 };
+
+// ─── REFERRAL DO INSTAGRAM (11/09/2026) ──────────────────────────────────────
+// Em 03/09 a Meta passou a mandar o referral em bem menos conversas de IG: de
+// ~65% das conversas reais (agosto) para ~40% (18% em 11/09), com o webhook
+// cru chegando SEM referral, a assinatura da conta íntegra (messaging_referral
+// assinado, conferido) e o Facebook seguindo em ~100%. Nada se perdeu daqui
+// para a plataforma — o que falta nunca chegou. Quem tem as conversas é este
+// banco, então a medida nasce aqui e vai no retorno da conciliação e do modo
+// saúde, para a auditoria da plataforma vigiar em vez de o dono descobrir
+// pelas visitas "sem criativo".
+// "Real" = a 1ª mensagem do cliente não é só um reel/post de terceiro
+// compartilhado (o webhook grava "[Client replied to our ad]" quando a
+// mensagem não tem texto — 43 das 167 conversas de IG de 05–11/09 eram isso).
+export type ReferralIg = {
+  horas: number;
+  conversas: number;
+  reais: number;
+  comAnuncio: number;
+  comProvaFaq: number; // 1ª mensagem é botão de FAQ do anúncio (prova sem a peça)
+  pctAnuncio: number;
+};
+const REFERRAL_IG_HORAS = 72;
+
+async function saudeDoReferralIg(convsComAnuncio: Set<string>): Promise<ReferralIg | undefined> {
+  try {
+    const desde = new Date(Date.now() - REFERRAL_IG_HORAS * 3600_000).toISOString();
+    const { data: convs, error } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("id, igsid")
+      .gte("created_at", desde)
+      .order("created_at", { ascending: true })
+      .limit(1000);
+    if (error) throw new Error(error.message);
+    const ig = (convs ?? []).filter((c) => !/^(fb_|wa_)/.test(String(c.igsid)));
+    const primeira = new Map<string, string>();
+    for (let i = 0; i < ig.length; i += 100) {
+      const ids = ig.slice(i, i + 100).map((c) => String(c.id));
+      const { data: msgs, error: erroMsgs } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("conversation_id, content, created_at")
+        .in("conversation_id", ids)
+        .eq("role", "user")
+        .order("created_at", { ascending: true })
+        .limit(5000);
+      if (erroMsgs) throw new Error(erroMsgs.message);
+      for (const m of msgs ?? []) {
+        const id = String(m.conversation_id);
+        if (!primeira.has(id)) primeira.set(id, String(m.content ?? ""));
+      }
+    }
+    let reais = 0;
+    let comAnuncio = 0;
+    let comProvaFaq = 0;
+    for (const c of ig) {
+      const t = primeira.get(String(c.id)) ?? "";
+      if (!t.trim() || /^\s*\[Client replied to our ad\]/.test(t)) continue;
+      reais++;
+      if (convsComAnuncio.has(String(c.id))) comAnuncio++;
+      else if (isAdFaqButtonFunil(t)) comProvaFaq++;
+    }
+    return {
+      horas: REFERRAL_IG_HORAS,
+      conversas: ig.length,
+      reais,
+      comAnuncio,
+      comProvaFaq,
+      pctAnuncio: reais ? Math.round((100 * comAnuncio) / reais) : 0,
+    };
+  } catch (err) {
+    console.warn("[CONCILIA] referral do IG:", String(err).slice(0, 120));
+    return undefined;
+  }
+}
 
 // Paginação com ordem estável: sem ela o range corta e a conciliação mente
 // (mesma armadilha que matou o GC da caixa-preta em 31/07).
@@ -310,12 +387,21 @@ export async function saudeDoFunil(): Promise<ResumoConciliacao> {
   };
   try {
     const convs = new Set<string>();
+    const comAnuncio = new Set<string>();
     for (const chave of await paginar(`${PREFIXO}%`)) {
       const m = chave.match(/^funil_adx_([0-9a-f-]{36})::/);
-      if (m) convs.add(m[1]);
+      if (!m) continue;
+      convs.add(m[1]);
+      try {
+        const ct = JSON.parse(decodeURIComponent(chave.slice(m[0].length))) as { ad_id?: string | null };
+        if (ct?.ad_id) comAnuncio.add(m[1]);
+      } catch {
+        /* contrato ilegível não conta como anúncio */
+      }
     }
     out.contratos = convs.size;
     Object.assign(out, await saudeDaCaptura());
+    out.referralIg = await saudeDoReferralIg(comAnuncio);
     out.ok = true;
   } catch (err) {
     out.erro = String(err instanceof Error ? err.message : err).slice(0, 300);
@@ -820,6 +906,9 @@ export async function conciliarContratos(opcoes?: { dry?: boolean; teto?: number
     marcar("marcas");
 
     Object.assign(out, await saudeDaCaptura(chavesRaw));
+    out.referralIg = await saudeDoReferralIg(
+      new Set([...contratos].filter(([, ct]) => Boolean(ct.ad_id)).map(([id]) => id))
+    );
     out.ok = true;
     marcar("saude");
     out.tempos = { ...tempos, total: Math.round((Date.now() - t0) / 100) / 10 };

@@ -25,6 +25,11 @@
 import { createClient } from "@supabase/supabase-js";
 
 const CORRIGIR = process.argv.includes("--corrigir");
+// --reassinar (11/09/2026): reenvia o conjunto INTEIRO mesmo sem campo
+// faltando — o "chute" de re-assinatura quando a Meta para de entregar um
+// campo que continua listado como assinado (caso do referral avulso do IG:
+// zero eventos em 8 dias a partir de 03/09 com a assinatura integra).
+const REASSINAR = process.argv.includes("--reassinar");
 const GRAPH = "https://graph.instagram.com/v21.0";
 
 // Campos que ESTE código sabe tratar. Não assinar nada além disso: campo que
@@ -84,11 +89,11 @@ console.log(
     : "\n✅ `messaging_referral` está assinado."
 );
 
-if (!CORRIGIR) {
+if (!CORRIGIR && !REASSINAR) {
   if (faltando.length) console.log("\nRode com --corrigir para assinar (aditivo, mantém o que já existe).");
   process.exit(0);
 }
-if (!faltando.length) {
+if (!faltando.length && !REASSINAR) {
   console.log("\nNada a corrigir.");
   process.exit(0);
 }

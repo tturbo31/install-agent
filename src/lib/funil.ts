@@ -326,11 +326,67 @@ export async function pecaPeloTemplate(igsid: string, msgs: MsgRow[]): Promise<R
 export type ResumoRecuperacao = {
   ok: boolean;
   verificadas: number;
+  puladas?: number; // já conferidas neste mesmo estado (marca d'água, 11/09/2026)
   pecas: number;
   evidencias: number;
   detalhes: string[];
   erros: string[];
 };
+
+// MARCA D'ÁGUA DA VERIFICAÇÃO (11/09/2026). A varredura relia as MESMAS ~85
+// conversas a cada rodada — 42,6s medidos em 11/09, acima dos 45s de teto da
+// auditoria, que abortava e nunca via o resultado. Conversa já conferida que
+// não se mexeu desde então não tem saudação, botão nem cartão novo para ler:
+// `funil_tchk_<conversa>::<epoch do updated_at>` diz "já vi neste estado".
+// Mensagem nova muda o updated_at e traz a conversa de volta à fila. Mesmo
+// padrão da marca `funil_conc_` da conciliação. Em simulação nada é marcado.
+const MARCA_TCHK = "funil_tchk_";
+
+async function marcasDeVerificacao(): Promise<Map<string, number>> {
+  const marcas = new Map<string, number>();
+  for (let pagina = 0; pagina < 30; pagina++) {
+    const { data, error } = await supabaseAdmin
+      .from("platform_settings")
+      .select("platform")
+      .like("platform", `${MARCA_TCHK}%`)
+      .order("platform", { ascending: true })
+      .range(pagina * 1000, pagina * 1000 + 999);
+    if (error) throw new Error(error.message);
+    for (const r of data ?? []) {
+      const corpo = String(r.platform).slice(MARCA_TCHK.length);
+      const sep = corpo.indexOf("::");
+      if (sep > 0) marcas.set(corpo.slice(0, sep), Number(corpo.slice(sep + 2)) || 0);
+    }
+    if ((data ?? []).length < 1000) break;
+  }
+  return marcas;
+}
+
+async function gravarMarcasDeVerificacao(
+  novas: Array<{ conv: string; epoch: number; antiga?: number }>,
+  apagar: string[]
+): Promise<void> {
+  try {
+    // a marca anterior sai antes de a nova entrar (o epoch mora DENTRO da chave)
+    const velhas = novas
+      .filter((n) => n.antiga !== undefined && n.antiga !== n.epoch)
+      .map((n) => `${MARCA_TCHK}${n.conv}::${n.antiga}`)
+      .concat(apagar);
+    for (let i = 0; i < velhas.length; i += 100) {
+      await supabaseAdmin.from("platform_settings").delete().in("platform", velhas.slice(i, i + 100));
+    }
+    const linhas = novas
+      .filter((n) => n.antiga !== n.epoch)
+      .map((n) => ({ platform: `${MARCA_TCHK}${n.conv}::${n.epoch}`, paused: false }));
+    for (let i = 0; i < linhas.length; i += 500) {
+      await supabaseAdmin
+        .from("platform_settings")
+        .upsert(linhas.slice(i, i + 500), { onConflict: "platform", ignoreDuplicates: true });
+    }
+  } catch (err) {
+    console.warn("[FUNIL] marcas de verificação:", String(err).slice(0, 120));
+  }
+}
 
 export async function recuperarCriativosRecentes(opts?: {
   dias?: number;
@@ -351,19 +407,43 @@ export async function recuperarCriativosRecentes(opts?: {
       .limit(400);
     if (error) throw new Error(error.message);
 
+    // marca d'água: quem já foi conferido neste mesmo estado não paga de novo.
+    // A simulação (GET) também respeita as marcas — é o que a auditoria vai
+    // ver no POST — mas nunca grava nenhuma.
+    const marcas = await marcasDeVerificacao();
+    const epochDe = (c: { updated_at?: string | null }) => Date.parse(c.updated_at ?? "") || 0;
+    const marcasNovas: Array<{ conv: string; epoch: number; antiga?: number }> = [];
+    const naJanela = new Set((convs ?? []).map((c) => String(c.id)));
+    out.puladas = 0;
+
     for (const conv of convs ?? []) {
       // WhatsApp: o CTWA vem completo no webhook e não há template para ler.
       if (canalDe(conv.igsid) === "whatsapp") continue;
       if (!convNoFunil(conv as ConvFunil)) continue; // pré-funil: o agendamento cobre
+      const marca = marcas.get(conv.id);
+      if (marca !== undefined && marca === epochDe(conv)) {
+        out.puladas++;
+        continue;
+      }
+      // "conferida neste estado": só quando a conversa foi lida até o fim
+      const lembrar = () => {
+        if (!dry) marcasNovas.push({ conv: conv.id, epoch: epochDe(conv), antiga: marca });
+      };
       const ad = await dadosDeAnuncioDaConversa(conv.id);
-      if (contratoTemDados(ad.contrato)) continue; // já tem atribuição
+      if (contratoTemDados(ad.contrato)) {
+        lembrar();
+        continue; // já tem atribuição
+      }
       const msgs = await mensagensDaConversa(conv.id);
-      if (!msgs.some((m) => m.role === "user")) continue;
+      if (!msgs.some((m) => m.role === "user")) {
+        lembrar();
+        continue;
+      }
       out.verificadas++;
 
       const ehFb = canalDe(conv.igsid) === "facebook";
       if (ehFb) {
-        if (orcamentoThreads <= 0) continue; // orçamento da Graph esgotado — a próxima rodada continua
+        if (orcamentoThreads <= 0) continue; // orçamento da Graph esgotado — a próxima rodada continua (sem marca)
         orcamentoThreads--;
       }
       const quem = conv.username ?? conv.name ?? conv.igsid;
@@ -385,6 +465,7 @@ export async function recuperarCriativosRecentes(opts?: {
             campanha: adNovo.campanha ?? undefined,
           });
         }
+        lembrar();
         continue;
       }
 
@@ -393,9 +474,15 @@ export async function recuperarCriativosRecentes(opts?: {
       const flagKey = `funil_adev_${conv.id}`;
       const { data: jaEnviada } = await supabaseAdmin
         .from("platform_settings").select("platform").eq("platform", flagKey).maybeSingle();
-      if (jaEnviada) continue;
+      if (jaEnviada) {
+        lembrar();
+        continue;
+      }
       const evid = evidenciaFaqButton(msgs) ?? (ehFb ? await evidenciaCardMessenger(conv.igsid) : undefined);
-      if (!evid) continue;
+      if (!evid) {
+        lembrar();
+        continue;
+      }
       out.evidencias++;
       out.detalhes.push(`${quem}: veio de anúncio (${evid})`);
       if (!dry) {
@@ -404,6 +491,17 @@ export async function recuperarCriativosRecentes(opts?: {
           .from("platform_settings")
           .upsert({ platform: flagKey, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
       }
+      lembrar();
+    }
+
+    if (!dry) {
+      // marcas de conversas que saíram da janela dos `dias` não servem mais:
+      // saem em lotes pequenos para a tabela não crescer para sempre
+      const foraDaJanela = [...marcas.keys()].filter((id) => !naJanela.has(id)).slice(0, 500);
+      await gravarMarcasDeVerificacao(
+        marcasNovas,
+        foraDaJanela.map((id) => `${MARCA_TCHK}${id}::${marcas.get(id)}`)
+      );
     }
   } catch (err) {
     out.ok = false;
