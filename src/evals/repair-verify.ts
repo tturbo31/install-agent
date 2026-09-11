@@ -196,7 +196,8 @@ async function main() {
   ]);
   console.log("   →", r9.replace(/\s+/g, " ").slice(0, 220));
   ck("does NOT repeat the repair decline", !DECLINES_REPAIR(r9), r9);
-  ck("engages the vinyl job (price or next step)", HAS_PRICE(r9) || /vinyl|promotion|\$5|per square foot/i.test(r9), r9);
+  // 300 sqft is under 400: the next step is Ozzi's direct line (owner rule 2026-09-11)
+  ck("engages the vinyl job (Ozzi direct line for 300 sqft, or price / next step)", /674[\s.-]*8334/.test(r9) || HAS_PRICE(r9) || /vinyl|promotion|\$5|per square foot/i.test(r9), r9);
 
   console.log(`\n================ RESULT: ${pass} passed, ${fail} failed ================`);
   if (fail) { console.log("FAILED:\n - " + fails.join("\n - ")); process.exit(1); }

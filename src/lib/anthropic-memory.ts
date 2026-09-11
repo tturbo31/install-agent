@@ -95,7 +95,7 @@ function buildMemoryContent(data: ClientMemory): string {
   if (data.lead_type) {
     lines.push(
       data.lead_type === "small"
-        ? "Lead type: SMALL — under 500 sqft, close quote by DM"
+        ? "Lead type: SMALL — under 500 sqft (under 400 sqft: no DM price, Ozzi direct at (561) 674-8334; 400 to 499 sqft: quote by DM)"
         : "Lead type: LARGE — over 500 sqft, must schedule free in-person visit"
     );
   }

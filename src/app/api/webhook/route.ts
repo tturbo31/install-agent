@@ -39,7 +39,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -143,6 +143,13 @@ async function processBookingCommand(
   if (unsupportedFloorStanding(history)) {
     console.warn(`[IG] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
     return { response: unsupportedFloorReply(history, lang), booked: false };
+  }
+  // UNDER 400 SQFT guard (owner rule 2026-09-11): a job under 400 square feet
+  // is never booked through the chat. A [BOOK] while the client's stated size
+  // is under 400 sqft is replaced by the Ozzi direct line.
+  if (smallJobStanding(history) !== null) {
+    console.warn("[IG] booking blocked — the client's project is under 400 sqft (Ozzi direct); sending the Ozzi line");
+    return { response: smallJobReply(history, lang), booked: false };
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
@@ -1887,6 +1894,15 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && unsupportedFloorLeak(history, safeAiText)) {
       console.warn("[IG] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
       safeAiText = unsupportedFloorReply(history, lang);
+    }
+
+    // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
+    // size is under 400 sqft, a price, a visit or slot offer, a booking-details
+    // ask or a [BOOK] from the model is replaced by the Ozzi direct line (and the
+    // first reply after the size always carries Ozzi's number).
+    if (!isBookingConfirmed && smallJobLeak(history, safeAiText)) {
+      console.warn("[IG] project under 400 sqft — model priced / offered a visit / asked details; replacing with the Ozzi direct line");
+      safeAiText = smallJobReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(

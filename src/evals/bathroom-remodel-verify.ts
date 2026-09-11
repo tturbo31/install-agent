@@ -46,6 +46,9 @@ const DECLINES_SMALL = (t: string) =>
 const DECLINES_REPAIR = (t: string) =>
   /installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:small\s+)?repair|do not do (?:small )?repair|only.*install/i.test(t);
 const MENTIONS_REMODEL = (t: string) => /\bremodel|reforma|remodelaci/i.test(t);
+// Owner rule 2026-09-11: flooring under 400 sqft is never priced or declined,
+// the client gets Ozzi's direct line (a remodel still goes to the visit).
+const OZZI_DIRECT = (t: string) => /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t);
 
 async function main() {
   console.log("\n================ BATHROOM REMODELING VERIFICATION ================");
@@ -98,11 +101,12 @@ async function main() {
   ck("confirma que SÍ", CONFIRMS_REMODEL(a6), a6);
   ck("propone la visita en persona", PROPOSES_VISIT(a6), a6);
 
-  // ── 7. REGRESSION: flooring in a bathroom < 200 sqft → still declined ─────
-  console.log("\n[7] REGRESSION: flooring for a bathroom, 150 sqft → declines (not a remodel)");
+  // ── 7. REGRESSION: flooring in a bathroom, 150 sqft → Ozzi direct (not a remodel visit)
+  console.log("\n[7] REGRESSION: flooring for a bathroom, 150 sqft → Ozzi direct line (not a remodel)");
   const r1 = await ai([{ role: "user", content: "I need vinyl flooring for my bathroom, it's about 150 square feet." }]);
   console.log("   →", r1.replace(/\s+/g, " ").slice(0, 150));
-  ck("declines the sub-200 sqft flooring job", DECLINES_SMALL(r1), r1);
+  ck("gives Ozzi's direct number for the sub-400 sqft flooring job", OZZI_DIRECT(r1), r1);
+  ck("does NOT decline it", !DECLINES_SMALL(r1), r1);
   ck("no price quoted", !HAS_PRICE(r1), r1);
   ck("does NOT route to a remodel visit", !MENTIONS_REMODEL(r1) && !PROPOSES_VISIT(r1), r1);
 
@@ -117,10 +121,11 @@ async function main() {
   ck("does NOT schedule a visit or price the repair", !PROPOSES_VISIT(r2) && !HAS_PRICE(r2), r2);
 
   // ── 9. REGRESSION: tile flooring 250 sqft → still a quoted flooring job ───
-  console.log("\n[9] REGRESSION: tile installation, 250 sqft → normal flooring quote (not a remodel)");
-  const r3 = await ai([{ role: "user", content: "I need tile installation for my bathroom, around 250 sqft" }]);
+  console.log("\n[9] REGRESSION: tile installation, 450 sqft → normal flooring quote (not a remodel)");
+  const r3 = await ai([{ role: "user", content: "I need tile installation for my bathroom, around 450 sqft" }]);
   console.log("   →", r3.replace(/\s+/g, " ").slice(0, 150));
   ck("does NOT route a tile install into a remodel visit", !MENTIONS_REMODEL(r3), r3);
+  ck("450 sqft tile → quoted by DM ($2,025), not sent to Ozzi", /2[,.]?025/.test(r3) && !OZZI_DIRECT(r3), r3);
 
   // ── 10. Source inspection: prompt + reminder encode the policy ───────────
   console.log("\n[10] System prompt + final reminder encode the policy");

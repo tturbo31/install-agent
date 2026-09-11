@@ -90,7 +90,7 @@ async function main() {
   ck("plain vinyl message is NOT a carpet lead", !mentionsCarpet("How much for vinyl in my living room?"));
   ck("ES 'carpeta' (= folder) is NOT carpet", !mentionsCarpet("Te mando la carpeta con las fotos"));
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
-  ck("first-contact canned openers gated on carpet", /!largeFirstMessage && !carpetFirstMessage/.test(aiSrc));
+  ck("first-contact canned openers gated on carpet", /!largeFirstMessage && (?:!smallFirstMessage && )?!carpetFirstMessage/.test(aiSrc));
   ck("what-included ask-type gated on carpet", /carpetLead \|\| assistantAlreadyAskedType\(messages\)/.test(aiSrc));
   ck("vinyl-prone type-ask gated on carpet", /!adType && !carpetLead && !SUBSTANTIVE_PRODUCT_Q/.test(aiSrc));
   ck("a carpet inquiry no longer counts as a type-less inquiry", !isFlooringInquiry("How much do you charge for carpet?"));
@@ -104,17 +104,31 @@ async function main() {
   ck("gives $2.20", hasRate(r1), r1);
   ck("says labor only / client provides the carpet", saysLaborOnly(r1), r1);
 
-  // ── 4. LIVE: small job (under 500) → price on the spot, no visit ───────────
-  console.log("\n[4] 'carpet, 300 sqft' → quotes $660 right here (no +$500 LVP add-on)");
+  // ── 4. LIVE: under 400 sqft → Ozzi direct line (owner rule 2026-09-11), no $660, no visit
+  console.log("\n[4] 'carpet, 300 sqft' → Ozzi direct line, no price, no visit, still YES to carpet");
+  const OZZI_DIRECT = (t: string) => /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t);
   const r2 = await ai([
     { role: "user", content: "Do you install carpet?" },
     { role: "assistant", content: "Yes, we install carpet, it's $2.20 per square foot for the installation labor and you provide the carpet material. About how many square feet is the area?" },
     { role: "user", content: "It's 300 square feet, 2 bedrooms." },
   ]);
   console.log("   AI:", r2.replace(/\s+/g, " ").slice(0, 200));
-  ck("quotes $660 (300 x 2.20)", /\$\s?660\b/.test(r2), r2);
-  ck("does NOT apply the +$500 LVP add-on ($1,160)", !/\$\s?1[.,]?160\b/.test(r2), r2);
-  ck("does not push a visit for a small job", !proposesVisit(r2), r2);
+  ck("gives Ozzi's direct number", OZZI_DIRECT(r2), r2);
+  ck("no total, no rate ($)", !/\$\s?\d/.test(r2), r2);
+  ck("does not push a visit", !proposesVisit(r2), r2);
+  ck("does NOT deny carpet", !deniesCarpet(r2), r2);
+
+  // ── 4b. LIVE: 400 to 499 sqft → price on the spot, no visit (unchanged) ────
+  console.log("\n[4b] 'carpet, 450 sqft' → quotes $990 right here (clean multiplication)");
+  const r2b = await ai([
+    { role: "user", content: "Do you install carpet?" },
+    { role: "assistant", content: "Yes, we install carpet, it's $2.20 per square foot for the installation labor and you provide the carpet material. About how many square feet is the area?" },
+    { role: "user", content: "It's 450 square feet, 2 bedrooms." },
+  ]);
+  console.log("   AI:", r2b.replace(/\s+/g, " ").slice(0, 200));
+  ck("quotes $990 (450 x 2.20)", /\$\s?990\b/.test(r2b), r2b);
+  ck("does not send a 450 sqft job to Ozzi", !OZZI_DIRECT(r2b), r2b);
+  ck("does not push a visit for a small job", !proposesVisit(r2b), r2b);
 
   // ── 5. LIVE: large job (500+) → visit, never a total ──────────────────────
   console.log("\n[5] 'carpet, whole house 1500 sqft' → free visit, NO total by DM");

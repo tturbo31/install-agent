@@ -65,7 +65,7 @@ const CONVERSATIONS: Conversation[] = [
       {
         client: "Vinyl, it's about 200 sqft",
         checks: [
-          { label: "Dá um preço pelo DM (small lead vinil)", fn: r => /\$\s?\d|1[,.]?500/.test(r) },
+          { label: "Abaixo de 400 sqft: manda falar com o Ozzi (561) 674-8334, sem preço", fn: r => /674[\s.-]*8334/.test(r) && !/\$\s?\d/.test(r) },
           { label: "Zero emojis",               fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
         ],
       },

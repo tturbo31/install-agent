@@ -295,7 +295,10 @@ async function main() {
   const r5 = await ai(BRIONES_UNREAD);
   console.log("   →", r5.replace(/\s+/g, " ").slice(0, 260));
   ck("does not pretend it saw the photo (no 'that size', no 'I see', no 'looks like')", !PRETENDS_SAW_PHOTO(r5), r5);
-  ck("asks the flooring type (vinyl / tile ...) or what the photo shows", ASKS_TYPE(r5) || /\b(?:photo|picture|image)\b[^.!?]{0,80}\?/i.test(r5), r5);
+  // "The photo didn't come through on my side, can you tell me what it shows or
+  // describe the area?" is the right move: the question may sit further than
+  // 80 chars after the word "photo".
+  ck("asks the flooring type (vinyl / tile ...) or what the photo shows", ASKS_TYPE(r5) || /\b(?:photo|picture|image)\b[^.!?]{0,140}\?/i.test(r5) || /what (?:it|the photo|the picture) shows|what'?s in (?:it|the photo)/i.test(r5), r5);
   ck("no slots / visit / details in this turn", !PROPOSES_VISIT(r5) && !ASKS_DETAILS(r5), r5);
 
   console.log("\n[2f] LIVE ES: 'Quiero hacer mi piso con epoxi'");
@@ -352,7 +355,7 @@ async function main() {
   ck("engages the tile job (rate or visit)", /4\.50/.test(r12) || PROPOSES_VISIT(r12) || ASKS_DETAILS(r12), r12);
 
   console.log("\n[3e] REGRESSION: carpet is still YES");
-  const r13 = await ai([u("Hi, do you install carpet? About 300 sqft")]);
+  const r13 = await ai([u("Hi, do you install carpet? About 450 sqft")]);
   console.log("   →", r13.replace(/\s+/g, " ").slice(0, 260));
   ck("says yes to carpet with $2.20 labor only", /2\.20/.test(r13) && !/don'?t\s+(?:do|install)\s+carpet/i.test(r13), r13);
 

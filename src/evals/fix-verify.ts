@@ -183,13 +183,13 @@ async function main() {
   ck("does NOT assume the vinyl package (no quarter round)", !/quarter round/i.test(op), op);
   ck("opener ≤2 sentences", (op.replace(/\[.*?\]/g,"").match(/[.!?](\s|$)/g)??[]).length<=2, op);
 
-  // ═══ 6. SMALL-JOB PRICING ≤400 (+$500 hidden), 401-499 plain, ≥500 visit ═══
+  // ═══ 6. SMALL-JOB: <400 Ozzi direct (owner rule 2026-09-11), 400-499 plain, ≥500 visit ═══
   console.log("\n[6] SMALL-JOB PRICING");
   const opn = "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. One area or the whole house?";
   const quote = (s:string)=> ai([{role:"user",content:"hi"},{role:"assistant",content:opn},{role:"user",content:s}]);
   const noLeak = (t:string)=> !/401|499|between|x\s?5|let me|add-?on|\btier\b|plus \$?500|right answer/i.test(t);
   const q200 = await quote("just one room, 200 sqft"); console.log("   200→", q200.replace(/\s+/g," ").slice(0,90));
-  ck("200 sqft → $1,500 hidden surcharge, no leak", /1[,.]?500/.test(q200) && !/1[,.]?000/.test(q200) && noLeak(q200), q200);
+  ck("200 sqft → Ozzi direct line, no price, no leak", /674[\s.-]*8334/.test(q200) && !/\$\s?\d/.test(q200) && noLeak(q200), q200);
   const q480 = await quote("about 480 sqft one area"); console.log("   480→", q480.replace(/\s+/g," ").slice(0,90));
   ck("480 sqft → $2,400 (no +500), no leak", /2[,.]?400/.test(q480) && !/2[,.]?900/.test(q480) && noLeak(q480), q480);
   const q600 = await quote("whole house ~600 sqft");

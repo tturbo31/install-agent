@@ -5,7 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -95,6 +95,13 @@ async function processBookingCommand(
   if (unsupportedFloorStanding(history)) {
     console.warn(`[FB] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
     return { response: unsupportedFloorReply(history, lang), booked: false };
+  }
+  // UNDER 400 SQFT guard (owner rule 2026-09-11): a job under 400 square feet
+  // is never booked through the chat. A [BOOK] while the client's stated size
+  // is under 400 sqft is replaced by the Ozzi direct line.
+  if (smallJobStanding(history) !== null) {
+    console.warn("[FB] booking blocked — the client's project is under 400 sqft (Ozzi direct); sending the Ozzi line");
+    return { response: smallJobReply(history, lang), booked: false };
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
@@ -1589,6 +1596,15 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     if (!isBookingConfirmed && unsupportedFloorLeak(history, safeResponse)) {
       console.warn("[FB] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
       safeResponse = unsupportedFloorReply(history, lang);
+    }
+
+    // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
+    // size is under 400 sqft, a price, a visit or slot offer, a booking-details
+    // ask or a [BOOK] from the model is replaced by the Ozzi direct line (and the
+    // first reply after the size always carries Ozzi's number).
+    if (!isBookingConfirmed && smallJobLeak(history, safeResponse)) {
+      console.warn("[FB] project under 400 sqft — model priced / offered a visit / asked details; replacing with the Ozzi direct line");
+      safeResponse = smallJobReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling, history);

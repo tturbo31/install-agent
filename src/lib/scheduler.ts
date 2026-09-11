@@ -2097,6 +2097,34 @@ export function unsupportedImageClarifyMessage(lang: Lang): string {
     : "Quick check so I point you the right way: from the photo, that looks like a concrete, paver or epoxy style floor, and that kind of finish isn't something we install. What we do is luxury vinyl plank, porcelain and ceramic tile, hardwood and carpet, are you looking to put one of those in?";
 }
 
+
+// Projects UNDER 400 sqft are never quoted and never booked through the chat
+// (owner rule 2026-09-11): the client is pointed to Ozzi's direct line and
+// Ozzi gives the number himself. Sent when a price, a visit / slot offer, a
+// booking-details ask or a [BOOK] leaks through while the client's stated size
+// is under 400 sqft (ai.smallJobStanding), and as the guaranteed first reply
+// after the size comes up. No dashes except the one inside the phone number,
+// no ¿ ¡, usted register in Spanish, no "?" (a question with "número" would
+// read as a booking-details ask), and no visit / in-person / "works for you"
+// wording (containsSchedulingOffer / VISIT_OFFER would flag the message as a
+// leak of itself).
+export const OZZI_DIRECT_PHONE = "(561) 674-8334";
+export function smallJobOzziDirectMessage(lang: Lang): string {
+  if (lang === "pt") return `Para um projeto com menos de 400 pés quadrados, o melhor é falar direto com o Ozzi, ele mesmo confere os detalhes e te passa o orçamento. Você pode ligar para ele no ${OZZI_DIRECT_PHONE}.`;
+  return lang === "es"
+    ? `Para un proyecto de menos de 400 pies cuadrados, lo mejor es que hable directamente con Ozzi, él mismo revisa los detalles y le pasa el presupuesto. Puede llamarlo al ${OZZI_DIRECT_PHONE}.`
+    : `For a project under 400 square feet, the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at ${OZZI_DIRECT_PHONE}.`;
+}
+
+// The client already has Ozzi's number and insists on a price here: the bot
+// holds the line, never a figure, not even approximate.
+export function smallJobOzziInsistMessage(lang: Lang): string {
+  if (lang === "pt") return `Por aqui eu não consigo passar o orçamento para esse tamanho, esse realmente precisa vir direto do Ozzi. Liga para ele no ${OZZI_DIRECT_PHONE} que ele confere e te passa o valor.`;
+  return lang === "es"
+    ? `Por aquí no puedo pasarle un presupuesto para ese tamaño, ese realmente tiene que venir directo de Ozzi. Llámelo al ${OZZI_DIRECT_PHONE} y él lo revisa y le pasa el precio.`
+    : `I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at ${OZZI_DIRECT_PHONE} and he'll check it and give you the number.`;
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with

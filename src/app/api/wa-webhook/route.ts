@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
@@ -83,6 +83,13 @@ async function processBookingCommand(
   if (unsupportedFloorStanding(history)) {
     console.warn(`[WA] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
     return { response: unsupportedFloorReply(history, lang), booked: false };
+  }
+  // UNDER 400 SQFT guard (owner rule 2026-09-11): a job under 400 square feet
+  // is never booked through the chat. A [BOOK] while the client's stated size
+  // is under 400 sqft is replaced by the Ozzi direct line.
+  if (smallJobStanding(history) !== null) {
+    console.warn("[WA] booking blocked — the client's project is under 400 sqft (Ozzi direct); sending the Ozzi line");
+    return { response: smallJobReply(history, lang), booked: false };
   }
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
@@ -1764,6 +1771,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (!isBookingConfirmed && unsupportedFloorLeak(history, safeResponse)) {
       console.warn("[WA] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
       safeResponse = unsupportedFloorReply(history, lang);
+    }
+
+    // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
+    // size is under 400 sqft, a price, a visit or slot offer, a booking-details
+    // ask or a [BOOK] from the model is replaced by the Ozzi direct line (and the
+    // first reply after the size always carries Ozzi's number).
+    if (!isBookingConfirmed && smallJobLeak(history, safeResponse)) {
+      console.warn("[WA] project under 400 sqft — model priced / offered a visit / asked details; replacing with the Ozzi direct line");
+      safeResponse = smallJobReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(safeResponse, phone, conv.id, isBookingConfirmed, lang, isRescheduling, history);
