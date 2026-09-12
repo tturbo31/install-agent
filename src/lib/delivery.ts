@@ -2,6 +2,18 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { LEGACY_ADMIN_SECRET } from "@/lib/admin-auth";
+import {
+  buildMessengerWebhookBody,
+  pickLostInbounds,
+  toThreadSnapshot,
+  trailingClientRun,
+  LOST_INBOUND_MAX_AGE_MS,
+  LOST_INBOUND_SCAN_LIMIT,
+  LOST_INBOUND_SWEEP_GAP_MS,
+  type GraphConversation,
+  type ThreadBubble,
+  type ThreadSnapshot,
+} from "@/lib/lost-inbound-policy";
 import { createHmac } from "crypto";
 
 // ─── Delivery-failure visibility ────────────────────────────────────────────
@@ -703,5 +715,152 @@ export async function watchWaQueue(): Promise<void> {
     await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
   } catch (err) {
     console.error("[WAQUEUE] watchdog error:", err);
+  }
+}
+
+// ─── Lost INBOUND net (Messenger) ────────────────────────────────────────────
+// 2026-09-12, Tony Martinez: Meta never POSTed the client's third bubble to
+// /api/fb-webhook (the raw capture proves it; IG kept receiving), so the bot
+// never saw it and never answered. See lost-inbound-policy.ts for the incident
+// and the pure selection rules. Runs on webhook traffic of all three channels,
+// self-throttled to one sweep / 5 min, ONE Graph call per sweep (the page's
+// 40 newest Messenger threads with their last 4 bubbles).
+const LOST_INBOUND_ALERT_EVERY_MS = 60 * 60_000;
+
+async function claimLostInbound(mid: string): Promise<boolean> {
+  const { error } = await supabaseAdmin
+    .from("platform_settings")
+    .insert({ platform: `lostinbound|${mid}`.slice(0, 250), paused: false });
+  return !error;
+}
+
+async function releaseLostInbound(mid: string): Promise<void> {
+  await supabaseAdmin.from("platform_settings").delete().eq("platform", `lostinbound|${mid}`.slice(0, 250));
+}
+
+// Outcome per bubble, persisted because the Vercel logs are not at hand when
+// a lost inbound is investigated: lostinbound-result|<outcome>|<iso>|<mid>.
+async function recordLostInboundOutcome(mid: string, outcome: string): Promise<void> {
+  try {
+    await supabaseAdmin
+      .from("platform_settings")
+      .insert({ platform: `lostinbound-result|${outcome}|${new Date().toISOString()}|${mid}`.slice(0, 250), paused: false });
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Re-post one bubble Meta never delivered to our own Messenger webhook. Same
+// headers as the lost-reply replay: admin replay header + Meta signature when
+// the app secret is configured (the webhook answers 403 without it). The
+// bubble is NOT stored yet, so the handler runs the normal inbound path
+// (store → debounce → answer) and dedupes on the real mid if Meta delivers
+// it late after all.
+async function repostMessengerBubble(clientId: string, bubble: ThreadBubble): Promise<boolean> {
+  const base = selfBaseUrl();
+  const pageId = process.env.FACEBOOK_PAGE_ID ?? "";
+  const raw = JSON.stringify(buildMessengerWebhookBody(pageId, clientId, bubble));
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-ozzi-replay": process.env.ADMIN_SECRET || LEGACY_ADMIN_SECRET,
+  };
+  const appSecret = process.env.FACEBOOK_APP_SECRET;
+  if (appSecret) headers["x-hub-signature-256"] = "sha256=" + createHmac("sha256", appSecret).update(raw, "utf8").digest("hex");
+  try {
+    const res = await fetch(base + "/api/fb-webhook", { method: "POST", headers, body: raw });
+    if (!res.ok) console.error(`[DELIVERY] lost-inbound repost ${base}/api/fb-webhook -> HTTP ${res.status}`);
+    return res.ok;
+  } catch (err) {
+    console.error("[DELIVERY] lost-inbound repost failed:", err);
+    return false;
+  }
+}
+
+export async function recoverLostInbounds(): Promise<void> {
+  try {
+    if (!(await shouldAlert("lostinbound", "sweep", LOST_INBOUND_SWEEP_GAP_MS))) return;
+    const pageId = process.env.FACEBOOK_PAGE_ID ?? "";
+    if (!pageId) return;
+    const { getFacebookPageToken } = await import("@/lib/fb-token");
+    const token = await getFacebookPageToken();
+    if (!token) return;
+    const fields = encodeURIComponent(
+      "updated_time,participants,messages.limit(4){id,created_time,from,message,sticker,attachments{mime_type,image_data,file_url}}"
+    );
+    const url = `https://graph.facebook.com/v24.0/me/conversations?platform=messenger&fields=${fields}&limit=${LOST_INBOUND_SCAN_LIMIT}&access_token=${encodeURIComponent(token)}`;
+    const res = await fetch(url);
+    const body = (await res.json().catch(() => ({}))) as { error?: unknown; data?: GraphConversation[] };
+    if (body.error || !Array.isArray(body.data)) {
+      console.warn("[DELIVERY] lost-inbound sweep: thread list unavailable:", JSON.stringify(body.error ?? res.status).slice(0, 200));
+      return;
+    }
+    const now = Date.now();
+    const threads = body.data
+      .map((c) => toThreadSnapshot(c, pageId))
+      .filter((t): t is ThreadSnapshot => !!t)
+      .filter((t) => t.bubbles.length > 0 && now - Date.parse(t.bubbles[0].created_time) <= LOST_INBOUND_MAX_AGE_MS);
+    const ids = threads.flatMap((t) => trailingClientRun(t).map((b) => b.id));
+    if (!ids.length) return;
+    // A failed read must never look like "nothing stored" — that would replay
+    // bubbles the webhook DID handle and answer clients twice.
+    const { data: stored, error } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("instagram_msg_id")
+      .in("instagram_msg_id", ids);
+    if (error) {
+      console.warn("[DELIVERY] lost-inbound sweep: stored-id read failed, skipping:", error.message);
+      return;
+    }
+    const storedIds = new Set((stored ?? []).map((r) => String(r.instagram_msg_id)));
+    const lost = pickLostInbounds(threads, storedIds, now);
+    if (!lost.length) return;
+    // Paused (mode=human) threads still get the bubble into the history (the
+    // handler stores before its mode gate and pings the owner), but nobody
+    // answers automatically — the alert must say so.
+    const { data: convs } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("igsid, mode")
+      .in("igsid", lost.map((l) => `fb_${l.clientId}`));
+    const modeOf = new Map((convs ?? []).map((c) => [String(c.igsid), String(c.mode)]));
+    const report: string[] = [];
+    for (const l of lost) {
+      const who = `${l.clientName ?? "cliente"} (fb_${l.clientId})`;
+      let reposted = 0;
+      let failed = 0;
+      for (const b of l.missing) {
+        if (!(await claimLostInbound(b.id))) continue; // an earlier sweep took it
+        const ok = await repostMessengerBubble(l.clientId, b);
+        await recordLostInboundOutcome(b.id, ok ? "reposted" : "repost-failed");
+        if (ok) reposted++;
+        else {
+          failed++;
+          await releaseLostInbound(b.id); // let the next sweep try again
+        }
+      }
+      if (!reposted && !failed) continue;
+      const last = l.missing[l.missing.length - 1];
+      const preview = (last.text || "[anexo]").replace(/\s+/g, " ").trim().slice(0, 60);
+      const paused = modeOf.get(`fb_${l.clientId}`) === "human";
+      console.warn(`[DELIVERY] lost inbound on Messenger ${who}: ${reposted} reposted, ${failed} failed ("${preview}")${paused ? " — conversation paused" : ""}`);
+      const status = failed
+        ? "reenvio falhou, responda pelo app"
+        : paused
+          ? "conversa pausada (modo humano): gravada no historico, responda pelo app"
+          : "reprocessada automaticamente";
+      report.push(`- ${who}: "${preview}" — ${status}`);
+    }
+    if (report.length && (await shouldAlert("lostinbound", "alert", LOST_INBOUND_ALERT_EVERY_MS))) {
+      const msg = [
+        `⚠️ OzziFloors - mensagem de cliente que a Meta NAO entregou ao bot`,
+        ``,
+        `O cliente escreveu no Messenger mas o webhook nunca recebeu a mensagem:`,
+        ...report,
+        ``,
+        `Reprocessada automaticamente = o bot leu a mensagem direto da thread e respondeu pelo fluxo normal.`,
+      ].join("\n");
+      await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+    }
+  } catch (err) {
+    console.error("[DELIVERY] lost-inbound sweep error:", err);
   }
 }
