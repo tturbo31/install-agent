@@ -84,8 +84,11 @@ async function main() {
   // without a name must ASK the name (not book); with the name typed it books.
   console.log("\n[ERROR 1] WhatsApp: slot + address (no name) → asks name; + name → BOOK");
   const err1Head: ChatMessage[] = [
-    { role: "user", content: "What do you charge for showers?" },
-    { role: "assistant", content: "Shower work is a bathroom remodel, I do a free in-person visit. What day works?" },
+    // Head is a FLOORING lead: a shower / bathroom job is Ozzi direct since
+    // 2026-09-11 and would be blocked from booking, which is not what this
+    // WhatsApp booking-mechanics case tests.
+    { role: "user", content: "I want vinyl for my whole apartment, about 900 sqft" },
+    { role: "assistant", content: "For that size I do a free in-person visit to measure and bring the samples. What day works?" },
     { role: "user", content: "Anyday, sooner the better" },
     { role: "assistant", content: `I have ${SLOT_DAY} at 5pm or 7pm. What's your name, your address, and which time works?` },
     { role: "user", content: `5pm ${SLOT_DAY}` },

@@ -21,7 +21,8 @@
 //     answered without a price.
 //  3. REGRESSIONS: 450 / 480 sqft → DM quote; 600 sqft → visit; canned opener
 //     still fires for a type-less first contact; pivot to whole house 1500
-//     sqft → visit; bathroom remodel → visit, not the Ozzi line.
+//     sqft → visit; bathroom remodel → Ozzi line with the BATHROOM wording
+//     (its own guard since 2026-09-11), never a visit.
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
@@ -333,11 +334,12 @@ async function main() {
   ck("1500: proposes the visit (or asks what day)", PROPOSES_VISIT(g5) || /what day|which day|when works/i.test(g5), g5);
   ck("1500: no total", !/\$\s?\d{1,3},\d{3}|\$\s?\d{4,}/.test(g5), g5);
 
-  console.log("\n[6f] REGRESSION: bathroom remodel → visit, never the Ozzi line for being small");
+  console.log("\n[6f] bathroom remodel (owner rule 2026-09-11, second part) → Ozzi line with the BATHROOM wording, never a visit, never the under-400 line");
   const g6 = await ai([u("Do you do bathroom remodels? It's a small bathroom, about 60 sqft")]);
   console.log("   →", g6.replace(/\s+/g, " ").slice(0, 200));
-  ck("remodel: proposes the visit", PROPOSES_VISIT(g6), g6);
-  ck("remodel: no Ozzi line, no price", !OZZI_DIRECT(g6) && !HAS_PRICE(g6), g6);
+  ck("remodel: Ozzi's number, no price", OZZI_DIRECT(g6) && !HAS_PRICE(g6), g6);
+  ck("remodel: no visit, no slots, no [BOOK]", !PROPOSES_VISIT(g6) && !HAS_BOOK(g6), g6);
+  ck("remodel: bathroom wording, not the 'under 400 square feet' line", /bathroom/i.test(g6) && !/under 400 square feet/i.test(g6), g6);
 
   console.log(`\n================ RESULT: ${pass} passed, ${fail} failed ================`);
   if (fail) { console.log("FAILED:\n - " + fails.join("\n - ")); process.exit(1); }

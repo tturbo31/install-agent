@@ -11,7 +11,7 @@
 //  2. LIVE MODEL: the prompt + injected CRITICAL block make the model decline
 //     (EN / ES / PT), with no visit, no price, no booking-details ask.
 //  3. REGRESSIONS: cracked tiles under the "liquid" ad (vinyl over tile) is
-//     still an install lead; bathroom remodel still confirms + visit; a whole-
+//     still an install lead; bathroom remodel is Ozzi direct (not a repair decline); a whole-
 //     house install that mentions cracked tiles still goes to the visit.
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -176,11 +176,11 @@ async function main() {
   ck("does NOT decline as a repair", !DECLINES_REPAIR(r6), r6);
   ck("says it goes over / covers the cracked tile", OVER_TILE(r6), r6);
 
-  console.log("\n[3b] REGRESSION: bathroom remodel still confirms + visit");
+  console.log("\n[3b] REGRESSION: bathroom remodel is NOT a repair decline (owner rule 2026-09-11: Ozzi direct, no visit)");
   const r7 = await ai([u("Hi, do you do bathroom remodeling?")]);
   console.log("   →", r7.replace(/\s+/g, " ").slice(0, 220));
-  ck("confirms YES", AFFIRMS(r7) && !DECLINES_REPAIR(r7), r7);
-  ck("proposes the visit", PROPOSES_VISIT(r7), r7);
+  ck("not declined as a repair, points to Ozzi's line", !DECLINES_REPAIR(r7) && /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(r7), r7);
+  ck("no visit (bathroom = Ozzi direct)", !PROPOSES_VISIT(r7), r7);
 
   console.log("\n[3c] REGRESSION: whole-house install that mentions cracked tiles → visit");
   const r8 = await ai([u("Hi, I want new floors for the whole house, about 1500 sqft, some of the tiles are cracked")]);

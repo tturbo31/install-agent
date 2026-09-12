@@ -2,7 +2,7 @@ import { zipsInText, cityAliasZip } from "./geo/zip-geo";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -287,7 +287,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // propose the free visit.
     // ...and a first message whose question the opener does NOT answer goes to
     // the model too (2026-08-21 sweep) — see questionBeyondOpener.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !mentionsBathroomProject(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -1817,7 +1817,8 @@ The latest client message contains "[floor plan or photo]" with no analysis: the
 // dimensions ("12x20 ft", "my kitchen is 12x14"). Several figures in ONE
 // message are summed (bedroom 150 + living 300 = 450 = normal flow). A figure
 // of 400 or more anywhere in the conversation, a "whole house / several rooms"
-// message after the small figure, a bathroom remodel (always the visit), an
+// message after the small figure, a bathroom project (Ozzi direct through its
+// own guard, bathroomProjectStanding, since 2026-09-11), an
 // "over N" figure, or a floor-plan analysis marked LARGE PROJECT switch the
 // guard OFF: a false "off" only falls back to the model and the prompt, a
 // false "on" would send a 1,500 sqft lead to the phone.
@@ -1891,6 +1892,69 @@ function analysisSqftSignals(raw: string): SqSignal[] {
   return best > 0 ? [{ v: Math.round(best), q: "exact" }] : [];
 }
 
+// ─── BATHROOM PROJECTS → OZZI DIRECT (owner rule 2026-09-11, second part) ───
+// A bathroom remodel / renovation, shower / tub / vanity work, a bathroom
+// quote ask, or "do you (guys) do bathrooms (too)?" is never quoted and never
+// booked through the chat: bathroom quotes and appointments are Ozzi's, the
+// client gets his direct line. Until today a bathroom remodel was "always the
+// free visit"; that [BOOK] path is now closed. What counts (the client's own
+// text, per message): a bathroom word next to a remodel verb ("bathroom
+// remodeling", "redo my master bathroom", "reforma de banheiro", "remodelar el
+// baño"), a service question about bathrooms ("do you guys do bathrooms too?",
+// "hacen baños?", "vocês fazem banheiro?"), a quote / price ask for a bathroom,
+// a "new / whole bathroom" or "bathroom project / job", or shower / tub /
+// vanity work ("what do you charge for showers?", "tub to shower conversion",
+// "tile my shower", "replace the vanity").
+// NOT a bathroom project: FLOORING in a bathroom ("bathroom floor", "vinyl for
+// my bathroom, 150 sqft") follows the flooring sqft rules (it ends at Ozzi's
+// line too when under 400 sqft, through smallJobStanding, and the prompt sends
+// a size-less single-bathroom floor there as well), a product question ("is it
+// waterproof for bathrooms?"), and "2 bed 2 bath" house descriptions.
+// The standing switches OFF when the conversation also carries a flooring job
+// of its own: a stated size of 400 sqft or more, a whole-house signal, a LARGE
+// PROJECT plan, or another room named (kitchen, living room, bedroom,
+// garage...): then the model handles both parts by the prompt (the visit for
+// the floors, Ozzi's line for the bathroom) and no guard blocks the flooring
+// [BOOK] (Kenny Abbasi 07-31 booked his floors AND asked "do you guys do
+// bathrooms too?"). A standing repair request owns the reply instead (a
+// bathroom repair is still a repair). A false "off" only falls back to the
+// model and the prompt; a false "on" would send a whole-house lead to the
+// phone, so the cues stay narrow. Accented letters: no \b, see [[js-word-boundary-accents]].
+const BATH_WORD_SRC = String.raw`(?<![a-zà-ÿ])(?<!\d\s?|\d\.\d\s?|(?:two|three|four|dos|tres|cuatro|dois|duas|tr[eê]s)\s)(?:bath\s?rooms?|baths?|restrooms?|powder\s+rooms?|half[\s-]?baths?|ba[ñn]os?|banheiros?|lavabos?|casa\s+de\s+banho|cuartos?\s+de\s+ba[ñn]o|quartos?\s+de\s+banho)(?![a-zà-ÿ])`;
+// "bathroom floor(s)" / "piso do banheiro" is flooring, not a bathroom project.
+const BATH_NOT_FLOOR = String.raw`(?!\s*(?:floors?|flooring|pisos?|tiles?\s+floors?))`;
+const BATH_FIXTURE_SRC = String.raw`(?<![a-zà-ÿ])(?:showers?|bath\s?tubs?|tubs?|vanit(?:y|ies)|toilets?|duchas?|regaderas?|ba[ñn]eras?|banheiras?|chuveiros?|box\s+(?:do|de)\s+banheiro|lavat[oó]rios?)(?![a-zà-ÿ])`;
+const REMODEL_VERB_SRC = String.raw`(?:remodel[a-zà-ÿ]*|renov[a-zà-ÿ]*|reform[a-zà-ÿ]*|re-?do(?:ing|ne)?|gut(?:ting|ted)?|makeover|redesign[a-z]*|rebuil[a-z]*|updat(?:e|ed|ing)|upgrad(?:e|ed|ing)|overhaul[a-z]*|tear(?:ing)?\s+out|rip(?:ping)?\s+out|demo(?:lish|lition)?|refazer|rehacer|arreglar|mexer\s+n[oa])`;
+const REMODEL_VERB_B = String.raw`(?<![a-zà-ÿ])${REMODEL_VERB_SRC}(?![a-zà-ÿ])`;
+const BATH_REMODEL_NEAR = new RegExp(String.raw`${REMODEL_VERB_B}[^.!?\n]{0,40}${BATH_WORD_SRC}|${BATH_WORD_SRC}[^.!?\n]{0,40}${REMODEL_VERB_B}`, "i");
+const BATH_SERVICE_Q = new RegExp(String.raw`(?<![a-zà-ÿ])(?:do|does|doing|handle|take\s+on|work\s+on|offer|hacen|hace|haces|hac[eé]is|fazem|faz|fazes|trabalham|trabalha|trabajan|trabaja)\s+(?:you\s+(?:guys\s+|all\s+)?|u\s+|ustedes\s+|voc[eê]s?\s+|voces\s+)?(?:also\s+|too\s+|only\s+|just\s+|tamb[eé]m\s+|tambi[eé]n\s+|s[oó]\s+|solo\s+)?(?:the\s+|a\s+|an\s+|my\s+|our\s+|whole\s+|entire\s+|full\s+|complete\s+|master\s+|small\s+|guest\s+|el\s+|la\s+|los\s+|las\s+|mi\s+|mis\s+|un\s+|una\s+|o\s+|os\s+|meu\s+|minha\s+|um\s+|uma\s+|de\s+|todo\s+el\s+|todo\s+o\s+)*${BATH_WORD_SRC}${BATH_NOT_FLOOR}`, "i");
+const BATH_TOO = new RegExp(String.raw`${BATH_WORD_SRC}\s+(?:too|also|as\s+well|tamb[eé]m|tambi[eé]n)(?![a-zà-ÿ])`, "i");
+const BATH_PROJECT = new RegExp(String.raw`${BATH_WORD_SRC}\s+(?:projects?|jobs?|work|renos?|renovations?|makeovers?|projeto|obra|trabajo|trabalho)(?![a-zà-ÿ])|(?<![a-zà-ÿ])(?:new|whole|entire|complete|full|nuev[oa]|nov[oa]|todo\s+(?:el|o)|inteir[oa]|complet[oa])\s+${BATH_WORD_SRC}${BATH_NOT_FLOOR}|${BATH_WORD_SRC}\s+(?:nov[oa]|nuev[oa]|inteir[oa]|complet[oa]|enter[oa])(?![a-zà-ÿ])`, "i");
+const BATH_QUOTE_ASK = new RegExp(String.raw`(?<![a-zà-ÿ])(?:quote|estimate|price|pricing|cost|charge|how\s+much|presupuesto|cotizaci[oó]n|precio|cu[aá]nto|or[çc]amento|quanto|pre[çc]o)(?![a-zà-ÿ])[^.!?\n]{0,30}${BATH_WORD_SRC}${BATH_NOT_FLOOR}`, "i");
+const FIX_ACT = String.raw`(?:${REMODEL_VERB_SRC}|replac[a-z]*|install[a-z]*|instala[a-zçã]*|poner|pongan|colocar|coloquen|convert[a-z]*|chang[a-z]*|cambiar|cambien|trocar|troquem|build[a-z]*|construir|hacer|fazer|put\s+in|putting\s+in|add(?:ing)?|re-?til[a-z]*|swap(?:ping)?)`;
+const FIX_ADJ = String.raw`(?:new\s+|nuev[oa]s?\s+|nov[oa]s?\s+|walk[\s-]?in\s+|custom\s+|tiled?\s+|glass\s+|frameless\s+|double\s+|floating\s+|standing\s+|freestanding\s+|corner\s+)*`;
+const FIX_DET = String.raw`(?:a\s+|an\s+|the\s+|my\s+|our\s+|el\s+|la\s+|mi\s+|o\s+|meu\s+|minha\s+|un\s+|una\s+|um\s+|uma\s+)?`;
+const BATH_FIXTURE_WORK = new RegExp([
+  String.raw`(?<![a-zà-ÿ])${FIX_ACT}(?![a-zà-ÿ])\s+${FIX_DET}${FIX_ADJ}${BATH_FIXTURE_SRC}`,
+  String.raw`${BATH_FIXTURE_SRC}\s+(?:to\s+${BATH_FIXTURE_SRC}\s+)?(?:conversions?|remodel[a-z]*|renovations?|replacements?|install(?:ation)?s?|surrounds?|walls?|tiles?|tiling|retil[a-z]*|pans?|niches?|doors?|enclosures?|bases?|floors?|areas?|conversi[oó]n|convers[aã]o|reforma|remodelaci[oó]n|nuev[oa]s?|nov[oa]s?)(?![a-zà-ÿ])`,
+  String.raw`(?<![a-zà-ÿ])(?:new|nuev[oa]|nov[oa]|walk[\s-]?in|custom|tiled|frameless|glass|freestanding)\s+${FIX_ADJ}${BATH_FIXTURE_SRC}`,
+  String.raw`(?<![a-zà-ÿ])(?:quote|estimate|price|pricing|cost|charge|how\s+much|cu[aá]nto|quanto|precio|presupuesto|or[çc]amento|pre[çc]o)(?![a-zà-ÿ])[^.!?\n]{0,30}${BATH_FIXTURE_SRC}`,
+  String.raw`(?<![a-zà-ÿ])til(?:e|ing)\s+(?:the|my|our|a|in\s+the|for\s+the|around\s+the)\s+${FIX_ADJ}${BATH_FIXTURE_SRC}`,
+  String.raw`(?<![a-zà-ÿ])(?:do|does|handle|work\s+on|offer|hacen|fazem)\s+(?:you\s+(?:guys\s+)?)?(?:also\s+|too\s+)?${FIX_DET}${FIX_ADJ}${BATH_FIXTURE_SRC}`,
+].join("|"), "i");
+// Another room / area named by the client = a flooring job of its own lives in
+// this conversation (address-ish words like "apt" / "unit" are deliberately
+// NOT here: they show up in the booking address and would flip the guard off
+// at the worst moment). "cuarto de baño" / "quarto de banho" ARE the bathroom.
+const OTHER_AREA = /(?<![a-zà-ÿ])(?:kitchens?|living\s*rooms?|living\s+area|family\s*rooms?|dining(?:\s*rooms?)?|bed\s?rooms?|master\s+bed|garages?|home\s+offices?|offices?|basements?|hallways?|closets?|laundry|patios?|balcon(?:y|ies)|stairs?|staircases?|cocinas?|salas?|comedor(?:es)?|habitaci[oó]n(?:es)?|cuartos?(?!\s+de\s+ba[ñn]o)|rec[aá]maras?|dormitorios?|garajes?|pasillos?|escaleras?|cozinhas?|quartos?(?!\s+de\s+banho)|escrit[oó]rios?|garagens?|corredor(?:es)?|escadas?)(?![a-zà-ÿ])/i;
+
+// One client message carries a bathroom-project cue (see the block above).
+export function bathroomProjectSignal(text: string): boolean {
+  const t = clientTextOnly(text);
+  if (!t) return false;
+  return BATH_REMODEL_NEAR.test(t) || BATH_SERVICE_Q.test(t) || BATH_TOO.test(t) || BATH_PROJECT.test(t) || BATH_QUOTE_ASK.test(t) || BATH_FIXTURE_WORK.test(t);
+}
+
 // The size the client stated when it is UNDER 400 sqft (the figure), or null
 // when no small size stands (nothing stated, 400+ stated anywhere, a later
 // "whole house", a remodel, a LARGE PROJECT plan).
@@ -1900,7 +1964,7 @@ export function smallJobStanding(history: Array<{ role: string; content: string 
     if (m.role !== "user") continue;
     const raw = m.content || "";
     const t = clientTextOnly(raw);
-    if (t && REMODEL_MENTION.test(t)) return null;
+    if (t && (REMODEL_MENTION.test(t) || bathroomProjectSignal(t))) return null;
     if (/LARGE PROJECT/.test(raw)) return null;
     const signals = [...clientSqftSignals(t), ...analysisSqftSignals(raw)];
     let sum = 0;
@@ -1966,6 +2030,68 @@ The client stated a project size under 400 square feet (about ${sqft} sqft). Own
 4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have), answer that part briefly and still give the Ozzi line in the same message.
 5. Only if the client states a size of 400 square feet or more, or says it is the whole house or several rooms, return to the normal flow (400 to 499 sqft: quote by DM; 500 or more: the free visit).
 6. If earlier in this conversation a price was given, a visit was offered, a slot was "held" or booking details were collected for this project, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.`;
+}
+
+// Conversation-level: a bathroom project stands (some client message carried a
+// bathroom cue) and NO flooring job of its own is in the conversation (no
+// stated size of 400 sqft or more, no whole-house signal, no LARGE PROJECT
+// plan, no other room named) and no repair request stands. This is what the
+// [BOOK] block, the post-model backstop and the prompt block read.
+export function bathroomProjectStanding(history: Array<{ role: string; content: string }>): boolean {
+  let standing = false;
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const raw = m.content || "";
+    if (/LARGE PROJECT/.test(raw)) return false;
+    for (const s of analysisSqftSignals(raw)) if (s.v >= 400) return false;
+    const t = clientTextOnly(raw);
+    if (!t) continue;
+    for (const s of clientSqftSignals(t)) {
+      const v = s.q === "under" ? s.v - 1 : s.v;
+      if (v >= 400) return false;
+    }
+    if (WHOLE_HOUSE_SIGNAL.test(t) || OTHER_AREA.test(t)) return false;
+    if (bathroomProjectSignal(t)) standing = true;
+  }
+  return standing && !repairRequestActive(history);
+}
+
+// First-contact gate: a first message that is a bathroom project never gets a
+// canned type-ask opener; the model answers with the bathroom Ozzi line in the
+// client's language.
+export function mentionsBathroomProject(text: string): boolean {
+  return bathroomProjectStanding([{ role: "user", content: text || "" }]);
+}
+
+// Post-model backstop while a bathroom project stands: the model quoted (any
+// dollar figure), offered a visit or slots, asked for the booking details,
+// wrote a [BOOK], or did not give Ozzi's number on the first reply after the
+// bathroom came up. The caller swaps the reply for bathroomReply. An
+// unsupported-floor request owns the reply instead (a decline, not a
+// referral); a repair already switches the standing off.
+export function bathroomLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!bathroomProjectStanding(history)) return false;
+  if (unsupportedFloorStanding(history)) return false;
+  const t = aiText || "";
+  if (/\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t)) return true;
+  return !smallJobReferralSent(history) && !OZZI_DIRECT_NUMBER.test(t);
+}
+
+// The Ozzi referral (any wording, any reason) already went out → the insist
+// line; otherwise the bathroom direct line.
+export function bathroomReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
+  return smallJobReferralSent(history) ? bathroomOzziInsistMessage(lang) : bathroomOzziDirectMessage(lang);
+}
+
+export function bathroomNote(referralSent: boolean): string {
+  return `CRITICAL, BATHROOM PROJECT (OZZI DIRECT: NO PRICE, NO VISIT, NO BOOKING):
+The client is asking about a bathroom project (a remodel or renovation, shower / tub / vanity work, a bathroom quote, or "do you do bathrooms"). Owner rule (2026-09-11): bathroom quotes and appointments are NOT handled through this chat, Ozzi handles them personally. This replaces the old "bathroom remodel = free visit" rule.
+1. ${referralSent ? "You ALREADY gave the client Ozzi's number earlier in this conversation, so keep it short. " : ""}Tell the client, in their language, that YES we do bathrooms too, that bathroom quotes and appointments are handled by Ozzi directly, and give the number (561) 674-8334. Two short sentences. Example: "Yes, we do bathrooms too! Bathroom quotes and appointments are handled by Ozzi directly, he goes over the details with you himself. You can reach him at (561) 674-8334."
+2. NEVER give a price, a range, a "starts at" or an estimate for the bathroom, not even approximate, not even if they insist. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address, phone or zip. NEVER generate [BOOK:...]. NEVER say we don't do bathrooms or that it is too small: we do it, Ozzi just handles it directly.
+3. If the client insists on a price or a visit here ("just give me a rough number", "can't you set it up here", "why can't you tell me", "I don't want to call"): do NOT give in. Say you are not able to give a quote or set anything up for a bathroom through here, it really has to go through Ozzi directly, and repeat the number. Example: "I'm not able to give you a quote or set anything up for a bathroom through here, that one really has to go through Ozzi directly. Please call him at (561) 674-8334 and he'll take care of you." Never explain the internal reason, never apologize twice, never invent a reason.
+4. If the same message also asks something unrelated (is the vinyl waterproof, do you install over tile, what floors do you have), answer that part briefly and still give the Ozzi line in the same message.
+5. If the client ALSO has a flooring job for other rooms or the whole house, handle that flooring part by the normal rules (the size, then the free visit for 500 sqft or more) and still say the bathroom part is with Ozzi directly.
+6. If earlier in this conversation a visit was offered, a slot was "held" or booking details were collected for this bathroom, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.`;
 }
 
 // A courtesy "thanks" that ALSO carries a real answer — a flooring type, a
@@ -3134,6 +3260,8 @@ export async function getAIResponse(
           // direct block and the post-model backstop).
           if (faqReanswer && smallJobStanding(messages) !== null) {
             console.log("[AI] repeated ad-FAQ after a gap, but a size under 400 sqft stands — the model answers with the Ozzi direct line");
+          } else if (faqReanswer && bathroomProjectStanding(messages)) {
+            console.log("[AI] repeated ad-FAQ after a gap, but a bathroom project stands — the model answers with the bathroom Ozzi line");
           } else if (faqReanswer) {
             console.log("[AI] repeated ad-FAQ after a gap — deterministic re-answer (no model, no dup-silence)");
             return { text: faqReanswer, inputTokens: 0, outputTokens: 0 };
@@ -3213,6 +3341,11 @@ export async function getAIResponse(
     // states a size under 400 sqft never gets a canned opener either; the model
     // answers with the Ozzi direct line in the client's language.
     const smallFirstMessage = mentionsSmallSqft(burst);
+    // BATHROOM backstop (owner rule 2026-09-11, second part): a first message
+    // that is a bathroom project (remodel, shower, "do you do bathrooms?")
+    // never gets a canned opener; the model answers with the bathroom Ozzi
+    // line in the client's language.
+    const bathroomFirstMessage = mentionsBathroomProject(burst);
     // CARPET backstop (owner rule 2026-07-30): every canned opener below names
     // only tile, vinyl, and hardwood, so firing one at a lead who asked about
     // carpet reads as "we don't install carpet" — which is false and is exactly
@@ -3238,7 +3371,7 @@ export async function getAIResponse(
     // responde o botão E o que a pessoa escreveu (revisão 4 dias 31/08).
     const faqPlusTyped = faqButtonPlusTypedText(burst);
     if (faqPlusTyped) console.log("[AI] First contact: FAQ button + typed text in the same burst — routing to the model");
-    if (!largeFirstMessage && !smallFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
       const lang = openerLang(burst);
       // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
       // at once, so the single-topic chain below (first match wins) answered one
@@ -3298,7 +3431,7 @@ export async function getAIResponse(
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
-    if (!largeFirstMessage && !smallFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(burst);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
@@ -3312,6 +3445,8 @@ export async function getAIResponse(
   // gives the Ozzi direct line (the post-model backstop still runs).
   if (hardcoded && smallJobStanding(messages) !== null) {
     console.log("[AI] Hard-coded intercept skipped — a size under 400 sqft stands; the model answers with the Ozzi direct line");
+  } else if (hardcoded && bathroomProjectStanding(messages)) {
+    console.log("[AI] Hard-coded intercept skipped — a bathroom project stands; the model answers with the bathroom Ozzi line");
   } else if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
     return { text: hardcoded, inputTokens: 0, outputTokens: 0 };
@@ -3358,7 +3493,7 @@ export async function getAIResponse(
 25. CAN BOOK ANY LISTED DAY, INCLUDING FUTURE WEEKS: The REAL-TIME SCHEDULE covers about three weeks ahead. You CAN and SHOULD book next week or the week after when the client wants it. NEVER say you cannot see, access, or open the calendar for a future week, and never say you can only book this week. Any date shown in the schedule is bookable. If the same weekday appears more than once, use the soonest one unless the client says "next week" or names a specific date.
 26. SERVICE AREA HARD GATE (overrides scheduling): We serve ONLY the Miami / South Florida EAST coast, from Homestead up to Jupiter (Miami-Dade, Broward, Palm Beach). We do NOT serve the Gulf / WEST coast at all (Tampa, St. Petersburg, Clearwater, Sarasota, Bradenton, Fort Myers, Cape Coral, Lehigh Acres, Estero, Bonita Springs, Naples, Marco Island, Port Charlotte, Punta Gorda), nor north of Jupiter (Treasure Coast), nor the Florida Keys south of Homestead. BEFORE proposing a visit, offering any time slot, confirming an appointment, or generating [BOOK:...], you MUST check the client's stated city/address. If it is on the west/Gulf coast or otherwise outside Homestead-to-Jupiter, you MUST NOT book — politely say we only serve the Miami area (the South Florida east coast from Homestead to Jupiter) and we do not cover their area. NEVER generate [BOOK:...] for an out-of-area address under any circumstance. This rule overrides every scheduling instruction.
 27. NO SQFT ARITHMETIC / NO INVENTED TOTALS: NEVER add, subtract, or recompute the client's stated square footage into a different number, and NEVER narrate a calculation out loud (forbidden examples: "that puts you at about 1,600 sqft to cover", "1900 minus 300", "so that's X sqft total"). Do NOT assume some rooms (bathrooms, laundry, kitchen) get a different material and subtract them, the whole job is the same flooring unless the client says otherwise. If you need to reference the size, repeat the client's own number back unchanged. For ANY job of 500 sqft or more, do NOT compute, quote, or restate any sqft total at all, just acknowledge warmly and move to the free in-person visit. Math errors and invented totals destroy trust, so when unsure, say nothing about the number and propose the visit.
-28. BATHROOM REMODELING RULE: We DO bathroom remodels (reforma de banheiro), not only flooring. When the client asks if we do, offer, or want a bathroom remodel or renovation (remodel, renovate, redo, or gut the bathroom), confirm YES we do it, explain that for a remodel we first need to check the space in person to give an accurate quote, and propose the FREE in-person visit exactly like a large lead: never quote a remodel price by DM, and never decline it for being small (it always goes to the visit, any size). This does NOT apply to a request for FLOORING in a bathroom (that is a normal flooring job under the usual sqft rules, including the under-400-sqft Ozzi direct rule) or to a repair of any kind (fixing or replacing damaged tiles, patching), which we do NOT do and never visit for, see rule 39.
+28. BATHROOM RULE (OZZI DIRECT, owner rule 2026-09-11): We DO bathroom remodels (reforma de banheiro, remodelación de baño) and bathroom work (shower, tub, vanity), but they are NOT quoted and NOT scheduled through this chat: Ozzi handles bathroom quotes and appointments personally. When the client asks if we do, offer, or want a bathroom remodel or renovation, any shower / tub / vanity work, a bathroom quote, or simply "do you do bathrooms?": confirm YES we do it in one short clause, then say bathroom quotes and appointments are handled by Ozzi directly and give his number (561) 674-8334, and stop. NEVER quote a bathroom price (not even approximate), NEVER propose or set up a visit, NEVER offer slots, NEVER ask for the name, address, phone or zip for it, NEVER generate [BOOK:...] for it, and never decline it for being small. If the client insists on a price or a visit here, hold the line: you can't give a quote or set anything up for a bathroom through here, it has to go through Ozzi, number repeated. This replaces the old "bathroom remodel = free visit" rule. FLOORING for a single bathroom and nothing else with no size stated is an obviously small area: Ozzi direct as well (rule 18), no need to ask the size; a stated size follows the size rules. A repair of any kind (fixing or replacing damaged tiles, patching) is something we do NOT do and never visit for, see rule 39. If the bathroom comes together with a flooring job for other rooms or the whole house, handle that flooring part by the normal rules and still send the bathroom part to Ozzi.
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
 30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
 31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.
@@ -3369,7 +3504,7 @@ export async function getAIResponse(
 36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, say Ozzi will personally contact them right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
-39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel, or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.
+39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.
 40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
@@ -3405,6 +3540,14 @@ export async function getAIResponse(
       console.log(`[AI] Project under 400 sqft stated (${sj} sqft) — injecting the Ozzi-direct block`);
       dynamicSystem += `\n\n---\n\n${smallJobNote(sj, smallJobReferralSent(messages))}`;
     }
+  }
+
+  // BATHROOM PROJECT standing → the bathroom Ozzi-direct block (owner rule
+  // 2026-09-11, second part: bathroom quotes and appointments are Ozzi's,
+  // never a price, never a visit, never [BOOK]).
+  if (bathroomProjectStanding(messages)) {
+    console.log("[AI] Bathroom project stands — injecting the bathroom Ozzi-direct block");
+    dynamicSystem += `\n\n---\n\n${bathroomNote(smallJobReferralSent(messages))}`;
   }
 
   // A photo the pipeline could not read is in the latest burst → the model
@@ -3583,6 +3726,17 @@ export async function getAIResponse(
     if (smallJobLeak(messages, cleaned)) {
       console.warn("[AI] project under 400 sqft — model priced / offered a visit / asked details; replaced with the Ozzi direct line");
       cleaned = smallJobReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+    }
+
+    // BATHROOM PROJECT backstop (owner rule 2026-09-11, second part): while a
+    // bathroom remodel / shower / tub / vanity request or "do you do bathrooms"
+    // stands, any dollar figure, visit or slot offer, booking-details ask or
+    // [BOOK] is replaced by the bathroom Ozzi line, and the first reply after
+    // the bathroom comes up always carries Ozzi's number. Every caller of
+    // getAIResponse gets this; the three webhooks keep a second net.
+    if (bathroomLeak(messages, cleaned)) {
+      console.warn("[AI] bathroom project — model priced / offered a visit / asked details; replaced with the bathroom Ozzi line");
+      cleaned = bathroomReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
     }
 
     // Regra do dono (28/08/2026): nada de ¿ / ¡ em espanhol — só ? e ! no final.

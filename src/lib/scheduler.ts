@@ -2125,6 +2125,33 @@ export function smallJobOzziInsistMessage(lang: Lang): string {
     : `I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at ${OZZI_DIRECT_PHONE} and he'll check it and give you the number.`;
 }
 
+// BATHROOM projects (a remodel or renovation, shower / tub / vanity work, a
+// bathroom quote, "do you do bathrooms?") are never quoted and never booked
+// through the chat (owner rule 2026-09-11, second part): bathroom quotes and
+// appointments are Ozzi's, the client is pointed to his direct line. Sent when
+// a price, a visit / slot offer, a booking-details ask or a [BOOK] leaks
+// through while a bathroom project stands (ai.bathroomProjectStanding), and as
+// the guaranteed first reply after the bathroom comes up. Same wording
+// constraints as the small-job lines: no dashes except the phone one, no ¿ ¡,
+// usted register in Spanish, no "?", and no visit / in-person / "works for
+// you" / slot wording (the leak detectors would flag the message as a leak of
+// itself). "citas" / "appointments" is fine: it is not an offer.
+export function bathroomOzziDirectMessage(lang: Lang): string {
+  if (lang === "pt") return `Sim, fazemos banheiro também! Orçamento e agendamento de banheiro é direto com o Ozzi, ele mesmo vê os detalhes com você. Você pode falar com ele no ${OZZI_DIRECT_PHONE}.`;
+  return lang === "es"
+    ? `Sí, también hacemos baños! Los presupuestos y las citas de baño los maneja Ozzi directamente, él mismo revisa los detalles con usted. Puede comunicarse con él al ${OZZI_DIRECT_PHONE}.`
+    : `Yes, we do bathrooms too! Bathroom quotes and appointments are handled by Ozzi directly, he goes over the details with you himself. You can reach him at ${OZZI_DIRECT_PHONE}.`;
+}
+
+// The client already has Ozzi's number and insists on a bathroom price or on
+// booking it here: the bot holds the line.
+export function bathroomOzziInsistMessage(lang: Lang): string {
+  if (lang === "pt") return `Por aqui eu não consigo passar orçamento nem marcar nada de banheiro, isso é direto com o Ozzi. Liga para ele no ${OZZI_DIRECT_PHONE} que ele te atende.`;
+  return lang === "es"
+    ? `Por aquí no puedo pasarle un presupuesto ni agendar nada de baño, eso es directo con Ozzi. Llámelo al ${OZZI_DIRECT_PHONE} y él lo atiende.`
+    : `I'm not able to give you a quote or set anything up for a bathroom through here, that one really has to go through Ozzi directly. Please call him at ${OZZI_DIRECT_PHONE} and he'll take care of you.`;
+}
+
 // True only when the string holds a real phone number (enough digits to dial).
 // Guards against the model dropping a non-number into the phone field, e.g. the
 // client says "Call me in Messenger" / "contact me here" and the AI booked with

@@ -301,6 +301,17 @@ const GRADERS = {
     label: 'Proposes the in-person visit to check the space (EN/PT/ES)',
     check: (t: string) => /visit|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|measure|see\s+(?:the|your)\s+(?:space|bathroom)|take\s+a\s+look|visita|presencial|pessoalmente|medir|ver\s+(?:o|el)\s+(?:espa[çc]o|ba[ñn]o|local)/i.test(t),
   },
+  ozziDirectBathroom: {
+    // Owner rule 2026-09-11 (second part): a bathroom remodel / any bathroom
+    // work is never priced and never sent to a visit: the client gets Ozzi's
+    // direct line, and the job is never declined.
+    label: 'Bathroom project → Ozzi direct line (no price, no visit, no decline)',
+    check: (t: string) =>
+      /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t) &&
+      !/\$\s?\d/.test(t) &&
+      !/\bvisit\b|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|which\s+(?:day|time|one)\s+works|what\s+day\s+works|\bvisita\b|presencial|pessoalmente/i.test(t) &&
+      !/\b(?:don'?t|do not|cannot|can'?t|won'?t)\s+(?:do|offer|handle)\s+(?:bathroom|remodel)|only\s+(?:do|offer|handle)\s+(?:flooring|floors)|n[aã]o\s+fazemos|no\s+hacemos/i.test(t),
+  },
   ozziDirectSmallJob: {
     // Owner rule 2026-09-11: a flooring job under 400 sqft is never priced,
     // never declined and never sent to a visit: the client gets Ozzi's direct
@@ -700,28 +711,28 @@ const SCENARIOS: Scenario[] = [
   },
 
   // ── BATHROOM REMODELING (new feature) ────────────────────────────────────
-  // Owner: we DO bathroom remodels. When asked, confirm YES, say we must check
-  // the space in person to quote, and propose the free visit (same flow as a
-  // large flooring lead). Never quote a remodel price by DM, any size.
+  // Owner rule 2026-09-11 (second part): we DO bathroom remodels, but bathroom
+  // quotes and appointments are Ozzi's: the bot gives his direct line, never a
+  // price, never a visit, never [BOOK]. (Replaces the old "remodel = visit".)
   {
-    name: '[BATHROOM REMODEL] "Do you do bathroom remodeling?" → yes + propose visit, no DM price',
+    name: '[BATHROOM REMODEL] "Do you do bathroom remodeling?" → Ozzi direct line, no visit, no price',
     messages: [{ role: "user", content: "Hi, do you do bathroom remodeling?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "noWrappingQuotes", "ozziDirectBathroom"],
   },
   {
-    name: '[BATHROOM REMODEL] "Do you remodel bathrooms or just floors?" → yes + visit, no DM price',
+    name: '[BATHROOM REMODEL] "Do you remodel bathrooms or just floors?" → Ozzi direct line, no visit, no price',
     messages: [{ role: "user", content: "Do you guys remodel bathrooms or do you only do floors?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "ozziDirectBathroom"],
   },
   {
-    name: '[BATHROOM REMODEL] "I want to gut and redo my master bathroom" → yes + visit, no DM price',
+    name: '[BATHROOM REMODEL] "I want to gut and redo my master bathroom" → Ozzi direct line, no visit, no price',
     messages: [{ role: "user", content: "I want to gut and redo my master bathroom completely" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "ozziDirectBathroom"],
   },
   {
-    name: '[BATHROOM REMODEL] PT "Vocês fazem reforma de banheiro?" → sim + visita, sem preço no DM',
+    name: '[BATHROOM REMODEL] PT "Vocês fazem reforma de banheiro?" → linha direta do Ozzi, sem visita, sem preço',
     messages: [{ role: "user", content: "Oi, vocês fazem reforma de banheiro?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "confirmsBathroomRemodel", "proposesVisitBilingual", "noPrice"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "ozziDirectBathroom"],
   },
 
   // ── REGRESSIONS — the remodel rule must NOT hijack these existing flows ───

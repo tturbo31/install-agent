@@ -39,7 +39,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -143,6 +143,14 @@ async function processBookingCommand(
   if (unsupportedFloorStanding(history)) {
     console.warn(`[IG] booking blocked — the client asked for a floor we do NOT do (epoxy/concrete/pavers); sending the decline`);
     return { response: unsupportedFloorReply(history, lang), booked: false };
+  }
+  // BATHROOM guard (owner rule 2026-09-11, second part): a bathroom remodel /
+  // renovation, shower / tub / vanity work or "do you do bathrooms?" is never
+  // booked through the chat, bathroom quotes and appointments are Ozzi's. A
+  // [BOOK] while a bathroom project stands is replaced by the bathroom Ozzi line.
+  if (bathroomProjectStanding(history)) {
+    console.warn("[IG] booking blocked — bathroom project (Ozzi direct); sending the bathroom Ozzi line");
+    return { response: bathroomReply(history, lang), booked: false };
   }
   // UNDER 400 SQFT guard (owner rule 2026-09-11): a job under 400 square feet
   // is never booked through the chat. A [BOOK] while the client's stated size
@@ -1903,6 +1911,16 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && smallJobLeak(history, safeAiText)) {
       console.warn("[IG] project under 400 sqft — model priced / offered a visit / asked details; replacing with the Ozzi direct line");
       safeAiText = smallJobReply(history, lang);
+    }
+
+    // BATHROOM backstop (owner rule 2026-09-11, second part): while a bathroom
+    // project stands (remodel / shower / tub / vanity / "do you do bathrooms"),
+    // a price, a visit or slot offer, a booking-details ask or a [BOOK] from the
+    // model is replaced by the bathroom Ozzi line (and the first reply after the
+    // bathroom comes up always carries Ozzi's number).
+    if (!isBookingConfirmed && bathroomLeak(history, safeAiText)) {
+      console.warn("[IG] bathroom project — model priced / offered a visit / asked details; replacing with the bathroom Ozzi line");
+      safeAiText = bathroomReply(history, lang);
     }
 
     const bookingStep = await processBookingCommand(

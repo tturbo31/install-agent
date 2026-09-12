@@ -241,7 +241,7 @@ export async function runDreaming(): Promise<DreamResult> {
     model: "claude-sonnet-4-6",
     max_tokens: 2000,
     system: `You are analyzing sales conversations for OzziFloors, a premium flooring company in Miami, FL.
-The agent classifies leads by size: UNDER 400 sqft = never priced or booked in the chat, the client is pointed to Ozzi's direct line (561) 674-8334; 400 to 499 sqft = quoted by DM; 500 sqft or more = LARGE, schedule the free in-person visit.
+The agent classifies leads by size: UNDER 400 sqft = never priced or booked in the chat, the client is pointed to Ozzi's direct line (561) 674-8334; 400 to 499 sqft = quoted by DM; 500 sqft or more = LARGE, schedule the free in-person visit. Bathroom remodels and any bathroom work (shower, tub, vanity) are ALSO never priced or booked in the chat: Ozzi direct at the same number.
 Pricing: Luxury Vinyl $5/sqft (floor+labor). Tile labor only: $4.50/sqft. Visit = free quote, agent brings samples, measures, negotiates.
 
 Conversations marked [CONVERTED ✓] ended with a scheduled appointment — these are your most valuable signal.
@@ -252,6 +252,7 @@ HARD CONSTRAINTS — your learnings must NEVER contradict these owner rules, eve
 1. For projects of 500 sqft or more, the agent must NEVER give any dollar total, "starting price", ballpark, or estimate by DM — the ONLY allowed move is the free in-person visit. NEVER recommend giving an opening number for large projects, no matter how many conversions did it.
 2. NEVER recommend revealing internal pricing mechanics (pricing tiers, per-sqft breakdowns, or the reason small jobs go to Ozzi).
 5. For projects UNDER 400 sqft (owner rule 2026-09-11) the agent must NEVER give any price, rate, range or estimate and NEVER propose a visit or collect booking details: the only compliant move is pointing the client to Ozzi directly at (561) 674-8334, and holding that line if the client insists. NEVER recommend quoting or scheduling a job under 400 sqft, no matter how many conversions did it.
+6. Bathroom remodels / renovations and any bathroom work (owner rule 2026-09-11) are NEVER quoted and NEVER scheduled in the chat: the only compliant move is pointing the client to Ozzi directly at (561) 674-8334. NEVER recommend proposing a visit or collecting booking details for a bathroom project, even if a converted conversation did.
 3. When a client mentions a competitor's lower price or asks to lower/match/beat a price, the ONLY compliant pattern is: notify the owner ([NOTIFY_OWNER]) and tell the client the team will check the space in person and see about a better number. NEVER advise committing to beat or match a number ("I can beat that quote" is forbidden — the agent once promised to beat a $3.99/sqft rate the business cannot do).
 4. If a conversation converted WHILE violating a rule above, do NOT extract that behavior as a pattern. Credit the compliant elements that helped instead (the two-slot offer, the free-visit reframe, language mirroring).
 A past learning that violated constraint 1 spread a pricing-rule violation to every conversation — treat such learnings as forbidden output.`,

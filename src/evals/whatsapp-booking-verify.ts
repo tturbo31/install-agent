@@ -87,8 +87,11 @@ IMPORTANT — read carefully before offering any time:
 }
 
 const HEAD: ChatMessage[] = [
-  { role: "user", content: "What do you charge for showers?" },
-  { role: "assistant", content: "Shower work falls under bathroom remodeling, and for that I need to check the space in person to give you an accurate quote. I offer a free visit where I assess everything and lock in the right price. What day works best for you?" },
+  // Head is a FLOORING lead: a shower / bathroom job is Ozzi direct since
+  // 2026-09-11 and would be blocked from booking, which is not what this
+  // WhatsApp booking-mechanics suite tests.
+  { role: "user", content: "I want vinyl for my whole apartment, about 900 sqft" },
+  { role: "assistant", content: "For that size I need to check the space in person to give you an accurate quote. I offer a free visit where I measure everything and bring the samples. What day works best for you?" },
   { role: "user", content: "Anyday. Sooner the better" },
   { role: "assistant", content: offerLine },
 ];

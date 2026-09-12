@@ -106,6 +106,9 @@ const SHARED: Check[] = [
   // Under 400 sqft (owner rule 2026-09-11): never booked, never priced; Ozzi direct line instead
   { label: "Under-400-sqft guard in processBookingCommand (Ozzi direct, never booked)", test: (s) => /if \(smallJobStanding\(history\) !== null\)[\s\S]{0,400}smallJobReply\(history, lang\)/.test(s) },
   { label: "Under-400-sqft post-model backstop (price / visit offer / details ask replaced)", test: (s) => /smallJobLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}smallJobReply\(history, lang\)/.test(s) },
+  // Bathroom projects (owner rule 2026-09-11, second part): never booked, never priced; bathroom Ozzi line instead
+  { label: "Bathroom guard in processBookingCommand (Ozzi direct, never booked)", test: (s) => /if \(bathroomProjectStanding\(history\)\)[\s\S]{0,400}bathroomReply\(history, lang\)/.test(s) },
+  { label: "Bathroom post-model backstop (price / visit offer / details ask replaced)", test: (s) => /bathroomLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}bathroomReply\(history, lang\)/.test(s) },
   { label: "Photo analyzed BEFORE the debounce and stored as the message text", test: (s) => /let preAnalysis: string \| null = null;[\s\S]{0,900}content: storedText,/.test(s) && /preAnalysis \?\?/.test(s) },
   { label: "Route-aware canned recovery ([BOOK] address to needTimeChoice/slotConflictRecovery)", test: (s) => (s.match(/needTimeChoiceMessage\(lang, [^)]*bookingData\.address\)/g) ?? []).length === 2 && /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time, bookingData\.address\)/.test(s) },
 ];
