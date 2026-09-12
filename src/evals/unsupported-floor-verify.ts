@@ -58,7 +58,7 @@ const a = (content: string): ChatMessage => ({ role: "assistant", content });
 // ── Predicates (EN / ES / PT) ───────────────────────────────────────────────
 const DECLINES_UNSUPPORTED = (t: string) =>
   /(?:don'?t|do\s+not|not\s+something\s+we|isn'?t\s+something\s+we|is\s+not\s+something\s+we|we\s+(?:don'?t|do\s+not)\s+(?:do|offer|install|work)|outside\s+(?:of\s+)?what\s+we|we\s+only\s+(?:do|install|work)|not\s+(?:a\s+)?service\s+we|no\s+(?:hacemos|trabajamos|ofrecemos|instalamos|es\s+algo\s+que)|n[aã]o\s+(?:fazemos|trabalhamos|instalamos|[eé]\s+algo\s+que)|solo\s+(?:hacemos|instalamos|trabajamos)|s[oó]\s+(?:fazemos|instalamos|trabalhamos))/i.test(t)
-  && /\b(?:epoxy|ep[oó]x[iy]\w*|concrete|concreto|cement\w*|cimento|micro\s*-?\s*cement\w*|microcemento|pavers?|resin\w*|terrazzo|that\s+(?:type|kind)|ese\s+tipo|esse\s+tipo)\b/i.test(t);
+  && /\b(?:epoxy|ep[oó]x[iy]\w*|concrete|concreto|cement\w*|cimento|micro\s*-?\s*cement\w*|microcemento|pavers?|resin\w*|terrazzo|travertin[eo]|flagstone|natural\s+stone|stone|piedra|pedra|that\s+(?:type|kind)|ese\s+tipo|esse\s+tipo)\b/i.test(t);
 const NAMES_OUR_FLOORS = (t: string) => /\bvinyl|vinil|vin[ií]lico\b/i.test(t) && /\b(?:tiles?|porcelain|porcelanato|cer[aâ]mica|ceramic)\b/i.test(t) && /\b(?:hardwood|madera|madeira)\b/i.test(t);
 const PROPOSES_VISIT = (t: string) =>
   /\bvisit\b|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|\bmeasure\b|take\s+a\s+look|\bvisita\b|presencial|pessoalmente|\bmedir\b|which\s+(?:day|time|one)\s+works|what\s+day\s+works|\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b[^.!?\n]{0,25}\b(?:at\s+)?\d{1,2}\s*(?:am|pm)\b|\b(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/i.test(t);
@@ -280,7 +280,7 @@ async function main() {
   console.log("\n[2c] LIVE: Briones replay — REAL vision output (pavers) + 'This'");
   const r3 = await ai(brionesWithPhoto(BRIONES_VISION_LEGACY));
   console.log("   →", r3.replace(/\s+/g, " ").slice(0, 260));
-  ck("says that finish isn't something we install", DECLINES_UNSUPPORTED(r3) || /\b(?:pavers?|stone|concrete|cement)\b[^.!?]{0,60}\b(?:not|isn'?t|don'?t)\b|\b(?:not|isn'?t|don'?t)\b[^.!?]{0,60}\b(?:pavers?|stone|concrete|cement)\b/i.test(r3), r3);
+  ck("says that finish isn't something we install", DECLINES_UNSUPPORTED(r3) || /\b(?:pavers?|stone|travertin[eo]|concrete|cement)\b[^.!?]{0,60}\b(?:not|isn'?t|don'?t)\b|\b(?:not|isn'?t|don'?t)\b[^.!?]{0,60}\b(?:pavers?|stone|travertin[eo]|concrete|cement)\b/i.test(r3), r3);
   ck("names vinyl / tile / hardwood", NAMES_OUR_FLOORS(r3), r3);
   ck("no slots, no visit, no zip/details ask", !PROPOSES_VISIT(r3) && !ASKS_DETAILS(r3), r3);
   ck("never 'for a restaurant that size'", !/that\s+size/i.test(r3), r3);
