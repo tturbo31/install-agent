@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
+import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -207,7 +208,7 @@ async function processBookingCommand(
     // The address must be COMPLETE: street number + street, not just a city.
     if (!isRealAddress(bookingData.address) || !addressHasStreetNumber(bookingData.address)) {
       console.warn(`[FB] booking blocked — address not usable (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
-      return { response: needAddressMessage(lang), booked: false };
+      return { response: needAddressMessage(lang, clientAlreadyGaveZip(history)), booked: false };
     }
     // ZIP guard (owner rule 2026-08-01): the address is only complete with the
     // ZIP CODE, and it must be one the CLIENT typed — never one the model
@@ -1261,8 +1262,13 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       .select("role, content, created_at")
       .eq("conversation_id", conv.id)
       .order("created_at", { ascending: false })
-      .limit(15);
-    const history = (historyRaw ?? []).reverse();
+      .limit(60);
+    // The model and the guards get the last 15 messages, plus the OLDER client
+    // bubbles of this booking episode that carry a zip / address / phone / name
+    // (Margarita León, IG 2026-09-12: the zip typed 16 bubbles earlier was
+    // asked again because nobody could see it). See booking-facts.ts.
+    const historyRows = (historyRaw ?? []).reverse();
+    const history = withEarlierBookingFacts(historyRows.slice(0, -15), historyRows.slice(-15));
 
     // The 15-message window can be ALL client bubbles when a conversation
     // accumulated many un-answered messages (the pre-fix booked-silence). Every
@@ -1662,6 +1668,14 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // Gonzalez / wa_13057903205, semana de 29/08 — cliente acreditou num slot
     // que nunca foi gravado).
     if (!booked && !isBookingConfirmed) afterBooking = softenPrematureLockIn(afterBooking);
+    // Revisão 09-14/09/2026: a claim with data still missing becomes "penciling
+    // in" (never a handoff), and a details ask never repeats a zip / address /
+    // phone / name the client already typed.
+    if (!booked && !isBookingConfirmed && !isRescheduling) {
+      const softened = softenVisitClaim(afterBooking, lang);
+      if (softened !== afterBooking) console.warn("[FB] visit claimed without a booking behind it — softened to penciling in");
+      afterBooking = rewriteBookingDataAsk(softened, history, false, lang);
+    }
     if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBooking)) {
       console.warn("[FB] bare confirmation with no booking behind it (" + JSON.stringify(afterBooking) + ") — replacing with the owner handoff");
       afterBooking = isRescheduling && bookedVisit

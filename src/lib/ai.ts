@@ -4048,9 +4048,60 @@ const VISIT_CLAIM_PATTERNS: RegExp[] = [
   /\b(?:est[aá]|fica|ficou)\s+(?:agendad[oa]|marcad[oa]|reservad[oa]|confirmad[oa])\b/i,
   /\b(?:visita|hor[aá]rio)\s+(?:est[aá]\s+)?(?:agendad[oa]|marcad[oa]|confirmad[oa])\b/i,
 ];
+// A claim that hangs on something the client still has to do is a promise,
+// not a claim: "cuando estés listo te agendo la visita", "avísame cuando
+// regreses y te agendo de una" (fb_28368243442792476, 2026-09-11), "once
+// you're back I'll get you booked". Sentence-level, and only when the
+// condition comes BEFORE the claim verb ("you're all set, if you need
+// anything…" is still a claim).
+const CONDITIONAL_CLAIM_LEAD = /\b(?:cuando|when|once|as\s+soon\s+as|after|despu[eé]s\s+de|apenas|assim\s+que|quando|av[ií]same|me\s+avisas|let\s+me\s+know|tell\s+me|if\s+you|si\s+(?:me|quieres|puedes|te|gustas)|se\s+(?:me|voc[eê]|quiser|puder))\b/i;
 export function claimsVisitScheduled(text: string): boolean {
   const t = normalizeSmartPunct((text || "").replace(/\[[^\]]*\]/g, " "));
-  return VISIT_CLAIM_PATTERNS.some((p) => p.test(t));
+  return t.split(/(?<=[.!?])\s+|\n+/).some((s) => {
+    const idx = VISIT_CLAIM_PATTERNS.map((p) => s.search(p)).filter((i) => i >= 0).sort((a, b) => a - b)[0];
+    if (idx === undefined) return false;
+    const lead = CONDITIONAL_CLAIM_LEAD.exec(s);
+    return !(lead && lead.index < idx);
+  });
+}
+
+// ─── Claim softener: "te agendo" → "te lo aparto" while data is missing ─────
+// When the slot / street / zip is not all in yet, a claim cannot become a tag
+// (the retry note would only push the model to invent the missing street), so
+// the claim is rewritten to the tentative "holding" language the flow already
+// uses ("I'm holding that 3pm for you", "para apartar el domingo"). The canned
+// visit lines (a real booking, or the restated real visit) are never touched.
+// Jorge Guerra (WA 2026-09-10): "el martes 15 a las 11am queda reservado
+// mientras me das tu nombre y la direccion" went out as a claim.
+const CANNED_VISIT_LINE = /^\s*(?:Your visit is confirmed for|Tu visita est[aá] confirmada para|Sua visita est[aá] confirmada para|Appointment confirmed|Cita confirmada|Visita confirmada|All set, your visit has been rescheduled|Listo, tu visita qued|Pronto, sua visita foi remarcada)/i;
+const CLAIM_SOFTEN_EN: Array<[RegExp, string]> = [
+  [/\b(?:you'?re|you are)\s+all\s+set\s+for\b/gi, "I'm penciling you in for"],
+  [/\b(?:you'?re|you are)\s+(?:all\s+)?(?:booked|scheduled|on the (?:calendar|schedule|books))\b/gi, "you're penciled in"],
+  [/\bi(?:'ve| have)\s+(?:got\s+)?you\s+(?:down|booked|scheduled|on the (?:calendar|schedule))\b/gi, "I'm penciling you in"],
+  [/\bi(?:'ve| have|'m| am)\s+(?:booked|booking|scheduled|scheduling)\s+you\b/gi, "I'm penciling you in"],
+  [/\bgot\s+you\s+(?:down|booked|scheduled)\b/gi, "penciling you in"],
+  [/\b(visit|appointment|estimate)\s+is\s+(?:now\s+)?(?:set|booked|scheduled|confirmed|on the (?:calendar|books))\b/gi, "$1 is penciled in"],
+];
+const CLAIM_SOFTEN_ES: Array<[RegExp, string]> = [
+  [/\b(te|se)\s+(?:lo\s+|la\s+)?(?:agendo|agend[eé]|reservo|reserv[eé]|apunto|apunt[eé]|anoto|anot[eé])\b/gi, "$1 lo aparto"],
+  [/\b(queda|quedas|qued[oó]|est[aá]s?|ya est[aá])\s+(?:agendad|reservad|confirmad|apuntad|anotad)([oa])\b/gi, "$1 apartad$2"],
+  [/\b(cita|visita)\s+(queda\s+|est[aá]\s+)?(?:agendada|reservada|confirmada|apuntada)\b/gi, "$1 $2apartada"],
+];
+const CLAIM_SOFTEN_PT: Array<[RegExp, string]> = [
+  [/\b(te|j[aá] te)\s+(?:agendo|agendei|reservo|reservei|marco|marquei)\b/gi, "$1 deixo anotado por enquanto"],
+  [/\b(?:agendei|marquei|reservei)\b/gi, "deixo anotado por enquanto"],
+  [/\b(visita|hor[aá]rio)\s+(est[aá]\s+)?(?:agendad|marcad|confirmad)([oa])\b/gi, "$1 $2anotad$3 por enquanto"],
+  [/\b(est[aá]|fica|ficou)\s+(?:agendad|marcad|reservad|confirmad)([oa])\b/gi, "$1 anotad$2 por enquanto"],
+];
+export function softenVisitClaim(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  if (!text || CANNED_VISIT_LINE.test(text)) return text;
+  if (!claimsVisitScheduled(text)) return text;
+  const rules = lang === "pt" ? [...CLAIM_SOFTEN_PT, ...CLAIM_SOFTEN_EN] : [...CLAIM_SOFTEN_ES, ...CLAIM_SOFTEN_EN, ...CLAIM_SOFTEN_PT];
+  return withTagsProtected(text, (prose) => {
+    let out = prose;
+    for (const [re, rep] of rules) out = out.replace(re, rep);
+    return out.replace(/[ \t]{2,}/g, " ");
+  });
 }
 
 // Everything the booking needs is already in the client's own messages: a slot
@@ -4086,9 +4137,127 @@ export function forcedBookRetryReason(
   const t = reply || "";
   if (/\[BOOK:/i.test(t)) return null;
   const asking = isAskingForBookingInfo(t);
-  if (claimsVisitScheduled(t) && !asking) return "claim";
+  // A claim while the slot / street / zip is still missing cannot be turned
+  // into a tag (the retry note would only push the model to invent the missing
+  // street): softenVisitClaim rewrites it to "penciling in" and the data ask
+  // goes out as usual (Jorge Guerra, WA 2026-09-10).
+  if (claimsVisitScheduled(t) && !asking) return bookingDataLooksComplete(history, phoneKnown) ? "claim" : null;
   if (asking && bookingDataLooksComplete(history, phoneKnown)) return "reask";
   return null;
+}
+
+// ─── Details ask vs what the client already typed ───────────────────────────
+// Yami Fonseca (FB 2026-09-10) and Tymur (IG 2026-09-14): the client answered
+// the zip question with the FULL address ("15269 Sw 35th terrace Miami, Fl
+// 33185"), picked a time, and the details ask still read "Can I get your name,
+// the property address, and the best phone number?". Margarita León (IG
+// 2026-09-12): the zip typed 16 bubbles earlier was asked again. The prompt
+// forbids all of it; this backstop rewrites the ask sentence(s) so they name
+// ONLY the items the client has not typed yet. Address = house number + street
+// in a client bubble; zip = five digits in a client bubble; phone = ten digits
+// typed, or the WhatsApp number; name = a bare name bubble after our ask, a
+// "my name is" intro, or the name in front of a typed phone / address. "City"
+// is never treated as given, and "for that address" is a reference, not an
+// ask. Untouched when nothing in the ask was already given, or when everything
+// was (that is the forced-[BOOK] retry's job).
+export type AskItem = "name" | "address" | "zip" | "city" | "phone";
+const ASK_ITEM_RES: Array<[AskItem, RegExp]> = [
+  ["zip", /\b(?:zip(?:\s*code)?|postal\s+code|c[oó]digo\s+postal|cep)\b/i],
+  ["city", /\b(?:city|ciudad|cidade)\b/i],
+  ["address", /(?<!\b(?:that|this|for that|of that|to that|at that|esa|esta|essa|esse|same|misma|mesmo)\s)\b(?:address|direcci[oó]n|endere[çc]o)\b/i],
+  ["phone", /\b(?:phone|tel[eé]fono|telefone|celular|cell|(?:best|callback|contact|good)\s+number|n[uú]mero(?:\s+de\s+(?:tel[eé]fono|contacto|celular))?)\b/i],
+  ["name", /\b(?:name|nombre|nome)\b/i],
+];
+const ASK_VERB = /\b(?:can i (?:get|have)|could i (?:get|have)|may i (?:get|have)|i(?:'ll)? (?:just |still )?need|(?:still|just) need|need your|what(?:'s| is) (?:the|your)|please send|send me|me (?:das|pasas?|mandas?|env[ií]as?|dices?|confirmas?)|dame|p[aá]same|necesito|cu[aá]l (?:es|ser[ií]a)|qual [eé]|me (?:passa|manda|envia|diz)|preciso)\b/i;
+const STREET_ADDRESS_RE = /\b\d{2,6}\s+(?:[nsew]{1,2}\.?\s+)?(?:[a-zà-ú0-9]+\s+){0,4}?(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path|cv|cove)\b/i;
+const CLIENT_PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
+const NAME_INTRO_RE = /\b(?:my name is|name is|me llamo|mi nombre es|meu nome [eé])\s*:?\s*[A-Za-zÀ-ú]|\b(?:name|nombre|nome)\s*:\s*[A-Za-zÀ-ú]|\b(?:is|es|[eé])\s+(?:my|mi|o?\s*meu)\s+(?:name|nombre|nome)\b/i;
+const NAME_IM_RE = /\b(?:I'?m|This is|Soy|Sou)\s+[A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)?\s*[.!]?$/;
+const NAME_STOP = new Set(["yes", "yeah", "yep", "no", "ok", "okay", "si", "sí", "sim", "hola", "hello", "hi", "hey", "thanks", "thank", "you", "gracias", "obrigado", "obrigada", "please", "por", "favor", "the", "and", "sure", "perfect", "perfecto", "perfeito", "good", "morning", "afternoon", "evening", "night", "today", "tonight", "tomorrow", "hoy", "mañana", "hoje", "amanhã", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo", "am", "pm", "messenger", "whatsapp", "instagram", "facebook", "vinyl", "tile", "hardwood", "laminate", "carpet", "phone", "name", "nombre", "nome", "number", "address", "dirección", "apt", "unit", "fl", "florida", "usa", "miami", "not", "now", "later", "call", "me", "my", "is", "es", "it", "its", "that", "this", "works", "for", "at", "in", "on", "el", "la", "de", "of", "to", "with", "con", "com", "sq", "ft", "sqft", "what", "what's", "your", "que", "como", "cuanto", "how", "much", "when", "where", "do", "does", "did", "are", "have", "has", "will", "would", "can", "could", "need", "want", "quiero", "necesito", "tengo", "puedo", "hay", "donde", "cuando", "who", "which", "why", "just", "only", "still", "mejor", "para", "ti", "mi", "vivo", "cerca", "casa", "house", "home"]);
+function nameCandidate(words: string[]): boolean {
+  return words.length >= 1 && words.length <= 4 && words.every((w) => w.length >= 2 && /^[a-zà-ú'.-]+$/i.test(w) && !NAME_STOP.has(w.toLowerCase()));
+}
+export function clientTypedName(history: Array<{ role: string; content: string }>): boolean {
+  let askSeen = false;
+  for (const m of history ?? []) {
+    const t = (m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ").trim();
+    if (m.role === "assistant") {
+      if (/\b(?:name|nombre|nome)\b/i.test(t) && /\?/.test(t)) askSeen = true;
+      continue;
+    }
+    if (!t) continue;
+    if (NAME_INTRO_RE.test(t) || NAME_IM_RE.test(t)) return true;
+    const hasPhone = CLIENT_PHONE_RE.test(t);
+    const hasStreet = STREET_ADDRESS_RE.test(t);
+    if (!askSeen && !hasPhone && !hasStreet) continue;
+    // A zip-only bubble ("Boca raton 33496") is a city, not a name.
+    if (!hasPhone && !hasStreet && /\b\d{5}\b/.test(t)) continue;
+    // The name rides in front of the digits ("Yami Fonseca 786-457-3511",
+    // "PEDRO 3640 NW 15 St …") or after a lone phone ("954 2402181 Manuel Romero").
+    const parts = t.split(/\d/);
+    const lead = (parts[0] || "").replace(/\b(?:phone|tel[eé]fono|telefone|cell|celular|number|n[uú]mero)\b/gi, " ").replace(/[^a-zà-ú' .-]/gi, " ").trim().split(/\s+/).filter(Boolean);
+    if (nameCandidate(lead)) return true;
+    const tail = (parts[parts.length - 1] || "").replace(/[^a-zà-ú' .-]/gi, " ").trim().split(/\s+/).filter(Boolean);
+    if (hasPhone && !hasStreet && nameCandidate(tail)) return true;
+  }
+  return false;
+}
+export function bookingItemsGiven(history: Array<{ role: string; content: string }>, phoneKnown: boolean): Set<AskItem> {
+  const given = new Set<AskItem>();
+  const joined = (history ?? [])
+    .filter((m) => m.role === "user")
+    .map((m) => (m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " "))
+    .join("\n");
+  if (STREET_ADDRESS_RE.test(joined)) given.add("address");
+  if (clientAlreadyGaveZip(history)) given.add("zip");
+  if (phoneKnown || CLIENT_PHONE_RE.test(joined)) given.add("phone");
+  if (clientTypedName(history)) given.add("name");
+  return given;
+}
+const ASK_ITEM_LABEL: Record<"en" | "es" | "pt", Record<AskItem, string>> = {
+  en: { name: "your name", address: "the property address (number, street and city)", zip: "the zip code for that address", city: "the city for that address", phone: "the best phone number to reach you" },
+  es: { name: "tu nombre", address: "la dirección de la propiedad (número, calle y ciudad)", zip: "el código postal de esa dirección", city: "la ciudad de esa dirección", phone: "el mejor número de teléfono para contactarte" },
+  pt: { name: "seu nome", address: "o endereço da propriedade (número, rua e cidade)", zip: "o zip code desse endereço", city: "a cidade desse endereço", phone: "o melhor telefone para contato" },
+};
+const ASK_ORDER: AskItem[] = ["name", "address", "zip", "city", "phone"];
+function cannedDetailsAsk(wanted: AskItem[], lang: "en" | "es" | "pt"): string {
+  const items = ASK_ORDER.filter((k) => wanted.includes(k)).map((k) => ASK_ITEM_LABEL[lang][k]);
+  const and = lang === "en" ? "and" : lang === "es" ? "y" : "e";
+  const list = items.length <= 1 ? items.join("") : items.length === 2 ? items[0] + " " + and + " " + items[1] : items.slice(0, -1).join(", ") + " " + and + " " + items[items.length - 1];
+  if (lang === "es") return "Me pasas " + list + "?";
+  if (lang === "pt") return "Me passa " + list + "?";
+  return "Can I get " + list + "?";
+}
+export function rewriteBookingDataAsk(
+  reply: string,
+  history: Array<{ role: string; content: string }>,
+  phoneKnown: boolean,
+  lang: "en" | "es" | "pt"
+): string {
+  const text = reply || "";
+  if (!text.trim() || /\[BOOK:/i.test(text)) return text;
+  const given = bookingItemsGiven(history, phoneKnown);
+  if (!given.size) return text;
+  let changed = false;
+  const out = withTagsProtected(text, (prose) => {
+    const sentences = prose.split(/(?<=[.!?])\s+|\n+/);
+    const rebuilt = sentences.map((s) => {
+      const mentioned = ASK_ITEM_RES.filter(([, re]) => re.test(s)).map(([k]) => k);
+      if (!mentioned.length) return s;
+      if (!/\?/.test(s) && !ASK_VERB.test(s)) return s;
+      const wanted = mentioned.filter((k) => !given.has(k));
+      if (wanted.length === mentioned.length) return s;
+      if (mentioned.includes("address") && given.has("address") && !given.has("zip") && !wanted.includes("zip")) wanted.push("zip");
+      if (!wanted.length) return s;
+      changed = true;
+      // A protected tag ([NOTIFY_OWNER]…) riding on this sentence stays with it.
+      const tagsHere = s.match(/\[#TAG\d+#\]/g) ?? [];
+      return cannedDetailsAsk(wanted, lang) + tagsHere.join("");
+    });
+    return rebuilt.join(" ").replace(/[ \t]{2,}/g, " ").trim();
+  });
+  if (changed) console.log("[AI] details-ask backstop: dropped the items the client already typed (" + [...given].join(",") + ")");
+  return changed ? out : text;
 }
 
 export const BOOK_NOW_NOTE =

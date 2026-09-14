@@ -138,7 +138,9 @@ console.log("\n[4] bookingDataLooksComplete / forcedBookRetryReason (casos reais
   ck("Yesmin: com [BOOK] na resposta não há retry", forcedBookRetryReason("Listo![BOOK:{\"name\":\"Yesmin\"}]", yesmin, true) === null);
   const semZip = yesmin.map((m) => (m.role === "user" ? U(m.content.replace(/33020/g, "")) : m));
   ck("Yesmin sem ZIP: dados incompletos", !bookingDataLooksComplete(semZip, true));
-  ck("Yesmin sem ZIP: claim ainda é claim (vira handoff, não re-pergunta)", forcedBookRetryReason(yesminReply, semZip, true) === "claim");
+  // Revisão 09-14/09: claim com dados incompletos NÃO força retry nem vira handoff —
+  // softenVisitClaim reescreve para "te lo aparto" e o pedido de dados segue (Jorge Guerra).
+  ck("Yesmin sem ZIP: claim com dados incompletos → null (softenVisitClaim cuida)", forcedBookRetryReason(yesminReply, semZip, true) === null);
 
   const alex: ChatMessage[] = [
     U("Five stairs"), A("Stairs are $150 per step with the flooring material and installation included, so five steps comes out to $750."),

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
+import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
 import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
@@ -37,6 +38,9 @@ import {
   promisesOwnerContact,
   forcedBookRetryReason,
   retryForBookTag,
+  clientAlreadyGaveZip,
+  rewriteBookingDataAsk,
+  softenVisitClaim,
   redirectOwnerPromiseToPhone,
   unansweredUserBurst,
   isVisitDetailQuestion,
@@ -258,7 +262,7 @@ async function processBookingCommand(
     // The address must be COMPLETE: street number + street, not just a city.
     if (!isRealAddress(bookingData.address) || !addressHasStreetNumber(bookingData.address)) {
       console.warn(`[IG] booking blocked — address not usable (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
-      return { response: needAddressMessage(lang), booked: false };
+      return { response: needAddressMessage(lang, clientAlreadyGaveZip(history)), booked: false };
     }
     // ZIP guard (owner rule 2026-08-01): the address is only complete with the
     // ZIP CODE, and it must be one the CLIENT typed — never one the model
@@ -1514,9 +1518,13 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       .select("role, content, created_at")
       .eq("conversation_id", conversation.id)
       .order("created_at", { ascending: false })
-      .limit(15);
-
-    const history = (historyRaw ?? []).reverse();
+      .limit(60);
+    // The model and the guards get the last 15 messages, plus the OLDER client
+    // bubbles of this booking episode that carry a zip / address / phone / name
+    // (Margarita León, IG 2026-09-12: the zip typed 16 bubbles earlier was
+    // asked again because nobody could see it). See booking-facts.ts.
+    const historyRows = (historyRaw ?? []).reverse();
+    const history = withEarlierBookingFacts(historyRows.slice(0, -15), historyRows.slice(-15));
 
     // The 15-message window can be ALL client bubbles when a conversation
     // accumulated many un-answered messages (the pre-fix booked-silence). Every
@@ -1971,6 +1979,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // Gonzalez / wa_13057903205, semana de 29/08 — cliente acreditou num slot
     // que nunca foi gravado).
     if (!booked && !isBookingConfirmed) afterBookingText = softenPrematureLockIn(afterBookingText);
+    // Revisão 09-14/09/2026: a claim with data still missing becomes "penciling
+    // in" (never a handoff), and a details ask never repeats a zip / address /
+    // phone / name the client already typed.
+    if (!booked && !isBookingConfirmed && !isRescheduling) {
+      const softened = softenVisitClaim(afterBookingText, lang);
+      if (softened !== afterBookingText) console.warn("[IG] visit claimed without a booking behind it — softened to penciling in");
+      afterBookingText = rewriteBookingDataAsk(softened, history, false, lang);
+    }
     if (!booked && !isBookingConfirmed && isBarePreBookingText(afterBookingText)) {
       console.warn("[IG] bare confirmation with no booking behind it (" + JSON.stringify(afterBookingText) + ") — replacing with the owner handoff");
       afterBookingText = isRescheduling && bookedVisit

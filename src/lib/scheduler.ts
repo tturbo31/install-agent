@@ -1029,6 +1029,20 @@ function ordinalSuffix(n: number): string {
 // "tomorrow"), an ordinal ("the first"), OR a plain yes when EXACTLY ONE slot was
 // on the table. Address and phone are NOT slot selections. When no such signal
 // exists, the booking is blocked and the client is asked to pick a day/time.
+// "2 :00 pm" / "2: 00 pm": phone keyboards drop a space around the colon and
+// every clock regex below then reads NO hour at all (Dan Chen, FB 2026-09-12:
+// "2 :00 pm (305)772-3782" → the [BOOK] for 2pm was blocked as "never
+// mentioned" and the client had to pick the time a second time). Collapse the
+// spaces before matching.
+export function normalizeClockSpacing(text: string): string {
+  return (text || "").replace(/\b(\d{1,2})\s*:\s*(\d{2})\b/g, "$1:$2");
+}
+// "let's move it to 9" / "change it to 5" / "push it to 3": a bare hour named
+// as the target of a move IS a clock hour (KYE, IG 2026-09-13: "wait let's
+// move it to 9 I forgot I have a meeting at 11" → 9am was blocked as "never
+// mentioned" and the client had to pick again). Units after the number
+// ("to 3 rooms", "to 2 days") never count.
+const MOVE_TO_HOUR = /\b(?:move|change|switch|push|bump|make|reschedule|do)\s+(?:it|that|this|the\s+(?:visit|appointment|time))?\s*(?:to|for|at)\s+(\d{1,2})\b(?!\s*(?:am|pm|:|\d|sq|square|ft|feet|rooms?|bed|people|days?|weeks?|hours?|minutes?|months?|%|k\b))/gi;
 const CLOCK_TIME_TOKEN = /\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi;
 // A bare "9:00" (colon + minutes, NO am/pm) IS a slot pick: "Let’s do
 // 9:00–thank you" after a "9am or 1pm" offer carried no recognized time token,
@@ -1057,13 +1071,14 @@ const SLOT_MONTH_DATE = new RegExp(`\\b(?:${MONTH_WORDS})\\s+\\d{1,2}\\b|\\b\\d{
 // "9:00" (colon keeps street numbers out), "a las 11" / "às 11", "9 o'clock".
 export function hoursNamed(text: string): Set<number> {
   const out = new Set<number>();
-  const t = text || "";
+  const t = normalizeClockSpacing(text || "");
   for (const tok of t.matchAll(/\b(\d{1,2})(?::\d{2})?\s*(?:am|pm)\b|\b(\d{1,2}):\d{2}\b/gi)) {
     out.add(parseInt(tok[1] ?? tok[2], 10) % 12);
   }
   for (const tok of t.matchAll(/(?:^|\W)(?:a\s+las?|[àa]s)\s+(\d{1,2})\b|\b(\d{1,2})\s*o'?clock\b/gi)) {
     out.add(parseInt(tok[1] ?? tok[2], 10) % 12);
   }
+  for (const tok of t.matchAll(MOVE_TO_HOUR)) out.add(parseInt(tok[1], 10) % 12);
   if (/\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i.test(t)) out.add(0);
   return out;
 }
@@ -1073,7 +1088,7 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
   // Smart-quote normalization mirrors normalizeSmartPunct in ai.ts: phone
   // keyboards send U+2019 ("Let’s"), which silently breaks every `'?` regex
   // below (the Guilford case). Kept local so this file stays SDK-free.
-  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+  const strip = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
 
   // Every bot message that carries clock time(s). The FIRST one opens the
   // pick window. IMPORTANT: we must NOT anchor on the LAST such message — after
@@ -1182,7 +1197,7 @@ export function bookedTimeSeenInConversation(
   const m = /^(\d{1,2}):(\d{2})/.exec((timeHHMM ?? "").trim());
   if (!m) return true; // unparseable time → let the scheduler's own validation decide
   const h12 = parseInt(m[1], 10) % 12;
-  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+  const strip = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
   for (const msg of history ?? []) {
     const t = strip(msg.content);
     // "9am", "3 pm", "9:00am" — and bare "9:00" (colon keeps street numbers out)
@@ -1193,6 +1208,9 @@ export function bookedTimeSeenInConversation(
     // word boundaries are ASCII-only, so \b never matches before "às".
     for (const tok of t.matchAll(/(?:^|\W)(?:a\s+las?|[àa]s)\s+(\d{1,2})\b|\b(\d{1,2})\s*o'?clock\b/gi)) {
       if (parseInt(tok[1] ?? tok[2], 10) % 12 === h12) return true;
+    }
+    for (const tok of t.matchAll(MOVE_TO_HOUR)) {
+      if (parseInt(tok[1], 10) % 12 === h12) return true;
     }
     if (h12 === 0 && /\bnoon\b|\bmediod[ií]a\b|\bmeio[-\s]?dia\b/i.test(t)) return true;
   }
@@ -1262,7 +1280,7 @@ export function bookedSlotMismatchesPromise(
   const tm = /^(\d{1,2}):(\d{2})/.exec((timeHHMM ?? "").trim());
   if (!tm || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr || "")) return { mismatch: false };
   const bookedH12 = parseInt(tm[1], 10) % 12;
-  const strip = (c: string) => (c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0];
+  const strip = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
 
   // The anchor is the NEWEST message carrying a slot signal: a clock hour (either
   // side) or a day reference from the CLIENT (their late "mejor el miércoles"
@@ -1286,8 +1304,20 @@ export function bookedSlotMismatchesPromise(
 
   // Date: enforced only on ONE unambiguous signal — today, tomorrow, or a single
   // day-of-month. Weekday words are reconcileBookingWeekday's job, not ours.
-  const saysToday = PROMISE_TODAY.test(anchor);
-  const saysTomorrow = PROMISE_TOMORROW.test(anchor);
+  // "just reach out tomorrow when you're ready and we'll get that info penciled
+  // in for Monday 1pm!" (Joe Patel, FB 2026-09-12): "tomorrow" was the day to
+  // write back, not the visit day, and this guard read it as a Sunday promise,
+  // blocked the correct Monday [BOOK] and re-offered Sunday's 7pm. When the
+  // anchor names exactly ONE weekday and that weekday is not today's /
+  // tomorrow's, the relative word is not the slot date — ignore it.
+  const anchorWeekdays = weekdaysNamed(anchor);
+  const todayStr = easternTodayStr();
+  let saysToday = PROMISE_TODAY.test(anchor);
+  let saysTomorrow = PROMISE_TOMORROW.test(anchor);
+  if (anchorWeekdays.length === 1) {
+    if (saysToday && ymd(todayStr).weekday !== anchorWeekdays[0]) saysToday = false;
+    if (saysTomorrow && ymd(addDaysStr(todayStr, 1)).weekday !== anchorWeekdays[0]) saysTomorrow = false;
+  }
   const doms = new Set<number>();
   for (const re of PROMISE_DOM_PATTERNS) {
     for (const m of anchor.matchAll(re)) {
@@ -1295,7 +1325,6 @@ export function bookedSlotMismatchesPromise(
       if (n >= 1 && n <= 31) doms.add(n);
     }
   }
-  const todayStr = easternTodayStr();
   let promisedDate: string | undefined;
   let dateMismatch = false;
   const signalCount = (saysToday ? 1 : 0) + (saysTomorrow ? 1 : 0) + (doms.size === 1 ? 1 : 0);
@@ -1304,7 +1333,6 @@ export function bookedSlotMismatchesPromise(
     else if (saysTomorrow) promisedDate = addDaysStr(todayStr, 1);
     else {
       const dom = [...doms][0];
-      const anchorWeekdays = weekdaysNamed(anchor);
       for (let d = todayStr, k = 0; k < 40; d = addDaysStr(d, 1), k++) {
         const f = ymd(d);
         if (f.day === dom && (anchorWeekdays.length !== 1 || f.weekday === anchorWeekdays[0])) {
@@ -2180,7 +2208,15 @@ export function isRealAddress(address?: string | null): boolean {
 // Sent when the slot is confirmed but we still need a usable street address.
 // Asks for the ZIP in the same breath (owner rule 2026-08-01) so the client
 // sends the complete address once instead of being asked twice.
-export function needAddressMessage(lang: Lang): string {
+export function needAddressMessage(lang: Lang, zipKnown = false): string {
+  // The client already typed the zip (Manuel Romero, FB 2026-09-11: "33319",
+  // and this line still said "con el código postal") → ask the street only.
+  if (zipKnown) {
+    if (lang === "pt") return "Perfeito! Qual é o endereço da propriedade (número, rua e cidade) para a visita?";
+    return lang === "es"
+      ? "Perfecto! Cuál es la dirección de la propiedad (número, calle y ciudad) para la visita?"
+      : "Perfect! What's the property address (number, street and city) for the visit?";
+  }
   if (lang === "pt") return "Perfeito! Qual é o endereço completo da propriedade, com o zip code, para a visita?";
   return lang === "es"
     ? "Perfecto! Cuál es la dirección completa de la propiedad, con el código postal, para la visita?"
