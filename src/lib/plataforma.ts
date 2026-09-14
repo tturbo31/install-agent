@@ -19,7 +19,12 @@ export type EventoFunil =
 
 export type EnvioResultado = { ok: boolean; status: number; body?: string };
 
-const TIMEOUT_MS = 5_000;
+// 15s (14/09/2026): com 5s, toda vez que a plataforma demorava (banco em fila
+// às 9h) o POST era repetido e o agendamento_marcado virava DUAS visitas
+// abertas na agenda do dono (pares com 2s de diferença: Sandra, Joaquín,
+// Sandra Rodríguez). A plataforma ficou idempotente no mesmo dia; aqui o teto
+// sobe para não abortar uma chamada que ia terminar bem.
+const TIMEOUT_MS = 15_000;
 const TENTATIVAS = 3; // 1 envio + 2 retries
 const RETRY_DELAY_MS = 1_000;
 

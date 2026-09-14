@@ -239,15 +239,31 @@ async function conferirNaPlataforma(
   for (let i = 0; i < identidades.length; i += LOTE_CONFERENCIA) {
     const lote = identidades.slice(i, i + LOTE_CONFERENCIA);
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 45_000);
-      const res = await fetch(`${base}/api/rastreio/conferir`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-webhook-token": token },
-        body: JSON.stringify({ identidades: lote }),
-        signal: ctrl.signal,
-      });
-      clearTimeout(timer);
+      // 2 tentativas (14/09/2026): a conferência é leitura pura na plataforma e
+      // um 5xx/rede dela (banco em fila às 9h) derrubava a conciliação inteira
+      // com "plataforma não respondeu" — e a auditoria só voltava 8h depois.
+      let res: Response | null = null;
+      for (let tentativa = 1; tentativa <= 2; tentativa++) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 45_000);
+        try {
+          res = await fetch(`${base}/api/rastreio/conferir`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-webhook-token": token },
+            body: JSON.stringify({ identidades: lote }),
+            signal: ctrl.signal,
+          });
+        } catch (err) {
+          res = null;
+          if (tentativa === 2) throw err;
+          console.warn(`[CONCILIA] conferência falhou na tentativa 1: ${String(err).slice(0, 120)} — repetindo`);
+        } finally {
+          clearTimeout(timer);
+        }
+        if (res && (res.ok || res.status < 500)) break;
+        if (tentativa === 1) await new Promise((r) => setTimeout(r, 4_000));
+      }
+      if (!res) return null;
       if (!res.ok) {
         console.warn(`[CONCILIA] /api/rastreio/conferir -> HTTP ${res.status} (lote ${i / LOTE_CONFERENCIA + 1})`);
         return null;
