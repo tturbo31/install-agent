@@ -65,7 +65,7 @@ ck("unit: idioma ES detectado", (recapForDuplicateReply(hist1, "Hola, la instala
 console.log("\n[C. backstop de promessa vazia]");
 for (const [nome, src] of canais) {
   ck(`${nome}: backstop promisesOwnerContact presente`, /promisesOwnerContact\(outboundResponse\)/.test(src), "promessa sem [NOTIFY_OWNER] volta a ser vazia");
-  ck(`${nome}: backstop checa ausência do tag no afterCancel`, /!\/\\\[NOTIFY_OWNER\\\]\/i\.test\(afterCancel\) && promisesOwnerContact/.test(src), "dispararia em dobro quando o tag JÁ notificou");
+  ck(`${nome}: backstop checa ausência do tag no afterCancel`, /!\/\\\[NOTIFY_OWNER\\\]\/i\.test\(afterCancel\) && \(?(?:promisedOwnerContact \|\| )?promisesOwnerContact/.test(src), "dispararia em dobro quando o tag JÁ notificou");
 }
 // unit: frases reais dos casos Jorge/Mike/Cindy detectadas
 for (const frase of [

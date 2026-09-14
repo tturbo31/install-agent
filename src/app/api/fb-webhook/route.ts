@@ -5,7 +5,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -1309,10 +1309,10 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
         m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)
       );
       if (isBookingConfirmed) {
-        systemParts.push("[BOOKING ALREADY CONFIRMED: The appointment is set. Do NOT answer any question or continue the conversation. For ANY message the client sends — thank-you, question, or anything else — respond with EXACTLY ONE short sentence redirecting them to Ozzi, then add [NOTIFY_OWNER]. Example: 'I\\'ll connect you with Ozzi for anything else you need![NOTIFY_OWNER]' NEVER generate [BOOK:...]. NEVER say any slot is taken or unavailable. NEVER answer questions directly.]");
+        systemParts.push("[BOOKING ALREADY CONFIRMED: The appointment is set. Do NOT answer any question or continue the conversation. For ANY message the client sends — thank-you, question, or anything else — respond with EXACTLY ONE short sentence redirecting them to Ozzi, then add [NOTIFY_OWNER]. Example: 'For anything else, you can reach Ozzi directly at (561) 674-8334![NOTIFY_OWNER]' NEVER say Ozzi or anyone will reach out or get back to them, give the number instead. NEVER generate [BOOK:...]. NEVER say any slot is taken or unavailable. NEVER answer questions directly.]");
       }
       if (isOwnerHandled) {
-        systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly and add [NOTIFY_OWNER].]");
+        systemParts.push("[RETURNING CLIENT: This person already had work done or the owner personally handled them. Do not use the sales flow. Greet warmly, give Ozzi's direct number (561) 674-8334 for whatever they need instead of promising that anyone will reach out, and add [NOTIFY_OWNER].]");
       }
       if (pastVisitNote) {
         systemParts.push(pastVisitNote);
@@ -1627,7 +1627,29 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
 
     const bookingStep = await processBookingCommand(safeResponse, psid, conv.id, isBookingConfirmed, lang, isRescheduling, history);
     let afterBooking = bookingStep.response;
-    const booked = bookingStep.booked;
+    let booked = bookingStep.booked;
+    // FORCED [BOOK] RETRY (Yesmin Alabart WA 13/09, Alex Young IG 11/09/2026):
+    // the model told the client the visit was scheduled ("te agendo el lunes a
+    // las 3pm") without the tag, or asked again for data the client already
+    // typed. One retry with an explicit "write the tag now" note; the tag then
+    // goes through every booking guard as usual. No tag on the retry: the
+    // claim becomes the Ozzi-direct line, the re-ask ships with an owner alert.
+    if (!booked && !isBookingConfirmed && !isRescheduling && !/\[BOOK:/i.test(safeResponse)) {
+      const retryReason = forcedBookRetryReason(afterBooking, history, false);
+      if (retryReason) {
+        console.warn("[FB] " + (retryReason === "claim" ? "visit claimed as scheduled without [BOOK]" : "re-asking booking data the client already gave") + " — forcing a [BOOK] retry");
+        const retryText = await retryForBookTag(messagesForAI, memoryContext, systemMemory, ownerCorrections, retryReason);
+        if (retryText) {
+          const retryStep = await processBookingCommand(retryText, psid, conv.id, isBookingConfirmed, lang, isRescheduling, history);
+          afterBooking = retryStep.response;
+          booked = retryStep.booked;
+        } else if (retryReason === "claim") {
+          afterBooking = bookingUnverifiedHandoffMessage(lang) + "[NOTIFY_OWNER]";
+        } else {
+          afterBooking = afterBooking + "[NOTIFY_OWNER]";
+        }
+      }
+    }
     // BARE-CONFIRMATION backstop (Shaeleen Herrera-Garcia, IG 2026-08-26): the
     // model's pre-booking line ("Perfect, see you then!") only means something
     // when a visit was actually written. About to go out ALONE — the [BOOK] tag
@@ -1648,7 +1670,10 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     }
     const afterCancel = await processCancelCommand(afterBooking, psid, conv.id, (conv as Record<string, unknown>).username as string ?? null, lang);
     const afterNotify = await processNotifyOwner(afterCancel, conv.id, (conv as Record<string, unknown>).username as string ?? null, psid);
-    const finalResponse = stripForbiddenTags(afterNotify);
+    // Owner rule 2026-09-14: any "Ozzi / the team will reach out" left in the
+    // reply becomes his direct number. The owner alert (below) still fires.
+    const promisedOwnerContact = promisesOwnerContact(afterNotify);
+    const finalResponse = stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang));
 
     // Never send an empty message: a tag-only reply (bare [NOTIFY_OWNER], etc.)
     // strips to "" and the Graph API send silently fails, leaving the client with
@@ -1708,7 +1733,7 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // waited weeks and a $16,625 job walked — 2026-08-10 review). If the
     // delivered reply promises owner contact and the tag never fired this
     // turn, notify the owner anyway.
-    if (!/\[NOTIFY_OWNER\]/i.test(afterCancel) && promisesOwnerContact(outboundResponse)) {
+    if (!/\[NOTIFY_OWNER\]/i.test(afterCancel) && (promisedOwnerContact || promisesOwnerContact(outboundResponse))) {
       console.log("[FB] reply promises owner contact without [NOTIFY_OWNER] — forcing owner notification");
       waitUntil(
         (async () => {

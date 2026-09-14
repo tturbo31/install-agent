@@ -33,8 +33,9 @@ function main() {
   ck("EN has no emojis", NO_EMOJI(en), en);
   ck("ES has no emojis", NO_EMOJI(es), es);
   ck("EN does not invent a price", !/\$\d/.test(en), en);
-  ck("EN points to the team/follow-up (keeps lead warm)", /team|reach|get (right )?back|shortly|contact/i.test(en), en);
-  ck("ES points to the team/follow-up (keeps lead warm)", /equipo|contacta|enseguida|en seguida/i.test(es), es);
+  // Regra do dono 14/09/2026: em vez de "a equipe entra em contato", o número do Ozzi.
+  ck("EN points to Ozzi's direct number (keeps lead warm)", /674[\s.-]*8334/.test(en) && /ozzi/i.test(en), en);
+  ck("ES points to Ozzi's direct number (keeps lead warm)", /674[\s.-]*8334/.test(es) && /ozzi/i.test(es), es);
 
   // ── 2. The labor question must NOT be wrongly silenced as a "closing" ─────
   console.log("\n[2] 'Is installation labor cost extra?' is a real question, not a closing");

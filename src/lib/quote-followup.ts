@@ -128,8 +128,8 @@ export function buildFollowupContext(input: QuoteFollowupInput): string {
 // Determinística de propósito: zero risco, zero custo, e NUNCA pode disparar o
 // detector de agendamento (é a última mensagem nossa na conversa).
 const APPROVAL_NOTE: Record<FollowupLang, string> = {
-  en: "As soon as your application is approved, Ozzi will personally reach out to you to finalize everything.",
-  es: "En cuanto tu solicitud sea aprobada, Ozzi se comunicará contigo personalmente para finalizar todo.",
+  en: "As soon as your application is approved, call or text Ozzi directly at (561) 674-8334 to finalize everything.",
+  es: "En cuanto tu solicitud sea aprobada, llama o escríbele a Ozzi directamente al (561) 674-8334 para finalizar todo.",
 };
 
 export function financingApprovalNote(lang: FollowupLang): string {

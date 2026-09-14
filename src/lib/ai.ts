@@ -179,7 +179,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /already\s+(got|have|received)\s+a\s+(quote|estimate|price)/i,
       /want\s+to\s+negotiate/i,
     ],
-    response: "I'll make sure our team reaches out to you directly to go over all the details from your visit. You'll hear from us very shortly![NOTIFY_OWNER]",
+    response: "For the details from your visit, the best is to reach Ozzi directly at (561) 674-8334, he goes over everything with you personally.[NOTIFY_OWNER]",
   },
 ];
 
@@ -1075,10 +1075,61 @@ const OWNER_PROMISE_PATTERNS: RegExp[] = [
   /\bflagging (this|it)\b[^.!?\n]{0,40}\b(for|to|as urgent)/i,
   /\b(ozzi|el due[nñ]o|nuestro equipo|alguien)\b[^.!?\n]{0,60}(te (va a )?(llama|contacta|responde)|se pondr[aá] en contacto|se comunicar[aá]|se comunique|se va a comunicar|estar[aá] esperando|devolver[aá] la llamada|te contacta)/i,
   /\b(ozzi|o dono|nossa equipe|algu[eé]m)\b[^.!?\n]{0,60}(vai (te )?(ligar|contatar|responder)|entra(r[aá])? em contato)/i,
+  // Owner rule 2026-09-14: the "I'll pass this along / connect you / you'll hear
+  // back" family is a promise too — nobody calls back from the alert, so every
+  // one of these must become Ozzi's direct number (redirectOwnerPromiseToPhone).
+  /\b(?:i'?ll|i will|let me|i'?m going to|i am going to|i'?m|i am|we'?ll|we will)\s+(?:connect|pass|forward|flag|hand|send|relay|pass(?:ing)?)\b[^.!?\n]{0,50}\b(?:ozzi|the owner|our team|my boss|our specialist|the team|the right person)\b/i,
+  /\bpassing\s+(?:this|it|your\s+\w+)\s+(?:along|on|over)?\s*(?:to\s+)?(?:ozzi|the owner|our team|my boss)\b/i,
+  /\b(?:you'?ll|you will)\s+(?:hear|be hearing)\s+(?:from|back)\b/i,
+  /\b(?:someone|he|she|they|we|ozzi|the team|our team|our specialist)(?:'ll| will)\s+(?:personally\s+)?(?:reach out|be in touch|get (?:right )?back to you|contact you|call you|text you|follow up|get in touch|be reaching out)\b/i,
+  /\b(?:le|te)\s+(?:paso|repaso|env[ií]o|mando|comunico)\b[^.!?\n]{0,40}\b(?:a\s+)?ozzi\b/i,
+  /\b(?:alguien|ozzi|nuestro equipo|el equipo|[eé]l)\b[^.!?\n]{0,40}\b(?:te|lo|la|se)\s+(?:contacta|contactar[aá]|llama|llamar[aá]|escribe|escribir[aá]|responde|comunicar[aá])\b/i,
+  /\ben\s+breve\s+(?:te|lo|la)\s+(?:contacta|llama|escribe|responde)/i,
+  /\b(?:vou|deixa eu|deixe-me|posso)\s+(?:repassar|passar|encaminhar)\b[^.!?\n]{0,40}\b(?:pro|para o|ao)\s+ozzi\b/i,
+  /\b(?:ele|algu[eé]m|o ozzi|nossa equipe)\b[^.!?\n]{0,40}\b(?:entrar[aá]|entra|vai entrar)\s+em\s+contato\b/i,
+  /\bem\s+breve\s+(?:ele|algu[eé]m)?\s*te\s+(?:contata|liga|responde|chama)/i,
 ];
 export function promisesOwnerContact(text: string): boolean {
   const t = normalizeSmartPunct(text || "");
   return OWNER_PROMISE_PATTERNS.some((p) => p.test(t));
+}
+
+// ─── Owner rule 2026-09-14: never promise that Ozzi will reach out ──────────
+// "I'll pass this along to Ozzi and he'll get in touch" only pinged the owner's
+// WhatsApp; nobody called back and the client sat waiting (David 305-761-1633
+// waited 3 days through four such promises, Pedro "still waiting in the phone
+// call", Emilio "waiting to be called back" — 10-14/09 audit). The owner's rule:
+// tell the client to contact Ozzi directly at (561) 674-8334 instead. Every
+// promise sentence in the OUTBOUND text is replaced by that line (once); the
+// arrival notice ("Ozzi will call you 40 minutes before") is not a promise of a
+// callback and stays. Tags are protected; [NOTIFY_OWNER] still fires.
+export const OZZI_DIRECT_PHONE = "(561) 674-8334";
+const OZZI_PHONE_RE = /674[\s.-]?8334/;
+const ARRIVAL_NOTICE_RE = /\b(?:40|forty)\s*(?:min|minutes|minutos)\b|\bbefore\s+(?:arriving|heading|coming|the\s+visit)\b|\bantes\s+de\s+(?:llegar|la\s+visita|chegar|da\s+visita)\b/i;
+export function ozziDirectLine(lang: "en" | "es" | "pt"): string {
+  if (lang === "pt") return "Para isso o melhor é falar direto com o Ozzi no (561) 674-8334, ele mesmo te atende.";
+  if (lang === "es") return "Para eso lo mejor es que contactes a Ozzi directamente al (561) 674-8334, él te atiende personalmente.";
+  return "For that, the best is to reach Ozzi directly at (561) 674-8334, he'll take care of you personally.";
+}
+export function redirectOwnerPromiseToPhone(text: string, lang: "en" | "es" | "pt"): string {
+  return withTagsProtected(text || "", (prose) => {
+    if (!OWNER_PROMISE_PATTERNS.some((p) => p.test(normalizeSmartPunct(prose)))) return prose;
+    const parts = prose.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [prose];
+    const hadNumber = OZZI_PHONE_RE.test(prose);
+    let replaced = false;
+    const out: string[] = [];
+    for (const s of parts) {
+      const ns = normalizeSmartPunct(s);
+      const isPromise = OWNER_PROMISE_PATTERNS.some((p) => p.test(ns)) && !ARRIVAL_NOTICE_RE.test(ns);
+      if (!isPromise) { out.push(s); continue; }
+      if (!replaced && !hadNumber) out.push(ozziDirectLine(lang) + " ");
+      replaced = true;
+    }
+    if (!replaced) return prose;
+    const result = out.join("").replace(/[ \t]{2,}/g, " ").trim();
+    console.log("[AI] owner-promise redirect: replaced \"Ozzi will reach out\" with his direct number");
+    return result || ozziDirectLine(lang);
+  });
 }
 
 // Phone keyboards send smart punctuation: U+2019 for the apostrophe ("Let’s")
@@ -1353,10 +1404,10 @@ export function priceNegotiationHandoff(text: string): string {
   // PT check first with PT-exclusive words only ("empresa"/"me" exist in
   // Spanish too — "Otra empresa me cotizó" once landed on the PT reply).
   if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite))(?![a-zà-ÿ])/.test(t) || /\b(?:você|voce|obrigad\w*|or[çc]amento|pre[çc]o|abaixar|baixar|conseguem?)\b/.test(t))
-    return "Vou passar isso para a nossa equipe. Vamos verificar o espaço pessoalmente e ver se conseguimos chegar num valor melhor para você, alguém já entra em contato![NOTIFY_OWNER]";
+    return "Isso é uma conversa direto com o Ozzi. Fala com ele no (561) 674-8334 que ele vê o espaço e o que consegue fazer no valor para você.[NOTIFY_OWNER]";
   if (/(?:^|[\s!.,?¡¿])(?:hola|buenas|buenos)(?![a-zà-ÿ])/.test(t) || /\b(?:cotiz\w*|ofrecieron|precio|barat[oa]s?|compa[ñn][ií]as?|pueden?|empresa|rebajar)\b/.test(t))
-    return "Déjame pasar esto a nuestro equipo. Vamos a verificar el espacio en persona y ver si podemos llegar a un mejor número para ti, alguien te contacta en seguida![NOTIFY_OWNER]";
-  return "Let me get our team on this one. We'll check the space in person and see if we can get to a better number for you, someone will reach out shortly![NOTIFY_OWNER]";
+    return "Eso es una conversación directa con Ozzi. Contáctalo al (561) 674-8334, él revisa el espacio y ve qué puede hacer con el precio para ti.[NOTIFY_OWNER]";
+  return "That one is a conversation for Ozzi directly. Reach him at (561) 674-8334, he'll check the space and see what he can do on the number for you.[NOTIFY_OWNER]";
 }
 
 // The flooring type already established for this conversation — from the ad-type
@@ -2017,6 +2068,12 @@ export function smallJobLeak(history: Array<{ role: string; content: string }>, 
   return !smallJobReferralSent(history) && !OZZI_DIRECT_NUMBER.test(t);
 }
 
+const SMALL_JOB_INSIST_RE = /not able to give you a quote|no puedo pasarle un presupuesto|não consigo passar o orçamento/i;
+export function smallJobPhotosMessage(lang: ReturnType<typeof detectLang>): string {
+  if (lang === "pt") return "Você pode ver nossos pisos em https://www.ozzifloors.com, e o Ozzi leva todas as amostras quando se encontra com você. Pode falar com ele no (561) 674-8334.";
+  if (lang === "es") return "Puedes ver nuestros pisos en https://www.ozzifloors.com, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.";
+  return "You can see our floors at https://www.ozzifloors.com, and Ozzi brings all the samples himself when he meets with you. You can reach him at (561) 674-8334.";
+}
 export function smallJobReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
   return smallJobReferralSent(history) ? smallJobOzziInsistMessage(lang) : smallJobOzziDirectMessage(lang);
 }
@@ -2027,7 +2084,7 @@ The client stated a project size under 400 square feet (about ${sqft} sqft). Own
 1. ${referralSent ? "You ALREADY gave the client Ozzi's number earlier in this conversation, so keep it short. " : ""}Tell the client, in their language, that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives them the quote himself, and give the number (561) 674-8334. Two short sentences. Example: "For a project under 400 square feet, the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at (561) 674-8334."
 2. NEVER give a price, a total, a per square foot rate, a range, a "starts at" or an estimate for this project, not even "approximate", not even if they insist, not even if they only ask for the rate. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address, phone or zip. NEVER generate [BOOK:...]. NEVER say we don't take the job, that it is too small or that we only do bigger projects: we do it, Ozzi just handles it directly.
 3. If the client insists on getting the number here ("just tell me the price", "a rough idea is fine", "can't you tell me here", "why can't you tell me", "I don't want to call", "no me puedes dar el precio", "me passa o valor aqui"): do NOT give in. Say you are not able to give a quote for that size through here, it really has to come from Ozzi directly, and repeat the number. Example: "I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at (561) 674-8334 and he'll check it and give you the number." Never explain the internal reason, never apologize twice, never invent a reason.
-4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have), answer that part briefly and still give the Ozzi line in the same message.
+4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have, can you send photos or samples), answer that part briefly and still give the Ozzi line in the same message. A request for photos, samples, colors, styles or the website is NEVER an insistence on the price: answer it (our floors are at https://www.ozzifloors.com, and Ozzi shows the samples himself) and NEVER use the "not able to give you a quote" line for it.
 5. Only if the client states a size of 400 square feet or more, or says it is the whole house or several rooms, return to the normal flow (400 to 499 sqft: quote by DM; 500 or more: the free visit).
 6. If earlier in this conversation a price was given, a visit was offered, a slot was "held" or booking details were collected for this project, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.`;
 }
@@ -2985,6 +3042,9 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     // size…", "let me give you the right ones: … Sunday the 31st does not
     // exist", "Wait, I need to copy the link exactly."
     /\bwait,?\s+i\s+(?:need|have|should)\s+to\b/.source,
+    // "Wait, I already have your name as Alex Young and the number." (Alex Young,
+    // IG 2026-09-11) — the model corrected its own data re-ask out loud.
+    /\bwait,?\s+(?:i|we)\s+(?:already|actually|do)\b/.source,
     /\blet\s+me\s+give\s+(?:you\s+)?the\s+(?:right|correct)\s+ones?\b/.source,
     /\b(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b[^.!?\n]{0,25}\bdoes\s+not\s+exist\b/.source,
     /\bno\s+dm\s+price\b/.source,
@@ -3485,7 +3545,7 @@ export async function getAIResponse(
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. If the client has already stated a size under 400 sqft, do not explain the rates at all, give the Ozzi direct line instead (rule 18).
 21. ANSWER PRODUCT QUESTIONS RULE: When the client asks a real question about the product, ALWAYS answer it directly and helpfully FIRST — never deflect a genuine product question to "browse our website". Key facts you can state: our luxury vinyl is 100% waterproof, has a stone composite (SPC) core, a 20-year warranty, is highly scratch and water resistant, performs great in humid and tropical climates, and can usually be installed right over existing tile. If they ask you to recommend something, give a brief direction based on their style and then invite them to browse for the exact look. If the client is OUTSIDE South Florida (another state, the Caribbean, the West Indies, another country) and is asking about the PRODUCT, still answer their product question helpfully; only mention that our installation service covers South Florida if they specifically ask US to install or visit. NEVER dismiss an out-of-area client with "we can't help you" — answer what they asked.
 20. TILE MATERIAL RULE: We do NOT sell tile material. If the client asks whether you offer, sell, have, or carry tile, or tile/porcelain that looks like wood (wood-look tile), respond with EXACTLY this and nothing more: "We don't sell tile materials. We only do the installation. However, you can find wood-look tiles at stores like Floor & Decor." Do NOT append, add, or tack on a luxury vinyl / LVP suggestion or any upsell after it — give only those sentences and stop. NEVER respond to a TILE question by pitching luxury vinyl wood-look as if it were the same thing. (Wood-look luxury VINYL is only the right answer when the client asks about vinyl or wood-look floors generally, not tile.)
-17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE. A bare "ok", "okay", "perfect", "great", "cool", "got it", "sounds good", "entendido", "listo", "beleza" sent after a message of yours that did NOT ask a question is a closing too: [REACT_ONLY]. And once you (or the system) told the client that Ozzi will reach out or be in touch, ANY acknowledgment or thanks that follows gets EXACTLY [REACT_ONLY]: never answer "Sounds good, Ozzi will be in touch soon" to an "ok". One handoff line is the END of the conversation, the client's "ok" does not reopen it.
+17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. An answer with a hedge attached ("I believe 1500, I need to double check", "around 900 but I'll confirm", "33020, I'll let you know the day") still ANSWERS your question (a size, a zip, a type, a day): continue the flow with that answer, NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE. A bare "ok", "okay", "perfect", "great", "cool", "got it", "sounds good", "entendido", "listo", "beleza" sent after a message of yours that did NOT ask a question is a closing too: [REACT_ONLY]. And once you (or the system) told the client that Ozzi will reach out or be in touch, ANY acknowledgment or thanks that follows gets EXACTLY [REACT_ONLY]: never answer "Sounds good, Ozzi will be in touch soon" to an "ok". One handoff line is the END of the conversation, the client's "ok" does not reopen it.
 16. DATE INTEGRITY RULE: When you name a weekday to the client (Friday, viernes, etc.), the date MUST be the exact [YYYY-MM-DD] shown next to that same weekday in the REAL-TIME SCHEDULE. NEVER compute or guess a date yourself, and NEVER pair a weekday with a date from a different schedule line. Before writing [BOOK:...], re-read the schedule line for the weekday you promised and copy its [YYYY-MM-DD] and only a time listed on that line. Example: if the schedule shows "Friday ... [2026-06-05]: 9am, 1pm", then "Friday at 1pm" books date 2026-06-05 and time 13:00, NEVER 2026-06-06. Saturday is a different line with different times. If the time the client wants is not listed under the exact date you promised, tell them it is not open and offer a time that IS listed for that date.
 15. CLIENT AVAILABILITY RULE: If the client states when they are available (examples: "only after 6pm", "I'm only home after 6", "only on weekends", "evenings only", "I work until 5", "only Saturday", "only Sunday", "no mornings"), you MUST filter all slot options to ONLY those that match their constraint. NEVER propose a time that contradicts what the client said. Examples: if the client says "after 6pm", offer ONLY 6pm or later slots on weekdays. If they say "only weekends", offer ONLY Saturday or Sunday slots. If they say "after 6pm or weekends", that means weekdays ONLY after 6pm AND weekends at any time — do NOT offer a weekday slot before 6pm, but a Saturday or Sunday at any hour is fine. If no slots in the schedule match their constraint, acknowledge it directly and ask what flexibility they have. This rule overrides the general "offer 2 available slots" instruction — always honor the client's stated availability first.
 22. NO PRESSURE RULE: Propose the visit and offer time slots ONCE. After you have already proposed the visit, do NOT tack a scheduling push onto the end of every message ("what time works for you", "what day works", "so we can get started right away", or a list of slots). When the client asks an informational question (materials, specs, thickness, wear layer, lighting, timeline, etc.), ANSWER that question and stop, with no scheduling pressure appended. Re-offer specific slots or re-ask "what time works" ONLY when the client signals readiness to book or themselves asks about scheduling or availability. NEVER end two messages in a row with the same scheduling question, that is pressuring the client and is forbidden. When the client raises an obstacle ("I don't have access", "it's owner occupied", "I can't be there", "I'm just researching", "not this week"), acknowledge it and adapt, NEVER ignore it and keep offering the same slots; if a visit is genuinely blocked, hand to Ozzi with [NOTIFY_OWNER] instead of pushing.
@@ -3503,13 +3563,13 @@ export async function getAIResponse(
 35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].
 36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
-38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, say Ozzi will personally contact them right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
+38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, tell them to reach Ozzi directly at (561) 674-8334 right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
 39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.
 40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {
-    dynamicSystem += `\n\n---\n\nCRITICAL — BOOKING ALREADY CONFIRMED:\nThe conversation is over. Do NOT answer any question or continue the conversation.\n- For ANY message — thank-you, question, or anything else — respond with ONE sentence redirecting to Ozzi, then add [NOTIFY_OWNER]\n- Required format: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]"\n- NEVER generate [BOOK:...] under any circumstance\n- NEVER answer questions about time, address, arrival, or any topic\n- NEVER say any slot is taken or unavailable\n- NEVER use any person's name other than Ozzi`;
+    dynamicSystem += `\n\n---\n\nCRITICAL — BOOKING ALREADY CONFIRMED:\nThe conversation is over. Do NOT answer any question or continue the conversation.\n- For ANY message — thank-you, question, or anything else — respond with ONE sentence redirecting to Ozzi, then add [NOTIFY_OWNER]\n- Required format: "For anything else, you can reach Ozzi directly at (561) 674-8334![NOTIFY_OWNER]"\n- NEVER say that Ozzi, the team or anyone will reach out, call or get back to them: give the number above instead\n- NEVER generate [BOOK:...] under any circumstance\n- NEVER answer questions about time, address, arrival, or any topic\n- NEVER say any slot is taken or unavailable\n- NEVER use any person's name other than Ozzi`;
   }
 
   // REPAIR REQUEST standing → the no-repairs block, read last (Priti, 2026-08-24).
@@ -3726,6 +3786,16 @@ export async function getAIResponse(
     if (smallJobLeak(messages, cleaned)) {
       console.warn("[AI] project under 400 sqft — model priced / offered a visit / asked details; replaced with the Ozzi direct line");
       cleaned = smallJobReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+    }
+    // Photos / samples / website ask while a size under 400 sqft stands: the
+    // model sometimes answers with the price-insist line ("I'm not able to give
+    // you a quote for that size...") although nobody asked for a price (3 of 6
+    // replays, 2026-09-14). The canned see-options intercept was skipped on
+    // purpose (it pitches the free visit), so answer the ask here: website,
+    // samples with Ozzi, and his number.
+    if (hardcoded && /ozzifloors\.com/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
+      console.warn("[AI] project under 400 sqft — photos/samples ask answered with the price-insist line; replaced with the website + samples line");
+      cleaned = smallJobPhotosMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
     }
 
     // BATHROOM PROJECT backstop (owner rule 2026-09-11, second part): while a
@@ -3949,6 +4019,101 @@ export async function generateSpeech(text: string): Promise<Buffer | null> {
     return Buffer.from(await response.arrayBuffer());
   } catch (err) {
     console.error("TTS error:", err);
+    return null;
+  }
+}
+
+
+// ─── Visit claimed as scheduled without a [BOOK] behind it ──────────────────
+// Yesmin Alabart (WA, 2026-09-13): slot chosen, name, street address WITH the
+// zip — the model wrote "Listo Yesmin, te agendo el lunes 14 de septiembre a
+// las 3pm. Cual es el tipo de piso...?" and never emitted [BOOK:...]. Not a
+// bare confirmation, not "locked in", so nothing caught it: she waited for a
+// 3pm visit that did not exist. Alex Young (IG, 2026-09-11): with name, phone,
+// address and zip all typed, the model asked for all of it again. Both get one
+// forced retry with an explicit "write the tag now" note; if the tag still does
+// not come, the client gets the Ozzi-direct line and the owner is alerted.
+const VISIT_CLAIM_PATTERNS: RegExp[] = [
+  /\b(?:you'?re|you are)\s+(?:all\s+)?(?:booked|scheduled|on the (?:calendar|schedule|books))\b/i,
+  /\b(?:you'?re|you are)\s+all\s+set\s+for\b/i,
+  /\b(?:agendei|marquei|reservei)\b/i,
+  /\bi(?:'ve| have)\s+(?:got\s+)?you\s+(?:down|booked|scheduled|on the (?:calendar|schedule))\b/i,
+  /\bi(?:'ve| have|'m| am)\s+(?:booked|booking|scheduled|scheduling)\s+you\b/i,
+  /\bgot\s+you\s+(?:down|booked|scheduled)\b/i,
+  /\b(?:your\s+)?(?:visit|appointment|estimate)\s+is\s+(?:now\s+)?(?:set|booked|scheduled|confirmed|on the (?:calendar|books))\b/i,
+  /\b(?:te|se)\s+(?:lo\s+|la\s+)?(?:agendo|agend[eé]|reservo|reserv[eé]|apunto|apunt[eé]|anoto|anot[eé])\b/i,
+  /\b(?:queda|quedas|qued[oó]|est[aá]s?|ya est[aá])\s+(?:agendad[oa]|reservad[oa]|confirmad[oa]|apuntad[oa]|anotad[oa])\b/i,
+  /\b(?:cita|visita)\s+(?:queda\s+|est[aá]\s+)?(?:agendada|reservada|confirmada|apuntada)\b/i,
+  /\b(?:te|j[aá] te)\s+(?:agendo|agendei|reservo|reservei|marco|marquei)\b/i,
+  /\b(?:est[aá]|fica|ficou)\s+(?:agendad[oa]|marcad[oa]|reservad[oa]|confirmad[oa])\b/i,
+  /\b(?:visita|hor[aá]rio)\s+(?:est[aá]\s+)?(?:agendad[oa]|marcad[oa]|confirmad[oa])\b/i,
+];
+export function claimsVisitScheduled(text: string): boolean {
+  const t = normalizeSmartPunct((text || "").replace(/\[[^\]]*\]/g, " "));
+  return VISIT_CLAIM_PATTERNS.some((p) => p.test(t));
+}
+
+// Everything the booking needs is already in the client's own messages: a slot
+// explicitly chosen, a street address with a number, a ZIP the client typed,
+// and a phone (typed, or the WhatsApp number). The name is not checked here:
+// if it is the only thing missing, the retry note tells the model to ask for
+// the name alone.
+const STREET_RE = /\b\d{1,6}\s+(?:[nsew]{1,2}\s+)?\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path)\b/i;
+const PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
+const ZIP_RE = /\b\d{5}\b/;
+export function bookingDataLooksComplete(history: Array<{ role: string; content: string }>, phoneKnown: boolean): boolean {
+  const msgs = history ?? [];
+  if (!clientConfirmedSlot(msgs)) return false;
+  const userTexts = msgs
+    .filter((m) => m.role === "user")
+    .map((m) => (m.content || "").split(/\n\n?\[SYSTEM:/)[0])
+    .filter((t) => !/^\s*\[(?:floor plan|client replied|voice|image)/i.test(t));
+  const joined = userTexts.join("\n");
+  if (!STREET_RE.test(joined)) return false;
+  if (!ZIP_RE.test(joined.replace(PHONE_RE, " "))) return false;
+  if (!phoneKnown && !PHONE_RE.test(joined)) return false;
+  return true;
+}
+
+// Why a forced [BOOK] retry is due: "claim" = the reply says the visit is set
+// without the tag (and is not asking for booking data), "reask" = the reply
+// asks for booking data the client already gave. null = nothing to do.
+export function forcedBookRetryReason(
+  reply: string,
+  history: Array<{ role: string; content: string }>,
+  phoneKnown: boolean
+): "claim" | "reask" | null {
+  const t = reply || "";
+  if (/\[BOOK:/i.test(t)) return null;
+  const asking = isAskingForBookingInfo(t);
+  if (claimsVisitScheduled(t) && !asking) return "claim";
+  if (asking && bookingDataLooksComplete(history, phoneKnown)) return "reask";
+  return null;
+}
+
+export const BOOK_NOW_NOTE =
+  "[SYSTEM: BOOKING DATA IS COMPLETE, WRITE THE [BOOK:...] TAG NOW. The client already confirmed a specific day and time, and typed the property address with its ZIP code (the phone is known too). Your previous draft either said the visit was scheduled or asked again for data the client already gave, WITHOUT the [BOOK:...] tag, so NO visit exists in the system. Output now: 5 words or fewer, then the [BOOK:{...}] tag with the exact name, phone, street address and ZIP the client typed, and the date and time the client confirmed (copy the [YYYY-MM-DD] of that weekday from the schedule). The flooring type is NOT required to book, never ask it before the tag. If the ONLY missing item is the client's name, ask for the name alone in ONE short sentence and nothing else. Never say the visit is booked, scheduled, agendada or reservada without the tag in the same message.]";
+
+export async function retryForBookTag(
+  messages: ChatMessage[],
+  memoryContext: string | null | undefined,
+  systemMemory: string | null | undefined,
+  ownerCorrections: string | null | undefined,
+  reason: string
+): Promise<string | null> {
+  if (!messages.length) return null;
+  const last = messages[messages.length - 1];
+  const retryMessages: ChatMessage[] = [...messages.slice(0, -1), { ...last, content: last.content + "\n\n" + BOOK_NOW_NOTE }];
+  try {
+    const r = await getAIResponse(retryMessages, memoryContext, systemMemory, ownerCorrections, false);
+    if (/\[BOOK:/i.test(r.text)) {
+      console.log("[AI] forced [BOOK] retry (" + reason + ") produced the tag");
+      return r.text;
+    }
+    console.warn("[AI] forced [BOOK] retry (" + reason + ") came back without a tag: " + JSON.stringify(r.text.slice(0, 160)));
+    return null;
+  } catch (err) {
+    console.error("[AI] forced [BOOK] retry failed:", err);
     return null;
   }
 }

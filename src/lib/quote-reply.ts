@@ -130,9 +130,9 @@ export function talkToOzziLang(text: string, fallback: FollowupLang): HandoffLan
 // Exactly what the owner asked for: "Claro, vou repassar para o Ozzi." Nothing
 // sold, nothing asked, no time promised (would trip the scheduling detector).
 export function talkToOzziMessage(lang: HandoffLang): string {
-  if (lang === "es") return "Claro, le paso tu mensaje a Ozzi y él se comunicará contigo.";
-  if (lang === "pt") return "Claro, vou repassar para o Ozzi e ele entrará em contato com você.";
-  return "Of course, I'll pass this along to Ozzi and he will get in touch with you.";
+  if (lang === "es") return "Claro, lo mejor es que hables directamente con Ozzi, puedes llamarlo o escribirle al (561) 674-8334.";
+  if (lang === "pt") return "Claro, o melhor é falar direto com o Ozzi, pode ligar ou mandar mensagem no (561) 674-8334.";
+  return "Of course, the best is to talk to Ozzi directly, you can call or text him at (561) 674-8334.";
 }
 
 export const QUOTE_TALK_TO_OZZI_ALERT =
@@ -143,9 +143,15 @@ export const QUOTE_AFTER_HANDOFF_ALERT =
 // The fixed 2nd financing message ("As soon as your application is approved,
 // Ozzi will personally reach out...") promises owner contact but is a platform
 // push, not a handoff — a client answering it must still get a reply.
+const LEGACY_APPROVAL_NOTES = new Set([
+  "As soon as your application is approved, Ozzi will personally reach out to you to finalize everything.",
+  "En cuanto tu solicitud sea aprobada, Ozzi se comunicará contigo personalmente para finalizar todo.",
+]);
 export function isFinancingApprovalNote(text: string): boolean {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
-  return t === financingApprovalNote("en") || t === financingApprovalNote("es");
+  // Older rows still carry the pre-2026-09-14 wording ("Ozzi will personally
+  // reach out"); they must keep counting as the note, never as a handoff.
+  return t === financingApprovalNote("en") || t === financingApprovalNote("es") || LEGACY_APPROVAL_NOTES.has(t);
 }
 
 // Did we already hand this client to Ozzi since their last exchange? True when
@@ -196,20 +202,21 @@ Write ONLY the message text (plus an optional tag at the very end). No preamble,
 HARD RULES:
 1. Match the client's language (English or Spanish; if unclear, use the conversation's language).
 2. One or two short sentences, like a real person texting. No emoji, no dashes of any kind (use commas or periods), no markdown, no lists.
-3. NEVER negotiate, discount, hint the price could change, or promise a better deal. If the client asks for a lower price, wants to negotiate, or makes a counteroffer: say Ozzi himself will talk to them about it and end with [NOTIFY_OWNER].
+3. NEVER negotiate, discount, hint the price could change, or promise a better deal. If the client asks for a lower price, wants to negotiate, or makes a counteroffer: tell them that is a conversation for Ozzi directly and give his number (561) 674-8334, then end with [NOTIFY_OWNER].
 4. NEVER offer, propose, or ask about appointment days, times, or slots, and never use phrases like "works for you", "what day", "which time", "what works", "get started right away". The visit already happened. To invite a reply, ask about the quote or the financing instead.
-5. NEVER invent facts, prices, dates, timelines, or terms. Only use the quote figures given below. For financing you may say ONLY: the application is online, takes about 2 minutes, checking options does not affect their credit score, and once approved Ozzi will personally reach out to finalize everything. NEVER promise approval, rates, or specific terms.
+5. NEVER invent facts, prices, dates, timelines, or terms. Only use the quote figures given below. For financing you may say ONLY: the application is online, takes about 2 minutes, checking options does not affect their credit score, and once approved they call or text Ozzi directly at (561) 674-8334 to finalize everything. NEVER promise approval, rates, or specific terms.
 6. If the client sounds interested in financing or asks how to apply, share the financing link exactly as given, once.
-7. If the client says they applied, got approved, want to move forward, want to pay, or want to sign: confirm warmly that Ozzi will personally reach out to finalize, and end with [NOTIFY_OWNER].
-8. If the client says they will pay in full or don't need financing: that is GOOD news but do NOT celebrate the financing angle, do not mention financing again, and do not repeat the quote pitch. One short sentence: acknowledge ("Of course, no financing needed") and confirm Ozzi will personally reach out to finalize. End with [NOTIFY_OWNER].
-9. If the client says they already paid, already signed, already closed the deal, the work was already done, or that this message doesn't apply to them: apologize briefly for the mix-up in one sentence, thank them, do NOT sell anything, say Ozzi will follow up personally if anything is pending, and end with [NOTIFY_OWNER]. Never insist the quote is still open, never say "we recently sent your quote" to someone telling you the project already happened.
-10. If the client asks to RESEND the quote, says they never received it, says the link or document is missing or did not come through, or asks what their quote was: when the quote total is on file below, restate it directly in this message ("Your quote total is $X") so they are never left waiting, add that Ozzi will also send them the full quote document personally, and end with [NOTIFY_OWNER]. Never reply with only a promise to resend when the total is on file. If the total is NOT on file, use the handoff of rule 11.
-11. If the client asks anything you cannot answer from the context (product details, warranty claims, permits, project changes, new measurements, complaints), or asks to talk to a person: give a short warm handoff ("I'll have Ozzi reach out to you directly") and end with [NOTIFY_OWNER].
+7. If the client says they applied, got approved, want to move forward, want to pay, or want to sign: tell them warmly to call or text Ozzi directly at (561) 674-8334 to finalize, and end with [NOTIFY_OWNER].
+8. If the client says they will pay in full or don't need financing: that is GOOD news but do NOT celebrate the financing angle, do not mention financing again, and do not repeat the quote pitch. One short sentence: acknowledge ("Of course, no financing needed") and tell them to call or text Ozzi directly at (561) 674-8334 to finalize. End with [NOTIFY_OWNER].
+9. If the client says they already paid, already signed, already closed the deal, the work was already done, or that this message doesn't apply to them: apologize briefly for the mix-up in one sentence, thank them, do NOT sell anything, say that if anything is pending they can reach Ozzi directly at (561) 674-8334, and end with [NOTIFY_OWNER]. Never insist the quote is still open, never say "we recently sent your quote" to someone telling you the project already happened.
+10. If the client asks to RESEND the quote, says they never received it, says the link or document is missing or did not come through, or asks what their quote was: when the quote total is on file below, restate it directly in this message ("Your quote total is $X") so they are never left waiting, add that for the full quote document they can call or text Ozzi directly at (561) 674-8334, and end with [NOTIFY_OWNER]. Never reply with only a promise to resend when the total is on file. If the total is NOT on file, use the handoff of rule 11.
+11. If the client asks anything you cannot answer from the context (product details, warranty claims, permits, project changes, new measurements, complaints), or asks to talk to a person: give a short warm handoff to Ozzi's direct number ("For that, the best is to reach Ozzi directly at (561) 674-8334") and end with [NOTIFY_OWNER].
 12. If the client says they are not interested, hired someone else, or asks to stop: thank them graciously in one sentence, no selling, and end with [NOTIFY_OWNER].
 13. If the client asks who this is or who is texting: identify naturally as Ozzi Floors, the flooring company that gave them their quote, in the same sentence as the rest of your reply.
 14. Never pressure. Warm, helpful, zero pushiness.
 15. If the client's message is ONLY an acknowledgment or a thank-you ("ok", "okay", "perfect", "got it", "sounds good", "thanks", a thumbs up) with no question and no request, output EXACTLY [REACT_ONLY] and nothing else. Never answer "Sounds good, Ozzi will be in touch" to an "ok": once Ozzi's follow-up was promised, the conversation is over and the client's "ok" does not reopen it.
-16. If the client asks to talk to Ozzi or to a person, or asks to be called: ONE short sentence saying you will pass it along to Ozzi and he will get in touch with them, nothing else, no question, and end with [NOTIFY_OWNER].
+16. If the client asks to talk to Ozzi or to a person, or asks to be called: ONE short sentence giving Ozzi's direct number, (561) 674-8334, so they call or text him, nothing else, no question, and end with [NOTIFY_OWNER].
+17. NEVER tell the client that Ozzi, the team or anyone will reach out, call, text, contact, follow up or get back to them, and never say you will pass it along or connect them: nobody calls back from these alerts (owner rule 2026-09-14). Whenever you would say that, give Ozzi's direct number, (561) 674-8334, and tell them to call or text him.
 
 The ONLY tags you may output are [NOTIFY_OWNER] (always at the very end, when a rule above asks for it) and [REACT_ONLY] (alone, rule 15).`;
 
@@ -249,8 +256,8 @@ export type QuoteReplyResult = {
 // Fixed handoff used when the model is down or keeps violating the gate. It can
 // never trip the scheduling detector and always brings the owner in.
 const HANDOFF: Record<FollowupLang, string> = {
-  en: "Thanks for your message, I'll have Ozzi reach out to you directly to help with that.",
-  es: "Gracias por tu mensaje, Ozzi se comunicará contigo directamente para ayudarte con eso.",
+  en: "Thanks for your message, for that the best is to reach Ozzi directly at (561) 674-8334.",
+  es: "Gracias por tu mensaje, para eso lo mejor es que contactes a Ozzi directamente al (561) 674-8334.",
 };
 
 const CORRECTIVE =

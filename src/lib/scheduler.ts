@@ -1934,20 +1934,20 @@ export function bookingSuccessMessage(lang: Lang, dateStr?: string, timeStr?: st
 // manual pelo app do IG nunca chegou ao scheduler). Não afirma NADA sobre data
 // ou disponibilidade: reconhece e passa para o Ozzi. Sem traço, sem emoji.
 export function appointmentMismatchHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Obrigado! O Ozzi vai revisar pessoalmente os detalhes da sua visita e te confirma tudo em seguida.";
+  if (lang === "pt") return "Obrigado! Para conferir os detalhes da sua visita, fala direto com o Ozzi no (561) 674-8334, ele confirma tudo com você.";
   return lang === "es"
-    ? "Gracias! Ozzi va a revisar personalmente los detalles de tu visita y te confirma todo enseguida."
-    : "Thank you! Let me have Ozzi personally double check your visit details and confirm everything with you shortly.";
+    ? "Gracias! Para revisar los detalles de tu visita, contacta a Ozzi directamente al (561) 674-8334, él te confirma todo."
+    : "Thank you! To double check your visit details, please reach Ozzi directly at (561) 674-8334 and he'll confirm everything with you.";
 }
 
 // Sent to the client when the booking could NOT be created (slot genuinely
 // unavailable, scheduler error, etc.). Honest, never claims the slot was
 // "just taken", and hands the lead to Ozzi so it is never lost.
 export function bookingFailureHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Desculpa, não consegui confirmar esse horário no sistema. Já avisei o Ozzi para confirmar sua visita diretamente, em breve ele te contata.";
+  if (lang === "pt") return "Desculpa, não consegui confirmar esse horário no sistema. Para confirmar sua visita, liga ou manda mensagem direto pro Ozzi no (561) 674-8334 que ele acerta com você.";
   return lang === "es"
-    ? "Disculpa, no pude confirmar ese horario en el sistema. Le aviso a Ozzi para que confirme tu cita directamente, en breve te contacta."
-    : "Sorry, I couldn't lock in that exact time in the system. I'm having Ozzi confirm your appointment directly, you'll hear back shortly.";
+    ? "Disculpa, no pude confirmar ese horario en el sistema. Para confirmar tu visita, llama o escríbele a Ozzi directamente al (561) 674-8334 y él la deja lista contigo."
+    : "Sorry, I couldn't lock in that exact time in the system. To confirm your visit, please call or text Ozzi directly at (561) 674-8334 and he'll set it up with you.";
 }
 
 // Sent when the model wrote its pre-booking line ("Perfect, see you then!") but
@@ -1957,10 +1957,10 @@ export function bookingFailureHandoffMessage(lang: Lang): string {
 // failure line either (the owner may have set the visit by hand); Ozzi confirms
 // and the owner is alerted with the conversation.
 export function bookingUnverifiedHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Deixa eu pedir para o Ozzi confirmar os detalhes da sua visita diretamente, em breve ele te contata.";
+  if (lang === "pt") return "Para confirmar os detalhes da sua visita, fala direto com o Ozzi no (561) 674-8334, ele acerta tudo com você.";
   return lang === "es"
-    ? "Déjame pedirle a Ozzi que confirme los detalles de tu visita directamente, en breve te contacta."
-    : "Let me have Ozzi confirm your visit details directly, you'll hear back shortly.";
+    ? "Para confirmar los detalles de tu visita, contacta a Ozzi directamente al (561) 674-8334, él lo deja todo listo contigo."
+    : "To confirm your visit details, please reach Ozzi directly at (561) 674-8334, he'll get everything set with you.";
 }
 
 // The phone in [BOOK] must be one the CLIENT typed. The model re-types the
@@ -2274,10 +2274,10 @@ export function rescheduleSuccessMessage(lang: Lang): string {
 // client warm with an honest holding reply while the owner is notified and the
 // conversation is handed to a human.
 export function aiOutageHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Obrigado pela sua mensagem! Já avisei nossa equipe e alguém te contata em seguida.";
+  if (lang === "pt") return "Obrigado pela sua mensagem! Estou com um probleminha aqui agora, o mais rápido é ligar ou mandar mensagem direto pro Ozzi no (561) 674-8334.";
   return lang === "es"
-    ? "Gracias por tu mensaje! Le aviso a nuestro equipo y alguien te contacta en seguida."
-    : "Thanks for your message! Let me get our team to reach out, someone will get right back to you.";
+    ? "Gracias por tu mensaje! Tengo un problemita de mi lado ahora, lo más rápido es que llames o le escribas a Ozzi directamente al (561) 674-8334."
+    : "Thanks for your message! I'm having a little trouble on my side right now, so the fastest is to call or text Ozzi directly at (561) 674-8334.";
 }
 
 // ─── Horários de um dia ordenados pela rota (mensagens enlatadas) ────────────
@@ -2733,10 +2733,10 @@ export function addressCorrectedMessage(lang: Lang, unit: string): string {
 // Endereço de OUTRA rua depois da visita marcada, ou falha ao gravar: o cliente
 // recebe um aviso honesto em vez do silêncio, e o dono decide.
 export function addressChangeHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Obrigado, anotei o endereço novo. O Ozzi te confirma a mudança antes da visita.";
+  if (lang === "pt") return "Obrigado, anotei o endereço novo. Para confirmar a mudança antes da visita, fala direto com o Ozzi no (561) 674-8334.";
   return lang === "es"
-    ? "Gracias, anoté la dirección nueva. Ozzi te confirma el cambio antes de la visita."
-    : "Thanks, I have the new address. Ozzi will confirm the change with you before the visit.";
+    ? "Gracias, anoté la dirección nueva. Para confirmar el cambio antes de la visita, contacta a Ozzi directamente al (561) 674-8334."
+    : "Thanks, I have the new address. To confirm the change before the visit, please reach Ozzi directly at (561) 674-8334.";
 }
 
 // Linha de alerta no WhatsApp do dono. O que importa é ele bater o olho e saber
@@ -2773,10 +2773,10 @@ export function cancellationConfirmedMessage(lang: Lang, dateStr: string, timeSt
 // The scheduler delete FAILED (or blew up): never claim the visit is cancelled.
 // Honest handoff — the owner gets the siren alert and cancels by hand.
 export function cancellationHandoffMessage(lang: Lang): string {
-  if (lang === "pt") return "Entendido, já passei seu pedido de cancelamento para o Ozzi e ele te confirma em seguida. Quando você estiver pronto agendamos uma nova visita no dia que ficar melhor para você.";
+  if (lang === "pt") return "Entendido, não consegui processar o cancelamento por aqui, então confirma direto com o Ozzi no (561) 674-8334. Quando você estiver pronto agendamos uma nova visita no dia que ficar melhor para você.";
   return lang === "es"
-    ? "Entendido, ya pasé tu solicitud de cancelación a Ozzi y él te la confirma enseguida. Cuando estés listo agendamos una nueva visita el día que mejor te quede."
-    : "Got it, I sent your cancellation request to Ozzi and he will confirm it with you right away. Whenever you're ready we can set up a new visit on the day that works best for you.";
+    ? "Entendido, no pude procesar la cancelación por aquí, así que confírmala directamente con Ozzi al (561) 674-8334. Cuando estés listo agendamos una nueva visita el día que mejor te quede."
+    : "Got it, I couldn't process the cancellation on my side, so please confirm it with Ozzi directly at (561) 674-8334. Whenever you're ready we can set up a new visit on the day that works best for you.";
 }
 
 // Owner WhatsApp alert for every cancellation attempt, so cancellations are

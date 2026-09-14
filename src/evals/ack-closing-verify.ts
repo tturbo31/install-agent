@@ -182,9 +182,10 @@ async function main() {
     ck(`${lang}: sanitizeOutbound deixa intacta`, sanitizeOutbound(m) === m, sanitizeOutbound(m));
     ck(`${lang}: sem '?', sem venda`, !m.includes("?") && !/quote|cotiza|orçamento|financ/i.test(m), m);
   }
-  ck("en: promete contato do Ozzi (promisesOwnerContact)", promisesOwnerContact(talkToOzziMessage("en")));
-  ck("es: promete contato do Ozzi (promisesOwnerContact)", promisesOwnerContact(talkToOzziMessage("es")));
-  ck("pt: promete contato do Ozzi (promisesOwnerContact)", promisesOwnerContact(talkToOzziMessage("pt")));
+  // Regra do dono 14/09/2026: a frase fixa dá o número do Ozzi em vez de prometer contato.
+  ck("en: dá o número do Ozzi, não promete contato", /674[\s.-]*8334/.test(talkToOzziMessage("en")) && !promisesOwnerContact(talkToOzziMessage("en")));
+  ck("es: dá o número do Ozzi, não promete contato", /674[\s.-]*8334/.test(talkToOzziMessage("es")) && !promisesOwnerContact(talkToOzziMessage("es")));
+  ck("pt: dá o número do Ozzi, não promete contato", /674[\s.-]*8334/.test(talkToOzziMessage("pt")) && !promisesOwnerContact(talkToOzziMessage("pt")));
 
   // ── 6. Fiação (código-fonte) ──────────────────────────────────────────────
   console.log("\n[6] Fiação nos webhooks e prompts");
@@ -198,7 +199,7 @@ async function main() {
   ck("wa: follow-up ack → só 👍", /isAckOnlyBurst\(historico\) \|\| isPureClosing\(rawText\)[\s\S]{0,120}sendWhatsAppReaction\(phone, messageId, "👍"\)/.test(wa));
   ck("wa: depois do repasse → silêncio + dono", /quoteHandoffActive\(historico\)[\s\S]{0,500}QUOTE_AFTER_HANDOFF_ALERT[\s\S]{0,160}return;/.test(wa));
   ck("wa: pedido de falar com o Ozzi → frase fixa", /isTalkToOzziRequest\(quoteBurst\)[\s\S]{0,200}talkToOzziMessage\(talkToOzziLang\(quoteBurst, quoteCtx\.idioma\)\)/.test(wa));
-  ck("wa: repasse gravado com QUOTE_HANDOFF_SUFFIX", /reply\.notifyOwner \? reply\.text \+ QUOTE_HANDOFF_SUFFIX : reply\.text/.test(wa));
+  ck("wa: repasse gravado com QUOTE_HANDOFF_SUFFIX", /reply\.notifyOwner \? replyText \+ QUOTE_HANDOFF_SUFFIX : replyText/.test(wa));
   ck("wa: [REACT_ONLY] do quote-reply → 👍", /reply\.reactOnly[\s\S]{0,80}sendWhatsAppReaction/.test(wa));
   ck("wa: o ack do follow-up vem ANTES do modelo", wa.indexOf("isAckOnlyBurst(historico)") < wa.indexOf("composeQuoteReply({ ctx: quoteCtx"));
   ck("prompt principal: 'ok' após não-pergunta e ack após handoff → [REACT_ONLY]", /One handoff line is the END of the conversation/.test(aiSrc));

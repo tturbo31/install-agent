@@ -146,7 +146,7 @@ async function main() {
   const promptSrc = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
   ck("prompt: seção presente", /## INSTALLATION CONFIRMED/.test(promptSrc));
   ck("prompt: ack → [REACT_ONLY]", /output EXACTLY \[REACT_ONLY\] and nothing else\. The system reacts with a thumbs up/.test(promptSrc));
-  ck("prompt: dúvida → repassa ao Ozzi + [NOTIFY_OWNER]", /pass it along to Ozzi, who will get in touch with them shortly, and add \[NOTIFY_OWNER\]/.test(promptSrc));
+  ck("prompt: dúvida → número do Ozzi + [NOTIFY_OWNER] (regra 14/09)", /reach Ozzi directly at \(561\) 674-8334 for that, and add \[NOTIFY_OWNER\]/.test(promptSrc));
   ck("prompt: proíbe repetir/corrigir o horário", /NEVER repeat, confirm, correct, or recalculate the installation date or time/.test(promptSrc));
   ck("prompt: proíbe a piada ('that does sound early')", /that does sound early!" is forbidden/.test(promptSrc));
   ck("prompt: não manda mais o cliente ao vendedor nomeado", !/HAND TO THE NAMED CONTACT/.test(promptSrc));
@@ -182,7 +182,7 @@ async function main() {
   ck("adiciona [NOTIFY_OWNER]", /\[NOTIFY_OWNER\]/.test(r2), r2);
   ck("não repete nem corrige horário", !ANY_TIME.test(r2.replace(/\[NOTIFY_OWNER\]/g, "")), r2);
   ck("sem piada sobre 'early'", !/early/i.test(r2), r2);
-  ck("sem telefone do vendedor nem do dono", !SELLER_PHONE.test(r2) && !OWNER_PHONE.test(r2), r2);
+  ck("sem telefone do vendedor (o do Ozzi é permitido desde 14/09)", !SELLER_PHONE.test(r2) && OWNER_PHONE.test(r2) !== undefined, r2);
   ck("não fica em silêncio", !/\[REACT_ONLY\]/.test(r2), r2);
 
   console.log("\n[6] LIVE: 'can we move it to Friday?' → repassa ao Ozzi, sem prometer, sem vendedor");
@@ -193,7 +193,7 @@ async function main() {
   console.log("   AI:", r3.replace(/\s+/g, " ").slice(0, 220));
   ck("menciona Ozzi + [NOTIFY_OWNER]", OZZI_HANDOFF.test(r3) && /\[NOTIFY_OWNER\]/.test(r3), r3);
   ck("não promete que moveu", !/(moved|rescheduled) (it|your|the)|all set|done!|i('ve| have) (moved|rescheduled)/i.test(r3), r3);
-  ck("sem telefone", !SELLER_PHONE.test(r3) && !OWNER_PHONE.test(r3), r3);
+  ck("sem telefone do vendedor (o do Ozzi é permitido desde 14/09)", !SELLER_PHONE.test(r3), r3);
   ck("não reinicia a venda", !TYPE_ASK.test(r3) && !/\$\s?\d/.test(r3), r3);
 
   console.log("\n[7] LIVE: 'do I need to move my furniture?' → NÃO responde, repassa ao Ozzi");
