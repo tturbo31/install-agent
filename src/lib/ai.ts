@@ -2,7 +2,7 @@ import { zipsInText, cityAliasZip } from "./geo/zip-geo";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
@@ -287,7 +287,7 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // propose the free visit.
     // ...and a first message whose question the opener does NOT answer goes to
     // the model too (2026-08-21 sweep) — see questionBeyondOpener.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !mentionsBathroomProject(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !mentionsBathroomProject(text) && !isMobileHomeRequest(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -1454,6 +1454,8 @@ export function isFlooringInquiry(text: string): boolean {
   // floors", "Do you do epoxy?") are answered by the model (correction or
   // decline + what we do install), never by the canned type-ask opener.
   if (mentionsUnsupportedFloor(t)) return false;
+  // A trailer / mobile home in the first message is declined by the model (owner rule 2026-09-15), never opened with the canned type-ask.
+  if (isMobileHomeRequest(t)) return false;
   if (PROMO_PRICE.test(t) || HOW_WORK.test(t)) return true;
   return FLOORING_CTX.test(t) && INQUIRY_INTENT.test(t);
 }
@@ -1843,6 +1845,101 @@ The photo analysis shows a concrete, cement, epoxy, microcement, paver, flagston
 export const UNREADABLE_IMAGE_NOTE = `CRITICAL, THE CLIENT SENT A PHOTO YOU CANNOT SEE:
 The latest client message contains "[floor plan or photo]" with no analysis: the image could not be read on our side, so you have NOT seen it. NEVER pretend you saw it, never describe it, never infer the floor type, the size of the space or its condition from it, never say "for a space that size". Say briefly that the photo did not come through on your side and ask what it shows (the floor they want, or the area to be done). If the flooring type is still unknown, ask which type they have in mind (luxury vinyl, tile or hardwood) in the SAME short message; this one re-ask is allowed even if the type was asked before, because their answer was the photo you could not see, so word it differently from the opener. Do NOT propose visit slots or ask for booking details in this turn unless the flooring type is already known from the client's own words.`;
 
+
+// ─── Trailers / mobile homes: we do NOT work in them (owner rule 2026-09-15) ─
+// The owner does not install in trailers, mobile homes, manufactured homes,
+// RVs or campers, of any size and with any floor type. Three layers, mirroring
+// the no-repairs guard: (1) prompt section TRAILERS AND MOBILE HOMES, (2) the
+// CRITICAL block injected while the request stands, (3) deterministic block of
+// [BOOK] / price / visit or slot offer / booking-details ask in getAIResponse
+// and in the three webhooks. Only the client's own words count (never the
+// bot's, never a photo analysis bubble), and our own "mobile showroom" never
+// does. A client who says it is NOT a trailer / mobile home clears the flag.
+const MOBILE_HOME_RE = /(?<![a-zà-ÿ])(?:mobile[\s-]*homes?|mobilehomes?|manufactured\s+(?:homes?|houses?|housing)|trailer\s+(?:homes?|parks?)|trailers?|trailas?|traylas?|double[\s-]*wides?|single[\s-]*wides?|park\s+models?|motor[\s-]*homes?|campers?|rvs?|casas?\s+m[oó]vil(?:es)?|casas?\s+m[oó]ve(?:l|is)|casas?\s+rodantes?|casas?\s+remolques?|remolques?)(?![a-zà-ÿ])/i;
+const MOBILE_HOME_NEGATION = /(?<![a-zà-ÿ])(?:not|isn'?t|it'?s\s+not|is\s+not|no\s+es|no\s+e|n[aã]o\s+[eé]|nem\s+[eé])\s+(?:in\s+)?(?:a\s+|an\s+|un\s+|una\s+|um\s+|uma\s+)?(?:mobile[\s-]*home|trailer|manufactured|casa\s+m[oó]vil|casa\s+m[oó]vel|casa\s+rodante)/i;
+const OUR_MOBILE_SHOWROOM = /mobile\s+show\s*rooms?|show\s*rooms?\s+m[oó]v(?:il|el)/gi;
+export function isMobileHomeRequest(text: string): boolean {
+  const t = clientTextOnly(text);
+  if (!t) return false;
+  const stripped = normalizeSmartPunct(t).replace(OUR_MOBILE_SHOWROOM, " ");
+  if (MOBILE_HOME_NEGATION.test(stripped)) return false;
+  return MOBILE_HOME_RE.test(stripped);
+}
+// Conversation-level: the trailer / mobile home stands from the client bubble
+// that named it until a client bubble says it is NOT one.
+export function mobileHomeStanding(history: Array<{ role: string; content: string }>): boolean {
+  let standing = false;
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const t = clientTextOnly(m.content);
+    if (!t) continue;
+    const stripped = normalizeSmartPunct(t).replace(OUR_MOBILE_SHOWROOM, " ");
+    if (MOBILE_HOME_NEGATION.test(stripped)) standing = false;
+    else if (MOBILE_HOME_RE.test(stripped)) standing = true;
+  }
+  return standing;
+}
+// Post-model backstop while a trailer / mobile home stands: the model quoted
+// (any dollar figure), offered a visit or slots, asked for the booking details
+// or wrote a [BOOK]. The caller swaps the reply for mobileHomeDeclineMessage.
+export function mobileHomeLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!mobileHomeStanding(history)) return false;
+  const t = aiText || "";
+  return /\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t);
+}
+export const MOBILE_HOME_NOTE = [
+  "CRITICAL, TRAILER / MOBILE HOME (WE DO NOT WORK IN THEM):",
+  "The client's property is a trailer, mobile home, manufactured home, RV or camper. Owner rule (2026-09-15): we do NOT do any work in those, of any size and with any floor type. No exceptions, not even \"just to take a look\".",
+  "1. Say so politely, in one or two short sentences and in the client's language: we don't do installations in trailers or mobile homes, so this one we can't take on, and close warmly (if they ever have a project in a house, condo or commercial space, happy to help). Example: \"Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!\"",
+  "2. NEVER quote a price, a rate or a total for it. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address or phone. NEVER say you need to see it in person. NEVER generate [BOOK:...].",
+  "3. If the same message also asks something unrelated, answer that part briefly and still give the decline.",
+  "4. If earlier in this conversation a price was given, a visit was offered, a slot was \"held\" or booking details were collected before the trailer / mobile home came up, that was a MISTAKE: do not confirm it, do not write [BOOK:...], apologize briefly and give the decline instead.",
+  "5. Only if the client clearly says the property is NOT a trailer or mobile home (a house, condo, apartment or commercial unit) return to the normal flow.",
+  "6. Our \"mobile showroom\" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.",
+].join("\n");
+
+// ─── "What's your number?" mid-booking must not end the booking ─────────────
+// Brickell (FB 2026-09-14): two slots offered and the details asked, then
+// "Cuál es tu número?" → the model answered with Ozzi's number alone (3 of 3
+// replays) and the visit was never set. The OWNER CONTACT rule says "ONLY this
+// number" (meaning WHICH number) and the model reads it as "say only the
+// number". While a visit is being set up (slots offered or details being
+// collected, nothing booked), a number-only reply gets the pending question
+// appended. The referral flows (under 400, bathroom, repair, floors we do not
+// do, trailer, quotes, financing) own their replies and are never touched.
+const PHONE_ONLY_EXCLUDE = /(?<![a-zà-ÿ])(?:400|square|sq\s*\.?\s*ft|sqft|pies|p[ée]s|bathroom|ba[ñn]o|banheiro|quote|presupuesto|or[çc]amento|remodel|reforma|partnership|financ\w*|trailer|mobile|application|approved|repair|reparaci|reparo)/i;
+export function isPhoneOnlyReply(text: string): boolean {
+  const t = (text || "").replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  if (!t || t.length > 170 || t.includes("?")) return false;
+  if (!OZZI_DIRECT_NUMBER.test(t)) return false;
+  return !PHONE_ONLY_EXCLUDE.test(t);
+}
+const PENDING_DETAILS_WORDS = /(?<![a-zà-ÿ])(?:name|address|phone|best\s+number|nombre|direcci[oó]n|tel[eé]fono|n[uú]mero\s+de\s+tel[eé]fono|nome|endere[çc]o|telefone)(?![a-zà-ÿ])/i;
+export function keepBookingThreadAfterPhone(history: Array<{ role: string; content: string }>, text: string, lang: "en" | "es" | "pt"): string {
+  if (!isPhoneOnlyReply(text)) return text;
+  const h = history ?? [];
+  let prev = "";
+  for (let i = h.length - 1; i >= 0; i--) if (h[i].role === "assistant") { prev = (h[i].content || "").split(/\n\n?\[SYSTEM:/)[0]; break; }
+  if (!prev || CANNED_VISIT_LINE.test(prev)) return text;
+  const details = PENDING_DETAILS_WORDS.test(prev);
+  const slots = containsSchedulingOffer(prev);
+  if (!details && !slots) return text;
+  let tail: string;
+  if (details && slots) {
+    tail = lang === "pt" ? "E pra deixar a visita marcada, me confirma o horário que funciona melhor e me passa seu nome, o endereço completo com o zip code e o melhor telefone?"
+      : lang === "es" ? "Y para dejar la visita lista, me confirmas el horario que te queda mejor y me pasas tu nombre, la dirección completa con el código postal y tu teléfono?"
+      : "And to get the visit set, which of those times works best, and can I get your name, the full address with the zip code, and the best phone number?";
+  } else if (details) {
+    tail = lang === "pt" ? "E pra deixar a visita marcada, me passa seu nome, o endereço completo com o zip code e o melhor telefone?"
+      : lang === "es" ? "Y para dejar la visita lista, me pasas tu nombre, la dirección completa con el código postal y tu teléfono?"
+      : "And to get the visit set, can I get your name, the full address with the zip code, and the best phone number?";
+  } else {
+    tail = lang === "pt" ? "E pra visita, qual dos horários funciona melhor pra você?"
+      : lang === "es" ? "Y para la visita, cuál de los horarios te queda mejor?"
+      : "And for the visit, which of those times works best for you?";
+  }
+  return text.replace(/\s+$/, "") + " " + tail;
+}
 
 // ─── Projects UNDER 400 sqft: no price, no visit, Ozzi direct ────────────────
 // Owner rule (2026-09-11): a job under 400 square feet is never sold and never
@@ -3406,6 +3503,9 @@ export async function getAIResponse(
     // never gets a canned opener; the model answers with the bathroom Ozzi
     // line in the client's language.
     const bathroomFirstMessage = mentionsBathroomProject(burst);
+    // TRAILER / MOBILE HOME (owner rule 2026-09-15): a first message that names
+    // one never gets a canned opener; the model declines in the client's language.
+    const mobileHomeFirstMessage = isMobileHomeRequest(burst);
     // CARPET backstop (owner rule 2026-07-30): every canned opener below names
     // only tile, vinyl, and hardwood, so firing one at a lead who asked about
     // carpet reads as "we don't install carpet" — which is false and is exactly
@@ -3431,7 +3531,7 @@ export async function getAIResponse(
     // responde o botão E o que a pessoa escreveu (revisão 4 dias 31/08).
     const faqPlusTyped = faqButtonPlusTypedText(burst);
     if (faqPlusTyped) console.log("[AI] First contact: FAQ button + typed text in the same burst — routing to the model");
-    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
       const lang = openerLang(burst);
       // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
       // at once, so the single-topic chain below (first match wins) answered one
@@ -3487,11 +3587,11 @@ export async function getAIResponse(
     const adContext = /\[AD REPLY:|\[Client replied to our ad\]|Client shared a post\/reel from our ad/i.test(lastMsg.content);
     const excludedTopic =
       SPECIFIC_TYPE.test(t) || SUBSTANTIVE_PRODUCT_Q.test(t) || SEE_OR_COLOR.test(t) ||
-      OTHER_TOPIC.test(t) || isRepairRequest(t) || mentionsUnsupportedFloor(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
+      OTHER_TOPIC.test(t) || isRepairRequest(t) || mentionsUnsupportedFloor(t) || isMobileHomeRequest(t) || /\bincluded?\b|what(?:'?s| is| does)\b.{0,25}\bpackage\b|come with|\blabor\s+cost\b/i.test(t);
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
-    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(burst);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
@@ -3507,6 +3607,8 @@ export async function getAIResponse(
     console.log("[AI] Hard-coded intercept skipped — a size under 400 sqft stands; the model answers with the Ozzi direct line");
   } else if (hardcoded && bathroomProjectStanding(messages)) {
     console.log("[AI] Hard-coded intercept skipped — a bathroom project stands; the model answers with the bathroom Ozzi line");
+  } else if (hardcoded && mobileHomeStanding(messages)) {
+    console.log("[AI] Hard-coded intercept skipped — a trailer / mobile home stands; the model declines");
   } else if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
     return { text: hardcoded, inputTokens: 0, outputTokens: 0 };
@@ -3608,6 +3710,13 @@ export async function getAIResponse(
   if (bathroomProjectStanding(messages)) {
     console.log("[AI] Bathroom project stands — injecting the bathroom Ozzi-direct block");
     dynamicSystem += `\n\n---\n\n${bathroomNote(smallJobReferralSent(messages))}`;
+  }
+
+  // TRAILER / MOBILE HOME standing → the decline block (owner rule 2026-09-15:
+  // we do not work in trailers / mobile homes, never a price, never a visit).
+  if (mobileHomeStanding(messages)) {
+    console.log("[AI] Trailer / mobile home stands — injecting the we-do-not-work-in-them block");
+    dynamicSystem += "\n\n---\n\n" + MOBILE_HOME_NOTE;
   }
 
   // A photo the pipeline could not read is in the latest burst → the model
@@ -3807,6 +3916,26 @@ export async function getAIResponse(
     if (bathroomLeak(messages, cleaned)) {
       console.warn("[AI] bathroom project — model priced / offered a visit / asked details; replaced with the bathroom Ozzi line");
       cleaned = bathroomReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+    }
+
+    // TRAILER / MOBILE HOME backstop (owner rule 2026-09-15): while the client
+    // said the property is a trailer / mobile home, any dollar figure, visit or
+    // slot offer, booking-details ask or [BOOK] is replaced by the decline.
+    // Every caller of getAIResponse gets this; the three webhooks keep a second net.
+    if (mobileHomeLeak(messages, cleaned)) {
+      console.warn("[AI] trailer / mobile home — model priced / offered a visit / asked details; replaced with the decline");
+      cleaned = mobileHomeDeclineMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+    }
+
+    // "What's your number?" while a visit is being set up (Brickell, FB
+    // 2026-09-14): the number alone ended the booking. Append the pending
+    // question. The referral flows own their replies and are left alone.
+    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+      const kept = keepBookingThreadAfterPhone(messages, cleaned, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      if (kept !== cleaned) {
+        console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
+        cleaned = kept;
+      }
     }
 
     // Regra do dono (28/08/2026): nada de ¿ / ¡ em espanhol — só ? e ! no final.

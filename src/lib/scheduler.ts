@@ -2097,6 +2097,18 @@ export function repairDeclineMessage(lang: Lang): string {
     : "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!";
 }
 
+// We do NOT work in trailers / mobile homes (owner rule 2026-09-15): sent by
+// the brain and the webhooks when a [BOOK], a price, a visit offer or a
+// booking-details ask leaks through while the client said the property is one
+// (ai.mobileHomeStanding). No visit / slot words, so the leak detectors never
+// flag the line itself.
+export function mobileHomeDeclineMessage(lang: Lang): string {
+  if (lang === "pt") return "Infelizmente não fazemos instalação em trailer nem em mobile home, então esse trabalho a gente não consegue pegar. Se um dia tiver um projeto em casa, apartamento ou espaço comercial, é só me chamar!";
+  return lang === "es"
+    ? "Lamentablemente no hacemos instalaciones en trailers ni casas móviles, así que este trabajo no lo podemos tomar. Si algún día tiene un proyecto en una casa, apartamento o local comercial, con gusto le ayudo."
+    : "Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!";
+}
+
 // We do NOT do epoxy, concrete/cement, microcement, resin, pavers or terrazzo
 // floors (owner rule 2026-09-09, JuanCarlos Briones / Frank Fernandez cases: a
 // paver-floor photo and an "Epoxy flooring / Self leveling concrete" request

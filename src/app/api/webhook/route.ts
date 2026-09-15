@@ -46,7 +46,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -56,7 +56,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -155,6 +155,13 @@ async function processBookingCommand(
   // renovation, shower / tub / vanity work or "do you do bathrooms?" is never
   // booked through the chat, bathroom quotes and appointments are Ozzi's. A
   // [BOOK] while a bathroom project stands is replaced by the bathroom Ozzi line.
+  // TRAILER / MOBILE HOME guard (owner rule 2026-09-15): we do not work in
+  // trailers, mobile homes, manufactured homes, RVs or campers. A [BOOK] while
+  // the client said the property is one of those is replaced by the decline.
+  if (mobileHomeStanding(history)) {
+    console.warn("[IG] booking blocked — trailer / mobile home (we do not work in them); sending the decline");
+    return { response: mobileHomeDeclineMessage(lang), booked: false };
+  }
   if (bathroomProjectStanding(history)) {
     console.warn("[IG] booking blocked — bathroom project (Ozzi direct); sending the bathroom Ozzi line");
     return { response: bathroomReply(history, lang), booked: false };
@@ -1913,6 +1920,15 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && unsupportedFloorLeak(history, safeAiText)) {
       console.warn("[IG] unsupported floor — model offered a visit / asked for booking details; replacing with the decline");
       safeAiText = unsupportedFloorReply(history, lang);
+    }
+
+    // TRAILER / MOBILE HOME backstop (owner rule 2026-09-15): while the client
+    // said the property is a trailer / mobile home, a price, a visit or slot
+    // offer, a booking-details ask or a [BOOK] from the model is replaced by
+    // the deterministic decline.
+    if (!isBookingConfirmed && mobileHomeLeak(history, safeAiText)) {
+      console.warn("[IG] trailer / mobile home — model priced / offered a visit / asked details; replacing with the decline");
+      safeAiText = mobileHomeDeclineMessage(lang);
     }
 
     // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
