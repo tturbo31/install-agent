@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { supabaseAdmin } from "./supabase";
 
 const SCHEDULER_URL = "https://wtyezgfzzetfrhoaqemt.supabase.co";
 const SCHEDULER_ANON_KEY =
@@ -264,6 +265,76 @@ async function insertLostSlotRace(
   }
 }
 
+// ─── Rastro de agendamentos (16/09/2026) ─────────────────────────────────────
+// A plataforma APAGA a linha de bookings no cancelamento e na remarcação (sem
+// cancelled_at), então a agenda atual não mostra quem ocupava um horário no
+// passado. Até 16/09 o log da rota ("route|book|…") servia de rastro para a
+// auditoria (revisão 14/09: reconstruir a grade no instante de cada oferta);
+// com a rota fora, o rastro fica no mesmo lugar (platform_settings do app), uma
+// linha compacta por evento, best-effort — nunca bloqueia nem falha a visita:
+//   booktrail|<kind>|<igsid>|<YYYY-MM-DD HH:MM>|<vendedor>|<bookingId>|<ISO>
+// kind: "book" / "reschedule" = visita criada por este código (só depois de
+// vencer a corrida de slot); "cancel" / "reschedule-old" = linha apagada por
+// este código. O bookingId casa criação e remoção. Visita apagada pelo dono na
+// plataforma continua invisível (como sempre foi). GC ocasional.
+export const BOOKING_TRAIL_KEEP_DAYS = 60;
+export type BookingTrailKind = "book" | "reschedule" | "cancel" | "reschedule-old";
+export interface BookingTrailEvent {
+  igsid?: string | null;
+  date: string;
+  time: string;
+  seller?: string | null;
+  bookingId?: string | null;
+}
+export function bookingTrailKey(kind: BookingTrailKind, ev: BookingTrailEvent, now: Date = new Date()): string {
+  const clean = (s: unknown, max: number) => (String(s ?? "").replace(/\|/g, "/").trim() || "?").slice(0, max);
+  return `booktrail|${kind}|${clean(ev.igsid, 40)}|${String(ev.date ?? "").slice(0, 10)} ${hhmm(ev.time)}|${clean(ev.seller, 40)}|${clean(ev.bookingId, 40)}|${now.toISOString()}`;
+}
+export function bookingTrailExpired(key: string, nowMs: number = Date.now(), keepDays: number = BOOKING_TRAIL_KEEP_DAYS): boolean {
+  const ts = Date.parse(key.split("|").pop() ?? "");
+  return Number.isFinite(ts) && ts < nowMs - keepDays * 86400000;
+}
+export function igsidFromBookingEmail(email: string | null | undefined): string | null {
+  const m = /^ia-([^@]+)@/.exec((email ?? "").toString().trim());
+  return m ? m[1] : null;
+}
+export function logBookingTrail(kind: BookingTrailKind, ev: BookingTrailEvent): void {
+  try {
+    const key = bookingTrailKey(kind, ev);
+    console.log(`[booktrail] ${key}`);
+    void supabaseAdmin
+      .from("platform_settings")
+      .insert({ platform: key, paused: false })
+      .then(
+        ({ error }) => { if (error) console.warn("[booktrail] persist failed:", error.message); },
+        (err: unknown) => console.warn("[booktrail] persist rejected:", String((err as Error)?.message ?? err))
+      );
+    if (Math.random() < 0.02) void pruneBookingTrail();
+  } catch {
+    /* best-effort */
+  }
+}
+async function pruneBookingTrail(): Promise<void> {
+  try {
+    const { data, error } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", "booktrail|%");
+    if (error || !data) return;
+    for (const r of data as Array<{ platform: string }>) {
+      if (bookingTrailExpired(r.platform)) await supabaseAdmin.from("platform_settings").delete().eq("platform", r.platform);
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+// id do vendedor → nome (para o rastro do cancelamento, que só tem seller_id).
+async function sellerNameMap(db: SchedulerDb): Promise<Map<string, string>> {
+  try {
+    const { data } = await db.from("sellers").select("id,name");
+    return new Map(((data ?? []) as Array<{ id: string; name: string }>).map((s) => [s.id, s.name]));
+  } catch {
+    return new Map();
+  }
+}
+
 export async function createBooking(req: BookingRequest): Promise<BookingResult> {
   try {
     const db = await getAuthenticatedClient();
@@ -380,6 +451,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     if (await insertLostSlotRace(db, data.id, seller.id, req.bookingDate, req.bookingTime)) {
       return { success: false, error: `No availability for ${req.bookingDate} at ${req.bookingTime}.` };
     }
+    logBookingTrail("book", { igsid: req.igsid ?? null, date: req.bookingDate, time: req.bookingTime, seller: seller.name, bookingId: data.id });
 
     return {
       success: true,
@@ -397,11 +469,14 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
 export async function cancelBooking(bookingId: string): Promise<{ success: boolean; error?: string }> {
   try {
     const db = await getAuthenticatedClient();
+    // Rastro: lê a linha antes de apagar (best-effort; a remoção não depende disso).
+    const { data: row } = await db.from("bookings").select("id, email, booking_date, booking_time, seller_id").eq("id", bookingId).maybeSingle();
     const { error } = await db.from("bookings").delete().eq("id", bookingId);
     if (error) {
       console.error("Cancel booking error:", error);
       return { success: false, error: error.message };
     }
+    if (row) logBookingTrail("cancel", { igsid: igsidFromBookingEmail(row.email), date: row.booking_date, time: row.booking_time, seller: row.seller_id, bookingId: row.id });
     return { success: true };
   } catch (err) {
     console.error("Cancel booking exception:", err);
@@ -433,7 +508,7 @@ export async function cancelClientBooking(
 
     const { data: bookings, error: fetchErr } = await db
       .from("bookings")
-      .select("id, booking_date, booking_time, address")
+      .select("id, booking_date, booking_time, address, seller_id")
       .like("email", `ia-${igsid}@%`)
       .gte("booking_date", today)
       .order("booking_date", { ascending: true })
@@ -444,12 +519,14 @@ export async function cancelClientBooking(
 
     let cancelled = 0;
     const visits: CancelledVisit[] = [];
+    const sellerNames = await sellerNameMap(db);
     for (const b of bookings) {
       const { error } = await db.from("bookings").delete().eq("id", b.id);
       if (!error) {
         cancelled++;
         visits.push({ date: b.booking_date, time: b.booking_time, address: b.address ?? null });
         console.log(`Cancelled booking ${b.id} on ${b.booking_date} at ${b.booking_time}`);
+        logBookingTrail("cancel", { igsid, date: b.booking_date, time: b.booking_time, seller: sellerNames.get(b.seller_id ?? "") ?? b.seller_id, bookingId: b.id });
       } else {
         console.error(`Cancel delete failed for booking ${b.id}:`, error.message);
       }
@@ -500,7 +577,7 @@ export async function rescheduleClientBooking(
     // 1. Find the existing upcoming booking(s) to move.
     const { data: olds, error: fetchErr } = await db
       .from("bookings")
-      .select("id, name, phone, address, notes, source, creative_url, referral_source, booking_date, booking_time")
+      .select("id, name, phone, address, notes, source, creative_url, referral_source, booking_date, booking_time, seller_id")
       .like("email", `ia-${igsid}@%`)
       .gte("booking_date", today)
       .order("booking_date", { ascending: true })
@@ -591,13 +668,17 @@ export async function rescheduleClientBooking(
     if (await insertLostSlotRace(db, created.id, seller.id, newDate, newTime)) {
       return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
     }
+    logBookingTrail("reschedule", { igsid, date: newDate, time: newTime, seller: seller.name, bookingId: created.id });
 
     // 4. New booking is in place — now remove the old one(s).
     let removed = 0;
     for (const b of olds) {
       if (b.id === created.id) continue;
       const { error: delErr } = await db.from("bookings").delete().eq("id", b.id);
-      if (!delErr) removed++;
+      if (!delErr) {
+        removed++;
+        logBookingTrail("reschedule-old", { igsid, date: b.booking_date, time: b.booking_time, seller: sellers.find((s) => s.id === b.seller_id)?.name ?? b.seller_id, bookingId: b.id });
+      }
     }
     console.log(`[reschedule] ${igsid}: new ${newDate} ${newTime} (seller ${seller.name}), removed ${removed} old booking(s)`);
 
