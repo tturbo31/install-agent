@@ -78,6 +78,11 @@ const prompt = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "ut
 ck("regra ZIP ALREADY GIVEN no prompt", /ZIP ALREADY GIVEN: if the client ALREADY typed their zip code earlier/.test(prompt));
 ck("Step 3 / pedido único intactos", /Ask for the client's name, full address with the ZIP CODE, and phone ONLY after/.test(prompt) && /the FULL address WITH THE ZIP CODE, AND the phone together in ONE message/.test(prompt));
 ck("prompt não pede mais o ZIP antes de oferecer horários (rota removida 16/09/2026)", !/zip code question/.test(prompt) && !/send me the zip and I'll check the schedule/.test(prompt) && !/ZIP CODE FIRST/.test(prompt));
+// Dreaming (memória noturna): em 16/09 o learnings.md ainda ensinava "zip primeiro, depois dois horários"
+// e o bot respondeu "Where r u located" pedindo o ZIP com a frase exata da memória. A análise noturna
+// precisa da trava para não reaprender o padrão das conversas anteriores a 16/09.
+const dreaming = readFileSync(join(process.cwd(), "src/lib/dreaming.ts"), "utf-8");
+ck("Dreaming: trava 'ZIP CODE IS NEVER ASKED BEFORE THE VISIT TIMES' no prompt de análise", /7\. ZIP CODE IS NEVER ASKED BEFORE THE VISIT TIMES \(owner rule 2026-09-16/.test(dreaming) && /NEVER extract "ask the zip, then offer two slots" as a pattern/.test(dreaming));
 
 console.log("\n━━ 5. zipsInText ━━");
 ck("ZIP sozinho", zipsInText("33130").join() === "33130");
