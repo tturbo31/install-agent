@@ -11,7 +11,7 @@
 // booking episode counts: nothing before the last completed booking
 // confirmation, nothing older than 14 days. Real client bubbles only — nothing
 // is synthesized.
-import { zipsInText } from "./geo/zip-geo";
+import { zipsInText } from "./zip-text";
 
 export type HistoryRow = { role: string; content: string; created_at?: string | null };
 

@@ -1,4 +1,4 @@
-import { zipsInText, cityAliasZip } from "./geo/zip-geo";
+import { zipsInText } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
@@ -690,7 +690,7 @@ export function clientEngagedScheduling(userText: string): boolean {
   // availability phrases ("I get off at 5:30", "after work", "off work") — these
   // ARE the client engaging scheduling, so the anti-pressure guard must not fire
   // and mangle the bot's slot reply into a dangling fragment.
-  // "Soonest" phrases (28/08/2026, caught by route-offer-verify T9): "any day
+  // "Soonest" phrases (28/08/2026): "any day
   // works, whatever is soonest", "asap", "the earliest you have", "today if
   // possible", "lo antes posible", "cuanto antes", "qualquer dia" were NOT
   // counted as engaging scheduling, so the anti-pressure strip deleted the very
@@ -708,20 +708,10 @@ export function clientEngagedScheduling(userText: string): boolean {
 // the missing name/phone (often citing "Friday at 5pm") is not pressure, and
 // stripping it left the client unanswered until the owner stepped in manually.
 // Exported for the conversion-fixes eval guard.
-// Rota (27/08/2026): com a nota ZIP CODE FIRST, a proposta da visita pede o ZIP
-// em vez de listar horários ("...I bring the samples. What's the zip code of the
-// property?"). Não tem clock time nem "what time works", mas É a proposta da
-// visita — conta como push para o anti-pressão não deixar o próximo turno
-// informativo ganhar uma lista de horários.
-export function isVisitProposalWithZipAsk(text: string): boolean {
-  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
-  return /\b(?:visit|measure|samples?|estimate|visita|medir|muestras|amostras|or[cç]amento)\b/i.test(t) && /\bzip\b|c[oó]digo\s+postal/i.test(t) && /\?/.test(t);
-}
-
 // ZIP já digitado pelo cliente (caso Adelyn, IG 27/08/2026): o bot pediu o
 // ZIP para posicionar a visita, a cliente mandou "33176", escolheu "1pm" e o
 // pedido de dados ainda dizia "the full property address with the zip code".
-// O prompt e a nota de rota agora instruem o modelo; este backstop apaga o
+// O prompt instrui o modelo; este backstop apaga o
 // trecho "with/including the zip code" (EN/ES/PT) do pedido quando algum ZIP
 // já está numa bolha do cliente. Só mexe no pedido de dados, nunca numa pergunta
 // isolada de ZIP ("What's the zip code for that address?") nem nas tags.
@@ -786,30 +776,14 @@ export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
   const recentAssistantPushed = [...messages]
     .filter((m) => m.role === "assistant")
     .slice(-3)
-    .some((m) => isSchedulingPush(m.content) || isVisitProposalWithZipAsk(m.content));
+    .some((m) => isSchedulingPush(m.content));
   const lastMsg = messages[messages.length - 1];
-  // Resposta ao pedido de ZIP (rota, 27/08/2026): nossa última mensagem pediu o
-  // ZIP na proposta da visita e o cliente respondeu com o ZIP, a cidade ou uma
-  // resposta curta sem pergunta → o próximo turno DEVE oferecer os horários;
-  // isso é o fluxo, não pressão. Uma pergunta informativa ("is it waterproof?")
-  // continua protegida: a lista de horários colada nela é cortada.
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (lastMsg?.role === "user" && lastAssistant && isVisitProposalWithZipAsk(lastAssistant.content) && isLocationAnswer(lastMsg.content)) {
-    return false;
-  }
   return (
     recentAssistantPushed &&
     lastMsg?.role === "user" &&
     !clientEngagedScheduling(lastMsg.content) &&
     !clientConfirmedSlot(messages)
   );
-}
-
-export function isLocationAnswer(userText: string): boolean {
-  const t = (userText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
-  if (!t) return false;
-  if (zipsInText(t).length > 0 || cityAliasZip(t) !== null) return true;
-  return t.split(/\s+/).length <= 4 && !/\?/.test(t);
 }
 
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
@@ -3196,26 +3170,21 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     /\bnecesito\s+(?:confirmar|verificar|revisar)\s+cu[aá]l\b/.source,
     /\bdebo\s+(?:confirmar|preguntar|verificar|revisar)\b/.source,
     /\bespera,?\s+d[eé]jame\b|\bd[eé]jame\s+(?:recalcular|rehacer|corregir)\b/.source,
-    // ROUTE-NOTE leak (route-offer-verify, 2026-08-27): with the internal
-    // "ROUTE PRIORITY" schedule note in context the model narrated its slot
-    // selection to the client — "The client can only do mornings before noon,
-    // so from the schedule the matching slots are Monday at 9am or 11am … I
-    // need to offer exactly two. Tuesday 9am and 11am fit the route priority
-    // and the client's constraint best." None of these phrases is ever
-    // client-facing; the note's own labels least of all.
+    // SLOT-SELECTION narration (2026-08-27): with the schedule block in context
+    // the model narrated its slot selection to the client — "The client can
+    // only do mornings before noon, so from the schedule the matching slots are
+    // Monday at 9am or 11am … I need to offer exactly two." None of these
+    // phrases is ever client-facing.
     /\bthe\s+client(?:'s)?\s+(?:can|cannot|can'?t|only|needs?|prefers?|constraints?|is|was|has|hasn'?t|did|didn'?t)\b/.source,
     /\bi\s+need\s+to\s+(?:offer|pick|choose|select|name|list)\b/.source,
-    /\bfits?\s+the\s+route\b|\broute\s+priorit(?:y|ies)\b|\boffer\s+first\b|\bthe\s+matching\s+slots?\b|\bfrom\s+the\s+schedule\s+(?:the|above|in\s+context)\b|\bexactly\s+two\s+(?:slots?|times?|options?)\b|\bzip\s+code\s+first\b/.source,
-    /\bprioridad\s+de\s+ruta\b|\bprioridade\s+de\s+rota\b|\bel\s+cliente\s+(?:s[oó]lo|solo|puede|necesita|prefiere)\b|\bo\s+cliente\s+(?:s[oó](?![a-z])|pode|precisa|prefere)(?![a-z])/.source,
-    // DATE-FIRST note labels (2026-08-27): "priority day", "70% booked", "fill
-    // rate", "preferred seller" and their ES/PT forms are never client-facing.
-    /\bpriority\s+day\b|\bd[ií]a\s+prioritari[oa]\b|\bdia\s+priorit[áa]ri[oa]\b|\bfill\s+rate\b|\bpreferred\s+seller\b|\bvendedor\s+prefer(?:ido|ente)\b|\b\d{1,3}\s?%\s+(?:booked|full|reserved|ocupad[oa]|reservad[oa]|llen[oa]|chei[oa])\b/.source,
-    // SOONEST-DAY / EARLIEST-FIRST note vocabulary (2026-08-28): the note now
-    // says "no empty hours", "fills from the first hour", "owner's rule",
-    // "soonest day first". None of it is client-facing. "The earliest I have
-    // is Monday at 9am" IS client-facing and must survive — hence the narrow
-    // phrasing (no bare "earliest").
-    /\bno\s+empty\s+hours\b|\bempty\s+hours\b|\bno\s+holes\b|\bsoonest\s+day\s+first\b|\bowner'?s\s+rule\b|\bregra\s+do\s+dono\b|\bregla\s+del\s+due[ñn]o\b|\bfills?\s+from\s+the\s+first\s+hour\b|\bfill\s+from\s+the\s+first\s+hour\b|\bdate\s+first\b/.source,
+    /\bthe\s+matching\s+slots?\b|\bfrom\s+the\s+schedule\s+(?:the|above|in\s+context)\b|\bexactly\s+two\s+(?:slots?|times?|options?)\b/.source,
+    /\bel\s+cliente\s+(?:s[oó]lo|solo|puede|necesita|prefiere)\b|\bo\s+cliente\s+(?:s[oó](?![a-z])|pode|precisa|prefere)(?![a-z])/.source,
+    // SOONEST-DAY / EARLIEST-FIRST schedule vocabulary (2026-08-28): the
+    // schedule block says "no empty hours", "fills from the first hour",
+    // "owner's rule", "soonest day first". None of it is client-facing. "The
+    // earliest I have is Monday at 9am" IS client-facing and must survive —
+    // hence the narrow phrasing (no bare "earliest").
+    /\bno\s+empty\s+hours\b|\bempty\s+hours\b|\bno\s+holes\b|\bsoonest\s+day\s+first\b|\bowner'?s\s+rule\b|\bregra\s+do\s+dono\b|\bregla\s+del\s+due[ñn]o\b|\bfills?\s+from\s+the\s+first\s+hour\b|\bfill\s+from\s+the\s+first\s+hour\b/.source,
     // Revisão 4 dias 31/08: dois monólogos inteiros furaram o scrubber DEPOIS do
     // deploy de 28/08. Keky (WA 29/08): "Wait, I notice this is a vague reply and
     // I already offered those two times before the system context loaded. Let me

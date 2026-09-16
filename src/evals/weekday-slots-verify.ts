@@ -108,7 +108,7 @@ function main() {
   console.log("\n[5] Guardas estáticas: a coluna chega e ninguém volta a ler s.time_slots");
   const sched = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
   const selects = sched.match(/\.select\("id,name,priority,enabled_weekdays[^"]*"\)/g) ?? [];
-  ck(`todo SELECT de sellers pede weekday_time_slots (${selects.length} encontrados)`, selects.length >= 6 && selects.every((s) => s.includes("weekday_time_slots")), selects.filter((s) => !s.includes("weekday_time_slots")).join(" | "));
+  ck(`todo SELECT de sellers pede weekday_time_slots (${selects.length} encontrados; eram 6 até a rota sair em 16/09/2026)`, selects.length >= 5 && selects.every((s) => s.includes("weekday_time_slots")), selects.filter((s) => !s.includes("weekday_time_slots")).join(" | "));
   ck("sellerOpenForSlot usa a grade do dia", /slotsForWeekday\(s, weekday\)\.includes\(slot\)/.test(sched));
   ck("nenhuma varredura de horários lê s.time_slots direto", !/s\.time_slots\.(forEach|includes)|of s\.time_slots/.test(sched), (sched.match(/.{0,60}s\.time_slots\.(forEach|includes).{0,20}/g) ?? []).join(" | "));
   ck("slotsForWeekday é exportado (webhooks/evals podem checar a grade)", /export function slotsForWeekday/.test(sched));

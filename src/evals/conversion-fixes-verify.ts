@@ -25,6 +25,7 @@ import {
 import { OPENER_ES, OPENER_EN, OPENER_LOCATION_EN, OPENER_LOCATION_ES, WHAT_IS_INCLUDED_ASK_TYPE } from "@/lib/system-prompt";
 import { stripInvertedPunctuation, stripInternalMarkers } from "@/lib/outbound-text";
 import { readFileSync } from "fs";
+import { getEasternDateContext } from "../lib/scheduler";
 import { join } from "path";
 
 // Load .env.local (same pattern as regression-suite) — section 8's negative
@@ -170,7 +171,7 @@ check("informational question with no timing words still does NOT engage schedul
   check("stripInvertedPunctuation: apaga ¿ e ¡ e mantém o resto", stripInvertedPunctuation("¡Perfecto! ¿Cuál te queda mejor?") === "Perfecto! Cuál te queda mejor?");
   check("stripInvertedPunctuation: não mexe em texto sem os sinais (nem em quebras de parágrafo)", stripInvertedPunctuation("Hola.\n\nQué tal?") === "Hola.\n\nQué tal?");
   check("envio (stripInternalMarkers, 3 canais) também limpa ¿¡", stripInternalMarkers("¿Te funciona? [SYSTEM: FOLLOWUP_NUDGE]") === "Te funciona?");
-  const srcFiles = ["src/lib/scheduler.ts", "src/lib/system-prompt.ts", "src/lib/followup.ts", "src/lib/quote-followup.ts", "src/lib/route-optimizer.ts", "src/lib/ai.ts"];
+  const srcFiles = ["src/lib/scheduler.ts", "src/lib/system-prompt.ts", "src/lib/followup.ts", "src/lib/quote-followup.ts", "src/lib/ai.ts"];
   const offenders: string[] = [];
   for (const f of srcFiles) {
     const lines = readFileSync(join(process.cwd(), f), "utf-8").split(/\r?\n/);
@@ -319,12 +320,25 @@ async function repeatInterceptChecks() {
   // re-tapped "What is the installation process?" landed 9s apart, the
   // debounce merged them into one turn and the intercept silenced BOTH.
   // The burst has new content → the model MUST answer (never [REACT_ONLY]).
+  const romullaScheduleCtx = () => {
+    const DN = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const MN = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const add = (d: string, n: number) => { const x = new Date(d + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+    const show = (d: string) => { const x = new Date(d + "T12:00:00Z"); return `• ${DN[x.getUTCDay()]}, ${MN[x.getUTCMonth()]} ${x.getUTCDate()}, ${x.getUTCFullYear()} [${d}]: 9am, 11am, 1pm, 3pm, 5pm`; };
+    const today = new Date().toISOString().slice(0, 10);
+    let d1 = add(today, 2); while ([0, 6].includes(new Date(d1 + "T12:00:00Z").getUTCDay())) d1 = add(d1, 1);
+    const d2 = add(d1, 1);
+    return `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${show(d1)}\n${show(d2)}\n\nIMPORTANT — read carefully before offering any time:\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'.\n- SOONEST DAY FIRST: take your two options from the FIRST line above that has open times and take that line's EARLIEST two open times.]`;
+  };
   const burstWithSchedule = await getAIResponse(
     [
       { role: "user", content: "What is the installation process?", at: "2026-07-23T19:22:10Z" },
       { role: "assistant", content: "Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?", at: "2026-07-23T19:22:25Z" },
       { role: "user", content: "Can you schedule to see my house", at: "2026-07-23T19:22:30Z" },
-      { role: "user", content: "What is the installation process?", at: "2026-07-23T19:22:39Z" },
+      // Agenda sintética no último balão, como o webhook faz em produção: sem a
+      // agenda no contexto o modelo às vezes só re-pergunta o tipo de piso
+      // ("Before I check availability, which flooring type…") — medido 16/09/2026.
+      { role: "user", content: "What is the installation process?" + romullaScheduleCtx(), at: "2026-07-23T19:22:39Z" },
     ],
     null, null, null, false
   );

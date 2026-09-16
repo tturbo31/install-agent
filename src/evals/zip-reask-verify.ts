@@ -9,13 +9,15 @@
  *     resto da frase intacto e as tags ([BOOK], [NOTIFY_OWNER]) protegidas.
  *  3. Nunca toca em pergunta isolada de ZIP ("What's the zip code for that
  *     address?") nem em frase sem ZIP.
- *  4. Prompt e nota ROUTE PRIORITY carregam a instrução.
+ *  4. Prompt carrega a instrução (regra ZIP ALREADY GIVEN).
+ *  5. zipsInText (zip-text.ts): "33130" sozinho é ZIP; "$33130", "33130 sqft",
+ *     "apt 33130" e "33055 SW 12 St" (número da casa) não são.
  * Run: npx tsx src/evals/zip-reask-verify.ts
  */
 import { clientAlreadyGaveZip, stripZipReask, isAskingForBookingInfo } from "../lib/ai";
+import { zipsInText } from "../lib/zip-text";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { buildRoutePriorityNote, getRouteConfig, type DayRanking } from "../lib/route-optimizer";
 
 let pass = 0, fail = 0; const fails: string[] = [];
 function ck(name: string, cond: boolean, detail = "") {
@@ -71,15 +73,20 @@ const offer = "That zip is right in our area! I have Friday at 9am or 1pm, which
 ck("gate: pedido de dados passa; oferta de horários que cita o ZIP sai intacta", isAskingForBookingInfo(cases[0][0]) && stripZipReask(offer) === offer);
 ck("resultado ainda pede nome+endereço+telefone", isAskingForBookingInfo(stripZipReask(cases[0][0])) && /name/.test(stripZipReask(cases[0][0])) && /address/.test(stripZipReask(cases[0][0])) && /phone/.test(stripZipReask(cases[0][0])));
 
-console.log("\n━━ 4. prompt + nota de rota ━━");
+console.log("\n━━ 4. prompt ━━");
 const prompt = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
 ck("regra ZIP ALREADY GIVEN no prompt", /ZIP ALREADY GIVEN: if the client ALREADY typed their zip code earlier/.test(prompt));
 ck("Step 3 / pedido único intactos", /Ask for the client's name, full address with the ZIP CODE, and phone ONLY after/.test(prompt) && /the FULL address WITH THE ZIP CODE, AND the phone together in ONE message/.test(prompt));
-const day: DayRanking = { dateStr: "2026-09-01", displayDate: "Tuesday, September 1, 2026 [2026-09-01]", ranked: [{ slot: "09:00", score: 10, tier: "great", sellers: [], best: null } as never, { slot: "13:00", score: 20, tier: "great", sellers: [], best: null } as never], capacity: 4, open: 2 } as never;
-const note = buildRoutePriorityNote([day], { lat: 25.6, lng: -80.3, zip: "33176", label: "33176", source: "zip" }, getRouteConfig(), (s) => s) ?? "";
-ck("nota ROUTE PRIORITY avisa que o ZIP 33176 já foi dado", /ALREADY gave their zip code \(33176\)/.test(note) && /do NOT ask for the zip code again/.test(note), note);
-const noteNoZip = buildRoutePriorityNote([day], { lat: 25.6, lng: -80.3, label: "Kendall", source: "city" }, getRouteConfig(), (s) => s) ?? "";
-ck("sem ZIP (cidade) a nota não promete ZIP", !/ALREADY gave their zip code/.test(noteNoZip));
+ck("prompt não pede mais o ZIP antes de oferecer horários (rota removida 16/09/2026)", !/zip code question/.test(prompt) && !/send me the zip and I'll check the schedule/.test(prompt) && !/ZIP CODE FIRST/.test(prompt));
+
+console.log("\n━━ 5. zipsInText ━━");
+ck("ZIP sozinho", zipsInText("33130").join() === "33130");
+ck("ZIP dentro do endereço", zipsInText("1 Main St, Miami FL 33176").join() === "33176");
+ck("ZIP depois de Ft Lauderdale", zipsInText("Ft Lauderdale 33301").join() === "33301");
+ck("dólares / sqft não são ZIP", zipsInText("$33130 for 33150 sqft").length === 0 && zipsInText("33150 SQFT").length === 0);
+ck("apartamento não é ZIP", zipsInText("apt 33130").length === 0 && zipsInText("#33130").length === 0);
+ck("número da casa não é ZIP", zipsInText("33055 SW 12 St").length === 0 && zipsInText("33055 Southwest 12th Street").length === 0);
+ck("fora de 33/34 não é ZIP", zipsInText("10001").length === 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) { console.log("FAILS:\n - " + fails.join("\n - ")); process.exit(1); }

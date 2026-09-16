@@ -91,17 +91,16 @@ console.log("\n━━ 3. Corte de HOJE: enlatadas usam o MESMO limite do booking
   ck("needTimeChoiceMessage e slotConflictRecoveryMessage usam a constante (>= 2 usos)", cutoffs.length >= 2, `${cutoffs.length} usos`);
 }
 
-console.log("\n━━ 4. Scrubber conhece o vocabulário NOVO da nota ━━");
+console.log("\n━━ 4. Scrubber conhece o vocabulário da regra SOONEST DAY FIRST ━━");
 {
+  // (a nota de rota — "priority day", "% booked", "offer first" — foi removida em 16/09/2026; só o vocabulário da agenda fica)
   const leaks = [
     "The soonest day first rule says Monday. I have Monday at 9am or 11am, which works better for you?",
-    "The priority day is Monday and it is 50% booked. I have 9am or 11am, which works better?",
     "Per the owner's rule I fill from the first hour. I have Monday at 9am or 11am, does that work?",
-    "The offer first times are 9am and 11am, and also open are 1pm and 3pm. Which works better for you?",
   ];
   for (const t of leaks) {
     const out = stripReasoningLeak(t);
-    ck(`limpa: ${JSON.stringify(t.slice(0, 46))}`, !/soonest day first|owner'?s rule|offer first|also open|priority day|% booked|first hour/i.test(out), out);
+    ck(`limpa: ${JSON.stringify(t.slice(0, 46))}`, !/soonest day first|owner'?s rule|first hour/i.test(out), out);
   }
   // A resposta legítima tem que sobreviver inteira ("earliest" sozinho é do cliente).
   const legit = [
