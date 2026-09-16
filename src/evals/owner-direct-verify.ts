@@ -163,7 +163,7 @@ console.log("\n[4] bookingDataLooksComplete / forcedBookRetryReason (casos reais
   ck("pergunta legítima com dados incompletos: sem retry", forcedBookRetryReason("Almost set! What's the zip code for that address?", alex.slice(0, 10), false) === null);
   const leak = stripReasoningLeak(alexReply);
   ck("stripReasoningLeak remove 'Wait, I already have...'", !/Wait, I already/.test(leak) && /hold that for you/.test(leak), leak);
-  ck("BOOK_NOW_NOTE: tag, tipo não obrigatório, só o nome se faltar", /\[BOOK:/.test(BOOK_NOW_NOTE) && /flooring type is NOT required/i.test(BOOK_NOW_NOTE) && /name alone/i.test(BOOK_NOW_NOTE));
+  ck("BOOK_NOW_NOTE: tag, tipo não obrigatório, nome NÃO obrigatório (nunca pedir)", /\[BOOK:/.test(BOOK_NOW_NOTE) && /flooring type is NOT required/i.test(BOOK_NOW_NOTE) && /name is NOT required/i.test(BOOK_NOW_NOTE) && !/name alone/i.test(BOOK_NOW_NOTE));
 }
 
 console.log("\n[4b] fotos/amostras com <400 sqft: resposta fixa em vez da linha de insistência");

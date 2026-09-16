@@ -21,7 +21,7 @@ const prompt = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "ut
 ck("seção SOUND LIKE A REAL PERSON TEXTING", /SOUND LIKE A REAL PERSON TEXTING/.test(prompt));
 ck("proíbe 'Great question' de abertura", /no "Great question", "Good question"/.test(prompt));
 ck("proíbe copiar exemplos palavra por palavra", /NEVER copy the example sentences in this prompt word for word/.test(prompt));
-ck("variação mantém 'zip code' e nome+endereço+telefone (guards)", /always the words "zip code" or "código postal", always name, address and phone together/.test(prompt));
+ck("variação mantém 'zip code' e endereço+telefone juntos, nunca o nome (guards, 16/09)", /always the words "zip code" or "código postal", always address and phone together, never the name/.test(prompt));
 ck("enlatados 'copy word for word' preservados", /every canned response marked "copy word for word" EXACTLY as written/.test(prompt) && /Copy it word for word/.test(prompt));
 
 console.log("\n━━ 2. openers enlatados ━━");

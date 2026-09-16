@@ -108,7 +108,7 @@ const CONVERSATIONS: Conversation[] = [
         ],
       },
       {
-        client: "My address is 1234 SW 8th St, Miami. Phone is (305) 555-1234",
+        client: "My address is 1234 SW 8th St, Miami FL 33135. Phone is (305) 555-1234",
         checks: [
           { label: "Gera tag [BOOK:...]",   fn: r => /\[BOOK:/i.test(r) },
           { label: "Texto antes da tag ≤ 6 palavras", fn: r => {

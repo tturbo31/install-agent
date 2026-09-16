@@ -5,7 +5,7 @@
  *     a regra SOONEST DAY FIRST continua.
  *  B. needTimeChoiceMessage / slotConflictRecoveryMessage oferecem os PRIMEIROS horários do dia (ordem do relógio).
  *  C. Modelo: proposta de visita SEM pedir ZIP antes; oferece exatamente 2 horários = os dois primeiros
- *     do dia mais próximo com vaga; cliente escolhe → pede nome + endereço com ZIP + telefone juntos.
+ *     do dia mais próximo com vaga; cliente escolhe → pede endereço com ZIP + telefone juntos, SEM pedir o nome (regra do dono 16/09).
  * Run: npx tsx src/evals/no-route-verify.ts
  */
 import { readFileSync } from "fs";
@@ -97,7 +97,7 @@ async function run() {
     { role: "user", content: `${first2[0]} works${sys()}` },
   ]);
   console.log("   C2 →", t2.replace(/\s+/g, " ").slice(0, 320));
-  ck("C2: pede o nome", /\bname\b/i.test(t2), t2);
+  ck("C2: NÃO pede o nome (regra do dono 16/09)", !/\bname\b/i.test(t2), t2);
   ck("C2: pede o endereço com o zip code", /\baddress\b/i.test(t2) && ZIP_ASK.test(t2), t2);
   ck("C2: pede o telefone", /\bphone\b|\bnumber\b/i.test(t2), t2);
   ck("C2: não gera [BOOK] sem os dados", !/\[BOOK:/i.test(t2), t2);

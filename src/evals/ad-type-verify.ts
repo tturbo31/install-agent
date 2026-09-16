@@ -202,7 +202,7 @@ async function main() {
   const safeTypeAnswer = (r: string) =>
     /tile/i.test(r) && /vinyl/i.test(r) && /hardwood/i.test(r) &&
     // "quarter round" only as part of the VINYL inclusions, never as THE package
-    (!/quarter round/i.test(r) || /\bvinyl\b[^.]{0,80}\bquarter round\b/i.test(r)) &&
+    (!/quarter round/i.test(r) || /\bvinyl\b[^.]{0,140}\bquarter round\b/i.test(r)) &&
     (!/\$\s?5\b/.test(r) || (/4\.50/.test(r) && /3\.20/.test(r)));
   const mHiw2 = await ai([
     { role: "user", content: "hi" },

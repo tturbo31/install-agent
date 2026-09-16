@@ -1445,7 +1445,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
         "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
         "\n- NEVER tell a client a time was 'just taken', is 'no longer available', or ask them to 'pick another time'. If a time is not listed, simply offer a different time that IS listed, naturally." +
         "\n- ONE EXCEPTION, and it is mandatory: if the client is ACCEPTING a day/time YOU offered earlier in this same conversation and that time is no longer on its line above, you must OWN IT in the first clause before anything else — a short apology that it filled up since you offered it — and only then name the real open times. Swapping their accepted slot for a different one with no acknowledgement is the worst thing you can do here: a client who confirmed 'Friday 7pm 👍' and sent his name, address and phone got back 'The soonest I have open is Sunday at 11am or 1pm' and replied 'I thought you said Friday at 7?' (Rolando, 2026-07-29) — the owner had to step in by hand. Say something like 'I'm sorry, that Friday 7pm filled up while we were talking — the closest I have now is Sunday at 11am or 1pm, which works?'. Never pretend the earlier offer did not happen, and never make the client be the one to notice." +
-        "\n- Until the visit is actually confirmed, do NOT tell the client a time is 'locked in', 'all set' or 'confirmed'. Say you are holding it while you collect their name, address and phone. Nine clients in five days were told a slot was theirs and then had it taken away." +
+        "\n- Until the visit is actually confirmed, do NOT tell the client a time is 'locked in', 'all set' or 'confirmed'. Say you are holding it while you collect their address and phone. Nine clients in five days were told a slot was theirs and then had it taken away." +
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
 
@@ -1885,13 +1885,15 @@ export function resolveClientName(candidates: Array<string | null | undefined>, 
   return fallback;
 }
 
-// Owner rule (2026-07-27): a visit is confirmed ONLY when the CLIENT gave all
-// three of name, address, and phone in the conversation. A profile display name
-// (IG/FB name, WhatsApp pushname) is NOT the client giving their name — the bot
-// must ASK. This is the server-side enforcement: the [BOOK] name must be real
-// (not a generic placeholder) AND at least one of its words must be something
-// the client actually typed. Token-level comparison (accent/case-insensitive)
-// so "José" matches a typed "jose" but "Ana" never matches inside "banana".
+// The client's name is NOT a booking requirement (owner rule 2026-09-16, which
+// replaced the 2026-07-27 name + address + phone rule): the visit books with the
+// address and the phone, the bot never asks for the name. This helper no longer
+// GATES anything; the webhooks use it only to rank the [BOOK] name: a name the
+// client actually typed wins over the platform's, a model guess never does. The
+// [BOOK] name must be real (not a generic placeholder) AND at least one of its
+// words must be something the client typed. Token-level comparison (accent/
+// case-insensitive) so "José" matches a typed "jose" but "Ana" never matches
+// inside "banana".
 const deaccent = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const nameTokens = (s: string) => deaccent(s).split(/[^a-z0-9]+/).filter(Boolean);
 export function clientProvidedName(name: string | null | undefined, history: Array<{ role: string; content: string }>): boolean {
@@ -1905,13 +1907,36 @@ export function clientProvidedName(name: string | null | undefined, history: Arr
   return nameTokens(cleaned).some((w) => w.length >= 2 && !GENERIC_NAMES.has(w) && typed.has(w));
 }
 
-// Sent when the slot (and possibly address/phone) is in hand but the client
-// never gave their name: ask for it instead of booking under a profile name.
-export function needNameMessage(lang: Lang): string {
-  if (lang === "pt") return "Última coisinha! Em nome de quem eu coloco a visita?";
-  return lang === "es"
-    ? "Última cosita! A nombre de quién pongo la visita?"
-    : "Last thing! What name should I put the visit under?";
+// "Verificar na plataforma o nome do cliente" (owner rule 2026-09-16): when the
+// client never typed their name, look it up in the scheduler by phone — the name
+// on their most recent visit (any channel, typed by the client or by the owner
+// on the platform). READ-ONLY. Phones are compared by their last 10 digits so
+// "(786) 368-1800", "786-368-1800" and "17863681800" all match. Skips generic
+// placeholders. null when nothing usable is on file or on any error.
+export async function lookupClientNameByPhone(phone: string | null | undefined): Promise<string | null> {
+  const digits = (phone ?? "").replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  const last10 = digits.slice(-10);
+  try {
+    const db = await getAuthenticatedClient();
+    const { data, error } = await db
+      .from("bookings")
+      .select("name, phone, booking_date")
+      .like("phone", `%${last10.slice(-4)}`)
+      .order("booking_date", { ascending: false })
+      .limit(50);
+    if (error || !data) return null;
+    for (const row of data as Array<{ name: string | null; phone: string | null }>) {
+      const rowDigits = (row.phone ?? "").replace(/\D/g, "");
+      if (rowDigits.length < 10 || rowDigits.slice(-10) !== last10) continue;
+      const n = cleanName((row.name ?? "").toString());
+      if (n && !GENERIC_NAMES.has(n.toLowerCase())) return n.slice(0, 100);
+    }
+    return null;
+  } catch (err) {
+    console.warn("lookupClientNameByPhone error:", err);
+    return null;
+  }
 }
 
 // We do NOT do repairs of any kind (owner rule 2026-08-25, Priti Budhrani case:

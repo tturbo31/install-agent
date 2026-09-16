@@ -73,16 +73,17 @@ const slotDateStr = slotIsToday
   ? today
   : new Date(new Date(today + "T12:00:00").getTime() + 86400000).toISOString().slice(0, 10);
 const slotDayLine = slotIsToday ? `• TODAY [${today}]: 5pm, 7pm` : `• TOMORROW [${slotDateStr}]: 5pm, 7pm`;
-const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${slotDayLine}\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "13055551234" as the phone.]${extra ? "\n\n" + extra : ""}]`;
+const waBook = (extra: string) => `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${slotDayLine}\n\n[WHATSAPP CHANNEL: You ALREADY have the client's phone number (13055551234). Ask ONLY for the full property address with the zip code. NEVER ask for their name (not required, owner rule 2026-09-16). Once you have a confirmed day/time and the address with its zip code, generate [BOOK:...] using "13055551234" as the phone, with the name only if the client stated it and "name":"" otherwise.]${extra ? "\n\n" + extra : ""}]`;
 const BOOKS = (t: string) => /\[BOOK:/i.test(t);
 
 async function main() {
   console.log("\n================= CONSOLIDATED REGRESSION SUITE (all fixed errors) =================");
 
   // ── ERROR 1: WhatsApp visit not booked / bot re-asks for an address already sent
-  // Owner rule 2026-07-27: the client's NAME is now required too — slot+address
-  // without a name must ASK the name (not book); with the name typed it books.
-  console.log("\n[ERROR 1] WhatsApp: slot + address (no name) → asks name; + name → BOOK");
+  // Owner rule 2026-09-16: the client's NAME is NOT a requirement — slot+address
+  // (WhatsApp number known) books WITHOUT asking the name; with a name typed it
+  // books under that name.
+  console.log("\n[ERROR 1] WhatsApp: slot + address (no name) → BOOK without asking the name; + name → BOOK");
   const err1Head: ChatMessage[] = [
     // Head is a FLOORING lead: a shower / bathroom job is Ozzi direct since
     // 2026-09-11 and would be blocked from booking, which is not what this
@@ -96,7 +97,8 @@ async function main() {
   const r1 = await ai([...err1Head,
     { role: "user", content: "113 NW 11th St Ft Lauderdale FL 33311" + waBook("") },
   ]);
-  ck("without the name: asks for it instead of booking", !BOOKS(r1) && /\bname\b/i.test(r1), r1);
+  ck("without the name: books anyway (name is not a requirement, owner rule 2026-09-16)", BOOKS(r1), r1);
+  ck("without the name: never asks for it", !/\bname\b/i.test(r1.replace(/\[BOOK:[\s\S]*?\]/g, "")), r1);
   const r1b = await ai([...err1Head,
     { role: "user", content: "It's Maria. 113 NW 11th St Ft Lauderdale FL 33311" + waBook("") },
   ]);

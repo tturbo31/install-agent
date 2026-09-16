@@ -108,7 +108,8 @@ async function main() {
     ck(`${name}: exige número da casa no endereço`, /!addressHasStreetNumber\(bookingData\.address\)/.test(src), rel);
     ck(`${name}: guarda do ZIP antes do createBooking`, src.indexOf("bookingAddressHasZip(bookingData.address") < src.indexOf("createBooking("), rel);
     ck(`${name}: guarda do ZIP depois da guarda de endereço`, src.indexOf("isRealAddress(bookingData.address)") < src.indexOf("bookingAddressHasZip(bookingData.address"), rel);
-    ck(`${name}: guarda do nome continua no lugar (sem regressão)`, /!clientProvidedName\(bookingData\.name,\s*history\)/.test(src), rel);
+    ck(`${name}: guarda do nome REMOVIDA (regra do dono 16/09: nome não é requisito)`, !/!clientProvidedName\(bookingData\.name,\s*history\)/.test(src) && !/needNameMessage/.test(src), rel);
+    ck(`${name}: nome vem da plataforma quando o cliente não digitou (lookupClientNameByPhone)`, /lookupClientNameByPhone\(/.test(src), rel);
   }
 
   console.log("\n[6] Prompt — pede endereço completo com ZIP CODE");
@@ -116,9 +117,9 @@ async function main() {
   ck("coleta cita street number + ZIP CODE", /INCLUDING the street number and the ZIP CODE/i.test(prompt));
   ck("regra ADDRESS MUST BE COMPLETE, WITH THE ZIP CODE presente", /ADDRESS MUST BE COMPLETE, WITH THE ZIP CODE/.test(prompt));
   ck("proíbe adivinhar o ZIP pela cidade", /NEVER guess, infer, or fill the ZIP CODE yourself/.test(prompt));
-  ck("Step 3 pede nome + endereço com ZIP + telefone", /Ask for the client's name, full address with the ZIP CODE, and phone ONLY after/.test(prompt));
-  ck("pedido único junta nome + endereço com ZIP + telefone", /the FULL address WITH THE ZIP CODE, AND the phone together in ONE message/.test(prompt));
-  ck("WHATSAPP EXCEPTION pede endereço com ZIP (sem telefone)", /ask ONLY for the client's name and the full property address with the ZIP CODE/.test(prompt));
+  ck("Step 3 pede endereço com ZIP + telefone (nunca o nome, 16/09)", /Ask for the full address with the ZIP CODE and the phone \(never the name\) ONLY after/.test(prompt));
+  ck("pedido único junta endereço com ZIP + telefone", /the FULL address WITH THE ZIP CODE AND the phone together in ONE message/.test(prompt));
+  ck("WHATSAPP EXCEPTION pede endereço com ZIP (sem telefone, sem nome)", /ask ONLY for the full property address with the ZIP CODE and NEVER ask for the phone \(and never the name\)/.test(prompt));
   ck("exemplo completo do [BOOK] tem ZIP no endereço", /"address":"3209 NE 7th St, Miami FL 33062"/.test(prompt));
 
   console.log("\n[7] O pedido de ZIP nunca é engolido pelos guards");
@@ -154,7 +155,7 @@ async function main() {
   const afterSlotPick = await ai(base);
   console.log("   →", afterSlotPick.slice(0, 240).replace(/\n/g, " "));
   ck("pede o ZIP CODE ao pedir os dados", /zip|postal/i.test(afterSlotPick), afterSlotPick);
-  ck("continua pedindo nome, endereço e telefone", /\bname\b|\bnombre\b/i.test(afterSlotPick) && /address|direcci[oó]n/i.test(afterSlotPick) && /phone|number|tel[eé]fono/i.test(afterSlotPick), afterSlotPick);
+  ck("continua pedindo endereço e telefone, sem o nome (16/09)", !/\bname\b|\bnombre\b/i.test(afterSlotPick) && /address|direcci[oó]n/i.test(afterSlotPick) && /phone|number|tel[eé]fono/i.test(afterSlotPick), afterSlotPick);
 
   // (b) Nome + endereço + telefone SEM ZIP → ou o modelo pede o ZIP (sem [BOOK]),
   //     ou emite [BOOK] e a guarda bloqueia. Nos dois casos a visita NÃO fecha.

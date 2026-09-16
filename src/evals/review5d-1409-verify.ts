@@ -169,9 +169,9 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("3 pm"),
   ];
   const g = bookingItemsGiven(yami, false);
-  ck("Yami: dado = endereço + zip (sem nome, sem fone)", g.has("address") && g.has("zip") && !g.has("phone") && !g.has("name"), [...g].join(","));
+  ck("Yami: dado = endereço + zip + nome (nome sempre conta como dado desde 16/09), sem fone", g.has("address") && g.has("zip") && !g.has("phone") && g.has("name"), [...g].join(","));
   const r1 = rewriteBookingDataAsk("Perfect, I'm holding that 3pm for you! Can I get your name, the property address, and the best phone number?", yami, false, "en");
-  ck("Yami: pedido vira 'name + phone', sem 'property address'", r1 === "Perfect, I'm holding that 3pm for you! Can I get your name and the best phone number to reach you?", r1);
+  ck("Yami: pedido vira só 'phone', sem 'property address' e sem nome (16/09)", r1 === "Perfect, I'm holding that 3pm for you! Can I get the best phone number to reach you?", r1);
   const tymur = [
     U("Looking to replace carpet 1100 sq"),
     A("For 1,100 sqft we need to come out and measure in person to give you the best price on the new floor. The visit is free and I bring samples so you can see the options right there. What's the zip code of the property?"),
@@ -182,7 +182,7 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("1pm"),
   ];
   const r2 = rewriteBookingDataAsk("Perfect, I'm holding that Tuesday 1pm for you! Can I get your name, the property address, and the best phone number?", tymur, false, "en");
-  ck("Tymur: idem", r2 === "Perfect, I'm holding that Tuesday 1pm for you! Can I get your name and the best phone number to reach you?", r2);
+  ck("Tymur: idem", r2 === "Perfect, I'm holding that Tuesday 1pm for you! Can I get the best phone number to reach you?", r2);
   const marg = [
     U("33180 It is a conso Conso Condo"),
     A("33180 is covered! I have Sunday at 7pm, want me to hold that for you?"),
@@ -207,7 +207,7 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("17199 Brulee breeze way"),
   ];
   const camReply = "What name should I put the visit under, and what's the city and zip code for that address?";
-  ck("Camila (WA): nome + cidade + zip faltando → intacto", rewriteBookingDataAsk(camReply, camila, true, "en") === camReply, rewriteBookingDataAsk(camReply, camila, true, "en"));
+  ck("Camila (WA): cidade + zip faltando → pedido só deles, sem o nome (16/09)", rewriteBookingDataAsk(camReply, camila, true, "en") === "Can I get the zip code for that address and the city for that address?", rewriteBookingDataAsk(camReply, camila, true, "en"));
   const jose = [
     U("Hi, yes i have a 1,500 sq ft where i will like to put vinyl floor, can you give me. Quote! What else do you need from need"),
     A("For 1,500 sqft I need to come measure in person to give you the best price, I bring all the floor samples so you can pick right there and it's completely free. What's the zip code of the property?"),
@@ -216,7 +216,7 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("6pm works"),
   ];
   const joseReply = "Perfect, I'm holding that 6pm for you! Can I get your name and the full property address in Davie?";
-  ck("Jose (WA): nome e endereço faltando → intacto", rewriteBookingDataAsk(joseReply, jose, true, "en") === joseReply, rewriteBookingDataAsk(joseReply, jose, true, "en"));
+  ck("Jose (WA): endereço faltando → pede só o endereço, sem o nome (16/09)", rewriteBookingDataAsk(joseReply, jose, true, "en") === "Perfect, I'm holding that 6pm for you! Can I get the property address (number, street and city)?", rewriteBookingDataAsk(joseReply, jose, true, "en"));
   ck("Jose: 'its Davie' não vira nome", !clientTypedName(jose));
   const manuel = [
     A("So it sounds like you have luxury vinyl already and just need the installation, at $2 per square foot that comes out to about $540 for 270 sqft. Cual es el codigo postal de la propiedad?"),
@@ -225,7 +225,10 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("Domingo a las 9am y lo haría con baseboard con material cuánto sería el total , y opciones de pago,"),
   ];
   const manReply = "Para los baseboards necesito saber cuántos pies lineales tienes, pero en cuanto al pago aceptamos tarjeta de crédito, cheque, efectivo y también tenemos financiamiento. Puedo tomar tu nombre, la dirección de la propiedad y el mejor número de teléfono para apartar el domingo a las 9am?";
-  ck("Manuel (ES): só o ZIP dado → pedido intacto", rewriteBookingDataAsk(manReply, manuel, false, "es") === manReply, rewriteBookingDataAsk(manReply, manuel, false, "es"));
+  {
+    const manOut = rewriteBookingDataAsk(manReply, manuel, false, "es");
+    ck("Manuel (ES): só o ZIP dado → pede endereço + teléfono, sem nombre, resposta dos baseboards intacta (16/09)", manOut.startsWith("Para los baseboards") && !/nombre/.test(manOut) && /dirección de la propiedad \(número, calle y ciudad\) y el mejor número de teléfono/.test(manOut) && !/[¿¡]/.test(manOut), manOut);
+  }
   const manuel2 = [...manuel, A("Puedo tomar tu nombre, la dirección de la propiedad y el mejor número de teléfono para apartar el domingo a las 9am?"), U("Llamarme en Messenger"), A("Necesito un número de teléfono real para poder agendar, no puedo usar Messenger como contacto. Cual sería el mejor número para llamarte?"), U("954 2402181 Manuel Romero")];
   ck("Manuel: nome após o telefone ('954 2402181 Manuel Romero') detectado", clientTypedName(manuel2));
   const alex = [
@@ -246,7 +249,7 @@ console.log("\n━━ 7. rewriteBookingDataAsk: nunca re-pede o que o cliente j�
     U("3 pm"),
   ];
   const r6 = rewriteBookingDataAsk("Perfecto, te aparto las 3pm! Me das tu nombre, la dirección de la propiedad y el mejor número de teléfono?", yamiEs, false, "es");
-  ck("ES: 'Me pasas tu nombre y el mejor número…' sem ¿", r6 === "Perfecto, te aparto las 3pm! Me pasas tu nombre y el mejor número de teléfono para contactarte?" && !/[¿¡]/.test(r6), r6);
+  ck("ES: 'Me pasas el mejor número…' sem nome e sem ¿ (nome nunca é pedido, 16/09)", r6 === "Perfecto, te aparto las 3pm! Me pasas el mejor número de teléfono para contactarte?" && !/[¿¡]/.test(r6), r6);
   const r7 = rewriteBookingDataAsk("Perfect! What's the full property address, including the zip code, for the visit?", [U("I'm at 33176"), A("33176 is covered! I have 1pm or 3pm"), U("1pm")], false, "en");
   ck("endereço não digitado, só ZIP: pede o endereço SEM 'including the zip code'", r7 === "Perfect! Can I get the property address (number, street and city)?", r7);
   ck("bare 'Yesmin Alabart' após pedido de nome → nome dado", clientTypedName([A("Me das tu nombre y la dirección de la propiedad para reservarlo?"), U("Yesmin Alabart")]));

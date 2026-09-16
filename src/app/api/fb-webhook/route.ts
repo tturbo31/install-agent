@@ -12,7 +12,7 @@ import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -231,26 +231,23 @@ async function processBookingCommand(
       console.warn(`[FB] Booking blocked — phone not a real number (${JSON.stringify(bookingData.phone)})`);
       return { response: needPhoneMessage(lang), booked: false };
     }
-    // Owner rule (2026-07-27): the visit is confirmed ONLY with the client's
-    // NAME, address, and phone — all given by the client in the conversation.
-    // A profile display name is not the client giving their name; if they never
-    // typed it, ask for it instead of booking.
-    if (!clientProvidedName(bookingData.name, history)) {
-      console.warn(`[FB] booking blocked — client never gave their name (${JSON.stringify(bookingData.name ?? null)}); asking for it`);
-      return { response: needNameMessage(lang), booked: false };
-    }
-
-    // Always book under the real client name: prefer a name the client typed,
-    // then the saved Messenger profile name, then the handle. Never just "Client".
+    // The NAME is not a requirement (owner rule 2026-09-16): address + phone
+    // book the visit; the name is never asked. Book under a name the client
+    // typed, then the name on their last visit in the platform (by phone), then
+    // the saved Messenger profile name, then the handle, then whatever the
+    // model wrote. Never just "Client".
     const { data: convName } = await supabaseAdmin
       .from("instagram_conversations")
       .select("name, username")
       .eq("id", conversationId)
       .single();
+    const typedName = clientProvidedName(bookingData.name, history) ? bookingData.name : null;
+    const platformName = typedName ? null : await lookupClientNameByPhone(bookingData.phone);
     const clientName = resolveClientName(
-      [bookingData.name, convName?.name, convName?.username],
+      [typedName, platformName, convName?.name, convName?.username, bookingData.name],
       "Facebook Client"
     );
+    if (!typedName) console.log(`[FB] booking without a typed name — using ${platformName ? "the platform's" : convName?.name ? "the profile's" : "a fallback"} (${clientName})`);
 
     // O ANÚNCIO VAI JUNTO PARA O CALENDÁRIO (01/08/2026). Até aqui o Messenger
     // mandava a string fixa "Facebook Messenger" — o Instagram já resolvia o

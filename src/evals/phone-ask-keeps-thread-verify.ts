@@ -71,12 +71,12 @@ async function main() {
   ck("not number-only: no number", !isPhoneOnlyReply("Sure, one moment."));
 
   const both = keepBookingThreadAfterPhone(BRICKELL, esLine, "es");
-  ck("Brickell (slots + details pending): number kept AND question appended", NUM.test(both) && /\?$/.test(both) && /nombre/.test(both) && /horario/.test(both), both);
+  ck("Brickell (slots + details pending): number kept AND question appended", NUM.test(both) && /\?$/.test(both) && !/nombre/.test(both) && /dirección/.test(both) && /horario/.test(both), both);
   ck("Brickell: no ¿ ¡ / dash", !/[¿¡—–]/.test(both), both);
   const slotsOnly = keepBookingThreadAfterPhone([U("1500 sqft vinyl"), A("I have tomorrow at 9am or 11am, which works better for you?"), U("What's your number?")], enLine, "en");
   ck("slots pending only: slot question appended", NUM.test(slotsOnly) && /which of those times works best/.test(slotsOnly), slotsOnly);
   const detailsOnly = keepBookingThreadAfterPhone([U("1500 sqft vinyl"), A("Perfect, I'm holding that 11am for you! Can I get your name, the property address, and the best phone number?"), U("What's your number?")], enLine, "en");
-  ck("details pending only: details question appended", NUM.test(detailsOnly) && /your name, the full address/.test(detailsOnly), detailsOnly);
+  ck("details pending only: details question appended", NUM.test(detailsOnly) && /the full address with the zip code and the best phone number/.test(detailsOnly) && !/your name/.test(detailsOnly), detailsOnly);
   const pt = keepBookingThreadAfterPhone([U("1500 sq ft vinil"), A("Tenho amanhã às 9h ou 11h, qual funciona melhor? Me passa seu nome, endereço e telefone."), U("Qual seu número?")], "Pode ligar ou mandar mensagem direto pro Ozzi no (561) 674-8334.", "pt");
   ck("PT: both pending → PT question appended", /visita marcada/.test(pt) && /\?$/.test(pt), pt);
   const unrelated = keepBookingThreadAfterPhone([U("Do you cover Jupiter?"), A("We cover all of South Florida, from Homestead up to Jupiter."), U("What's your number?")], enLine, "en");

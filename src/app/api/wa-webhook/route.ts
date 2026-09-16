@@ -8,7 +8,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, needNameMessage, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -226,27 +226,23 @@ async function processBookingCommand(
       console.warn(`[WA] booking blocked — address without a client-given zip (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needZipMessage(lang), booked: false };
     }
-    // Owner rule (2026-07-27): the visit is confirmed ONLY with the client's
-    // NAME, address, and phone — all given by the client in the conversation
-    // (on WhatsApp the phone is the chat id, so name + address are asked). A
-    // profile pushname is not the client giving their name; if they never
-    // typed it, ask for it instead of booking.
-    if (!clientProvidedName(bookingData.name, history)) {
-      console.warn(`[WA] booking blocked — client never gave their name (${JSON.stringify(bookingData.name ?? null)}); asking for it`);
-      return { response: needNameMessage(lang), booked: false };
-    }
-
-    // Always book under the real client name: prefer a name the client typed,
-    // then the saved WhatsApp contact name. Never just "Client".
+    // The NAME is not a requirement (owner rule 2026-09-16): on WhatsApp the
+    // phone is the chat id, so the address alone books the visit; the name is
+    // never asked. Book under a name the client typed, then the name on their
+    // last visit in the platform (by phone), then the saved WhatsApp contact
+    // name, then whatever the model wrote. Never just "Client".
     const { data: convName } = await supabaseAdmin
       .from("instagram_conversations")
       .select("name, username")
       .eq("id", conversationId)
       .single();
+    const typedName = clientProvidedName(bookingData.name, history) ? bookingData.name : null;
+    const platformName = typedName ? null : await lookupClientNameByPhone(clientPhone);
     const clientName = resolveClientName(
-      [bookingData.name, convName?.name, convName?.username],
+      [typedName, platformName, convName?.name, convName?.username, bookingData.name],
       "WhatsApp Client"
     );
+    if (!typedName) console.log(`[WA] booking without a typed name — using ${platformName ? "the platform's" : convName?.name ? "the profile's" : "a fallback"} (${clientName})`);
 
     // O ANÚNCIO VAI JUNTO PARA O CALENDÁRIO (01/08/2026) — mesma correção do
     // Messenger: só o Instagram resolvia o criativo persistido da conversa.
@@ -1517,7 +1513,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
       }
       if (!isBookingConfirmed && !isRescheduling) {
         // WhatsApp: the client's phone number is already known from the chat.
-        systemParts.push(`[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${phone}). To confirm a visit, ask ONLY for the client's name and the property address. NEVER ask the client for their phone number. Once you have a confirmed day/time, the client's name, and the address, generate [BOOK:...] using "${phone}" as the phone.]`);
+        systemParts.push(`[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (${phone}). To confirm a visit, ask ONLY for the full property address with the zip code. NEVER ask the client for their phone number, and NEVER ask for their name (the name is not required, owner rule 2026-09-16). Once you have a confirmed day/time and the address with its zip code, generate [BOOK:...] using "${phone}" as the phone, with the name only if the client stated it and "name":"" otherwise.]`);
         const recentUserTexts = history
           .filter((m: { role: string; content: string }) => m.role === "user")
           .slice(-3)
