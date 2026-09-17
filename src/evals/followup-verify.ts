@@ -42,16 +42,16 @@ let d = decideFollowup("fb_123", target, NOW);
 check("engaged lead, visit offered, 9.5h silent → ELIGIBLE", d.eligible, d.reason);
 check("english conversation → english template", d.lang === "en", d.lang);
 
-console.log("\n── 2. Ghosts and mis-taps are NEVER followed up ──");
+console.log("\n── 2. Fantasma do botão (17/09/2026): agora É alvo, com texto fixo ──");
 d = decideFollowup("fb_1", [m("user", "What type of materials are included?", 10), m("assistant", OPENER, 10)], NOW);
-check("one-tap ad FAQ ghost → blocked", !d.eligible && d.reason === "never-genuinely-engaged", d.reason);
+check("one-tap ad FAQ ghost → faq_ghost (pedido do dono 17/09)", d.eligible && d.kind === "faq_ghost", d.reason);
 d = decideFollowup("fb_1", [
   m("user", "What type of materials are included?", 10),
   m("assistant", OPENER, 10),
   m("user", "Can I customize the design?", 9),
   m("assistant", OPENER, 9),
 ], NOW);
-check("multi-tap FAQ ghost (only buttons, no real message) → blocked", !d.eligible, d.reason);
+check("multi-tap FAQ ghost (only buttons, no real message) → faq_ghost", d.eligible && d.kind === "faq_ghost", d.reason);
 check("isAdFaqButton catches the $4,500 button", isAdFaqButton("Is labor cost also $4,500?"));
 check("isAdFaqButton does NOT flag a real question", !isAdFaqButton("What vinyl brands do you install?"));
 
@@ -98,14 +98,18 @@ check("conversation with a prior follow-up → blocked forever", !d.eligible && 
 console.log("\n── 6. Timing windows per channel ──");
 const fresh = [...target.slice(0, 3), m("user", "sounds good", 1), m("assistant", VISIT_OFFER, 1)];
 d = decideFollowup("fb_123", fresh, NOW);
-check("only 1h of silence → too fresh, blocked", !d.eligible, d.reason);
+check("1h of silence → eligible (mínimo é 45 min desde 17/09)", d.eligible, d.reason);
+d = decideFollowup("fb_123", [...target.slice(0, 3), m("user", "sounds good", 0.5), m("assistant", VISIT_OFFER, 0.5)], NOW);
+check("30 min of silence → too fresh, blocked", !d.eligible && /too-fresh/.test(d.reason), d.reason);
 const stale = [m("user", "vinyl whole house", 30), m("assistant", OPENER, 30.1), m("user", "yes vinyl", 30), m("assistant", VISIT_OFFER, 29.9)];
 d = decideFollowup("fb_123", stale, NOW);
 check("Messenger 30h → Meta window closed, blocked", !d.eligible, d.reason);
 d = decideFollowup("wa_15551234567", stale, NOW);
 check("WhatsApp 30h → still inside Z-API window, ELIGIBLE", d.eligible, d.reason);
 d = decideFollowup("fb_123", [...target.slice(0, 3), m("assistant", VISIT_OFFER, 1)], NOW);
-check("bot's own message only 1h old → blocked", !d.eligible, d.reason);
+check("bot's own message only 1h old → eligible (45 min)", d.eligible, d.reason);
+d = decideFollowup("fb_123", [...target.slice(0, 3), m("assistant", VISIT_OFFER, 0.4)], NOW);
+check("bot's own message only 24 min old → blocked", !d.eligible && /bot-msg-too-fresh/.test(d.reason), d.reason);
 
 console.log("\n── 7. Unanswered client message is NOT this feature's job ──");
 d = decideFollowup("fb_123", [...target, m("user", "do you take credit cards?", 5)], NOW);

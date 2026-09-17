@@ -11,7 +11,9 @@ import { retryFailedSends, watchWaQueue } from "@/lib/delivery";
 // Same auth model as /api/dream: the x-vercel-cron header (unforgeable — Vercel
 // strips it from external requests) or the admin/verify secret.
 
-export const maxDuration = 120;
+// 120 → 300 em 17/09/2026: até 60 envios por varredura (fantasma do botão +
+// sumiu após o preço), com a IA escrevendo a nudge de quem conversou.
+export const maxDuration = 300;
 
 function isAuthorized(secret: string | null): boolean {
   const adminSecret = process.env.ADMIN_SECRET;
@@ -19,10 +21,22 @@ function isAuthorized(secret: string | null): boolean {
   return (!!adminSecret && secret === adminSecret) || (!!verifyToken && secret === verifyToken);
 }
 
+// A CADA 30 MIN (17/09/2026): além do cron diário da Vercel (limite de 2 crons
+// no plano), o pg_cron da PLATAFORMA chama esta rota de meia em meia hora
+// durante o dia da Flórida. Ele se identifica com o token compartilhado dos
+// webhooks da plataforma (header x-webhook-token = PLATAFORMA_WEBHOOK_TOKEN,
+// que este projeto já tem para chamar a plataforma), guardado no Vault do
+// Supabase dela. Fora de 9h–20h ET a varredura responde quietHours.
+function isPlatformCron(req: NextRequest): boolean {
+  const token = process.env.PLATAFORMA_WEBHOOK_TOKEN;
+  const enviado = req.headers.get("x-webhook-token");
+  return !!token && !!enviado && enviado === token;
+}
+
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   const isVercelCron = !!req.headers.get("x-vercel-cron");
-  if (!isVercelCron && !isAuthorized(secret)) {
+  if (!isVercelCron && !isPlatformCron(req) && !isAuthorized(secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

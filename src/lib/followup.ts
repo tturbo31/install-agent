@@ -39,10 +39,36 @@ export function followupTemplate(lang: Lang): string {
   return "Hi, just checking in, want me to get your free estimate visit scheduled? I bring all the samples so you can pick your floor and get the exact price on the spot.";
 }
 
+// ─── FANTASMA DO BOTÃO (17/09/2026, pedido do dono) ─────────────────────────
+// 44% das conversas de anúncio são um toque no botão de FAQ, a resposta
+// automática e silêncio (578 em duas semanas, a maior perda do funil). Este
+// segmento era PROIBIDO aqui ("one-tap ghost"); agora recebe UMA mensagem
+// 45 min depois oferecendo a visita gratuita desta semana. Sem IA (texto
+// fixo, o que mantém a varredura rápida) e com o mesmo teto de 1 por conversa.
+export function ghostTemplate(lang: Lang): string {
+  if (lang === "pt")
+    return "Oi, quer que eu veja um horário esta semana para a sua visita gratuita de orçamento? Levo todas as amostras e você já sai com o preço exato.";
+  if (lang === "es")
+    return "Hola, quieres que busque un horario esta semana para tu visita gratis de estimado? Llevo todas las muestras y tienes el precio exacto al momento.";
+  return "Hi, want me to check a time this week for your free estimate visit? I bring all the samples and you get the exact price on the spot.";
+}
+
+// ─── SUMIU DEPOIS DO PREÇO (17/09/2026, pedido do dono) ─────────────────────
+// 94 conversas em duas semanas morreram logo depois de o bot dizer o valor.
+// A nudge de quem já ouviu o preço traz a linha do FINANCIAMENTO (pagar por
+// mês, pelo parceiro), sem prometer aprovação nem citar taxas ou parcelas.
+export function financingTemplate(lang: Lang): string {
+  if (lang === "pt")
+    return "Oi, passando para saber se ficou alguma dúvida sobre o piso. Se ajudar, temos financiamento pelo nosso parceiro para pagar por mês, e a visita de orçamento é gratuita, quer que eu veja um horário esta semana?";
+  if (lang === "es")
+    return "Hola, solo para saber si quedó alguna duda sobre el piso. Si ayuda, tenemos financiamiento con nuestro socio para pagar mensual, y la visita del estimado es gratis, quieres que busque un horario esta semana?";
+  return "Hi, just checking if you had any questions about the floors. If it helps, we offer financing through our partner so you can pay monthly, and the estimate visit is free, want me to check a time this week?";
+}
+
 // Detects a follow-up we already sent (any language) — ONE per conversation, ever.
 // A nudge escrita pela IA é gravada no banco com o sufixo [SYSTEM: FOLLOWUP_NUDGE]
 // (nunca enviado ao cliente), então o marcador também o reconhece.
-export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar|\[SYSTEM: FOLLOWUP_NUDGE\]/i;
+export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar|want me to check a time this week|quieres que busque un horario|quer que eu veja um hor[aá]rio|just checking if you had any questions|solo para saber si qued|passando para saber se ficou|\[SYSTEM: FOLLOWUP_NUDGE\]/i;
 export const FOLLOWUP_DB_SUFFIX = "\n\n[SYSTEM: FOLLOWUP_NUDGE]";
 
 // Meta ad FAQ quick-reply buttons — a tap is NOT genuine engagement. A lead
@@ -80,6 +106,21 @@ export function isSchedulingAsk(text: string): boolean {
   return containsSchedulingOffer(t) || SCHEDULING_ASK.test(t);
 }
 
+// Conversa em que TUDO que o cliente mandou foi botão de FAQ do anúncio (ou
+// vazio) e o bot já respondeu: o "fantasma do botão" (17/09/2026).
+export function isFaqGhost(messages: FollowupMsg[]): boolean {
+  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  const users = messages.filter((m) => m.role === "user");
+  if (users.length === 0 || !messages.some((m) => m.role === "assistant")) return false;
+  return users.every((m) => strip(m.content).length === 0 || isAdFaqButton(m.content));
+}
+
+// O bot já disse um valor em dólar nesta conversa ("$5 per sqft", "$4,500").
+export const PRICE_STATED = /\$\s?\d/;
+export function priceWasStated(messages: FollowupMsg[]): boolean {
+  return messages.some((m) => m.role === "assistant" && PRICE_STATED.test((m.content || "").split(/\n\n?\[SYSTEM:/)[0]));
+}
+
 // Language of the conversation. The client's own words decide when they carry
 // a signal; when they don't (a bare address, a name, FAQ-button English), we
 // trust the language of OUR OWN last reply — the model already language-matched
@@ -114,13 +155,21 @@ const H = 3600_000;
 // Channel messaging windows, measured from the CLIENT's last message. Meta
 // enforces the 24h standard-messaging window (22h keeps margin); Z-API
 // WhatsApp has no such window, so we allow catching yesterday's leads too.
+// MÍNIMO DE 45 MIN (17/09/2026, pedido do dono; era 3h): a varredura passou a
+// rodar a cada 30 min pelo pg_cron da plataforma, e o cliente que sumiu depois
+// do botão ou do preço recebe a mensagem ainda com o assunto quente.
+const MIN_SILENCE_H = 0.75;
 const WINDOW_H: Record<Channel, { min: number; max: number }> = {
-  instagram: { min: 3, max: 22 },
-  facebook: { min: 3, max: 22 },
-  whatsapp: { min: 3, max: 46 },
+  instagram: { min: MIN_SILENCE_H, max: 22 },
+  facebook: { min: MIN_SILENCE_H, max: 22 },
+  whatsapp: { min: MIN_SILENCE_H, max: 46 },
 };
 
-export type FollowupDecision = { eligible: boolean; reason: string; lang: Lang };
+// engaged = o alvo original (conversou, recebeu a oferta de visita, sumiu);
+// faq_ghost = só tocou no botão do anúncio; after_price = sumiu logo depois do
+// valor. `financing` = o preço já foi dito, a nudge leva a linha do parceiro.
+export type FollowupKind = "engaged" | "faq_ghost" | "after_price";
+export type FollowupDecision = { eligible: boolean; reason: string; lang: Lang; kind: FollowupKind; financing: boolean };
 
 // Pure eligibility decision for one conversation. `messages` must be the FULL
 // history in ascending order; `nowMs` injected for testability.
@@ -131,7 +180,8 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     messages.filter((m) => m.role === "user").map((m) => strip(m.content)),
     lastBot?.content
   );
-  const no = (reason: string): FollowupDecision => ({ eligible: false, reason, lang });
+  const financing = priceWasStated(messages);
+  const no = (reason: string): FollowupDecision => ({ eligible: false, reason, lang, kind: "engaged", financing });
 
   if (!messages.length) return no("empty");
   if (messages.some((m) => m.role === "assistant" && FOLLOWUP_MARKER.test(m.content))) return no("already-followed-up");
@@ -139,15 +189,28 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
   const last = messages[messages.length - 1];
   if (last.role !== "assistant") return no("client-has-last-word"); // unanswered client msg is a different problem
   if (botClosedTheLoop(last.content)) return no("bot-closed-loop");
-  if (!isSchedulingAsk(last.content)) return no("last-bot-msg-not-a-scheduling-ask");
 
-  // Genuine engagement: at least one real (non-FAQ-button) client message AFTER
-  // our first reply. One-tap ad ghosts never qualify.
-  const firstBotIdx = messages.findIndex((m) => m.role === "assistant");
-  const engaged = messages.some(
-    (m, i) => i > firstBotIdx && m.role === "user" && strip(m.content).trim().length > 0 && !isAdFaqButton(m.content)
-  );
-  if (!engaged) return no("never-genuinely-engaged");
+  // Qual dos três alvos é esta conversa (17/09/2026):
+  //   fantasma do botão → texto fixo da visita gratuita;
+  //   sumiu logo depois do preço (a ÚLTIMA fala nossa traz o valor e não é
+  //   oferta de horário) → nudge com financiamento;
+  //   o alvo original: nossa última fala é uma oferta/pergunta de agendamento.
+  let kind: FollowupKind = "engaged";
+  if (isFaqGhost(messages)) kind = "faq_ghost";
+  else if (!isSchedulingAsk(last.content)) {
+    if (PRICE_STATED.test(strip(last.content))) kind = "after_price";
+    else return no("last-bot-msg-not-a-scheduling-ask");
+  }
+
+  if (kind !== "faq_ghost") {
+    // Genuine engagement: at least one real (non-FAQ-button) client message
+    // AFTER our first reply (the ghost path above is the only exception).
+    const firstBotIdx = messages.findIndex((m) => m.role === "assistant");
+    const engaged = messages.some(
+      (m, i) => i > firstBotIdx && m.role === "user" && strip(m.content).trim().length > 0 && !isAdFaqButton(m.content)
+    );
+    if (!engaged) return no("never-genuinely-engaged");
+  }
 
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser) return no("no-user-message");
@@ -164,11 +227,11 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
   if (!Number.isFinite(ageH)) return no("bad-timestamp");
   if (ageH < win.min) return no(`too-fresh(${ageH.toFixed(1)}h)`);
   if (ageH > win.max) return no(`window-closed(${ageH.toFixed(1)}h)`);
-  // Our own last line must also have had ≥2.5h with no answer.
+  // Our own last line must also have had ≥45 min with no answer.
   const botAgeH = (nowMs - Date.parse(last.created_at)) / H;
-  if (Number.isFinite(botAgeH) && botAgeH < 2.5) return no(`bot-msg-too-fresh(${botAgeH.toFixed(1)}h)`);
+  if (Number.isFinite(botAgeH) && botAgeH < MIN_SILENCE_H) return no(`bot-msg-too-fresh(${botAgeH.toFixed(1)}h)`);
 
-  return { eligible: true, reason: "ok", lang };
+  return { eligible: true, reason: "ok", lang, kind, financing };
 }
 
 // Daytime guard: only message clients 9:00–20:59 America/New_York.
@@ -207,6 +270,12 @@ Write ONLY the message text. Rules:
 4. NEVER mention, offer, or hint at a discount, deal, or better price. NEVER invent prices, sizes, or facts not present in the conversation. You may repeat a price WE already stated there.
 5. No pressure, one gentle nudge.`;
 
+// Quem já ouviu o preço recebe a linha do financiamento (17/09/2026): é a
+// objeção mais comum de quem some depois do valor, e o dono quer que a
+// retomada a responda antes de o cliente perguntar.
+const NUDGE_FINANCING_RULE = `
+6. The client already heard our price in this conversation. Add ONE short sentence saying we offer financing through our partner so they can pay monthly. NEVER promise approval, NEVER quote interest rates, terms, credit requirements, or monthly amounts. Financing goes alongside the free estimate visit, never instead of it.`;
+
 let _nudgeAnthropic: Anthropic | null = null;
 function nudgeClient(): Anthropic {
   if (!_nudgeAnthropic) {
@@ -226,7 +295,7 @@ function sanitizeNudge(text: string): string {
 
 // Escreve a nudge personalizada; devolve null quando o texto não passa nos
 // guardas (aí o chamador usa o template fixo comprovado).
-export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang): Promise<string | null> {
+export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, financing = false): Promise<string | null> {
   try {
     const tail = messages
       .slice(-10)
@@ -235,7 +304,7 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang):
     const res = await nudgeClient().messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 200,
-      system: NUDGE_SYSTEM,
+      system: financing ? NUDGE_SYSTEM + NUDGE_FINANCING_RULE : NUDGE_SYSTEM,
       messages: [
         {
           role: "user" as const,
@@ -245,9 +314,13 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang):
     });
     const block = res.content[0];
     const text = sanitizeNudge(block?.type === "text" ? block.text : "");
-    if (text.length < 20 || text.length > 360) return null;
+    if (text.length < 20 || text.length > 420) return null;
     if (promisesDiscount(text)) return null;
     if (/https?:\/\//i.test(text)) return null;
+    // financiamento: nunca taxa, parcela ou aprovação (o modelo não sabe)
+    if (financing && /\b\d+(?:[.,]\d+)?\s?%|\bapproved?\b|\baprovad|\bmonthly payment of|\bpor m[eê]s de|\bmensual de\b|\bcuota de\b/i.test(text)) return null;
+    // financiamento pedido e não mencionado: o template garante a linha
+    if (financing && !/financ/i.test(text)) return null;
     return text;
   } catch (err) {
     console.error("[FOLLOWUP] nudge AI failed, using template:", err);
@@ -255,7 +328,9 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang):
   }
 }
 
-const MAX_SENDS_PER_RUN = 25; // hard cap — a bug can never mass-message
+// hard cap — a bug can never mass-message. 25 → 60 em 17/09/2026: o fantasma
+// do botão entrou no alvo (≈50 conversas/dia) e a varredura roda a cada 30 min
+const MAX_SENDS_PER_RUN = 60;
 const SCAN_WINDOW_H = 48;
 
 type ConvRow = { id: string; igsid: string; name: string | null; username: string | null; mode: string; booking_confirmed: boolean | null; updated_at: string };
@@ -266,7 +341,7 @@ export type SweepResult = {
   quietHours?: boolean;
   scanned: number;
   eligible: number;
-  sent: Array<{ igsid: string; channel: Channel; name: string; lang: Lang; ok: boolean; error?: string }>;
+  sent: Array<{ igsid: string; channel: Channel; name: string; lang: Lang; kind?: FollowupKind; ok: boolean; error?: string }>;
   skippedReasons: Record<string, number>;
 };
 
@@ -342,17 +417,24 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
     const channel = channelOfIgsid(conv.igsid);
     const name = conv.name || conv.username || conv.igsid;
     if (opts.dry) {
-      result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: "DRY-RUN (not sent)" });
+      result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, kind: decision.kind, ok: false, error: "DRY-RUN (not sent)" });
       continue;
     }
-    // IA personaliza a partir da conversa; template comprovado é o fallback.
-    let text = (await composeColdLeadNudge(messages, decision.lang)) ?? followupTemplate(decision.lang);
+    // Fantasma do botão: texto fixo (sem IA, sem contexto para personalizar).
+    // Os outros: IA personaliza a partir da conversa, com a linha do
+    // financiamento quando o preço já foi dito; template comprovado é o fallback.
+    let text: string;
+    if (decision.kind === "faq_ghost") text = ghostTemplate(decision.lang);
+    else
+      text =
+        (await composeColdLeadNudge(messages, decision.lang, decision.financing)) ??
+        (decision.financing ? financingTemplate(decision.lang) : followupTemplate(decision.lang));
     // O modelo já escreveu o nudge em PORTUGUÊS para uma cliente de espanhol
     // (Alicia, WA 27/08/2026: "Ficou com dúvida sobre instalar por cima da
     // losa…"). Idioma errado = template comprovado no idioma certo.
     if (decision.lang !== "pt" && PT_SIGNALS.test(text)) {
       console.warn(`[FOLLOWUP] composed nudge came out in Portuguese for a ${decision.lang} conversation — using the template instead`);
-      text = followupTemplate(decision.lang);
+      text = decision.financing ? financingTemplate(decision.lang) : followupTemplate(decision.lang);
     }
     try {
       if (channel === "whatsapp") {
@@ -375,8 +457,8 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       // followup vira "[Treino]" e a conversa é pausada (mode=human).
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: stripInvertedPunctuation(text) + FOLLOWUP_DB_SUFFIX });
       await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
-      result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: true });
-      console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}) to ${name}`);
+      result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, kind: decision.kind, ok: true });
+      console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}/${decision.kind}${decision.financing ? "+financing" : ""}) to ${name}`);
     } catch (err) {
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: String(err).slice(0, 200) });
       console.error(`[FOLLOWUP] send failed for ${conv.igsid}:`, err);
