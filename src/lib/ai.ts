@@ -1184,6 +1184,23 @@ export function isBareGreeting(text: string): boolean {
 //  • "no inglés" / "no hablo inglés" / "no english" → ES: someone who tells us
 //    they do not speak English is, in this market, asking for Spanish; the PT
 //    form ("não falo inglês") and "espanhol" (PT word for Spanish) → PT.
+// "No, speak English" (Leticia Ahumada, FB 2026-09-17): a Spanish speaker's
+// broken English for "I don't speak English". The comma made it miss the
+// negated pattern and hit the POSITIVE "speak english" branch, so the pipeline
+// treated it as a request for English and the model answered "Already in
+// English!". Two families, both → es (Spanish is what a client who cannot
+// write English is asking for in this market; PT forms have their own rule):
+//  • UNAMBIGUOUS: grammatical statements that can only mean "I do not speak
+//    English" ("I don't speak English", "me no English", "my English is bad",
+//    "little English", "I speak Spanish", "no hablo inglés").
+//  • AMBIGUOUS: the bare fragments "no english" / "no, speak english" / "no
+//    speak english" / "english no". They mean "I don't speak English" when our
+//    last message was in English (nobody asks for English in the middle of an
+//    English conversation) and "please speak English" when it was not:
+//    languageSwitchRequest decides that with the context; here, with no
+//    context, they count as "does not speak English".
+export const NO_ENGLISH_AMBIGUOUS = /(?:^|[^a-z])no[\s,.!;:]+(?:(?:speak(?:ing)?|understand|know|talk|read|write)\s+)?(?:any\s+|much\s+|good\s+|well\s+|the\s+|in\s+)?english(?![a-z])|(?:^|[^a-z])english[\s,.!;:]+no(?![a-z])/;
+export const NO_ENGLISH_UNAMBIGUOUS = /\b(?:don'?t|do\s+not|cannot|can'?t|not|never|barely|hardly)\s+(?:really\s+)?(?:speak|understand|know|talk|read|write)\s+(?:any\s+|much\s+|good\s+|well\s+|the\s+)?english\b|\b(?:me|i)\s+no\s+(?:(?:speak|understand|know|talk)\s+)?(?:good\s+)?english\b|\b(?:my|our)\s+english\s+(?:is\s+)?(?:not\s+(?:good|great|so\s+good|very\s+good)|bad|poor|weak|limited|basic|no\s+good|very\s+(?:bad|poor|limited))\b|\b(?:very\s+)?(?:little|poco|bad|poor|no\s+good)\s+english\b|\benglish\s+(?:is\s+)?(?:not\s+good|no\s+good|bad|poor|hard\s+for\s+me)\b|\bsorry[\s,.!]+(?:no|not)\s+(?:speak\s+)?english\b|\bi\s+(?:only\s+)?speak\s+(?:only\s+)?spanish\b|\bspanish\s+only\b|\bonly\s+spanish\b|\bno\s+(?:hablo|s[eé]|entiendo)\s+(?:el\s+)?(?:ingl[eé]s|english)\b|\bsolo\s+(?:hablo\s+)?espa[ñn]ol\b/;
 export function requestedLang(text: string): "en" | "es" | "pt" | null {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].toLowerCase();
   if (!t.trim()) return null;
@@ -1199,7 +1216,7 @@ export function requestedLang(text: string): "en" | "es" | "pt" | null {
   if (/\bspanish\b(?!\s+(?:tile|tiles|style|floor|flooring|pattern|colonial|revival|villa|home|house|mission|clay|terracotta|terra))/.test(t)) return "es";
   if (/(?:^|[^a-zà-ÿ])no\s+(?:me\s+|nos\s+)?(?:hablo|hablamos|hable[ns]?|habla|s[eé]|sabemos|sabe|entiendo|entendemos|entiende[ns]?|escriba[ns]?|escribe[ns]?|manden?|domino|manejo)\s+(?:bien\s+|nada\s+de\s+|mucho\s+|muy\s+bien\s+)?(?:el\s+|en\s+)?ingl[eé]s(?![a-zà-ÿ])/.test(t)) return "es";
   if (/(?:^|[\s.,!¡¿])no\s+ingl[eé]s(?![a-zà-ÿ])/.test(t)) return "es";
-  if (/\bno\s+(?:speak|speaking)\s+english\b|\bno\s+english\b|\bdon'?t\s+speak\s+(?:any\s+|much\s+)?english\b/.test(t)) return "es";
+  if (NO_ENGLISH_UNAMBIGUOUS.test(t) || NO_ENGLISH_AMBIGUOUS.test(t)) return "es";
   // English, explicitly requested.
   if (/\bin\s+english\b|\benglish\s+(?:please|pls|plz|only)\b|\bspeak\s+english\b|(?:^|[\s.,!¡¿])en\s+ingl[eé]s(?![a-zà-ÿ])|(?:^|[\s.,!¡¿])em\s+ingl[eê]s(?![a-zà-ÿ])/.test(t)) return "en";
   return null;
@@ -1220,7 +1237,11 @@ export function openerLang(text: string): "en" | "es" | "pt" {
   // non-greeting words also pin the language for a no-greeting inquiry.
   // "onde" is uniquely Portuguese (Spanish is "donde"/"dónde", and \b protects
   // against the substring inside them — "d" is a word char, so no boundary).
-  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria|onde)\b/.test(t)) return "pt";
+  // "Me envi seu WhatsApp aí eu te chamo" (Stela Cunha, FB 2026-09-17) had no
+  // PT signal here and got the ENGLISH opener: the PT-only function words
+  // ("eu", "seu/sua", "aí", "pra", "vc", "né", "tá") and "te chamo / te ligo"
+  // pin Portuguese. Bare "ai" (no accent) is left out: it is also English "AI".
+  if (/(?:^|[\s!.,?¡¿])(?:olá|oi|bom\s+dia|boa\s+(?:tarde|noite)|al[oô])(?![a-zà-ÿ])/.test(t) || /\b(você|voce|obrigad|reforma|quanto custa|orçamento|gostaria|onde)\b/.test(t) || /(?:^|[\s!.,?¡¿])(?:eu|seu|sua|teu|tua|aí|vc|vcs|pra|né|tá|tb|também|te\s+(?:chamo|ligo|mando|envio))(?![a-zà-ÿ])/.test(t)) return "pt";
   // "pisos?/cerámica/instalación/cotización" pin Spanish for no-greeting
   // inquiries like "Q piso es el de la promo?" — that message used to fail both
   // language checks and get the ENGLISH opener (2026-07-07 review). "piso" is
@@ -1245,6 +1266,92 @@ export function openerMessage(text: string): string {
   if (requested) return requested === "pt" ? OPENER_LANG_PT : requested === "es" ? OPENER_LANG_ES : OPENER_LANG_EN;
   const lang = openerLang(text);
   return lang === "pt" ? OPENER_PT : lang === "es" ? OPENER_ES : OPENER_EN;
+}
+
+// ─── Language switch mid-conversation ──────────────────────────────────────
+// Leticia Ahumada (FB 2026-09-17): our process answer in English, then "No,
+// speak English", a Spanish speaker's broken English for "I don't speak
+// English". requestedLang read it as a request FOR English (the comma broke
+// the negated pattern and the positive "speak english" branch matched) and
+// the model, with no note, answered "Already in English!" and kept going in
+// English. The lead went quiet. Now every unanswered burst is checked for a
+// language statement:
+//  • the statement decides the TARGET language in context: an ambiguous "no
+//    english" / "no, speak english" after an ENGLISH message of ours means
+//    the client does not speak English (Spanish, or Portuguese when their
+//    earlier bubbles were Portuguese); "no, speak English" after a SPANISH
+//    or PORTUGUESE message of ours means they want English;
+//  • a CRITICAL note tells the model to switch and pick the thread back up in
+//    that language, never to comment on the client's English;
+//  • after the model, a reply in the wrong language (or an "already in
+//    English") is replaced by the deterministic language-confirming line.
+export type LangSwitch = { target: "en" | "es" | "pt"; reason: "no-english" | "request" };
+const ALREADY_IN_ENGLISH = /\balready\s+(?:in|speaking|writing|using|talking)\s+(?:in\s+)?english\b|\bthis\s+is\s+(?:already\s+)?(?:in\s+)?english\b|\b(?:i|we)(?:'m|'re|\s+am|\s+are)\s+(?:already\s+)?(?:speaking|writing|talking|typing|replying|answering)\s+(?:to\s+you\s+)?(?:in\s+)?english\b|\bin\s+english\s+already\b|\bya\s+(?:te\s+)?(?:estoy|estamos)\s+(?:escribiendo|hablando|respondiendo)\s+en\s+ingl[eé]s\b/i;
+const EN_MARKERS = /\b(?:the|we|you|your|which|what|our|and|for|with|are|is|that|this|can|will|have|does|it|from|would|here|there|thanks|works|floors?|furniture)\b/gi;
+const ES_PT_MARKERS = /\b(?:el|la|los|las|con|para|que|qué|cuál|cual|del|una|uno|nosotros|nuestro|nuestra|nosso|nossa|você|voce|com|pra|qual|piso|pisos|visita|gratis|grátis|gratuita|gratuito|casa|precio|preço|hola|olá|claro|bueno|gusto|prazer|muebles|móveis|moveis|instalamos|trabajamos|trabalhamos|tenemos|temos|mañana|amanhã|hoy|hoje|español|espanol|português|portugues)\b/gi;
+function replyLooksEnglish(text: string): boolean {
+  const s = (text || "").replace(/\[[^\]]*\]/g, " ");
+  if (/[ñãõçáéíóúêàô]/.test(s)) return false;
+  return (s.match(EN_MARKERS) || []).length >= 2;
+}
+function replyLooksSpanishOrPortuguese(text: string): boolean {
+  const s = (text || "").replace(/\[[^\]]*\]/g, " ");
+  if (/[ñãõç¿¡]/.test(s)) return true;
+  return (s.match(ES_PT_MARKERS) || []).length >= 2;
+}
+export function languageSwitchRequest(history: Array<{ role: string; content: string }>): LangSwitch | null {
+  const h = history ?? [];
+  let lastAsst = -1;
+  for (let i = h.length - 1; i >= 0; i--) if (h[i].role === "assistant") { lastAsst = i; break; }
+  const burst = h.slice(lastAsst + 1).filter((m) => m.role === "user").map((m) => clientTextOnly(m.content || "")).filter(Boolean).join("\n");
+  if (!burst.trim()) return null;
+  const requested = requestedLang(burst);
+  if (!requested) return null;
+  const lower = normalizeSmartPunct(burst).toLowerCase();
+  const prevText = lastAsst >= 0 ? (h[lastAsst].content || "").split(/\n\n?\[SYSTEM:/)[0] : "";
+  // Our previous message's language. No previous message = the client is
+  // answering Meta's ad greeting, which is in English.
+  const prevIsEnglish = !prevText.trim() || !replyLooksSpanishOrPortuguese(prevText);
+  const unambiguous = NO_ENGLISH_UNAMBIGUOUS.test(lower) || /(?:^|[^a-zà-ÿ])n[aã]o\s+(?:falo|entendo|sei)\b[^.!?\n]{0,20}ingl/.test(lower) || /(?:^|[^a-zà-ÿ])no\s+(?:me\s+)?(?:hablo|hablamos|s[eé]|entiendo|hable[ns]?)\b[^.!?\n]{0,30}ingl/.test(lower);
+  if (requested === "es" && !unambiguous && NO_ENGLISH_AMBIGUOUS.test(lower)) {
+    if (!prevIsEnglish) {
+      // "No, speak English" / "No, English please" after our Spanish: they
+      // want English. A bare "no english" after our Spanish: they are refusing
+      // English, stay in the language we were using.
+      if (/\b(?:speak|talk|write|please|pls|plz|only)\b|por\s+favor/.test(lower)) return { target: "en", reason: "request" };
+      return { target: detectLang(prevText) === "pt" ? "pt" : "es", reason: "no-english" };
+    }
+    const earlierPt = h.slice(0, lastAsst + 1).some((m) => m.role === "user" && detectLang(clientTextOnly(m.content || "")) === "pt");
+    return { target: earlierPt ? "pt" : "es", reason: "no-english" };
+  }
+  return { target: requested, reason: requested !== "en" && unambiguous ? "no-english" : "request" };
+}
+export function languageSwitchNote(sw: LangSwitch): string {
+  const name = sw.target === "es" ? "SPANISH" : sw.target === "pt" ? "PORTUGUESE" : "ENGLISH";
+  const example = sw.target === "es" ? "\"Claro, con gusto te atiendo en español\"" : sw.target === "pt" ? "\"Claro, com prazer te atendo em português\"" : "\"Of course, English works\"";
+  const why = sw.reason === "no-english"
+    ? "The client's latest message says they do NOT speak English (\"No, speak English\", \"no English\", \"I don't speak English\" or a broken-English variant of it). It is NOT a request for English: nobody asks for English in the middle of an English conversation. From this reply on, write ONLY in " + name + "."
+    : "The client's latest message asks you to write in " + name + ". From this reply on, write ONLY in " + name + ".";
+  return [
+    "CRITICAL, LANGUAGE SWITCH TO " + name + ":",
+    why,
+    "1. Start with a short, warm confirmation in " + name + " (one clause, like " + example + "), then, in the SAME message and in " + name + ", pick the conversation up exactly where it was: restate what your previous message asked or answered (if you asked the flooring type, ask it again in " + name + ", tile, vinyl or hardwood; if you offered visit times, offer the same times again; if you asked for the address or phone, ask for them again; if you answered a question, answer it again briefly).",
+    "2. NEVER write \"Already in English\", never say you are already writing in some language, never correct, comment on or apologize for the client's English, never ask which language they prefer. Just switch.",
+    "3. Every word of this reply, and of every later reply, must be in " + name + ", even if the client's later messages are short or mix in English words. Product names (tile, vinyl, hardwood, quarter round) stay as they are. Two short sentences at most, no inverted question or exclamation marks, no dashes.",
+  ].join("\n");
+}
+export function languageSwitchFallback(history: Array<{ role: string; content: string }>, sw: LangSwitch): string {
+  const typeKnown = conversationFlooringType(history as unknown as ChatMessage[]) !== null;
+  if (sw.target === "pt") return typeKnown ? "Claro, com prazer te atendo em português. Me diz em que posso te ajudar com o seu piso?" : OPENER_LANG_PT;
+  if (sw.target === "es") return typeKnown ? "Claro, con gusto te atiendo en español. Dime en qué te puedo ayudar con tu piso?" : OPENER_LANG_ES;
+  return typeKnown ? "Of course, English works. How can I help you with your floors?" : OPENER_LANG_EN;
+}
+export function enforceLanguageSwitch(history: Array<{ role: string; content: string }>, text: string, sw: LangSwitch): string {
+  const t = text || "";
+  if (!t.trim() || /\[REACT_ONLY\]|\[BOOK:/i.test(t)) return t;
+  const wrong = sw.target === "en" ? replyLooksSpanishOrPortuguese(t) : replyLooksEnglish(t) || ALREADY_IN_ENGLISH.test(t);
+  if (!wrong) return t;
+  return languageSwitchFallback(history, sw);
 }
 
 // The Meta ad quick-reply FAQ buttons arrive as known first messages. Answer the
@@ -1871,6 +1978,50 @@ export const MOBILE_HOME_NOTE = [
   "5. Only if the client clearly says the property is NOT a trailer or mobile home (a house, condo, apartment or commercial unit) return to the normal flow.",
   "6. Our \"mobile showroom\" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.",
 ].join("\n");
+
+// ─── "Send me your WhatsApp" / "what's your number?" ────────────────────────
+// Stela Cunha (FB 2026-09-17): first message "Me envi seu WhatsApp aí eu te
+// chamo" (PT: "send me your WhatsApp and I'll message you"). No "?", and not
+// one word of it ("whatsapp", "seu", "te chamo", "eu") was in any first-contact
+// detector or language list, so the ad-context leg fired the canned ENGLISH
+// type-ask over it and the owner had to send the number by hand two hours
+// later. A request for our WhatsApp / number / contact, in any of the three
+// languages, always needs reading (the model answers it with (561) 674-8334 in
+// the client's language and keeps the conversation going) and the reply is
+// guaranteed to carry the number (ensureContactNumber). A message that GIVES
+// the client's own number ("my WhatsApp is 305…", "786-619-7511 call me") is
+// not a request for ours.
+const WHATSAPP_WORD = /whats\s*app|(?<![a-zà-ÿ])(?:whats|wpp|wsp|zap|watsapp?|wassap|guasap|whatsap)(?![a-zà-ÿ])/i;
+const CONTACT_REQUEST = new RegExp([
+  String.raw`(?<![a-zà-ÿ])(?:seu|sua|teu|tua|su|tu|your|ur)\s+(?:n[uú]mero|numero|telefone|tel[eé]fono|contato|contacto|celular|cel|fone|phone|number|contact|digits)(?![a-zà-ÿ])`,
+  String.raw`\bphone\s+number\b|\bwhat(?:'?s|\s+is)\s+(?:the|a\s+good)\s+number\b|\bnumber\s+to\s+(?:call|text|reach)\b|\bcontact\s+(?:number|info)\b`,
+  String.raw`(?<![a-zà-ÿ])(?:me\s+(?:envia|envie|manda|mande|passa|passe|pasa|pase|env[ií]a|env[ií]e|d[aá]|d[eê]|deja)|p[aá]same|m[aá]ndame|env[ií]ame|d[aá]me|send\s+me|give\s+me|text\s+me)\s+(?:o\s+|a\s+|el\s+|la\s+|un\s+|um\s+|seu\s+|sua\s+|teu\s+|tu\s+|su\s+|your\s+|the\s+)?(?:n[uú]mero|numero|telefone|tel[eé]fono|contato|contacto|celular|cel|fone|phone|number|contact)(?![a-zà-ÿ])`,
+  String.raw`(?<![a-zà-ÿ])(?:eu\s+)?te\s+(?:chamo|ligo)(?![a-zà-ÿ])|(?<![a-zà-ÿ])(?:yo\s+)?te\s+(?:llamo|escribo|marco)(?![a-zà-ÿ])|\bi(?:'ll|\s+will|\s+can|\s+could)\s+(?:call|text|message|reach|contact)\s+(?:you|u)\b|\bcan\s+i\s+(?:call|text|message)\s+(?:you|u)\b`,
+].join("|"), "i");
+const GIVES_OWN_NUMBER = /\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b|\b\d{3}\s\d{3}\s\d{2}\s\d{2}\b|\+\d{10,13}\b|(?<![a-zà-ÿ])(?:my|mi|meu|minha)\s+(?:whats\s*app|whats|wpp|zap|n[uú]mero|numero|number|phone|telefone|tel[eé]fono|cel(?:ular)?)(?![a-zà-ÿ])/i;
+export function asksForOurContact(text: string): boolean {
+  const t = normalizeSmartPunct(clientTextOnly(text || ""));
+  if (!t.trim()) return false;
+  if (GIVES_OWN_NUMBER.test(t)) return false;
+  return WHATSAPP_WORD.test(t) || CONTACT_REQUEST.test(t);
+}
+export function contactNumberLine(lang: "en" | "es" | "pt"): string {
+  if (lang === "pt") return "Claro, nosso WhatsApp é o (561) 674-8334, pode falar direto com o Ozzi por lá.";
+  if (lang === "es") return "Claro, nuestro WhatsApp es el (561) 674-8334, ahí puedes escribirle directo a Ozzi.";
+  return "Sure, our WhatsApp is (561) 674-8334, you can reach Ozzi directly there.";
+}
+// The client asked for our WhatsApp / number and the reply came back without
+// it: prepend the number line in the client's language (a leading "Claro," /
+// "Sure," of the model's own is dropped so the two never stack).
+export function ensureContactNumber(history: Array<{ role: string; content: string }>, text: string, lang: "en" | "es" | "pt"): string {
+  const t = text || "";
+  if (!t.trim() || /\[REACT_ONLY\]|\[BOOK:/i.test(t)) return t;
+  if (OZZI_PHONE_RE.test(t)) return t;
+  if (!asksForOurContact(unansweredUserBurst(history))) return t;
+  const rest = t.replace(/^\s*(?:claro|sure|of course|por supuesto|certo|perfecto|perfect|perfeito)[,!.]?\s*/i, "");
+  const body = rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : "";
+  return (contactNumberLine(lang) + " " + body).trim();
+}
 
 // ─── "What's your number?" mid-booking must not end the booking ─────────────
 // Brickell (FB 2026-09-14): two slots offered and the details asked, then
@@ -2933,7 +3084,12 @@ export function firstMessageNeedsReading(text: string): boolean {
     // (pedido do número em espanhol, sem "?"), "Send me info to x@y.com",
     // "like to talk with someone on monday", "I've been a flooring installer
     // for 50 years" — todos levaram o opener enlatado em inglês.
-    /\b(?:su|tu|el|un)\s+(?:tel[eé]fono|n[uú]mero)\b|(?:^|[\s.,!?])tel[eé]fono(?![a-zà-ÿ])|\bn[uú]mero\s+de\s+(?:contacto|tel[eé]fono)\b|\b[\w.+-]+@[\w-]+\.\w{2,}\b|\bsend\s+(?:me\s+)?(?:the\s+)?info(?:rmation)?\b|\btalk\s+(?:with|to)\s+(?:someone|a\s+person|a\s+human|a\s+rep)\b|\bhablar\s+con\s+(?:alguien|una\s+persona)\b|\bfalar\s+com\s+(?:algu[eé]m|uma\s+pessoa)\b|\b(?:i'?ve\s+been|i\s+have\s+been|been)\s+(?:an?\s+)?(?:flooring\s+|floor\s+)?installer\b|\bsoy\s+instalador\b|\bsou\s+instalador\b/i.test(t)
+    /\b(?:su|tu|el|un)\s+(?:tel[eé]fono|n[uú]mero)\b|(?:^|[\s.,!?])tel[eé]fono(?![a-zà-ÿ])|\bn[uú]mero\s+de\s+(?:contacto|tel[eé]fono)\b|\b[\w.+-]+@[\w-]+\.\w{2,}\b|\bsend\s+(?:me\s+)?(?:the\s+)?info(?:rmation)?\b|\btalk\s+(?:with|to)\s+(?:someone|a\s+person|a\s+human|a\s+rep)\b|\bhablar\s+con\s+(?:alguien|una\s+persona)\b|\bfalar\s+com\s+(?:algu[eé]m|uma\s+pessoa)\b|\b(?:i'?ve\s+been|i\s+have\s+been|been)\s+(?:an?\s+)?(?:flooring\s+|floor\s+)?installer\b|\bsoy\s+instalador\b|\bsou\s+instalador\b/i.test(t) ||
+    // "Me envi seu WhatsApp aí eu te chamo" (Stela Cunha, FB 2026-09-17): a
+    // request for our WhatsApp / number / contact, in any language, with or
+    // without a "?", never gets the canned type-ask; the model answers it with
+    // (561) 674-8334 in the client's language (see asksForOurContact).
+    asksForOurContact(t)
   );
 }
 
@@ -3567,8 +3723,17 @@ export async function getAIResponse(
     }
   }
 
+  // LANGUAGE SWITCH (Leticia, FB 2026-09-17): the unanswered burst says the
+  // client does not speak English, or asks for a language. The model gets a
+  // CRITICAL note (below), the canned intercepts step aside (they answer in
+  // their own language), the referral replies use the target language, and
+  // the reply is verified to be in that language before it ships.
+  const langSwitch = languageSwitchRequest(messages);
+  if (langSwitch) console.log("[AI] language switch requested: " + langSwitch.target + " (" + langSwitch.reason + ")");
+  const usersLang = (): "en" | "es" | "pt" => langSwitch?.target ?? detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" "));
+
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns
-  const hardcoded = checkHardcodedResponse(messages);
+  const hardcoded = langSwitch ? null : checkHardcodedResponse(messages);
   // A size under 400 sqft stands (owner rule 2026-09-11): the canned intercepts
   // mention the free visit / rates, so the model answers what was asked AND
   // gives the Ozzi direct line (the post-model backstop still runs).
@@ -3610,7 +3775,7 @@ export async function getAIResponse(
   }
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
-  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n1b. SPANISH PUNCTUATION: never use the inverted marks ¿ or ¡. In Spanish, punctuate exactly like Portuguese: only the closing ? or ! at the end of the sentence ("Cuál te interesa?", "Perfecto!"), never "¿Cuál te interesa?" or "¡Perfecto!".\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for the client's address and phone (never the name) ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed. An address or phone number by itself is NOT a slot selection: if the client sent contact info but never picked one of the offered days/times, do not generate [BOOK:...], ask which of the offered times works instead.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. Ask ONLY for the property address with the zip code instead (never the name). The MOMENT you have a confirmed day/time AND the property address with its zip code, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. WHATSAPP EXCEPTION: if a [WHATSAPP CHANNEL] note is in context the client is ALREADY messaging us on WhatsApp, so never tell them to message us on WhatsApp, instead say the team will send the photos of the options right here and add [NOTIFY_OWNER]. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number or contact: use ONLY (561) 674-8334. The owner's name is Ozzi. NEVER invent a number. NEVER write any other phone number in a message, not even the CLIENT'S OWN number back to them — when saying the team will call, say "on the number you provided" with NO digits (wrong: "I'll have Ozzi reach out to you at 3057668885"; right: "I'll have Ozzi reach out to you on the number you provided shortly!"). The only place a client's number belongs is inside the [BOOK:...] tag. If the client asks for YOUR name, say you are Ozzi's assistant, NEVER invent a personal name (no "Alex", no made-up names, ever).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added, and only for 400 to 499 sqft (450 sqft tile = $2,025): under 400 sqft is never priced, it goes to the Ozzi direct line (rule 18). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.\n15. DATA ON FILE RULE: before asking for the client's address or phone, scan the WHOLE conversation, including messages from days ago. If the client already typed it, NEVER ask for it again, reuse it in the [BOOK:...] tag and ask only for what is genuinely missing. Re-asking data the client already gave (Cleveland, Josue, Yinnart, Frank, 08/2026) reads as a robot that does not listen and loses the visit.\n15b. NAME IS NEVER ASKED (owner rule 2026-09-16): the client's name is NOT a booking requirement. NEVER ask for it, not with the address and phone, not alone, not as a "last thing" or "what name should I put the visit under". The booking needs only the confirmed slot, the full address with its ZIP and the phone (or the WhatsApp number); with those, write [BOOK:...] at once, using the name only if the client stated it and "name":"" otherwise (the system fills it from the profile and previous visits).\n16. TIME OF DAY RULE: when the client asks for a part of the day or a boundary ("afternoon", "evening", "after 4", "mornings only", "por la tarde", "depois das 5"), offer the EARLIEST open times INSIDE that window on the soonest day that has them. Never answer "afternoon" with 9am or 11am.
+  dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n1b. SPANISH PUNCTUATION: never use the inverted marks ¿ or ¡. In Spanish, punctuate exactly like Portuguese: only the closing ? or ! at the end of the sentence ("Cuál te interesa?", "Perfecto!"), never "¿Cuál te interesa?" or "¡Perfecto!".\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for the client's address and phone (never the name) ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed. An address or phone number by itself is NOT a slot selection: if the client sent contact info but never picked one of the offered days/times, do not generate [BOOK:...], ask which of the offered times works instead.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. Ask ONLY for the property address with the zip code instead (never the name). The MOMENT you have a confirmed day/time AND the property address with its zip code, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. WHATSAPP EXCEPTION: if a [WHATSAPP CHANNEL] note is in context the client is ALREADY messaging us on WhatsApp, so never tell them to message us on WhatsApp, instead say the team will send the photos of the options right here and add [NOTIFY_OWNER]. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number, our WhatsApp or a contact ("me envia seu WhatsApp", "pásame tu WhatsApp", "send me your WhatsApp", "what's your number?"): give ONLY (561) 674-8334, it is both our phone and our WhatsApp, in the client's own language and in that same reply, and never answer such a request with only the flooring-type question (the number first, then the next question in the same message). The owner's name is Ozzi. NEVER invent a number. NEVER write any other phone number in a message, not even the CLIENT'S OWN number back to them — when saying the team will call, say "on the number you provided" with NO digits (wrong: "I'll have Ozzi reach out to you at 3057668885"; right: "I'll have Ozzi reach out to you on the number you provided shortly!"). The only place a client's number belongs is inside the [BOOK:...] tag. If the client asks for YOUR name, say you are Ozzi's assistant, NEVER invent a personal name (no "Alex", no made-up names, ever).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added, and only for 400 to 499 sqft (450 sqft tile = $2,025): under 400 sqft is never priced, it goes to the Ozzi direct line (rule 18). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.\n15. DATA ON FILE RULE: before asking for the client's address or phone, scan the WHOLE conversation, including messages from days ago. If the client already typed it, NEVER ask for it again, reuse it in the [BOOK:...] tag and ask only for what is genuinely missing. Re-asking data the client already gave (Cleveland, Josue, Yinnart, Frank, 08/2026) reads as a robot that does not listen and loses the visit.\n15b. NAME IS NEVER ASKED (owner rule 2026-09-16): the client's name is NOT a booking requirement. NEVER ask for it, not with the address and phone, not alone, not as a "last thing" or "what name should I put the visit under". The booking needs only the confirmed slot, the full address with its ZIP and the phone (or the WhatsApp number); with those, write [BOOK:...] at once, using the name only if the client stated it and "name":"" otherwise (the system fills it from the profile and previous visits).\n16. TIME OF DAY RULE: when the client asks for a part of the day or a boundary ("afternoon", "evening", "after 4", "mornings only", "por la tarde", "depois das 5"), offer the EARLIEST open times INSIDE that window on the soonest day that has them. Never answer "afternoon" with 9am or 11am.
 18. UNDER 400 SQFT RULE (OZZI DIRECT, owner rule 2026-09-11): the moment the client states a project size under 400 sqft (any figure below 400, or an obviously tiny area like a closet, a half bath or a hallway), for ANY flooring type, NEVER give a price, a total, a per-sqft rate, a range or an estimate for it, NEVER propose a visit or an estimate, NEVER offer slots, NEVER ask for name/address/phone, NEVER generate [BOOK:...], and NEVER say we don't take it or that it is too small. Say that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives the quote himself, and give the number (561) 674-8334. If they insist on a number here, say you are not able to give a quote for that size through here, it has to come from Ozzi directly, and repeat the number, never give in. For 400 to 499 sqft quote by DM: a clean multiplication with NOTHING added (luxury vinyl sqft x $5, tile sqft x $4.50, hardwood sqft x $3.20, carpet sqft x $2.20, laminate or install-only sqft x $2), ONE final total in one clean sentence, never narrate the math, never mention any tier. For 500 sqft or more NEVER give a DM price, propose the free visit.
 23. JOB SEEKER RULE: If the message is from someone seeking a job or offering their own labor/services (installer, painter, laborer, helper, carpenter, "are you hiring", "looking for work", "I'm an installer", "busco trabajo", "soy instalador", "procuro emprego", "sou pintor"), this is NOT a customer. Output EXACTLY [REACT_ONLY] and nothing else, no greeting, no pitch. A real customer asking about our service ("do you have installers?", "I need my floor installed") is NOT a job seeker, answer them normally.
 19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. If the client has already stated a size under 400 sqft, do not explain the rates at all, give the Ozzi direct line instead (rule 18).
@@ -3629,7 +3794,7 @@ export async function getAIResponse(
 30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
 31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.
 32. AD PRICE MISMATCH RULE: If the client quotes a price they saw in one of our ads ("the ad says $2,350 for 1000 sqft", "the promotion mentioned $2,300") that does NOT match the promotions in these rules, NEVER confirm, endorse, repeat, or validate that number as ours, and NEVER do math that legitimizes it (never "that $2,300 promo is our vinyl package"). Say the promotions vary by flooring type and the exact price is confirmed at the free in-person measure, then continue the normal flow. Never call the ad wrong or fake either, just move to what you can offer.
-33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. Both options come from the SOONEST day in the schedule that has open times (today first, then tomorrow; see SOONEST DAY FIRST in the schedule) and are that day's EARLIEST open times (its first two listed, 9am before 11am before 1pm), and if that day has only one open time, that one plus the first open time of the next day. The CLIENT AVAILABILITY RULE still applies first.
+33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. Both options come from the SOONEST day in the schedule that has open times (today first, then tomorrow; see SOONEST DAY FIRST in the schedule) and are that day's EARLIEST open times (its first two listed, 9am before 11am before 1pm), and if that day has only one open time, that one plus the first open time of the next day. Times shown on a schedule line inside a parenthesis as 'open only if the client asks for one of these' are NOT offered by you, they are only accepted when the client asks for one (owner rule 2026-09-17: one team member's day fills before the next one's). The CLIENT AVAILABILITY RULE still applies first.
 34. NO INVENTED COMPANY FACTS: NEVER state years in business, number of installers or crews, business hours, company history, or any company fact that is not written in these rules. If asked, keep it warm and general (the team has deep local experience across South Florida) and steer back to the free visit. Also never assert which city a zip code belongs to.
 35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].
 36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
@@ -3686,6 +3851,13 @@ export async function getAIResponse(
   if (mobileHomeStanding(messages)) {
     console.log("[AI] Trailer / mobile home stands — injecting the we-do-not-work-in-them block");
     dynamicSystem += "\n\n---\n\n" + MOBILE_HOME_NOTE;
+  }
+
+  // LANGUAGE SWITCH → the note is read last (Leticia, FB 2026-09-17: "No,
+  // speak English" got "Already in English!").
+  if (langSwitch) {
+    console.log("[AI] Language switch to " + langSwitch.target + " — injecting the language-switch block");
+    dynamicSystem += "\n\n---\n\n" + languageSwitchNote(langSwitch);
   }
 
   // A photo the pipeline could not read is in the latest burst → the model
@@ -3841,7 +4013,7 @@ export async function getAIResponse(
     // (the three webhooks keep their own copy of this guard as a second net).
     if (repairVisitOfferLeak(messages, cleaned)) {
       console.warn("[AI] repair request — model offered a visit / [BOOK]; replaced with the no-repairs decline");
-      cleaned = repairDeclineMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = repairDeclineMessage(usersLang());
     }
 
     // FLOOR WE DO NOT DO backstop inside the brain (Briones IG 2026-09-05,
@@ -3853,7 +4025,7 @@ export async function getAIResponse(
     // their own copy of this guard as a second net).
     if (unsupportedFloorLeak(messages, cleaned)) {
       console.warn("[AI] unsupported floor — model offered a visit / details / [BOOK]; replaced with the floors-we-do-not-do reply");
-      cleaned = unsupportedFloorReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = unsupportedFloorReply(messages, usersLang());
     }
 
     // PROJECT UNDER 400 SQFT backstop (owner rule 2026-09-11): while the
@@ -3863,7 +4035,7 @@ export async function getAIResponse(
     // caller of getAIResponse gets this; the three webhooks keep a second net.
     if (smallJobLeak(messages, cleaned)) {
       console.warn("[AI] project under 400 sqft — model priced / offered a visit / asked details; replaced with the Ozzi direct line");
-      cleaned = smallJobReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = smallJobReply(messages, usersLang());
     }
     // Photos / samples / website ask while a size under 400 sqft stands: the
     // model sometimes answers with the price-insist line ("I'm not able to give
@@ -3873,7 +4045,7 @@ export async function getAIResponse(
     // samples with Ozzi, and his number.
     if (hardcoded && /ozzifloors\.com/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
       console.warn("[AI] project under 400 sqft — photos/samples ask answered with the price-insist line; replaced with the website + samples line");
-      cleaned = smallJobPhotosMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = smallJobPhotosMessage(usersLang());
     }
 
     // BATHROOM PROJECT backstop (owner rule 2026-09-11, second part): while a
@@ -3884,7 +4056,7 @@ export async function getAIResponse(
     // getAIResponse gets this; the three webhooks keep a second net.
     if (bathroomLeak(messages, cleaned)) {
       console.warn("[AI] bathroom project — model priced / offered a visit / asked details; replaced with the bathroom Ozzi line");
-      cleaned = bathroomReply(messages, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = bathroomReply(messages, usersLang());
     }
 
     // TRAILER / MOBILE HOME backstop (owner rule 2026-09-15): while the client
@@ -3893,17 +4065,40 @@ export async function getAIResponse(
     // Every caller of getAIResponse gets this; the three webhooks keep a second net.
     if (mobileHomeLeak(messages, cleaned)) {
       console.warn("[AI] trailer / mobile home — model priced / offered a visit / asked details; replaced with the decline");
-      cleaned = mobileHomeDeclineMessage(detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      cleaned = mobileHomeDeclineMessage(usersLang());
     }
 
     // "What's your number?" while a visit is being set up (Brickell, FB
     // 2026-09-14): the number alone ended the booking. Append the pending
     // question. The referral flows own their replies and are left alone.
     if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
-      const kept = keepBookingThreadAfterPhone(messages, cleaned, detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" ")));
+      const kept = keepBookingThreadAfterPhone(messages, cleaned, usersLang());
       if (kept !== cleaned) {
         console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
         cleaned = kept;
+      }
+    }
+
+    // "Send me your WhatsApp" / "what's your number?" and the reply came back
+    // without the number (Stela Cunha, FB 2026-09-17): prepend our WhatsApp
+    // line in the client's language. The referral flows own their replies.
+    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+      const withNumber = ensureContactNumber(messages, cleaned, usersLang());
+      if (withNumber !== cleaned) {
+        console.warn("[AI] contact request — reply had no number; prepended our WhatsApp line");
+        cleaned = withNumber;
+      }
+    }
+
+    // LANGUAGE SWITCH backstop (Leticia, FB 2026-09-17): the client said they
+    // do not speak English (or asked for a language) and the reply is still in
+    // the wrong language, or comments "Already in English": ship the
+    // deterministic language-confirming line instead.
+    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+      const inLang = enforceLanguageSwitch(messages, cleaned, langSwitch);
+      if (inLang !== cleaned) {
+        console.warn("[AI] language switch to " + langSwitch.target + " — reply was in the wrong language; replaced with the language-confirming line");
+        cleaned = inLang;
       }
     }
 

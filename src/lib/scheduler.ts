@@ -20,7 +20,7 @@ export interface Seller {
   active: boolean;
 }
 
-interface BookingRow {
+export interface BookingRow {
   seller_id: string | null;
   booking_date: string;
   booking_time: string;
@@ -184,6 +184,58 @@ function pickSellerForSlot(
     .filter((s) => sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff))
     .sort((a, b) => a.priority - b.priority);
   return candidates[0] ?? null;
+}
+
+// ─── Owner rule 2026-09-17: one seller's day fills before the next seller's ──
+// "Lotar a agenda do Alexandre primeiro, antes do Chris; o Diego (horários
+// pares) na frente do Chris." The schedule the model reads is a union of every
+// seller's open hours, so with Alexandre's 9am taken the union still showed
+// 9am (Chris's) and the next client got Chris's 9am while Alexandre had 1pm,
+// 3pm and 5pm open. The OFFER now follows the priority order: a lower-priority
+// seller's hour is only OFFERED once every higher-priority seller who works
+// that hour on that weekday has no open hour left that day (or is off). Such
+// hours stay OPEN (createBooking books any free seller): the schedule shows
+// them in a parenthesis as "open only if the client asks for one of these", so
+// a client who wants 9am still gets it, with Chris. Hours of a seller with a
+// different grid (Diego's 2pm/4pm/6pm/8pm) are never held back by a seller who
+// does not work that hour, so the day still fills chronologically across
+// Alexandre and Diego. Equal priorities never hold each other back. notBefore
+// (today's same-day notice) applies before deciding who still has open hours.
+export function splitDaySlotsByPriority(
+  sellers: Seller[],
+  dateStr: string,
+  weekday: number,
+  bookings: BookingRow[],
+  daysOff: DaysOffSet,
+  notBefore?: string
+): { preferred: string[]; onRequest: string[] } {
+  const sorted = [...sellers].filter((s) => s.active).sort((a, b) => a.priority - b.priority);
+  const minSlot = notBefore ? hhmm(notBefore) : null;
+  const openBy = new Map<string, string[]>();
+  for (const s of sorted) {
+    const open = slotsForWeekday(s, weekday).filter(
+      (slot) => (!minSlot || slot >= minSlot) && sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)
+    );
+    openBy.set(s.id, open);
+  }
+  const preferred = new Set<string>();
+  const onRequest = new Set<string>();
+  for (const s of sorted) {
+    for (const slot of openBy.get(s.id) ?? []) {
+      const heldBack = sorted.some(
+        (h) =>
+          h.priority < s.priority &&
+          (openBy.get(h.id)?.length ?? 0) > 0 &&
+          h.enabled_weekdays.includes(weekday) &&
+          !daysOff.has(dayOffKey(h.id, dateStr)) &&
+          slotsForWeekday(h, weekday).includes(slot)
+      );
+      if (heldBack) onRequest.add(slot);
+      else preferred.add(slot);
+    }
+  }
+  for (const p of preferred) onRequest.delete(p);
+  return { preferred: [...preferred].sort(), onRequest: [...onRequest].sort() };
 }
 
 type SchedulerDb = Awaited<ReturnType<typeof getAuthenticatedClient>>;
@@ -1193,7 +1245,7 @@ export function bookedTimeSeenInConversation(
 // re-offer with that day's REAL open times so the pick that follows is explicit.
 export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promise<string> {
   try {
-    let slots = await getAvailableSlots(dateStr);
+    let slots = await getPreferredSlots(dateStr);
     if (dateStr === easternTodayStr()) {
       const nowET = easternNowHM();
       const cutoff = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
@@ -1396,25 +1448,20 @@ export async function getRealAvailabilityContext(): Promise<string> {
       const { weekday, month, day, year } = ymd(dateStr);
       const displayDate = `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${dateStr}]`;
 
-      const slotSet = new Set<string>();
-      sellers.forEach((s) => {
-        slotsForWeekday(s, weekday).forEach((slot) => {
-          if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
-        });
-      });
-
       // For today only: drop slots that start in less than SAME_DAY_MIN_NOTICE_MIN
       // Eastern minutes (was a 30-min buffer: at 4:25pm the bot offered "today at
       // 5pm", booked it at 4:28pm, nobody could get there and the client wrote
       // "Is this a scam" — Rowan Hobbs, 2026-08-23).
       const isToday = dateStr === windowDays[0];
-      const futureSlots = Array.from(slotSet).filter((slot) => {
-        if (!isToday) return true;
-        const [h, m] = slot.split(":").map(Number);
-        return h * 60 + m >= nowMinutesPlus30;
-      });
-
-      const slots = futureSlots.sort();
+      const notBefore = isToday
+        ? String(Math.floor(nowMinutesPlus30 / 60)).padStart(2, "0") + ":" + String(nowMinutesPlus30 % 60).padStart(2, "0")
+        : undefined;
+      // Owner rule 2026-09-17: one seller's day fills before the next seller's
+      // hours are offered (splitDaySlotsByPriority). The held-back hours stay
+      // bookable and go into a parenthesis for a client who asks for one.
+      const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff, notBefore);
+      const slots = preferred;
+      const onRequestNote = onRequest.length > 0 ? " (open only if the client asks for one of these: " + onRequest.map(fmt12).join(", ") + ")" : "";
       if (slots.length > 0) {
         hasAnySlot = true;
         const formatted = slots.map((s) => {
@@ -1423,7 +1470,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
           const h12 = h % 12 || 12;
           return `${h12}${min === 0 ? "" : `:${min}`}${period}`;
         });
-        lines.push(`• ${displayDate}: ${formatted.join(", ")}`);
+        lines.push(`• ${displayDate}: ${formatted.join(", ")}${onRequestNote}`);
       } else {
         lines.push(`• ${displayDate}: fully booked`);
       }
@@ -1437,6 +1484,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
         "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. If that line has only one open time, offer it plus the first open time of the next line that has any. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
+        "\n- ONE TEAM MEMBER'S DAY FILLS BEFORE THE NEXT ONE'S (owner's rule 2026-09-17): the times listed BEFORE a parenthesis are the ONLY ones you offer. Times inside a parenthesis marked 'open only if the client asks for one of these' are NEVER offered, listed, hinted at or counted by you: they belong to a second team member whose day only opens once the first one's is full. If the client, on their own, asks for one of those parenthesis times, it IS open: accept it and book it normally, never say it is not available." +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
@@ -1496,20 +1544,14 @@ export async function getNextOpenSlots(
   const out: Array<{ dateStr: string; weekday: number; times: string[] }> = [];
   for (const dateStr of windowDays) {
     const { weekday } = ymd(dateStr);
-    const slotSet = new Set<string>();
-    sellers.forEach((s) => {
-      slotsForWeekday(s, weekday).forEach((slot) => {
-        if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
-      });
-    });
     const isToday = dateStr === windowDays[0];
-    const times = Array.from(slotSet)
-      .filter((slot) => {
-        if (!isToday) return true;
-        const [h, m] = slot.split(":").map(Number);
-        return h * 60 + m >= nowMinutesPlus30;
-      })
-      .sort();
+    const notBefore = isToday
+      ? String(Math.floor(nowMinutesPlus30 / 60)).padStart(2, "0") + ":" + String(nowMinutesPlus30 % 60).padStart(2, "0")
+      : undefined;
+    // Owner rule 2026-09-17: only the hours that are OFFERED (one seller's day
+    // before the next seller's), the same hours the model's schedule lists.
+    const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff, notBefore);
+    const times = preferred.length > 0 ? preferred : onRequest;
     if (times.length > 0) out.push({ dateStr, weekday, times });
   }
   return out;
@@ -1549,7 +1591,7 @@ export async function slotConflictRecoveryMessage(
         // availability view disagrees with the booking write.
         const failedHM = /^(\d{1,2}):(\d{2})/.exec((requestedTime ?? "").trim());
         const failedMin = failedHM ? parseInt(failedHM[1], 10) * 60 + parseInt(failedHM[2], 10) : null;
-        let slots = (await getAvailableSlots(requestedDate)).filter((s) => {
+        let slots = (await getPreferredSlots(requestedDate)).filter((s) => {
           if (failedMin === null) return true;
           const [h, min] = s.split(":").map(Number);
           return h * 60 + min !== failedMin;
@@ -1754,7 +1796,7 @@ export function detectLang(text: string): Lang {
   const esWords = ["hola", "gracias", "cuánto", "cuanto", "precio", "piso", "casa", "área", "area", "necesito", "quiero", "buenas", "cita", "dirección", "direccion", "cocina", "cuarto", "metros", "usted", "mañana", "tengo", "viernes", "sábado", "sabado", "domingo", "lunes", "martes", "miércoles", "miercoles", "jueves", "para", "está", "esta", "pisos"];
   const enWords = ["hello", "thanks", "thank", "price", "floor", "house", "need", "want", "quote", "address", "kitchen", "room", "tomorrow", "morning", "would", "please", "available", "looking"];
   // \b is ASCII-only in JS, so accented words use (?:^|\W)…(?=$|\W) instead.
-  const ptWords = ["você", "voce", "vcs", "obrigado", "obrigada", "não", "endereço", "endereco", "orçamento", "orcamento", "amanhã", "terça", "segunda-feira", "quarta", "quinta", "sexta", "gostaria", "gostaríamos", "gostariamos", "olá", "hoje", "preço", "madeira", "banheiro", "cozinha", "preciso", "falo", "português", "portugues", "pode", "seria", "tudo bem", "estou", "muito"];
+  const ptWords = ["você", "voce", "vcs", "obrigado", "obrigada", "não", "endereço", "endereco", "orçamento", "orcamento", "amanhã", "terça", "segunda-feira", "quarta", "quinta", "sexta", "gostaria", "gostaríamos", "gostariamos", "olá", "hoje", "preço", "madeira", "banheiro", "cozinha", "preciso", "falo", "português", "portugues", "pode", "seria", "tudo bem", "estou", "muito", "seu", "sua", "eu", "aí", "pra", "vc", "chamo", "ligo", "teu", "tua", "né", "tá", "qual", "quais", "meu", "minha", "nosso", "nossa", "isso"];
   for (const w of esWords) if (new RegExp(`\\b${w}\\b`).test(t)) es++;
   for (const w of enWords) if (new RegExp(`\\b${w}\\b`).test(t)) en++;
   for (const w of ptWords) if (new RegExp(`(?:^|\\W)${w}(?=$|\\W)`).test(t)) pt++;
@@ -2217,6 +2259,37 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     // horário fantasma em dia lotado (e domingo nem tem essa grade). Vazio
     // manda o chamador para o caminho seguro.
     console.error("getAvailableSlots failed — returning none:", err);
+    return [];
+  }
+}
+
+// The hours that are OFFERED for one day (owner rule 2026-09-17: one seller's
+// day fills before the next seller's hours are offered), i.e. the same hours
+// the model sees before the parenthesis on that day's schedule line. Every
+// open hour is still bookable (createBooking books any free seller); this is
+// only what the canned offers (needTimeChoiceMessage, the same-day
+// alternatives of slotConflictRecoveryMessage) propose. Empty on error, like
+// getAvailableSlots.
+export async function getPreferredSlots(dateStr: string): Promise<string[]> {
+  try {
+    const db = await getAuthenticatedClient();
+    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
+      db
+        .from("sellers")
+        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
+        .eq("active", true)
+        .order("priority", { ascending: true }),
+      db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
+      getDaysOff(db, dateStr, dateStr),
+    ]);
+    if (bookedErr) throw new Error("get_booked_slots: " + bookedErr.message);
+    const sellers = (sellersData ?? []) as Seller[];
+    const bookings = (bookedData ?? []) as BookingRow[];
+    const weekday = new Date(dateStr + "T12:00:00").getDay();
+    const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff);
+    return preferred.length > 0 ? preferred : onRequest;
+  } catch (err) {
+    console.error("getPreferredSlots failed — returning none:", err);
     return [];
   }
 }

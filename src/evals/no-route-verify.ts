@@ -11,7 +11,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, type ChatMessage } from "../lib/ai";
-import { getEasternDateContext, getRealAvailabilityContext, needTimeChoiceMessage, slotConflictRecoveryMessage, getAvailableSlots, easternTodayStr } from "../lib/scheduler";
+import { getEasternDateContext, getRealAvailabilityContext, needTimeChoiceMessage, slotConflictRecoveryMessage, getPreferredSlots, easternTodayStr } from "../lib/scheduler";
 
 function loadEnv() {
   try {
@@ -51,13 +51,15 @@ async function run() {
   const dayLines = avail.split("\n").filter((l) => l.startsWith("• ") && !/fully booked/.test(l));
   const firstLine = dayLines[0] ?? "";
   const firstDate = (/\[(\d{4}-\d{2}-\d{2})\]/.exec(firstLine) ?? [])[1];
-  const firstTimes = firstLine.split("]: ")[1]?.split(", ").map((s) => s.trim()) ?? [];
+  // Regra do dono 17/09: a linha pode terminar com "(open only if the client asks for one of these: …)",
+  // horários do vendedor seguinte que NÃO são ofertados; só os da frente contam.
+  const firstTimes = firstLine.split("]: ")[1]?.replace(/\s*\(open only if[^)]*\)\s*$/, "").split(", ").map((s) => s.trim()) ?? [];
   console.log(`   primeiro dia com vaga: ${firstLine}`);
   ck("primeiro dia com vaga identificado", !!firstDate && firstTimes.length >= 2, firstLine);
 
   console.log("\n━━ B. enlatadas: horários em ordem do relógio ━━");
   if (firstDate) {
-    const slots = await getAvailableSlots(firstDate);
+    const slots = await getPreferredSlots(firstDate); // horários OFERTÁVEIS (regra 17/09: um vendedor por vez)
     const isToday = firstDate === easternTodayStr();
     const ntc = await needTimeChoiceMessage("en", firstDate);
     console.log("   needTimeChoiceMessage →", ntc);
