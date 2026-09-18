@@ -141,95 +141,186 @@ async function saudacaoDaThread(psid) {
   } catch { return null; }
 }
 
-// ── 3) jobs sem criativo → conversa do agente (elo forte) ──
+// ── 3) jobs e vendas sem criativo → conversas do agente (elo forte) ──
+// 18/09/2026: o elo por telefone buscava os 7 dígitos COLADOS ("7559043") e o
+// cliente digita "201-755-9043", "(954) 668-0744", "305 2829441" — 12 pessoas
+// com a prova na conversa ficaram de fora. Agora o padrão aceita qualquer
+// separador e a conferência é pelos 10 dígitos, só em mensagem do CLIENTE.
+// Também: TODAS as conversas da pessoa são avaliadas (não só a primeira
+// achada), as vendas assinadas ainda sem job entram na varredura, e a thread
+// do Messenger é lida uma vez para saudação E cartão "replied to an ad.".
 const { data: jobs } = await pl
   .from("jobs")
-  .select("id, data_conclusao, quotes(id, lead_id, nome_cliente, telefone, email, data_assinatura)")
+  .select("id, quote_id, data_conclusao, quotes(id, lead_id, nome_cliente, telefone, email, data_assinatura)")
   .order("data_conclusao", { ascending: false })
-  .limit(1000);
-const { data: leadsTudo } = await pl.from("leads").select("id, telefone, telefone_conversa, ig_id, ad_id, ad_name, ad_title, ad_evidencia, canal, criado_em").limit(20000);
+  .limit(2000);
+const { data: assinados } = await pl
+  .from("quotes")
+  .select("id, lead_id, nome_cliente, telefone, email, data_assinatura")
+  .eq("status", "assinado")
+  .order("data_assinatura", { ascending: false })
+  .limit(2000);
+const leadsTudo = [];
+for (let de = 0; ; de += 1000) {
+  const { data, error } = await pl.from("leads").select("id, telefone, telefone_conversa, ig_id, ad_id, ad_name, ad_title, ad_evidencia, canal, criado_em").range(de, de + 999);
+  if (error) throw new Error("leads: " + error.message);
+  leadsTudo.push(...(data ?? []));
+  if (!data || data.length < 1000) break;
+}
+const leadPorId = new Map();
 const leadPorTel = new Map();
 const leadPorIg = new Map();
-for (const l of leadsTudo ?? []) {
-  const t = dez(l.telefone);
-  if (t.length === 10 && !leadPorTel.has(t)) leadPorTel.set(t, l);
+for (const l of leadsTudo) {
+  leadPorId.set(l.id, l);
+  for (const t of [dez(l.telefone), dez(l.telefone_conversa)]) if (t.length === 10 && !leadPorTel.has(t)) leadPorTel.set(t, l);
   if (l.ig_id && !leadPorIg.has(l.ig_id)) leadPorIg.set(l.ig_id, l);
 }
 const temCriativo = (l) => !!(l && (l.ad_id || l.ad_name || l.ad_title));
-const pessoaTemCriativo = (tel, igsid) => temCriativo(leadPorTel.get(tel)) || temCriativo(leadPorIg.get(igsid));
 
-let atribuidos = 0, provas = 0, ambiguos = 0, semProva = 0, soNome = 0, jaTem = 0, erros = 0;
-const vistos = new Set();
+const alvos = [];
+const comJob = new Set();
 for (const j of jobs ?? []) {
   const q = Array.isArray(j.quotes) ? j.quotes[0] : j.quotes;
   if (!q) continue;
-  const tel = dez(q.telefone);
-  if (vistos.has(tel || q.id)) continue;
-  vistos.add(tel || q.id);
-  const nome = String(q.nome_cliente ?? "?").slice(0, 22).padEnd(22);
-  const dataJob = String(j.data_conclusao).slice(0, 10);
+  comJob.add(q.id);
+  alvos.push({ tipo: "job", q, quando: String(j.data_conclusao ?? "").slice(0, 10) });
+}
+for (const q of assinados ?? []) if (!comJob.has(q.id)) alvos.push({ tipo: "venda", q, quando: String(q.data_assinatura ?? "").slice(0, 10) });
 
-  // elo forte: telefone do orçamento digitado na conversa, ou e-mail ia-<igsid>
-  let conv = null;
-  const tel7 = tel.slice(-7);
-  if (tel7.length === 7) {
-    const { data: msgs } = await app.from("instagram_messages").select("conversation_id").ilike("content", `%${tel7}%`).limit(3);
-    const cid = msgs?.[0]?.conversation_id;
-    if (cid) {
-      const { data: c } = await app.from("instagram_conversations").select("id, igsid, created_at, name, username").eq("id", cid).maybeSingle();
-      if (c) conv = c;
+const soDigitos = (s) => String(s ?? "").replace(/\D/g, "");
+const COLS_CONV = "id, igsid, created_at, name, username";
+async function conversasDaPessoa(q, tel) {
+  const ids = new Map(); // conv id → conv
+  if (tel.length === 10) {
+    const { data: msgs, error } = await app
+      .from("instagram_messages")
+      .select("conversation_id, role, content")
+      .ilike("content", `%${tel.slice(0, 3)}%${tel.slice(3, 6)}%${tel.slice(6)}%`)
+      .limit(60);
+    if (error) console.log("     !! busca telefone:", error.message);
+    const cids = [...new Set((msgs ?? []).filter((m) => m.role === "user" && soDigitos(m.content).includes(tel)).map((m) => m.conversation_id))];
+    if (cids.length > 0) {
+      const { data: cs } = await app.from("instagram_conversations").select(COLS_CONV).in("id", cids);
+      for (const c of cs ?? []) ids.set(c.id, c);
     }
+    // o próprio chat de WhatsApp do número
+    const { data: wa } = await app.from("instagram_conversations").select(COLS_CONV).in("igsid", [`wa_1${tel}`, `wa_${tel}`]);
+    for (const c of wa ?? []) ids.set(c.id, c);
   }
-  if (!conv && q.email && /^ia-/.test(q.email)) {
+  if (q.email && /^ia-/.test(q.email)) {
     const igsid = q.email.replace(/^ia-/, "").replace(/@.*$/, "");
-    const { data: c } = await app.from("instagram_conversations").select("id, igsid, created_at, name, username").eq("igsid", igsid).maybeSingle();
-    if (c) conv = c;
+    const { data: c } = await app.from("instagram_conversations").select(COLS_CONV).eq("igsid", igsid).maybeSingle();
+    if (c) ids.set(c.id, c);
   }
-  if (!conv) {
-    // só o nome: não vale como elo — listar para conferência humana
-    if (q.nome_cliente && q.nome_cliente.length > 3) {
-      const partes = q.nome_cliente.split(" ");
-      const { data: cs } = await app.from("instagram_conversations").select("igsid, created_at, name").ilike("name", `%${partes[0]}%${partes[1] ?? ""}%`).limit(2);
-      if (cs && cs.length === 1) { soNome++; console.log(`  ? só nome      ${nome} job ${dataJob} ~ conversa ${cs[0].created_at.slice(0, 10)} "${cs[0].name}" (não atribuído: nome não é prova)`); }
-    }
-    continue;
-  }
-  const igsidPuro = conv.igsid.replace(/^(fb_|wa_)/, "");
-  const canal = conv.igsid.startsWith("fb_") ? "facebook" : conv.igsid.startsWith("wa_") ? "whatsapp" : "instagram";
-  if (pessoaTemCriativo(tel, igsidPuro)) { jaTem++; continue; }
-  if (canal === "whatsapp") { semProva++; continue; } // WhatsApp não tem template a ler
+  return [...ids.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
 
+// thread do Messenger: saudação do anúncio E cartão "replied to an ad." numa leitura só
+const cacheThread = new Map();
+async function lerThread(psid) {
+  if (cacheThread.has(psid)) return cacheThread.get(psid);
+  const out = { saudacao: null, cartao: false };
+  try {
+    const conv = await fetch(`https://graph.facebook.com/v24.0/me/conversations?user_id=${psid}&fields=id&access_token=${pageToken}`);
+    const convId = conv.ok ? (await conv.json()).data?.[0]?.id : null;
+    if (convId) {
+      let url = `https://graph.facebook.com/v24.0/${convId}/messages?fields=message,from&limit=100&access_token=${pageToken}`;
+      let ultimas = [];
+      for (let p = 0; p < 4 && url; p++) {
+        const res = await fetch(url);
+        if (!res.ok) break;
+        const j = await res.json();
+        if ((j.data ?? []).some((m) => /replied to an ad/i.test(m.message ?? ""))) out.cartao = true;
+        ultimas = j.data ?? ultimas;
+        url = j.paging?.next ?? null;
+      }
+      for (const m of [...ultimas].reverse().slice(0, 12)) {
+        const t = cauda(m.message ?? "");
+        if (t && porSaudacao.has(t)) {
+          out.saudacao = t;
+          break;
+        }
+      }
+    }
+  } catch {
+    /* melhor esforço */
+  }
+  cacheThread.set(psid, out);
+  await new Promise((ok) => setTimeout(ok, 200));
+  return out;
+}
+
+async function avaliar(conv) {
+  const canal = conv.igsid.startsWith("fb_") ? "facebook" : conv.igsid.startsWith("wa_") ? "whatsapp" : "instagram";
   const dia = diaNY(conv.created_at);
   const { data: msgs } = await app.from("instagram_messages").select("role, content").eq("conversation_id", conv.id).order("created_at", { ascending: true }).limit(6);
   const primeira = (msgs ?? []).find((m) => m.role === "user");
   const texto1 = norm(stripSys(primeira?.content ?? "").replace(/\?+\s*$/, "?"));
   const candFaq = porPergunta.get(texto1) ?? null;
   let candSaud = null;
+  let cartao = false;
   if (canal === "facebook") {
-    const t = await saudacaoDaThread(igsidPuro);
-    await new Promise((ok) => setTimeout(ok, 200));
-    if (t) candSaud = porSaudacao.get(t) ?? null;
+    const th = await lerThread(conv.igsid.slice(3));
+    cartao = th.cartao;
+    if (th.saudacao) candSaud = porSaudacao.get(th.saudacao) ?? null;
   }
-  let candidatos = null, fonte = null;
+  let candidatos = null;
+  let fonte = null;
   if (candSaud && candFaq) {
-    const ids = new Set(candFaq.map((c) => c.ad_id));
-    const inter = candSaud.filter((c) => ids.has(c.ad_id));
+    const idsFaq = new Set(candFaq.map((c) => c.ad_id));
+    const inter = candSaud.filter((c) => idsFaq.has(c.ad_id));
     candidatos = inter.length > 0 ? inter : candSaud;
     fonte = "msg_greeting";
-  } else if (candSaud) { candidatos = candSaud; fonte = "msg_greeting"; }
-  else if (candFaq) { candidatos = candFaq; fonte = "faq_icebreaker"; }
-
-  const evidencia = candFaq ? "faq_button" : null;
-  let achado = null, motivo = "";
-  if (candidatos) {
+  } else if (candSaud) {
+    candidatos = candSaud;
+    fonte = "msg_greeting";
+  } else if (candFaq) {
+    candidatos = candFaq;
+    fonte = "faq_icebreaker";
+  }
+  // mesmas DUAS provas que a varredura automática aceita (funil.ts): botão de
+  // FAQ na 1ª mensagem ou o cartão "replied to an ad." na thread do Messenger
+  const evidencia = candFaq ? "faq_button" : cartao ? "card_messenger" : null;
+  let achado = null;
+  let motivo = "sem botão, saudação nem cartão de anúncio";
+  // no WhatsApp a peça exata vem do referral (externalAdReply); o botão só PROVA a origem
+  if (candidatos && canal !== "whatsapp") {
     const d = decidir(candidatos, dia);
     if (d?.ad_id) achado = d;
     else motivo = d?.ambiguo ? `ambíguo: ${d.ambiguo.slice(0, 80)}` : "ninguém veiculando no dia";
-  } else motivo = "sem botão nem saudação de anúncio";
+  } else if (candidatos) motivo = "WhatsApp: botão prova a origem, não a peça";
+  return { conv, canal, dia, fonte, evidencia, achado, motivo };
+}
 
-  if (!achado && !evidencia) { semProva++; console.log(`  – sem prova     ${nome} job ${dataJob} · ${canal} ${dia} · ${motivo}`); continue; }
-  if (achado) { atribuidos++; console.log(`  ✅ ${fonte.padEnd(14)} ${nome} job ${dataJob} · ${canal} ${dia} → ${achado.nome} (${achado.ad_id})`); }
-  else { ambiguos++; provas++; console.log(`  ▲ prova s/ peça ${nome} job ${dataJob} · ${canal} ${dia} · ${motivo}`); }
+let atribuidos = 0, provas = 0, semProva = 0, semConversa = 0, jaTem = 0, jaTemProva = 0, erros = 0;
+const vistos = new Set();
+for (const { tipo, q, quando } of alvos) {
+  const tel = dez(q.telefone);
+  if (vistos.has(tel || q.id)) continue;
+  vistos.add(tel || q.id);
+  const nome = String(q.nome_cliente ?? "?").slice(0, 22).padEnd(22);
+  const rot = `${tipo} ${quando}`;
+  const leadsDaPessoa = [leadPorId.get(q.lead_id), leadPorTel.get(tel)].filter(Boolean);
+  if (leadsDaPessoa.some(temCriativo)) { jaTem++; continue; }
+
+  const convs = await conversasDaPessoa(q, tel);
+  if (convs.length === 0) { semConversa++; continue; }
+  for (const c of convs) {
+    const l = leadPorIg.get(c.igsid.replace(/^(fb_|wa_)/, ""));
+    if (l) leadsDaPessoa.push(l);
+  }
+  if (leadsDaPessoa.some(temCriativo)) { jaTem++; continue; }
+
+  // a conversa MAIS ANTIGA com peça vence (regra "primeiro anúncio vence"); sem peça, a 1ª com prova
+  const avals = [];
+  for (const c of convs) avals.push(await avaliar(c));
+  const melhor = avals.find((a) => a.achado) ?? avals.find((a) => a.evidencia) ?? null;
+  if (!melhor) { semProva++; console.log(`  – sem prova     ${nome} ${rot} · ${avals.map((a) => `${a.canal} ${a.dia}`).join(", ")} · ${avals[0].motivo}`); continue; }
+  const { conv, canal, dia, fonte, evidencia, achado, motivo } = melhor;
+  const igsidPuro = conv.igsid.replace(/^(fb_|wa_)/, "");
+  if (!achado && leadsDaPessoa.some((l) => l.ad_evidencia)) { jaTemProva++; continue; }
+  if (achado) { atribuidos++; console.log(`  ✅ ${fonte.padEnd(14)} ${nome} ${rot} · ${canal} ${dia} → ${achado.nome} (${achado.ad_id})`); }
+  else { provas++; console.log(`  ▲ prova s/ peça ${nome} ${rot} · ${canal} ${dia} · ${evidencia} · ${motivo}`); }
 
   if (!APLICAR) continue;
   const campos = {
@@ -238,7 +329,8 @@ for (const j of jobs ?? []) {
   };
   try {
     if (achado) await pl.from("ads").upsert({ ad_id: achado.ad_id, ad_name: achado.nome }, { onConflict: "ad_id", ignoreDuplicates: true });
-    const existente = leadPorTel.get(tel) ?? leadPorIg.get(igsidPuro);
+    // o lead do ORÇAMENTO é quem a tela de Jobs lê primeiro; depois telefone, depois a conversa
+    const existente = leadPorId.get(q.lead_id) ?? leadPorTel.get(tel) ?? leadPorIg.get(igsidPuro);
     if (existente) {
       const preencher = {};
       for (const [k, v] of Object.entries(campos)) if (!existente[k]) preencher[k] = v;
@@ -247,13 +339,20 @@ for (const j of jobs ?? []) {
         const { error } = await pl.from("leads").update(preencher).eq("id", existente.id);
         if (error) throw new Error(error.message);
         Object.assign(existente, preencher);
+        if (preencher.ig_id) leadPorIg.set(preencher.ig_id, existente);
+        await pl.from("lead_eventos").insert({
+          lead_id: existente.id,
+          evento: "criativo_recuperado",
+          detalhe: JSON.stringify({ origem: "recuperacao_jobs_template", conversa: conv.igsid, conversa_em: conv.created_at, quote_id: q.id, fonte: achado ? fonte : null, evidencia, campos: Object.keys(preencher) }),
+        });
       }
+      if (!q.lead_id) await pl.from("quotes").update({ lead_id: existente.id }).eq("id", q.id).is("lead_id", null);
     } else {
       const novo = {
         telefone: tel.length === 10 ? `1${tel}` : null,
         nome: q.nome_cliente ?? conv.name ?? null,
         canal,
-        ig_id: leadPorIg.has(igsidPuro) ? null : igsidPuro,
+        ig_id: canal === "whatsapp" || leadPorIg.has(igsidPuro) ? null : igsidPuro,
         ig_username: conv.username ?? null,
         estagio: "vendido",
         criado_em: conv.created_at,
@@ -261,6 +360,7 @@ for (const j of jobs ?? []) {
       };
       const { data: ins, error } = await pl.from("leads").insert(novo).select("id, telefone, ig_id, ad_id, ad_name, ad_evidencia").single();
       if (error) throw new Error(error.message);
+      leadPorId.set(ins.id, ins);
       if (tel.length === 10) leadPorTel.set(tel, ins);
       if (ins.ig_id) leadPorIg.set(ins.ig_id, ins);
       await pl.from("lead_eventos").insert({
@@ -276,4 +376,4 @@ for (const j of jobs ?? []) {
     console.log(`     !! gravar ${nome}: ${e.message}`);
   }
 }
-console.log(`\nRESULTADO: atribuídos=${atribuidos} · prova sem peça=${provas} (ambíguos=${ambiguos}) · sem prova=${semProva} · só nome=${soNome} · já tinham=${jaTem} · erros=${erros}`);
+console.log(`\nRESULTADO (${alvos.length} alvos: jobs + vendas assinadas): peça exata=${atribuidos} · prova sem peça=${provas} · sem prova=${semProva} · sem conversa=${semConversa} · já tinham criativo=${jaTem} · já tinham a prova=${jaTemProva} · erros=${erros}`);
