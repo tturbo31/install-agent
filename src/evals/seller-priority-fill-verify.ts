@@ -4,10 +4,13 @@
 // The schedule the model reads used to be a seller-less union of every open
 // hour, so with Alexandre's 9am taken it still listed 9am (Chris's) and the
 // next client landed on Chris while Alexandre had 1pm, 3pm, 5pm open. Now:
-//  • splitDaySlotsByPriority: a lower-priority seller's hour is only OFFERED
-//    once every higher-priority seller who works that hour that weekday has
-//    no open hour left that day; it stays bookable and is shown in a
-//    parenthesis "open only if the client asks for one of these".
+//  • splitDaySlotsByPriority (STRICT order since the afternoon of 17/09,
+//    owner: "Alexandre, depois Diego, depois Chris, tem que ser nessa ordem"):
+//    a seller's hours are only OFFERED once every seller in front of him has
+//    no open hour left that day, whatever the hour grids; they stay bookable
+//    and are shown in a parenthesis "open only if the client asks for one of
+//    these". Single exception: the seller in front has ONE hour left → the
+//    offer is topped up with the next seller's earliest hour, same day.
 //  • getRealAvailabilityContext / getNextOpenSlots / getPreferredSlots (the
 //    canned offers) all use it; createBooking still books ANY free seller
 //    (pickSellerForSlot, lowest priority number first) so an asked-for hour
@@ -54,62 +57,78 @@ const SAT = "2026-09-19"; // weekday 6
 const noOff = new Set<string>();
 
 async function main() {
-  console.log("\n[1] DETERMINISTIC — splitDaySlotsByPriority with the real grids");
+  console.log("\n[1] DETERMINISTIC — splitDaySlotsByPriority, strict order Alexandre → Diego → Chris");
+  const j = (r: { preferred: string[]; onRequest: string[] }) => `${r.preferred.join(",")} | ${r.onRequest.join(",")}`;
+  const FULL_A = ["09:00", "11:00", "13:00", "15:00", "17:00"].map((t) => bk("A", THU, t));
+  const FULL_D = ["14:00", "16:00", "18:00", "20:00"].map((t) => bk("D", THU, t));
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, [], noOff);
-    // Chris's 7pm is nobody else's hour (Alexandre stops at 5pm, Diego has 6pm/8pm), so it is
-    // offered too, last in the day; his 9am..5pm are Alexandre's hours and stay hidden.
-    ck("empty weekday: offered = Alexandre + Diego hours + Chris's lone 7pm, chronological", r.preferred.join(",") === "09:00,11:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00", r.preferred.join(","));
-    ck("empty weekday: nothing on request (Chris's shared hours are already listed through Alexandre)", r.onRequest.length === 0, r.onRequest.join(","));
+    ck("empty weekday: offered = Alexandre's day only (9am, 11am, 1pm, 3pm, 5pm)", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00", j(r));
+    ck("empty weekday: Diego's 2/4/6/8pm and Chris's 7pm wait in the parenthesis", r.onRequest.join(",") === "14:00,16:00,18:00,19:00,20:00", j(r));
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "09:00")], noOff);
-    ck("Alexandre's 9am taken: 9am (Chris) is NOT offered, goes to the parenthesis", !r.preferred.includes("09:00") && r.onRequest.includes("09:00"), `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
-    ck("…and the offer continues with Alexandre's 11am, 1pm + Diego's 2pm", r.preferred.slice(0, 3).join(",") === "11:00,13:00,14:00", r.preferred.join(","));
+    ck("Alexandre's 9am taken: 9am (Chris) is NOT offered, goes to the parenthesis", !r.preferred.includes("09:00") && r.onRequest.includes("09:00"), j(r));
+    ck("…and the offer is Alexandre's 11am, 1pm, 3pm, 5pm only (no Diego, no Chris)", r.preferred.join(",") === "11:00,13:00,15:00,17:00", j(r));
   }
   {
-    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "09:00"), bk("A", THU, "11:00"), bk("A", THU, "13:00"), bk("A", THU, "15:00"), bk("A", THU, "17:00")], noOff);
-    ck("Alexandre FULL: Chris's whole day opens for offer (9am first), Diego's hours still there", r.preferred.join(",") === "09:00,11:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00" && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    const r = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_A.slice(0, 4), noOff);
+    ck("Alexandre has ONE hour left (5pm): offer = 5pm + Diego's earliest (2pm), same day", r.preferred.join(",") === "14:00,17:00", j(r));
+    ck("…the rest of Diego's day and all of Chris's stay in the parenthesis", r.onRequest.join(",") === "09:00,11:00,13:00,15:00,16:00,18:00,19:00,20:00", j(r));
   }
   {
-    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "09:00"), bk("A", THU, "11:00"), bk("A", THU, "13:00"), bk("A", THU, "15:00"), bk("A", THU, "17:00"), bk("C", THU, "09:00"), bk("D", THU, "14:00")], noOff);
-    ck("Alexandre full, Chris 9am + Diego 2pm taken: offer = 11am, 1pm, 3pm, 4pm, 5pm, 6pm, 7pm, 8pm", r.preferred.join(",") === "11:00,13:00,15:00,16:00,17:00,18:00,19:00,20:00", r.preferred.join(","));
+    const r = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_A, noOff);
+    ck("Alexandre FULL: Diego's day is offered (2pm, 4pm, 6pm, 8pm), Chris still waits", r.preferred.join(",") === "14:00,16:00,18:00,20:00" && r.onRequest.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00", j(r));
+    const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_A, bk("C", THU, "09:00"), bk("D", THU, "14:00")], noOff);
+    ck("Alexandre full, Chris 9am + Diego 2pm taken: offer = 4pm, 6pm, 8pm (Diego); Chris's 11am..7pm on request", r2.preferred.join(",") === "16:00,18:00,20:00" && r2.onRequest.join(",") === "11:00,13:00,15:00,17:00,19:00", j(r2));
+    const r3 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_A, ...FULL_D.slice(0, 3)], noOff);
+    ck("Alexandre full, Diego has ONE hour left (8pm): offer = Chris's 9am + 8pm, same day", r3.preferred.join(",") === "09:00,20:00" && r3.onRequest.join(",") === "11:00,13:00,15:00,17:00,19:00", j(r3));
+    const r4 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_A, ...FULL_D], noOff);
+    ck("Alexandre AND Diego full: Chris's whole day opens (9am first), nothing on request", r4.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r4.onRequest.length === 0, j(r4));
+    const r5 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_A, ...FULL_D, ...["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"].map((t) => bk("C", THU, t))], noOff);
+    ck("everyone full: nothing offered, nothing on request", r5.preferred.length === 0 && r5.onRequest.length === 0, j(r5));
   }
   {
-    const off = new Set<string>([`A|${THU}`]);
-    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [], off);
-    ck("Alexandre on a day off: Chris's hours are offered normally", r.preferred.includes("09:00") && r.preferred.includes("19:00") && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [], new Set<string>([`A|${THU}`]));
+    ck("Alexandre on a day off: Diego's day is offered, Chris waits", r.preferred.join(",") === "14:00,16:00,18:00,20:00" && r.onRequest.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00", j(r));
+    const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [], new Set<string>([`A|${THU}`, `D|${THU}`]));
+    ck("Alexandre and Diego off: Chris's day is offered normally", r2.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r2.onRequest.length === 0, j(r2));
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, SUN, 0, [], noOff);
-    ck("Sunday (Diego and Chris, same grid): Diego's day is offered, Chris's identical hours are not doubled", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    ck("Sunday (Diego and Chris, same grid): Diego's day is offered, Chris's identical hours are not doubled", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r.onRequest.length === 0, j(r));
     const r2 = splitDaySlotsByPriority(SELLERS, SUN, 0, [bk("D", SUN, "09:00"), bk("D", SUN, "11:00")], noOff);
-    ck("Sunday, Diego's 9am + 11am taken: offer starts at 1pm (Diego), Chris's 9am/11am on request", r2.preferred.join(",") === "13:00,15:00,17:00,19:00" && r2.onRequest.join(",") === "09:00,11:00", `${r2.preferred.join(",")} | ${r2.onRequest.join(",")}`);
+    ck("Sunday, Diego's 9am + 11am taken: offer starts at 1pm (Diego), Chris's 9am/11am on request", r2.preferred.join(",") === "13:00,15:00,17:00,19:00" && r2.onRequest.join(",") === "09:00,11:00", j(r2));
     const r3 = splitDaySlotsByPriority(SELLERS, SUN, 0, ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"].map((t) => bk("D", SUN, t)), noOff);
-    ck("Sunday, Diego full: Chris's day is offered", r3.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r3.onRequest.length === 0, `${r3.preferred.join(",")} | ${r3.onRequest.join(",")}`);
+    ck("Sunday, Diego full: Chris's day is offered", r3.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r3.onRequest.length === 0, j(r3));
+    const r4 = splitDaySlotsByPriority(SELLERS, SUN, 0, ["09:00", "11:00", "13:00", "15:00", "17:00"].map((t) => bk("D", SUN, t)), noOff);
+    ck("Sunday, Diego has ONE hour left (7pm): offer = Chris's 9am + 7pm", r4.preferred.join(",") === "09:00,19:00" && r4.onRequest.join(",") === "11:00,13:00,15:00,17:00", j(r4));
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, SAT, 6, [], noOff);
-    ck("Saturday (only Alexandre works): his hours, nothing on request", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00" && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    ck("Saturday (only Alexandre works): his hours, nothing on request", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00" && r.onRequest.length === 0, j(r));
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "13:00"), bk("A", THU, "15:00"), bk("A", THU, "17:00")], noOff, "12:30");
-    ck("today, notice at 12:30: Alexandre's remaining hours are all taken → Chris's 1pm, 3pm, 5pm, 7pm offered (his morning is past)", r.preferred.join(",") === "13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00" && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    ck("today, notice at 12:30: Alexandre's remaining hours all taken → Diego's 2/4/6/8pm offered, Chris's 1pm..7pm on request", r.preferred.join(",") === "14:00,16:00,18:00,20:00" && r.onRequest.join(",") === "13:00,15:00,17:00,19:00", j(r));
     const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "13:00")], noOff, "12:30");
-    ck("today, notice at 12:30, Alexandre still has 3pm/5pm: Chris's 1pm on request, offer = 2pm, 3pm, 4pm, 5pm, 6pm, 7pm, 8pm", r2.preferred.join(",") === "14:00,15:00,16:00,17:00,18:00,19:00,20:00" && r2.onRequest.join(",") === "13:00", `${r2.preferred.join(",")} | ${r2.onRequest.join(",")}`);
+    ck("today, notice at 12:30, Alexandre still has 3pm/5pm: offer = 3pm, 5pm; everything else on request", r2.preferred.join(",") === "15:00,17:00" && r2.onRequest.join(",") === "13:00,14:00,16:00,18:00,19:00,20:00", j(r2));
+    const r3 = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "13:00"), bk("A", THU, "15:00")], noOff, "12:30");
+    ck("today, notice at 12:30, Alexandre has only 5pm: offer = 2pm (Diego) + 5pm", r3.preferred.join(",") === "14:00,17:00" && r3.onRequest.join(",") === "13:00,15:00,16:00,18:00,19:00,20:00", j(r3));
   }
   {
     const A2: Seller = { ...A, id: "A2", name: "Twin", priority: 1 };
     const r = splitDaySlotsByPriority([A, A2, C], THU, 4, [bk("A", THU, "09:00")], noOff);
-    ck("equal priorities never hold each other back (twin's 9am still offered)", r.preferred.includes("09:00"), `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    ck("equal priorities never hold each other back (twin's 9am still offered)", r.preferred.includes("09:00"), j(r));
   }
   {
     const r = splitDaySlotsByPriority([{ ...A, active: false }, C], THU, 4, [], noOff);
-    ck("inactive higher-priority seller does not hold anyone back", r.preferred.includes("09:00") && r.onRequest.length === 0, `${r.preferred.join(",")} | ${r.onRequest.join(",")}`);
+    ck("inactive higher-priority seller does not hold anyone back", r.preferred.includes("09:00") && r.onRequest.length === 0, j(r));
   }
   {
-    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [], noOff);
+    const r = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("A", THU, "09:00")], noOff);
     ck("preferred and on-request never overlap", r.preferred.every((t) => !r.onRequest.includes(t)));
+    ck("preferred ∪ on-request = every open hour of the day", [...r.preferred, ...r.onRequest].sort().join(",") === "09:00,11:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00", j(r));
     ck("slotsForWeekday still the only grid source (Diego Sunday override)", slotsForWeekday(D, 0).join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && slotsForWeekday(D, 4).join(",") === "14:00,16:00,18:00,20:00");
   }
 
@@ -149,7 +168,7 @@ async function main() {
   const sched = [
     "REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):",
     "• Thursday, September 17, 2026 [2026-09-17]: fully booked",
-    "• Friday, September 18, 2026 [2026-09-18]: 1pm, 2pm, 4pm, 5pm, 6pm, 8pm (open only if the client asks for one of these: 11am, 3pm, 7pm)",
+    "• Friday, September 18, 2026 [2026-09-18]: 1pm, 2pm (open only if the client asks for one of these: 11am, 3pm, 4pm, 5pm, 6pm, 7pm, 8pm)",
     "• Saturday, September 19, 2026 [2026-09-19]: 9am, 11am, 1pm, 3pm, 5pm",
     "• Sunday, September 20, 2026 [2026-09-20]: 9am, 11am, 1pm, 3pm, 5pm, 7pm",
   ].join("\n") + avail.slice(avail.indexOf("\nIMPORTANT"));
