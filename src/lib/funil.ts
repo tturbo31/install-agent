@@ -642,7 +642,26 @@ function identidade(conv: ConvFunil, msgs: MsgRow[], extraFone?: string | null):
     ig_id: canal === "whatsapp" ? undefined : canal === "facebook" ? conv.igsid.slice(3) : conv.igsid,
     ig_username: canal === "instagram" ? conv.username ?? undefined : undefined,
     telefone: telefoneDoContato(conv.igsid, msgs, extraFone) ?? undefined,
+    // TELEFONE DIGITADO NO WHATSAPP (17/09/2026): no WhatsApp o `telefone` é o
+    // próprio número do chat, e o número que o cliente ESCREVE ("Daniel /
+    // Phone: 5618721042", num chat de número israelense) nunca chegava à
+    // plataforma — a visita marcada com esse número ficava sem o anúncio do
+    // clique. Vai em `telefone_conversa`, a chave que une as duas identidades.
+    telefone_conversa: canal === "whatsapp" ? telefoneDigitadoNoWhatsApp(conv.igsid, msgs, extraFone) ?? undefined : undefined,
   };
+}
+
+// Primeiro telefone que o cliente digitou numa conversa de WhatsApp e que NÃO
+// é o número do próprio chat.
+export function telefoneDigitadoNoWhatsApp(igsid: string, msgs: MsgRow[], extra?: string | null): string | null {
+  const proprio = igsid.slice(3).replace(/\D/g, "").slice(-10);
+  const diferente = (tel: string | null) => (tel && tel.replace(/\D/g, "").slice(-10) !== proprio ? tel : null);
+  for (const m of msgs) {
+    if (m.role !== "user") continue;
+    const tel = diferente(extrairTelefone(m.content));
+    if (tel) return tel;
+  }
+  return extra ? diferente(extrairTelefone(extra)) : null;
 }
 
 // ─── data_visita em ISO com fuso de Miami (DST correto) ─────────────────────
