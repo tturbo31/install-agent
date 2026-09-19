@@ -23,6 +23,7 @@ import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal, quoteHandoffActive, isTalkToOzziRequest, talkToOzziLang, talkToOzziMessage, QUOTE_HANDOFF_SUFFIX, QUOTE_TALK_TO_OZZI_ALERT, QUOTE_AFTER_HANDOFF_ALERT } from "@/lib/quote-reply";
 import { findRecentInstallationConfirmation, isInstallAck, installHandoffMessage, INSTALL_STAGE_ALERT } from "@/lib/instalacao";
+import { isWaEditCallback, waEditAction, waEditStoreId, phoneFromWaIgsid, isRealWaPhone } from "@/lib/wa-edit-policy";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
 // + vision + AI + send retries): message stored, reply never generated, zero
@@ -556,17 +557,71 @@ async function handleWaMessage(body: Record<string, unknown>) {
       return;
     }
 
-    const phone = body.phone as string;
-    if (!phone) return;
-
+    let phone = body.phone as string;
+    // messageId is the real bubble the 👍 reactions point at; storeMsgId is
+    // what gets stored as instagram_msg_id (the dedupe key). They differ only
+    // for an edit, which is stored under its own editMessageId.
     const messageId = body.messageId as string;
     if (!messageId) return;
+    let storeMsgId = messageId;
+
+    // ── EDITED BUBBLE (Alejandro Trigoso, WA 2026-09-18) ──────────────────
+    // Z-API sends an edit with isEdit:true, the ORIGINAL bubble's messageId (the
+    // dedupe below dropped it as a repeat) and phone = the chat LID, not the
+    // number: the zip he added by editing his address never reached the bot,
+    // which asked for it again and lost the visit. The conversation and the
+    // number come from the stored original; the edit becomes a new client
+    // bubble through the normal flow (the pre-send stale-context guard drops a
+    // reply built on the old text). After we already answered, only an edit
+    // with new information is answered; a cosmetic one just fixes the stored
+    // bubble. See src/lib/wa-edit-policy.ts.
+    if (isWaEditCallback(body)) {
+      const editedText = String((body.text as { message?: string } | undefined)?.message ?? "").trim();
+      if (!editedText) return;
+      const { data: orig } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("id, conversation_id, content, created_at")
+        .eq("instagram_msg_id", messageId)
+        .eq("role", "user")
+        .maybeSingle();
+      const { data: origConv } = orig
+        ? await supabaseAdmin.from("instagram_conversations").select("igsid").eq("id", orig.conversation_id).maybeSingle()
+        : { data: null };
+      const origPhone = phoneFromWaIgsid(origConv?.igsid);
+      if (orig && origPhone) {
+        const { data: lastAsst } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("created_at")
+          .eq("conversation_id", orig.conversation_id)
+          .eq("role", "assistant")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const answeredSince = !!lastAsst && Date.parse(lastAsst.created_at) > Date.parse(orig.created_at);
+        const action = waEditAction(orig.content ?? "", editedText, answeredSince);
+        console.log(`[WA] edited bubble ${messageId} (${origPhone}) → ${action}`);
+        if (action === "ignore") return;
+        if (action === "update-original") {
+          await supabaseAdmin.from("instagram_messages").update({ content: editedText }).eq("id", orig.id);
+          return;
+        }
+        phone = origPhone;
+      } else if (!isRealWaPhone(phone)) {
+        // Original never stored (emoji-only bubble, older history) and the
+        // callback only carries the LID: no way to reach the conversation.
+        console.warn(`[WA] edited bubble ${messageId} with no stored original and no number (${phone}) — dropped`);
+        return;
+      }
+      storeMsgId = waEditStoreId(body);
+    }
+
+    if (!phone) return;
 
     // Deduplicate
     const { data: already } = await supabaseAdmin
       .from("instagram_messages")
       .select("id")
-      .eq("instagram_msg_id", messageId)
+      .eq("instagram_msg_id", storeMsgId)
       .maybeSingle();
     if (already) return;
 
@@ -687,7 +742,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
         conversation_id: conv.id,
         role: "user",
         content: storedText,
-        instagram_msg_id: messageId,
+        instagram_msg_id: storeMsgId,
       })
       .select("id, created_at")
       .single();
@@ -1370,7 +1425,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
     }
 
     // Update stored message with enriched content
-    await supabaseAdmin.from("instagram_messages").update({ content: enrichedText }).eq("instagram_msg_id", messageId);
+    await supabaseAdmin.from("instagram_messages").update({ content: enrichedText }).eq("instagram_msg_id", storeMsgId);
 
     // Save contact name if available
     const senderName = body.senderName as string | undefined;
