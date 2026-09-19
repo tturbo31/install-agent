@@ -287,7 +287,10 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
     // propose the free visit.
     // ...and a first message whose question the opener does NOT answer goes to
     // the model too (2026-08-21 sweep) — see questionBeyondOpener.
-    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !mentionsBathroomProject(text) && !isMobileHomeRequest(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text)) return openerMessage(last.content);
+    // ...and so does one with ANY word the opener does not answer, question or
+    // not (2026-09-19, openerCoversMessage): the same gate as the router.
+    const firstBurst = messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n");
+    if (vinylProne && !messages.some((m) => m.role === "assistant") && !mentionsLargeSqft(text) && !mentionsSmallSqft(text) && !mentionsBathroomProject(text) && !isMobileHomeRequest(text) && !questionBeyondOpener(text) && !mentionsRejection(text) && !firstMessageNeedsReading(text) && openerCoversMessage(firstBurst)) return openerMessage(last.content);
   }
   // Capability questions (waterproof, durable, climate...) get a real answer;
   // "what is the material / is it vinyl" product-type questions get the luxury
@@ -1380,6 +1383,125 @@ export function questionBeyondOpener(text: string): boolean {
   return !(PROMO_PRICE.test(t) || HOW_WORK.test(t) || PRODUCT_TYPE_Q.test(t));
 }
 
+// ─── Canned type-ask ONLY when it answers everything the client wrote ──────
+// Juan Carlos Beltran (FB 2026-09-19) answered the ad greeting with "Para esa
+// instalación (a no ser que sea solo promocional) se debe retirar el rodapiés
+// anterior y Lugo colocar en nuevo sobre el piso" and got the canned "Hola,
+// trabajamos con piso vinílico de lujo, tile y hardwood… Cuál te interesa?".
+// No "?" and no question word, so questionBeyondOpener let it through; the
+// English twin ("Not if you don't remove and replace moldings") had gone to the
+// model since 08/25, the Spanish one never did. The 14-day sweep (05–19/09)
+// found the same steamroll on "Call next week pls", "I would like to book a
+// call", "Hi can I send you some pictures and you give me a quote", "Does the
+// price include staircase ?", "Refinishing", "Need a quote for my hose to
+// install railing", "Necesito alguien que instale losas" (tile, named in
+// Spanish, then asked the type), "trabajan en Orlando? … el piso de madera",
+// "Dame la dirección", "What would the price be for an apartment of 2000 ft ?"
+// and "Not now maybe at another time". Every backstop above enumerates one more
+// wording and lags the next one, so the default flips here: the canned type-ask
+// answers a first message ONLY when every word in it is greeting / courtesy /
+// generic "I want info, a price, a quote" vocabulary. Any other word, any digit
+// or another script (a place, a size, a type in other words, a detail of the
+// job, a condition, a request, a rejection) sends the burst to the model, which
+// answers it in the client's language and asks the type in the same message.
+// A language request keeps its deterministic language opener when the rest is
+// generic ("En español", "No sé inglés, si puede tráeselo en español").
+const OPENER_GENERIC_WORDS = new Set(
+  (
+    // greetings, courtesy, fillers (EN / ES / PT, accents stripped)
+    "hi hii hiii hey heyy hello helo hellow hallo howdy there good morning afternoon evening day night gm guys everyone team sir maam madam " +
+    "hola holaa ola oi oie alo buenas buenos buen dia dias tarde tardes noche noches saludos tal bom boa noite " +
+    "please pls plz pleas porfa porfavor favor thanks thank thx ty tks gracias grasias muchas mucha obrigado obrigada brigado " +
+    "yes yeah yea yep yup sure ok okay kk si sim claro of course ofc cool great " +
+    // function words
+    "im me my we us our you your youre ur it its this that thats the an as to for of in on at by with and or about from some any more much " +
+    "what whats how is are am be do does can could would will id ill ive get getting got have has need needs want wants wanted wanna like " +
+    "looking look see know let lets just also very super really so if all give tell explain send done use uses using carry sell sells " +
+    "yo mi mis te tu tus su sus usted ustedes le les nos el la los las lo un una unos unas de del al para pa en con es son esta este estoy estan eso esa ese esto " +
+    "que como cual cuales sobre mas por " +
+    "eu meu minha meus minhas voce voces vc vcs os um uma da do das dos pra em na nas com qual quais " +
+    // generic interest: info, price, quote, floor, installation
+    "interested interest intrested interesed intersted info information details detail option options " +
+    "quote quotes quotation qoute estimate estimates estimation est price prices pricing cost costs charge rate rates " +
+    "promo promos promotion promotions offer offers deal deals special specials discount discounts free " +
+    "sq sqft sf ft square foot feet per floor floors flooring install installs installation installed installing instalation " +
+    "service services new project work works home house " +
+    "quiero quisiera queria queremos necesito necesitamos nesesito ocupo busco buscando interesa interesado interesada interesados interesadas " +
+    "gustaria saber conocer dar darme puede pueden puedes podria podrian obtener hacer informacion detalles " +
+    "cuanto cuantos cuanta cuesta cuestan costo costos costaria cobran cobra precio precios valor cotizacion cotizaciones cotizar " +
+    "estimado estimados estimacion presupuesto presupuestos promocion promociones oferta ofertas gratis gratuito gratuita " +
+    "piso pisos suelo suelos instalacion instalaciones instalar pie pies cuadrado cuadrados casa servicio servicios nuevo nueva nuevos nuevas " +
+    "quero gostaria preciso precisamos interesse interessado interessada tenho quanto quanta custa custo preco precos valores " +
+    "orcamento orcamentos promocao promocoes informacao informacoes mais instalacao servico servicos novo nova"
+  ).split(/\s+/)
+);
+// Words of an explicit language request ("No sé inglés, si puede tráeselo en
+// español"): generic only when requestedLang() already read one in the burst.
+const OPENER_LANG_REQUEST_WORDS = new Set(
+  (
+    "en em in espanol spanish ingles english portugues portuguese espanhol castellano idioma language lengua " +
+    "hablas habla hablan hablo hable hablen hablamos hablar hablarme ablas abla ablan ablo speak speaks speaking talk falo fala falam falar falamos fale " +
+    "no nao not dont se sei sabe saben entiendo entendo entende entienden understand solo only somente " +
+    "respuesta responder respondeme responda escribir escribirme escribeme escriba escribe escriban write " +
+    "traer traeselo traermelo atender atenderme atiendan explicar explicarme mandar mandame"
+  ).split(/\s+/)
+);
+export function openerCoversMessage(text: string): boolean {
+  const raw = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  const t = normalizeSmartPunct(raw)
+    .replace(NON_CLIENT_TAGS, " ")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  // Any number is content: a size, a ZIP, a phone, an address, a time.
+  if (/\d/.test(t)) return false;
+  // A letter outside a-z (another script) is content the canned line cannot read.
+  if (/[^\P{L}a-z]/u.test(t)) return false;
+  const langRequest = requestedLang(raw) !== null;
+  return t
+    // A bare product-type question ("What is the material?", "What kind of
+    // floor is this?") stays the opener's home turf: "which of the three?" IS
+    // its answer, and the model would quote all three rates before the type.
+    // What is left around it must still be generic.
+    .replace(new RegExp(PRODUCT_TYPE_Q.source, "gi"), " ")
+    .replace(/['`´]/g, "")
+    .split(/[^a-z]+/)
+    .filter((w) => w.length >= 2)
+    .every((w) => {
+      // "Hiii", "Yesss", "holaaa", "okk": a stretched last letter is still the word.
+      const forms = [w, w.replace(/(.)\1+$/, "$1")];
+      return forms.some((x) => OPENER_GENERIC_WORDS.has(x) || (langRequest && OPENER_LANG_REQUEST_WORDS.has(x)));
+    });
+}
+// The prompt's OPENER rule already says "answer it first", but on the model
+// path "Does the price include staircase ?" still got "It depends on the
+// flooring type… tile, vinyl, or hardwood?" in 1 of 3 runs (2026-09-19). A
+// generic rule loses to the habit of the type question; this block is injected
+// only when the first message is not something the canned opener covers.
+export const FIRST_MESSAGE_CONTENT_NOTE = [
+  "CRITICAL, THE CLIENT'S FIRST MESSAGE SAYS OR ASKS SOMETHING SPECIFIC:",
+  "It is not a plain greeting or a generic \"interested / price / quote\" request, so the canned opener was NOT sent. Your reply MUST begin with a direct answer to what they wrote, in one short clause and in their language. A statement or a condition gets what WE do about it and what it costs, from these rules: never just agree with the client or repeat their premise back as if it were our policy.",
+  "FACTS for the usual first-message details:",
+  "- Baseboards (rodapié, zócalo, rodapé): NOT included in any promo. The vinyl promo includes the quarter round only. Removing the old baseboards and installing new ones is a separate service: $1 per linear foot for the material and $3 per linear foot for the installation.",
+  "- Stairs: $150 per step with the material, $100 per step labor only.",
+  "- A request for a call, to talk, or for our number: Ozzi's number (561) 674-8334, they can call or text him directly. Never promise that someone will call.",
+  "- Our address or where we are: based in Miami, serving all of South Florida from Homestead to Jupiter, and we bring the samples to their home.",
+  "- A floor size of 500 sqft or more, even written as \"2000 ft\", \"1200 feet\" or \"800 pies\", or a whole house or a whole apartment: your answer to it is the free in-person visit, because for that size we measure in person and give the exact price there (OPENER EXCEPTION). Never a total. You can still ask the type in the same message. A smaller size follows the size rules.",
+  "- A place they name: whether we cover it. Removing the old floor, the process, the warranty, the product: the real answer from these rules.",
+  "NO PER-SQFT RATE YET: until the client picks a flooring type, never state the $5 vinyl promo, the $4.50 tile rate or the $3.20 hardwood rate, not even as a list of all three. For what is included, say it depends on the floor: the vinyl promo includes the material, the labor and the quarter round, tile and hardwood are labor only.",
+  "Then, in the SAME message and only if the flooring type is still unknown, ask which one they want: tile, vinyl, or hardwood. A reply that is ONLY the type question, or that says \"it depends on the flooring type\" without answering what they asked, is WRONG.",
+  "If the message is a goodbye, a no thanks, a wrong tap, spam or not about flooring at all, this block does not apply: follow the other rules.",
+].join("\n");
+// The block is English and long: without a language line the model answered
+// Juan Carlos's Spanish message in English 5 of 5 times (it had answered in
+// Spanish without the block). Name the language when the message pins one.
+export function firstMessageContentNote(firstBurst: string): string {
+  const lang = openerLang(firstBurst);
+  if (lang === "es") return FIRST_MESSAGE_CONTENT_NOTE + "\nLANGUAGE: the client wrote in SPANISH, so every word of your reply is in SPANISH (tile, vinyl, hardwood and quarter round stay as they are).";
+  if (lang === "pt") return FIRST_MESSAGE_CONTENT_NOTE + "\nLANGUAGE: the client wrote in PORTUGUESE, so every word of your reply is in PORTUGUESE (tile, vinyl, hardwood and quarter round stay as they are).";
+  return FIRST_MESSAGE_CONTENT_NOTE;
+}
+
 // "Where are you located?" typed as the first message — a direct question the
 // generic opener used to steamroll (Tom Kiper, 2026-07-29: asked twice, got the
 // type-ask opener once and then dead air). Answer + type-ask, zero-token.
@@ -1391,7 +1513,12 @@ const AD_FAQ_LOCATION = /\bwhere\b[^.!?\n]{0,40}\b(?:located|based|location)\b|\
 // Inclusions-family Meta FAQ buttons (shared by the first-contact opener router
 // AND the repeated-message intercept, so both agree on what the ask-type
 // inclusions line actually answered).
-const AD_FAQ_INCLUSIONS = /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b/i;
+// "What is included in the materials package?" (100 taps in 14 days) is the
+// same inclusions button: without it here, a burst of it + "Is installation
+// labor cost extra?" + "Do you offer any discounts for larger spaces?" counted
+// as TYPED text and fell out of the combined FAQ answer (2026-09-19 sweep: 8
+// such bursts got the generic opener, none of the three questions answered).
+const AD_FAQ_INCLUSIONS = /\b(?:labor|installation)\s+(?:cost\s+)?(?:extra|included|also)\b|\bis\s+(?:the\s+)?(?:labor|installation)\s+cost\b|\bwhat\s+(?:kind|type)s?\s+of\s+materials?\s+(?:are\s+|is\s+)?included\b|\bwhat(?:'?s|\s+is)\s+included\s+in\s+the\s+materials?\s+package\b/i;
 
 // ─── FAQ repetida DIAS depois → re-resposta determinística ──────────────────
 // Pendência da revisão semanal de 03/09 fechada em 05/09: o mesmo botão de FAQ
@@ -1424,8 +1551,22 @@ const FAQ_REANSWER_TYPE_ASK = {
   en: " Which flooring are you thinking about, tile, vinyl, or hardwood?",
   es: " Cual te interesa, tile, vinil o hardwood?",
 } as const;
+// Re-sent seconds after our answer (Rosemene, FB 2026-09-19): the type was
+// asked a moment ago, so asking it again is the robotic loop (rule 29); the
+// re-answer moves toward the free visit instead (rule 35).
+const FAQ_REANSWER_VISIT_PIVOT = {
+  en: " Want me to set up a free visit so you can see the samples and get the exact price?",
+  es: " Quieres que coordinemos una visita gratis para que veas las muestras y tengas el precio exacto?",
+} as const;
+// Our reply was already a re-answer (FAQ lead-in or recap prefix): one more
+// identical re-send right after it gets silence (rule 35's storm cap).
+export function isReanswerReply(text: string): boolean {
+  const t = (text || "").trim();
+  const leads = [...FAQ_REANSWER_LEADS.en, ...FAQ_REANSWER_LEADS.es, ...RECAP_PREFIXES.en, ...RECAP_PREFIXES.es, ...RECAP_PREFIXES.pt];
+  return leads.some((l) => t.startsWith(l.trim()));
+}
 
-export function cannedFaqReanswer(lastText: string, messages: ChatMessage[]): string | null {
+export function cannedFaqReanswer(lastText: string, messages: ChatMessage[], opts?: { quick?: boolean }): string | null {
   const t = (lastText || "").trim();
   if (!t) return null;
   let fam: "process" | "discount" | "location" | "inclusions" | null = null;
@@ -1435,6 +1576,12 @@ export function cannedFaqReanswer(lastText: string, messages: ChatMessage[]): st
   else if (AD_FAQ_INCLUSIONS.test(t)) fam = "inclusions";
   if (!fam) return null;
   const lang = detectLang(t) === "es" ? "es" : "en";
+  if (opts?.quick) {
+    // "Here it is again" + the answer, then the free visit (unless a visit is
+    // already on the table), never the type question a second time.
+    const visitOffered = messages.some((m) => m.role === "assistant" && /\b(?:visit|visita)\b/i.test(m.content));
+    return FAQ_REANSWER_LEADS[lang][1] + " " + FAQ_REANSWERS[lang][fam] + (visitOffered ? "" : FAQ_REANSWER_VISIT_PIVOT[lang]);
+  }
   const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
   const asks = messages.filter((m) => m.role === "user" && norm(m.content) === norm(lastText)).length;
   const lead = FAQ_REANSWER_LEADS[lang][Math.max(0, asks - 1) % FAQ_REANSWER_LEADS[lang].length];
@@ -2090,14 +2237,35 @@ export function contactNumberLine(lang: "en" | "es" | "pt"): string {
 // The client asked for our WhatsApp / number and the reply came back without
 // it: prepend the number line in the client's language (a leading "Claro," /
 // "Sure," of the model's own is dropped so the two never stack).
+// "Call next week pls" / "I would like to book a call" (2026-09-19 sweep): a
+// first message asking for a CALL, with no number of the client's in it, got
+// the canned type-ask, and once it reached the model it still got only the
+// type question in 1 of 2 runs. Owner rule 2026-09-14: nobody calls back from
+// the alert, the client calls Ozzi directly, so the first reply to a call
+// request carries the number the same way a request for our WhatsApp does.
+const CALL_REQUEST = /\b(?:call|ring)\s+(?:me|us)\b|\bgive\s+(?:me|us)\s+a\s+(?:call|ring)\b|\b(?:book|schedule|set\s+up|have|get|arrange)\s+a\s+(?:phone\s+)?call\b|\bcall\s+(?:next|this\s+(?:week|weekend|morning|afternoon|evening)|tomorrow|today|tonight|later|asap|pls|please|plz|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\bphone\s+call\b|(?<![a-zà-ÿ])ll[aá]m(?:ame|enme|anos|ennos)(?![a-zà-ÿ])|(?<![a-zà-ÿ])me\s+(?:pueden|puede|puedes|podr[ií]an?)\s+llamar(?![a-zà-ÿ])|(?<![a-zà-ÿ])una\s+llamada(?![a-zà-ÿ])|(?<![a-zà-ÿ])me\s+lig(?:a|ue|uem)(?![a-zà-ÿ])|(?<![a-zà-ÿ])uma\s+liga[çc][aã]o(?![a-zà-ÿ])/i;
+export function asksForACall(text: string): boolean {
+  const t = normalizeSmartPunct(clientTextOnly(text || ""));
+  if (!t.trim() || GIVES_OWN_NUMBER.test(t)) return false;
+  return CALL_REQUEST.test(t);
+}
+export function callNumberLine(lang: "en" | "es" | "pt"): string {
+  if (lang === "pt") return "Claro, você pode ligar ou mandar mensagem direto pro Ozzi no (561) 674-8334.";
+  if (lang === "es") return "Claro, puedes llamar o escribirle directo a Ozzi al (561) 674-8334.";
+  return "Sure, you can call or text Ozzi directly at (561) 674-8334.";
+}
 export function ensureContactNumber(history: Array<{ role: string; content: string }>, text: string, lang: "en" | "es" | "pt"): string {
   const t = text || "";
   if (!t.trim() || /\[REACT_ONLY\]|\[BOOK:/i.test(t)) return t;
   if (OZZI_PHONE_RE.test(t)) return t;
-  if (!asksForOurContact(unansweredUserBurst(history))) return t;
-  const rest = t.replace(/^\s*(?:claro|sure|of course|por supuesto|certo|perfecto|perfect|perfeito)[,!.]?\s*/i, "");
+  const burst = unansweredUserBurst(history);
+  const wantsOurContact = asksForOurContact(burst);
+  const wantsACall = !wantsOurContact && !history.some((m) => m.role === "assistant") && asksForACall(burst);
+  if (!wantsOurContact && !wantsACall) return t;
+  // "Sure thing!" must go whole: stripping only "Sure" left "Thing! We work…".
+  const rest = t.replace(/^\s*(?:claro(?:\s+que\s+s[ií])?|sure(?:\s+thing)?|of course|por supuesto|certo|perfecto|perfect|perfeito)[,!.]?\s*/i, "");
   const body = rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : "";
-  return (contactNumberLine(lang) + " " + body).trim();
+  return ((wantsOurContact ? contactNumberLine(lang) : callNumberLine(lang)) + " " + body).trim();
 }
 
 // ─── "What's your number?" mid-booking must not end the booking ─────────────
@@ -3606,6 +3774,27 @@ export async function getAIResponse(
           const nowAt = repeatCandidate.at ? Date.parse(repeatCandidate.at as string) : NaN;
           const gapMin = (nowAt - prevAt) / 60000;
           if (Number.isFinite(gapMin) && gapMin >= 0 && gapMin <= 15) {
+            // Re-sent AFTER our answer went out (Rosemene, FB 2026-09-19: "What is
+            // the installation process?" again 31s after our answer and silenced
+            // here as a "double-tap"; 7 such silences in 14 days, 4 of those leads
+            // never wrote again). A true double-tap lands BEFORE our reply (the
+            // client has not seen the answer yet) and stays silent. A re-send
+            // after the reply is the client asking again: answer it (rule 35),
+            // once. Another identical re-send right after our re-answer gets
+            // silence (storm cap), and so does a contentless ad tap (the ad
+            // re-tap nudge owns those).
+            const replyAt = messages[i].at ? Date.parse(messages[i].at as string) : NaN;
+            const cameAfterReply = Number.isFinite(replyAt) && Number.isFinite(nowAt) && nowAt > replyAt + 2000;
+            const hasClientWords = lastText.replace(NON_CLIENT_TAGS, " ").trim().length > 0;
+            if (cameAfterReply && hasClientWords && !isReanswerReply(messages[i].content)) {
+              const quickReanswer = cannedFaqReanswer(lastText, messages, { quick: true });
+              if (quickReanswer && smallJobStanding(messages) === null && !bathroomProjectStanding(messages)) {
+                console.log("[AI] client re-sent the question AFTER our answer — deterministic re-answer (not a double-tap)");
+                return { text: quickReanswer, inputTokens: 0, outputTokens: 0 };
+              }
+              console.log("[AI] client re-sent the message AFTER our answer — answering it fresh (not a double-tap)");
+              break;
+            }
             console.log("[AI] client repeated the exact message within 15min — REACT_ONLY (double-tap, no repeat)");
             return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
           }
@@ -3793,7 +3982,12 @@ export async function getAIResponse(
     // questionBeyondOpener: a first-message question the opener does not answer
     // (licensed? smaller projects? free estimates?) reaches the model instead of
     // being steamrolled by the canned line (2026-08-21 sweep, 25 cases/7 days).
-    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    // openerCoversMessage (2026-09-19): so does a first message with ANY word the
+    // canned type-ask does not answer, question or not (Juan Carlos, "se debe
+    // retirar el rodapiés anterior…"; 161 of 1,227 first contacts in 14 days).
+    const openerCovers = openerCoversMessage(burst);
+    if (!openerCovers) console.log("[AI] First contact carries content the canned opener does not answer — the model reads it");
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && openerCovers && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(burst);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
@@ -3953,6 +4147,23 @@ export async function getAIResponse(
     if (gap !== null) {
       console.log(`[AI] Client returned after ${Math.round(gap)}h of silence — injecting the stale-thread block`);
       dynamicSystem += `\n\n---\n\n${staleThreadNote(gap)}`;
+    }
+  }
+
+  // FIRST MESSAGE WITH CONTENT (Juan Carlos, FB 2026-09-19): the canned
+  // type-ask stepped aside because the client wrote something specific, so
+  // the model must answer THAT before the type question. Only on a true first
+  // contact with the type unknown, and never over a referral flow (bathroom,
+  // under 400, trailer, repair, floor we don't do own their replies) or a
+  // rejection (the model reads it and closes or stays silent).
+  if (!messages.some((m) => m.role === "assistant") && !conversationFlooringType(messages)) {
+    const firstBurst = messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n");
+    if (
+      clientTextOnly(firstBurst).trim() && !openerCoversMessage(firstBurst) && !mentionsRejection(firstBurst) &&
+      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)
+    ) {
+      console.log("[AI] First message says something specific — injecting the answer-it-first block");
+      dynamicSystem += "\n\n---\n\n" + firstMessageContentNote(firstBurst);
     }
   }
 

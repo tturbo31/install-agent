@@ -287,8 +287,11 @@ async function priceNegotiationChecks() {
 }
 
 async function repeatInterceptChecks() {
-  console.log("\n── 5. Repeated-message intercept (double-tap only, 15min window) ──");
-  // Double-tap (2 min apart): suppressed BEFORE the API call — zero tokens.
+  console.log("\n── 5. Repeated-message intercept (re-send after our answer = answered; true double-tap = silent) ──");
+  // Re-sent 90s AFTER our answer (Rosemene, FB 2026-09-19: the old rule called
+  // this a double-tap and the client got silence): the client saw the answer
+  // and asked again, so it gets a deterministic re-answer BEFORE the API call
+  // (zero tokens), never a copy of the previous message.
   const doubleTap = await getAIResponse(
     [
       { role: "user", content: "What is the installation process?", at: "2026-07-08T18:16:00Z" },
@@ -297,7 +300,18 @@ async function repeatInterceptChecks() {
     ],
     null, null, null, false
   );
-  check("Toque duplo (2min) → [REACT_ONLY], zero tokens", doubleTap.text === "[REACT_ONLY]" && doubleTap.inputTokens === 0);
+  check("Re-envio 90s após a resposta → re-resposta determinística (Rosemene 19/09), zero tokens", doubleTap.text !== "[REACT_ONLY]" && /furniture/i.test(doubleTap.text) && doubleTap.inputTokens === 0, doubleTap.text.slice(0, 100));
+  // A true double-tap lands WITH our reply (≤2s, before the client could see
+  // it): the answer above already covers it — silent, zero tokens.
+  const realDoubleTap = await getAIResponse(
+    [
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T18:16:00Z" },
+      { role: "assistant", content: "We move all the furniture, install the floors, add the quarter round, clean everything up, all within 2 to 3 days.", at: "2026-07-08T18:16:30Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-08T18:16:31Z" },
+    ],
+    null, null, null, false
+  );
+  check("Toque duplo de verdade (chega junto com a resposta) → [REACT_ONLY], zero tokens", realDoubleTap.text === "[REACT_ONLY]" && realDoubleTap.inputTokens === 0, realDoubleTap.text.slice(0, 80));
 
   // Genuine re-ask 2 HOURS later (the Nardine case, 2026-07-08): the opener
   // never answered the question — the repeat MUST get a real answer now.
@@ -438,8 +452,9 @@ async function repeatInterceptChecks() {
     /material|labor|mano de obra|includ/i.test(inclRetap.text),
     inclRetap.text.slice(0, 100)
   );
-  // Counter-case: the CURRENT ask-type line names the inclusions per type, so
-  // the same repeat within a minute IS a double-tap — suppressed, zero tokens.
+  // The CURRENT ask-type line names the inclusions per type; the same question
+  // re-sent 84s after it was SEEN (Rosemene rule, 2026-09-19) gets the
+  // deterministic re-answer, zero tokens, never the identical line again.
   const inclDoubleTapCanned = await getAIResponse(
     [
       { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:49:10Z" },
@@ -449,12 +464,12 @@ async function repeatInterceptChecks() {
     null, null, null, false
   );
   check(
-    "Mesma FAQ re-tocada após a linha ask-type ATUAL (que nomeia as inclusões) → double-tap suprimido, zero tokens",
-    inclDoubleTapCanned.text === "[REACT_ONLY]" && inclDoubleTapCanned.inputTokens === 0,
+    "Mesma FAQ re-tocada 84s após a linha ask-type ATUAL → re-resposta determinística, zero tokens",
+    inclDoubleTapCanned.text !== "[REACT_ONLY]" && /labor only/i.test(inclDoubleTapCanned.text) && inclDoubleTapCanned.text !== WHAT_IS_INCLUDED_ASK_TYPE && inclDoubleTapCanned.inputTokens === 0,
     inclDoubleTapCanned.text.slice(0, 100)
   );
-  // Counter-case: after a FULL model answer, the same repeat within a minute
-  // IS a double-tap — stays suppressed, zero tokens.
+  // After a FULL model answer, the same re-send 84s later is still the client
+  // asking again: re-answered, zero tokens.
   const inclDoubleTap = await getAIResponse(
     [
       { role: "user", content: "What type of materials are included?", at: "2026-08-25T01:49:10Z" },
@@ -464,13 +479,13 @@ async function repeatInterceptChecks() {
     null, null, null, false
   );
   check(
-    "Mesma FAQ re-tocada após resposta COMPLETA de inclusões → double-tap suprimido, zero tokens",
-    inclDoubleTap.text === "[REACT_ONLY]" && inclDoubleTap.inputTokens === 0,
+    "Mesma FAQ re-tocada 84s após resposta COMPLETA de inclusões → re-resposta determinística, zero tokens",
+    inclDoubleTap.text !== "[REACT_ONLY]" && /labor only/i.test(inclDoubleTap.text) && inclDoubleTap.inputTokens === 0,
     inclDoubleTap.text.slice(0, 100)
   );
 
-  // Counter-case: after the LOCATION opener (which DID answer), the same
-  // repeat IS a double-tap — stays suppressed, zero tokens.
+  // After the LOCATION opener (which DID answer), the same question re-sent a
+  // minute later gets the location again, zero tokens (was silence).
   const locDoubleTap = await getAIResponse(
     [
       { role: "user", content: "Where are you located", at: "2026-07-29T21:42:16Z" },
@@ -480,13 +495,13 @@ async function repeatInterceptChecks() {
     null, null, null, false
   );
   check(
-    "Repetição 1min após opener DE LOCALIZAÇÃO (já respondeu) → [REACT_ONLY], zero tokens",
-    locDoubleTap.text === "[REACT_ONLY]" && locDoubleTap.inputTokens === 0,
+    "Repetição 1min após opener DE LOCALIZAÇÃO → localização de novo, zero tokens",
+    locDoubleTap.text !== "[REACT_ONLY]" && /miami/i.test(locDoubleTap.text) && locDoubleTap.text !== OPENER_LOCATION_EN && locDoubleTap.inputTokens === 0,
     locDoubleTap.text.slice(0, 80)
   );
 
-  // Counter-case: process FAQ re-tapped after the process-aware opener (which
-  // answered it AND asked the type) — still a double-tap, still suppressed.
+  // Process FAQ re-tapped 105s after the process-aware opener (which answered
+  // it AND asked the type): re-answered, without asking the type a 2nd time.
   const processRetap = await getAIResponse(
     [
       { role: "user", content: "What is the installation process?", at: "2026-07-29T18:00:00Z" },
@@ -496,10 +511,22 @@ async function repeatInterceptChecks() {
     null, null, null, false
   );
   check(
-    "Re-tap do FAQ de processo após opener FAQ-aware → [REACT_ONLY], zero tokens",
-    processRetap.text === "[REACT_ONLY]" && processRetap.inputTokens === 0,
+    "Re-tap do FAQ de processo 105s após opener FAQ-aware → re-resposta sem repetir o tipo, zero tokens",
+    processRetap.text !== "[REACT_ONLY]" && /furniture/i.test(processRetap.text) && !/tile, vinyl, or hardwood\?/i.test(processRetap.text) && processRetap.inputTokens === 0,
     processRetap.text.slice(0, 80)
   );
+  // Storm backstop: a THIRD send right after our re-answer → silence.
+  const processStorm = await getAIResponse(
+    [
+      { role: "user", content: "What is the installation process?", at: "2026-07-29T18:00:00Z" },
+      { role: "assistant", content: "Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?", at: "2026-07-29T18:00:15Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-29T18:02:00Z" },
+      { role: "assistant", content: processRetap.text, at: "2026-07-29T18:02:05Z" },
+      { role: "user", content: "What is the installation process?", at: "2026-07-29T18:03:00Z" },
+    ],
+    null, null, null, false
+  );
+  check("3º envio logo após a re-resposta → [REACT_ONLY] (teto de tempestade), zero tokens", processStorm.text === "[REACT_ONLY]" && processStorm.inputTokens === 0, processStorm.text.slice(0, 80));
 
   // A question the type-ask opener plainly did NOT answer ("do you finance?")
   // repeated 2 min later must also get a real answer, never silence.
