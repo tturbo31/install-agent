@@ -1910,6 +1910,83 @@ export function lastBurstHasUnreadImage(history: Array<{ role: string; content: 
   return burst.some((m) => /\[floor plan or photo\]/i.test(m.content || ""));
 }
 
+// The conversation went quiet for a long time and the client just wrote again.
+// The model gets the bubbles with NO timestamps, so a days-old goodbye still
+// reads as "the last thing said" — fb_39448595681394200 (2026-09-18 00:26)
+// wrote "I would like to get a free estimate 305-968-6096 thank you" after 4
+// days of silence and got "Good night! Once you get that measurement…": the
+// model answered the 09/13 "I'm going to go to sleep now… good night" and the
+// fresh request (with the phone number in it) was never acted on. Nobody ever
+// called that lead. Returns the elapsed hours between the previous bubble and
+// the burst that just arrived, only when it is long enough to mislead.
+export function staleThreadGapHours(history: Array<{ role: string; content: string; at?: string }>): number | null {
+  const h = history ?? [];
+  if (h.length < 2) return null;
+  if (h[h.length - 1].role !== "user") return null;
+  // Walk back over the trailing client burst: the burst's FIRST bubble is when
+  // the client came back, and the bubble before it is where the thread stopped.
+  // "Same burst" is by the CLOCK, not just by role — the bubble before the new
+  // one is often the client's own old message that we never answered (the
+  // 09/13 "good night" sat right under the 09/18 estimate ask, with nothing of
+  // ours in between). Walking those together hid the very gap we are after.
+  const BURST_MS = 30 * 60000;
+  let i = h.length - 1;
+  while (i > 0 && h[i - 1].role === "user") {
+    const a = Date.parse(h[i].at ?? "");
+    const b = Date.parse(h[i - 1].at ?? "");
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a - b > BURST_MS) break;
+    i--;
+  }
+  const prevAt = Date.parse(h[i - 1]?.at ?? "");
+  const backAt = Date.parse(h[i]?.at ?? "");
+  if (!Number.isFinite(prevAt) || !Number.isFinite(backAt)) return null;
+  const hours = (backAt - prevAt) / 3600000;
+  // 6h is past any same-session pause (a client who answers after lunch is not
+  // re-opening anything) and still catches the overnight and multi-day returns.
+  return hours >= 6 ? hours : null;
+}
+
+// The model answered [REACT_ONLY] (= total silence) to a client bubble that is
+// plainly alive. Found while verifying the stale-thread fix (2026-09-19): an
+// un-answered "ok thanks" sitting right above the new bubble makes the model
+// read the whole burst as a closing, so "I'm ready to set up the visit, whole
+// house, 33180" got NOTHING back — the ack poisons the turn even in a live
+// thread. The client's ack is never answered with text (owner rule 26/08), so
+// it stays in the history forever and keeps poisoning every later message.
+// True only when the NEWEST bubble carries real substance of its own.
+export function reactOnlyIsWrong(history: Array<{ role: string; content: string }>): boolean {
+  const h = history ?? [];
+  const last = h[h.length - 1];
+  if (!last || last.role !== "user") return false;
+  const strip = (c: string) => normalizeSmartPunct(c ?? "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  const t = strip(last.content);
+  if (!t) return false;
+  // Genuine closings stay silent — that is the owner's rule, not a bug.
+  if (isPureClosing(t) || isBareAck(t)) return false;
+  if (!(QUESTION_SIGNALS.test(t) || SUBSTANTIVE_CONTENT.test(t) || BOOKING_INFO_SIGNALS.test(t))) return false;
+  // A question sent for the third time is a deliberate [REACT_ONLY] (rule 35),
+  // and the double-tap intercept owns the repeats — never fight those here.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9áéíóúñãõçü ]/gi, "").replace(/\s+/g, " ").trim();
+  const me = norm(t);
+  const repeats = h.slice(0, -1).filter((m) => m.role === "user" && norm(strip(m.content)) === me).length;
+  return repeats === 0;
+}
+
+export const REACT_ONLY_WRONG_NOTE = `CRITICAL, YOU JUST ANSWERED WITH [REACT_ONLY] AND THAT WAS WRONG:
+The client's newest message is a REAL, live message: it asks something, answers something you asked, states a scope or a size, or carries an address, a phone or a day and time. Silence loses the lead.
+An older "ok", "thanks" or "good night" bubble sitting above it is NOT part of it, it was already handled and it is spent: ignore it completely.
+Answer the NEWEST message now, normally, in the client's language, following all the usual rules. Do NOT output [REACT_ONLY] again, do NOT greet them for the silence, and do NOT comment on the previous messages.`;
+
+export function staleThreadNote(hours: number): string {
+  const label =
+    hours >= 48 ? `${Math.round(hours / 24)} days` : hours >= 24 ? "more than a day" : `${Math.round(hours)} hours`;
+  return `CRITICAL, THE CLIENT IS COMING BACK AFTER A LONG SILENCE (${label} passed between the previous message in this conversation and the message that just arrived):
+1. Everything above the client's newest message is OLD. Answer ONLY the newest message. NEVER reply to an older bubble as if it had just arrived.
+2. A goodbye, a good night, a "talk tomorrow", a "let me measure and I'll let you know" or any other sign-off from that old part is already spent: do NOT greet them with "Good night!", do NOT say "once you get that measurement", do NOT pick the conversation up where it stopped as if no time had passed.
+3. Treat the new message as a fresh, live request. If it asks for a quote, an estimate, a visit or an answer, give that answer now and move it forward. If it carries an address, a phone number or a size, that information is CURRENT: use it, never ask for it again, and never ignore it.
+4. Do not mention the silence, do not apologize for the gap, and do not comment on how long it has been. Just answer what they asked, warmly and in their language.`;
+}
+
 export const UNSUPPORTED_FLOOR_NOTE = `CRITICAL, FLOOR TYPE WE DO NOT DO (EPOXY / CONCRETE / CEMENT / MICROCEMENT / RESIN / PAVERS / TERRAZZO):
 The client is asking for a floor we do NOT install. We ONLY install luxury vinyl plank (wood look or stone/tile look, it goes right over existing tile), porcelain and ceramic tile, and hardwood (carpet and laminate installation too if they ask). We do NOT do epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, or terrazzo. Not even "to take a look".
 1. Say so politely, in one or two short sentences and in the client's language, name what we DO install, and ask if one of those would work for them. Example: "Epoxy isn't something we do, we install luxury vinyl plank (wood or stone look, it goes right over existing tile), porcelain and ceramic tile, hardwood and carpet. Would one of those be a good fit for your space?"
@@ -3867,6 +3944,18 @@ export async function getAIResponse(
     dynamicSystem += `\n\n---\n\n${UNREADABLE_IMAGE_NOTE}`;
   }
 
+  // The client is back after hours or days of silence → say so, or the model
+  // answers the old goodbye instead of the new request (fb_39448595681394200,
+  // 2026-09-18: a free-estimate ask with the phone number in it got "Good
+  // night!"). The bubbles carry no timestamps, this note is the only clock.
+  {
+    const gap = staleThreadGapHours(messages);
+    if (gap !== null) {
+      console.log(`[AI] Client returned after ${Math.round(gap)}h of silence — injecting the stale-thread block`);
+      dynamicSystem += `\n\n---\n\n${staleThreadNote(gap)}`;
+    }
+  }
+
   let response;
   try {
     response = await anthropic.messages.create({
@@ -3912,6 +4001,40 @@ export async function getAIResponse(
       console.error("🚨🚨 ANTHROPIC OUT OF CREDITS — add credits at console.anthropic.com (Plans & Billing). The AI cannot reply to ANY client until then. 🚨🚨");
     }
     throw err;
+  }
+
+  // [REACT_ONLY] BACKSTOP: total silence is right only for a real closing. When
+  // the newest bubble is a live message (a question, an answer to ours, a size,
+  // an address, a day), ask once more — an un-answered "ok thanks" above it
+  // makes the model read the whole burst as a goodbye (2026-09-19). One retry:
+  // if it still wants silence, we honor it rather than invent a reply.
+  {
+    const first = response.content[0];
+    if (first?.type === "text" && /\[REACT_ONLY\]/i.test(first.text) && reactOnlyIsWrong(messages)) {
+      console.log("[AI] [REACT_ONLY] on a live client message — retrying once with the answer-it block");
+      const retryMsgs = messages.map((m, i) =>
+        i === messages.length - 1 ? { ...m, content: `${m.content}\n\n[SYSTEM: ${REACT_ONLY_WRONG_NOTE}]` } : m
+      );
+      try {
+        const retry = await anthropic.messages.create({
+          model: "claude-sonnet-4-6",
+          max_tokens: 600,
+          system: [
+            { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+            { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+          ],
+          messages: retryMsgs.map((m) => ({ role: m.role, content: m.content })),
+        });
+        const rb = retry.content[0];
+        if (rb?.type === "text" && rb.text.trim() && !/\[REACT_ONLY\]/i.test(rb.text)) {
+          response = retry;
+        } else {
+          console.log("[AI] retry still asked for silence — honoring [REACT_ONLY]");
+        }
+      } catch (e) {
+        console.error("[AI] [REACT_ONLY] retry failed, honoring the first answer:", e);
+      }
+    }
   }
 
   const block = response.content[0];
