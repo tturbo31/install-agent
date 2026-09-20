@@ -33,6 +33,8 @@ import {
   adFlooringTypeNote,
   classifyAdCreativeType,
   isConsecutiveDuplicate,
+  slotApologyAlreadyGivenNote,
+  stripRepeatedSlotApology,
   adRetapNudge,
   recapForDuplicateReply,
   promisesOwnerContact,
@@ -1601,6 +1603,11 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       if (pastVisitNote) {
         systemParts.push(pastVisitNote);
       }
+      // Caso Alejandro Trigoso (WA 19/09/2026): a desculpa do horário que encheu
+      // voltou IDÊNTICA no turno seguinte, depois de o cliente já ter aceitado e
+      // pedido outro dia. Uma vez basta — a menos que o CLIENTE retome o horário.
+      const slotApologyNote = slotApologyAlreadyGivenNote(messagesForAI);
+      if (slotApologyNote) systemParts.push(slotApologyNote);
       if (isRescheduling) {
         // CANCEL intent gets its own framing: routing "I need to cancel" into a
         // note that says the client "wants to MOVE the visit" made the model push
@@ -2007,6 +2014,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       afterBookingText = isRescheduling && bookedVisit
         ? visitDetailsMessage(lang, bookedVisit.date, bookedVisit.time) + "[NOTIFY_OWNER]"
         : bookingUnverifiedHandoffMessage(lang) + "[NOTIFY_OWNER]";
+    }
+    // Backstop determinístico da nota SLOT APOLOGY ALREADY GIVEN (Alejandro
+    // Trigoso, WA 19/09/2026): se o modelo repetiu a desculpa do horário que
+    // encheu mesmo assim, a desculpa sai e a oferta atrás dela fica.
+    if (!booked) {
+      const semRepeticao = stripRepeatedSlotApology(afterBookingText, messagesForAI);
+      if (semRepeticao !== afterBookingText) console.warn("[slot-apology] desculpa do horário perdido repetida — removida, oferta mantida");
+      afterBookingText = semRepeticao;
     }
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id, conversation.username ?? null, lang);
     const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);

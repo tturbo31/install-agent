@@ -879,6 +879,174 @@ export function softenPrematureLockIn(text: string): string {
   return withTagsProtected(text, (prose) => prose.replace(/\b(?:all\s+)?locked\s+in\b/gi, "penciled in"));
 }
 
+// ─── "That slot filled up" — said ONCE, never on a loop ─────────────────────
+// The schedule context (rule "ONE EXCEPTION", scheduler.ts) makes the model OWN
+// a time that filled up while the client was confirming it: "I'm sorry, that
+// Sunday 3pm filled up while we were talking. The soonest I have now is ...".
+// Nothing ever told it to say that ONCE. Alejandro Trigoso (WA, 2026-09-19)
+// heard it, accepted it and moved on ("Tuesday") — and got the identical
+// opening sentence back on the very next turn with a different offer glued
+// behind it. To the client that reads like a stuck record, and it buries the
+// answer he actually asked for.
+//
+// THE EXCEPTION is why this is not a blanket strip: when the client BRINGS THE
+// DEAD SLOT BACK UP ("are you coming tomorrow at 11am?", "is someone still
+// going?"), the apology is news again and MUST repeat — Cleveland (2026-09-02)
+// and Marguerite (2026-08-27/28) both re-asked about the lost time and both
+// were answered correctly. Only the UNPROMPTED repeat is removed.
+//
+// Accents are stripped before every test: JS \b is ASCII-only, so "sábado" /
+// "terça" / "amanhã" never closed a boundary (see js-word-boundary-accents).
+const deaccentLower = (s: string) => (s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+// The apology lead-in, in the three languages we speak.
+const SLOT_APOLOGY_OPEN = /(?:i'?m\s+sorry|i\s+am\s+sorry|so\s+sorry|sorry|my\s+apologies|apologies|lo\s+siento|siento\s+mucho|perdon|perdona|disculpa|disculpame|desculpa|desculpe|sinto\s+muito)/i;
+// Evidence that it is about a slot that is GONE, not a generic "sorry".
+const SLOT_GONE_EVIDENCE = /(?:filled\s+up|got\s+(?:taken|booked|filled)|was\s+(?:taken|booked|filled)|just\s+(?:got\s+)?taken|no\s+longer\s+(?:open|available|free|have|has)|(?:isn'?t|is\s+not)\s+(?:open|available|free)|se\s+llen[oa]|se\s+ocup[oa]|ya\s+no\s+(?:esta|tengo|lo\s+tengo|la\s+tengo)|ya\s+fue\s+tomad|encheu|lotou|foi\s+preenchid|ja\s+(?:foi\s+ocupad|esta\s+ocupad)|nao\s+tenho\s+mais|nao\s+esta\s+mais)/i;
+const CLOCK_TOKEN_RE = /(?<![a-z0-9])(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?![a-z])/g;
+const WEEKDAY_CANON: Record<string, number> = {
+  sunday: 0, domingo: 0,
+  monday: 1, lunes: 1, segunda: 1,
+  tuesday: 2, martes: 2, terca: 2,
+  wednesday: 3, miercoles: 3, quarta: 3,
+  thursday: 4, jueves: 4, quinta: 4,
+  friday: 5, viernes: 5, sexta: 5,
+  saturday: 6, sabado: 6,
+  today: 7, hoy: 7, hoje: 7,
+  tomorrow: 8, manana: 8, amanha: 8,
+};
+const WEEKDAY_TOKEN_RE = new RegExp("(?<![a-z])(?:" + Object.keys(WEEKDAY_CANON).join("|") + ")(?![a-z])", "g");
+// How far back an earlier apology still counts as "already said". Marguerite's
+// repeat landed a day and one client message later, so a short window is enough.
+const SLOT_APOLOGY_LOOKBACK = 8;
+
+function clockTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of deaccentLower(text).matchAll(CLOCK_TOKEN_RE)) {
+    const min = m[2] && m[2] !== "00" ? ":" + m[2] : "";
+    out.add(String(parseInt(m[1], 10)) + min + m[3]);
+  }
+  return out;
+}
+function weekdayTokens(text: string): Set<number> {
+  const out = new Set<number>();
+  for (const m of deaccentLower(text).matchAll(WEEKDAY_TOKEN_RE)) out.add(WEEKDAY_CANON[m[0]]);
+  return out;
+}
+
+type SlotApology = { times: Set<string>; days: Set<number>; clauses: string[]; goneClauseIdx: number };
+
+// Parses the FIRST sentence of a reply as "sorry, <that slot> is gone".
+// Returns null for anything else — a generic apology, an apology that trails an
+// offer ("I have Monday 5pm or 6pm, sorry the Sunday 3pm filled up"), or a
+// sentence whose leading clauses already carry a time (dropping those would eat
+// the offer itself).
+export function parseSlotGoneApology(sentence: string): SlotApology | null {
+  const raw = (sentence ?? "").trim();
+  if (!raw) return null;
+  const flat = deaccentLower(raw);
+  if (!SLOT_GONE_EVIDENCE.test(flat)) return null;
+  const apologyAt = flat.search(SLOT_APOLOGY_OPEN);
+  // The apology has to OPEN the sentence ("Cleveland, I'm sorry, ..." is fine).
+  if (apologyAt < 0 || apologyAt > 30) return null;
+  const clauses = raw.split(/,\s+/);
+  let goneClauseIdx = -1;
+  for (let i = 0; i < clauses.length; i++) {
+    if (SLOT_GONE_EVIDENCE.test(deaccentLower(clauses[i]))) goneClauseIdx = i;
+    else if (goneClauseIdx >= 0) break; // the evidence region ended
+  }
+  if (goneClauseIdx < 0 || goneClauseIdx > 1) return null;
+  // A clock BEFORE the evidence means the offer leads and the apology trails.
+  for (let i = 0; i < goneClauseIdx; i++) if (clockTokens(clauses[i]).size > 0) return null;
+  const region = clauses.slice(0, goneClauseIdx + 1).join(", ");
+  return { times: clockTokens(region), days: weekdayTokens(region), clauses, goneClauseIdx };
+}
+
+// Same lost slot? Clock first (that is what the client remembers), weekday only
+// as a tie-breaker when BOTH sides name one — so a Sunday 3pm that died and a
+// Wednesday 3pm that died later are never treated as the same apology.
+function sameLostSlot(a: SlotApology, b: SlotApology): boolean {
+  const dayHit = a.days.size > 0 && b.days.size > 0 && [...a.days].some((d) => b.days.has(d));
+  if (a.times.size > 0 && b.times.size > 0) {
+    if (![...a.times].some((t) => b.times.has(t))) return false;
+    return a.days.size > 0 && b.days.size > 0 ? dayHit : true;
+  }
+  return dayHit; // no clock on one side (e.g. "Saturday the 15th filled up")
+}
+
+const firstSentenceOf = (text: string) =>
+  (text ?? "").replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+/)[0] ?? "";
+
+function recentSlotApologies(history: ChatMessage[]): SlotApology[] {
+  const out: SlotApology[] = [];
+  const assistants = history.filter((m) => m.role === "assistant").slice(-SLOT_APOLOGY_LOOKBACK);
+  for (const m of assistants) {
+    const parsed = parseSlotGoneApology(firstSentenceOf(m.content));
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
+// The client's own messages since our last reply.
+function trailingUserBurst(history: ChatMessage[]): string[] {
+  const out: string[] = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role !== "user") break;
+    out.unshift(history[i].content.split(/\n\n?\[SYSTEM:/)[0]);
+  }
+  return out;
+}
+
+// "Are we still on?" / "are you coming tomorrow at 11am?" — the client put the
+// dead slot back on the table, so saying it again is an answer, not a repeat.
+// Cliente irritado, desconfiado ou plantado esperando: a visita perdida ainda é
+// o assunto, e quem decide o tom ali é a regra 38 do prompt, não este guard.
+const CLIENT_UPSET = /(?:scam|fraud|wast(?:e|ing)\s+(?:my|people'?s?|our)?\s*time|ridiculous|unprofessional|this\s+is\s+a\s+joke|don'?t\s+trust|do\s+not\s+trust|(?:nobody|no\s+one|noone)\s+(?:came|showed|show\s+up)|never\s+came|never\s+showed|estafa|fraude|perdiendo\s+(?:mi|el)\s+tiempo|no\s+(?:vino|llego)\s+nadie|no\s+confio|golpe|enganaca|perdendo\s+(?:meu|o)\s+tempo|ninguem\s+(?:veio|apareceu)|nao\s+confio)/i;
+const STILL_ON_QUESTION = /(?:still\s+(?:going|coming|on|good|happening)|are\s+(?:you|we|they)\s+(?:coming|still)|is\s+(?:someone|somebody|anyone)\s+(?:still\s+)?(?:coming|going)|we\s+good\s+for|confirm|sigue\s+en\s+pie|siguen?\s+(?:viniendo|en\s+pie)|van\s+a\s+venir|vienen|ainda\s+(?:vem|vao|vai|esta)|continua\s+(?:de\s+pe|valendo))/i;
+function clientReopenedSlot(history: ChatMessage[], slot: SlotApology): boolean {
+  for (const text of trailingUserBurst(history)) {
+    const flat = deaccentLower(text);
+    if (STILL_ON_QUESTION.test(flat) || CLIENT_UPSET.test(flat)) return true;
+    if ([...clockTokens(text)].some((t) => slot.times.has(t))) return true;
+    if ([...weekdayTokens(text)].some((d) => slot.days.has(d))) return true;
+  }
+  return false;
+}
+
+// Dynamic note for the model: the apology is spent, answer what was just asked.
+// Deliberately NOT in the stable system prompt — it is per-turn state, and a new
+// rule in the cached prefix changes flows it was never meant to touch.
+export function slotApologyAlreadyGivenNote(history: ChatMessage[]): string | null {
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return null;
+  const slot = parseSlotGoneApology(firstSentenceOf(lastAssistant.content));
+  if (!slot) return null;
+  if (clientReopenedSlot(history, slot)) return null;
+  return "[SLOT APOLOGY ALREADY GIVEN: You have ALREADY told this client that the time they had accepted filled up, and they have taken it well and moved on. Do NOT open this reply by apologizing for that lost time again, and do NOT bring it up again. Just answer what they actually said, directly. If they named a day, give that day's real open times from the schedule above. Mention the lost time again ONLY if the CLIENT brings it up.]";
+}
+
+// Deterministic backstop for the note above: drop the repeated apology clauses
+// and keep the offer behind them. Never returns an empty message, and tags are
+// masked first (a scrubber that eats a [BOOK] costs a visit — see
+// book-tag-eaten-by-leak-scrubber).
+export function stripRepeatedSlotApology(text: string, history: ChatMessage[]): string {
+  if (!text?.trim()) return text;
+  const prior = recentSlotApologies(history);
+  if (prior.length === 0) return text;
+  return withTagsProtected(text, (prose) => {
+    const sentences = prose.trim().split(/(?<=[.!?])\s+/);
+    const cur = parseSlotGoneApology(sentences[0] ?? "");
+    if (!cur) return prose;
+    if (!prior.some((p) => sameLostSlot(p, cur))) return prose;
+    if (clientReopenedSlot(history, cur)) return prose;
+    const rest = cur.clauses.slice(cur.goneClauseIdx + 1).join(", ").trim();
+    const head = rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : "";
+    const kept = [head, ...sentences.slice(1)].filter((s) => s.trim()).join(" ").trim();
+    // The apology WAS the whole message: silence is worse than a repeat.
+    if (!kept) return prose;
+    return kept;
+  });
+}
+
 const BIG_DOLLAR = /\$\s?\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\$\s?\d{4,}/;
 
 export function conversationHasLargeLead(messages: ChatMessage[]): boolean {
