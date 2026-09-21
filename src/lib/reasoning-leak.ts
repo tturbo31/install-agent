@@ -8,7 +8,7 @@
 // Thursday at 6pm, which works better for you? And what's the full property
 // address with the zip code so I can hold it?"
 //
-// It was the 7th monologue shipped in 35 days (13,714 replies). Each earlier one
+// It was the 7th monologue shipped in 35 days (10,849 replies). Each earlier one
 // was answered with new PHRASES in the sentence blacklist of ai.ts
 // (REASONING_LEAK_SENTENCE), and each new leak simply used new words: run over
 // the Julie text, the blacklist as deployed that same afternoon still let 11 of
@@ -35,7 +35,7 @@
 // its re-draft, or nothing clean left) the caller REGENERATES the turn, keeps
 // the salvage as the fallback, and if neither is clean the turn goes to the
 // owner ([NOTIFY_OWNER]) instead of to the client. Every signal below was run
-// against the 13,714 real replies of the last 35 days: it fires on the leaks and
+// against the 10,849 real replies of the last 35 days: it fires on the leaks and
 // on nothing else (scripts/tmp-leak-corpus-2109.mts).
 
 // Sentence split that never breaks inside a decimal price ("$4.50").
@@ -79,6 +79,12 @@ const INTERNAL_VOCAB = new RegExp(
     /\bfinal\s+reminders?\b/.source,
     /\bthe\s+(?:prompt|instructions?)\s+(?:says?|tells?|states?)\b/.source,
     /\bdifferently[-\s]worded\b/.source,
+    // The RULES recited to the client (production 2026-09-21 17:56Z: "Two
+    // bathrooms with no size stated is an obviously small area, so…"; 09-03:
+    // "420 sqft is under 500, so it could be quoted by DM…"; 08-31: "256 sqft,
+    // so that falls in our range for a quick DM quote").
+    /\bno\s+size\s+(?:stated|given|mentioned)\b|\bobviously\s+(?:a\s+)?(?:small|tiny)\s+area\b/.source,
+    /\bso\s+it\s+(?:could|can|should|would)\s+be\s+quoted\b|\bbefore\s+quoting\s+anything\b|\bfalls?\s+in(?:to)?\s+our\s+range\b/.source,
   ].join("|"),
   "i"
 );
@@ -89,7 +95,7 @@ const SELF_TALK = new RegExp(
     /\blet\s+me\s+(?:re-?read|re-?check|redo|recalculate|reconsider|think|look\s+again)\b/.source,
     /\blet\s+me\s+offer\b/.source,
     /\blet\s+me\s+ask\s+(?:for|which|about|them)\b/.source,
-    /\bi\s+need\s+to\s+ask\s+(?:which|for|about|them)\b/.source,
+    /\bi\s+need\s+to\s+ask\s+(?:which|for|about|them|the|their|what)\b/.source,
     /\bi(?:'ll|\s+will)\s+keep\s+(?:it|this)\s+(?:simple|short|brief)\b/.source,
     /\bi\s+can\s+accept\s+(?:it|that|those|them|this)\b/.source,
     /\bactually,?\s+(?:let\s+me|they|the\s+client)\b/.source,

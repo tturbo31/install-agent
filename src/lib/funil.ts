@@ -885,7 +885,7 @@ async function mensagensDaConversa(convId: string): Promise<MsgRow[]> {
 }
 
 // Botões de FAQ dos anúncios Meta — um toque não é "resposta real".
-const FAQ_BUTTON = /^\s*(?:what type of materials are included|what is the installation process|do you offer any discounts for larger spaces|is labor cost also \$?4,?500|can i customize the design|what is included in the materials package|is installation cost included in the price|is installation labor cost extra|schedule a quote)\s*\??\s*$/i;
+const FAQ_BUTTON = /^\s*(?:what type of materials are included|what is the installation process|do you offer any discounts for larger spaces|do you offer any discounts or promotions|is labor cost included in the price|is labor cost also \$?4,?500|can i customize the design|what is included in the materials package|is installation cost included in the price|is installation labor cost extra|schedule a quote)\s*\??\s*$/i;
 
 export function isAdFaqButtonFunil(text: string): boolean {
   return FAQ_BUTTON.test(stripSys(text));

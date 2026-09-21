@@ -11,7 +11,7 @@
  * Prova, SEM nenhuma chamada paga (o modelo é um servidor falso local):
  *  1. PURO: o texto exato da Julie e os outros 6 vazamentos reais saem limpos
  *     (detecção por FORMA + corte do trecho inteiro do monólogo).
- *  2. PURO: falsos-positivos medidos no corpus de 13.714 respostas reais não
+ *  2. PURO: falsos-positivos medidos no corpus de 10.849 respostas reais únicas não
  *     disparam ("since they are in good shape", "closest match", "el cliente
  *     compra su material", corretor falando do próprio cliente).
  *  3. PURO: a tag [BOOK] nunca se perde num vazamento, e turno com tag nunca é
@@ -88,6 +88,9 @@ const REAL: Array<[string, string, RegExp, RegExp]> = [
   ["374066de 29/08 (Natasha)", "They said next week, so the first available next-week day is Monday August 31. Today is Saturday August 29. \"Next week\" from Saturday August 29 would typically mean the week of Monday August 31. I'll offer Monday August 31 first. Boca Raton is in our service area. Zip 33432 already given. Boca is covered, great! I have Monday the 31st at 9am or 11am, which works better for you?", /^Boca is covered, great!/, /they said|today is|i'll offer|already given|typically mean/i],
   ["21445c49 31/08", "However, they also sent their address. Also get their name since I don't have it. Actually, they haven't picked a specific time. I need to ask which one. And I need their name. Let me ask for the time and name together. I'm holding Wednesday for you! Which works better, 11am or 1pm?", /^I'm holding Wednesday for you!/, /they also|their name|need to ask|let me ask/i],
   ["7798856b 17/09", "Since they already asked this once and got the explanation, I'll give a brief, differently worded version per rule 35. Since you're asking about what comes with the package, it really comes down to the floor: vinyl includes the flooring material, installation, and quarter round all in one. Which of those are you considering?", /^Since you're asking/, /rule 35|differently worded|they already/i],
+  ["produção 21/09 17:56Z (a REGRA recitada ao cliente)", "Two bathrooms with no size stated is an obviously small area, so for a project that size the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at (561) 674-8334.", /\(561\) 674-8334/, /no size stated|obviously small/i],
+  ["3591e011 03/09 (regra recitada + ordem a si mesmo)", "420 sqft is under 500, so it could be quoted by DM, but I still don't know if it's vinyl, tile, or hardwood. I need to ask the type before quoting anything. Which flooring are you thinking, tile, vinyl, or hardwood?", /^Which flooring are you thinking/, /quoted by DM|need to ask|before quoting/i],
+  ["53f300fa 30/08 (regra recitada)", "16x16 is 256 sqft, so that falls in our range for a quick DM quote. Which flooring were you thinking for that slab, tile, vinyl, or hardwood?", /^Which flooring were you thinking/, /falls in our range/i],
   ["868bf420 19/08 (autocorreção no meio da frase)", "No problem, two weeks out works perfectly! For the week of September 1st I have Tuesday September 1 at 9am, 11am, 1pm, 3pm, 5pm, or 7pm, and Wednesday September 2 at those same hours , actually, let me give you two clean options: Tuesday September 1 at 9am or 11am, or Wednesday September 2 at 9am or 11am, whichever works better?", /Tuesday September 1 at 9am or 11am, or Wednesday September 2 at 9am or 11am, whichever works better\?$/, /let me give|those same hours|1pm, 3pm/i],
 ];
 for (const [id, text, keep, gone] of REAL) {

@@ -74,7 +74,7 @@ export const FOLLOWUP_DB_SUFFIX = "\n\n[SYSTEM: FOLLOWUP_NUDGE]";
 // Meta ad FAQ quick-reply buttons — a tap is NOT genuine engagement. A lead
 // whose only "messages" are these templates is a browse/mis-tap ghost and must
 // never receive a follow-up (58% of leads are one-tap ghosts per the review).
-const FAQ_BUTTON = /^\s*(?:what type of materials are included|what is the installation process|do you offer any discounts for larger spaces|is labor cost also \$?4,?500|can i customize the design|what is included in the materials package|is installation cost included in the price|is installation labor cost extra|schedule a quote)\s*\??\s*$/i;
+const FAQ_BUTTON = /^\s*(?:what type of materials are included|what is the installation process|do you offer any discounts for larger spaces|do you offer any discounts or promotions|is labor cost included in the price|is labor cost also \$?4,?500|can i customize the design|what is included in the materials package|is installation cost included in the price|is installation labor cost extra|schedule a quote)\s*\??\s*$/i;
 
 export function isAdFaqButton(text: string): boolean {
   return FAQ_BUTTON.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
