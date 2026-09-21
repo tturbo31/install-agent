@@ -78,7 +78,7 @@ async function main() {
   ck("o porquê está escrito no código (para ninguém repetir a tentativa)", /WHY THERE IS NO LENGTH RULE IN THE DYNAMIC BLOCK/.test(ai));
   ck("orçamento (160 / 220) no prompt estável bate com as constantes da rede", SYSTEM_PROMPT.includes("Under " + REPLY_TARGET_CHARS + " characters in total is the norm and " + REPLY_TIGHTEN_OVER + " is the ceiling"));
   ck("trava oferta + pedido de dados roda logo depois da rede, dentro do cérebro (vale para os 3 canais)", ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") > ai.indexOf("needsTightening(cleaned)") && ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") < ai.indexOf("cleaned = scrubForeignPhones(cleaned"));
-  const iNet = ai.indexOf("needsTightening(cleaned)"), iLeak = ai.indexOf("cleaned = stripReasoningLeak(cleaned);"), iPhones = ai.indexOf("cleaned = scrubForeignPhones(cleaned"), iSmall = ai.indexOf("if (smallJobLeak(messages, cleaned))");
+  const iNet = ai.indexOf("needsTightening(cleaned)"), iLeak = ai.indexOf("const leak = assessReasoningLeak(cleaned, leakOpts);"), iPhones = ai.indexOf("cleaned = scrubForeignPhones(cleaned"), iSmall = ai.indexOf("if (smallJobLeak(messages, cleaned))");
   ck("a rede roda depois do scrubber de raciocínio e ANTES de todos os backstops", iLeak > 0 && iNet > iLeak && iPhones > iNet && iSmall > iNet, `${iLeak} ${iNet} ${iPhones} ${iSmall}`);
   ck("chave de emergência REPLY_TIGHTEN=off", /process\.env\.REPLY_TIGHTEN !== "off"/.test(ai));
   ck("falha da reescrita nunca derruba a resposta (try/catch devolve null)", /short-reply rewrite failed, keeping the original/.test(ai));

@@ -151,12 +151,14 @@ const CONVERSATIONS: Conversation[] = [
   },
 
   {
-    name: "Cliente pede fotos → redireciona para WhatsApp, sem [SEND_IMAGES]",
+    // Regra do dono 27/07/2026: fotos/amostras → link do site (antes era o
+    // redirect pro WhatsApp; este teste ficou com a expectativa antiga).
+    name: "Cliente pede fotos → link do site, sem [SEND_IMAGES]",
     turns: [
       {
         client: "Can you show me some photos of your floors?",
         checks: [
-          { label: "Redireciona para WhatsApp", fn: r => /whatsapp|561\D*674\D*8334/i.test(r) },
+          { label: "Manda o link do site", fn: r => /ozzifloors\.com/i.test(r) },
           { label: "Sem [SEND_IMAGES]",                       fn: r => !/\[SEND_IMAGES/i.test(r) },
           { label: "Zero emojis",                             fn: r => !/[\u{1F300}-\u{1FAFF}]/u.test(r) },
         ],

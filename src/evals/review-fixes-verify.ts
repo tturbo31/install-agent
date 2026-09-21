@@ -58,7 +58,10 @@ async function main() {
   const leak1 = "Perfect, 16 steps it is. What's the full address so I can get you scheduled? Wait, let me handle this properly. 16 steps at $140 per step is $2,240 for the labor. Let me redo this: That comes out to $2,240 for the installation.";
   const clean1 = stripReasoningLeak(leak1);
   ck("leak 1: 'Wait, let me handle this properly' removed", !/wait,?\s+let me|let me redo/i.test(clean1), clean1);
-  ck("leak 1: the real question survives", /full address/i.test(clean1), clean1);
+  // 2026-09-21 (Julie): after "Wait, …" what stood BEFORE it is the draft the
+  // model abandoned, and the narrated arithmetic between the two markers goes
+  // with the span. What survives is the model's final answer.
+  ck("leak 1: the final answer survives, the abandoned draft and the narrated math do not", /\$2,240 for the installation/.test(clean1) && !/per step is/i.test(clean1) && !/full address/i.test(clean1), clean1);
   const leak2 = "This is a small tile job quoted by DM, not a visit, so I just need to notify Ozzi to follow up. Since the client accepted the quote, I'll escalate. Great, I'll have Ozzi reach out to you directly to get this scheduled![NOTIFY_OWNER]";
   const clean2 = stripReasoningLeak(leak2);
   ck("leak 2: third-person planning removed", !/the client accepted|i'?ll escalate|notify ozzi to/i.test(clean2), clean2);

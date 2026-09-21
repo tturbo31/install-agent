@@ -251,7 +251,7 @@ import { sendFacebookMessage } from "@/lib/facebook";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
-import { removeDashes, removeEmojis, stripWrappingQuotes, isHostileRejection } from "@/lib/ai";
+import { removeDashes, removeEmojis, stripWrappingQuotes, isHostileRejection, replyStillLeaks } from "@/lib/ai";
 import { promisesDiscount } from "@/lib/quote-followup";
 
 // ─── Nudge personalizada pela IA (2026-07-17) ───────────────────────────────
@@ -315,6 +315,9 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, 
     const block = res.content[0];
     const text = sanitizeNudge(block?.type === "text" ? block.text : "");
     if (text.length < 20 || text.length > 420) return null;
+    // Julie (WA 21/09/2026): texto com o raciocínio do modelo nunca sai; o
+    // chamador cai no template fixo comprovado.
+    if (replyStillLeaks(text)) return null;
     if (promisesDiscount(text)) return null;
     if (/https?:\/\//i.test(text)) return null;
     // financiamento: nunca taxa, parcela ou aprovação (o modelo não sabe)

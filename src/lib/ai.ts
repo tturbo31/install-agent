@@ -5,6 +5,8 @@ import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONS
 import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
+import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
+import { withRequestedTimesNote } from "@/lib/requested-slots";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -247,6 +249,13 @@ function conversationMentionsCarpet(messages: ChatMessage[]): boolean {
   return messages.some((m) => m.role === "user" && mentionsCarpet(m.content));
 }
 
+// The client already told us the size or the scope of the job, in any message.
+const SCOPE_STATED =
+  /\b\d{2,5}\s*(?:sq\.?\s*(?:ft|feet|foot)|sqft|square\s+f(?:ee|oo)t|pies|p[eé]s|m2|m²)(?![a-zà-ÿ])|\b(?:whole|entire)\s+(?:house|home|place|apartment|condo|floor)\b|\b(?:one|two|three|a\s+few|\d)\s+(?:areas?|rooms?|bedrooms?)\b|\b(?:kitchen|bedrooms?|living\s+room|dining\s+room|hallway|stairs|basement|office)\b|\btoda\s+la\s+casa\b|\bcasa\s+(?:entera|completa|toda|inteira)\b|\b(?:una?|um|uma|dos|dois|duas|tres|tr[eê]s|\d)\s+(?:[aá]reas?|cuartos?|habitaci[oó]n(?:es)?|c[oô]modos?|quartos?|rec[aá]maras?)(?![a-zà-ÿ])|\b(?:cocina|sala|rec[aá]mara|cozinha)(?![a-zà-ÿ])/i;
+export function scopeAlreadyStated(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.role === "user" && SCOPE_STATED.test((m.content || "").split(/\n\n?\[SYSTEM:/)[0]));
+}
+
 function checkHardcodedResponse(messages: ChatMessage[]): string | null {
   const last = messages[messages.length - 1];
   if (!last || last.role !== "user") return null;
@@ -322,6 +331,12 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
         if (carpetLead || assistantAlreadyAskedType(messages)) return null;
         return WHAT_IS_INCLUDED_ASK_TYPE;
       }
+      // The photos/samples line ends in "one area or the whole house?". When
+      // the client ALREADY said it ("The whole house, around 1100 sqft", then
+      // "can you send me pictures of the colors?") the canned line asked it
+      // again, 6 runs in 6 (2026-09-21): the robot signature rule 5 forbids.
+      // The scope is known: the link and the samples go, the question does not.
+      if (rule.id?.startsWith("see_options") && scopeAlreadyStated(messages)) return rule.response.replace(/\s*[^.!?]*\?\s*$/, "");
       return rule.response;
     }
   }
@@ -3798,22 +3813,45 @@ const REASONING_LEAK_SENTENCE = new RegExp(
   "i"
 );
 
-export function stripReasoningLeak(text: string): string {
-  // Tags ([BOOK:{...}] and friends) are masked first: the JSON "notes" once
-  // matched a leak pattern and the WHOLE tag was deleted, shipping "Perfect,
-  // see you then!" with no visit behind it (Shaeleen Herrera-Garcia, IG
-  // 2026-08-26). Only the prose is ever judged sentence by sentence.
-  return withTagsProtected(text, (prose) => {
-    if (!REASONING_LEAK_SENTENCE.test(prose)) return prose;
-    // Sentence split that never breaks inside a decimal price ("$4.50").
-    const parts = prose.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [prose];
-    const kept = parts.filter((s) => !REASONING_LEAK_SENTENCE.test(s));
-    const result = kept.join("").replace(/[ \t]{2,}/g, " ").trim();
-    const substance = result.replace(/\[[^\]]*\]/g, "").trim();
-    if (substance.length < 20) return prose;
-    console.log("[AI] reasoning-leak scrubber: removed internal monologue sentence(s) from the reply");
-    return result;
+// A sentence is monologue when it matches a known PHRASE above or has the
+// SHAPE of one (third person about the client, the plumbing's vocabulary,
+// orders to itself: reasoning-leak.ts, written after Julie, WA 2026-09-21).
+const leakVerdict = (sentence: string, opts: LeakOptions): string | null =>
+  REASONING_LEAK_SENTENCE.test(sentence) ? "known-phrase" : monologueSignal(sentence, opts);
+
+// What the draft yields and whether the turn must be regenerated. Tags
+// ([BOOK:{...}] and friends) are masked first: the JSON "notes" once matched a
+// leak pattern and the WHOLE tag was deleted, shipping "Perfect, see you then!"
+// with no visit behind it (Shaeleen Herrera-Garcia, IG 2026-08-26). Only the
+// prose is ever judged sentence by sentence.
+export function assessReasoningLeak(text: string, opts: LeakOptions = {}): { text: string; mode: string; regenerate: boolean; signals: string[] } {
+  let verdict = { mode: "clean", regenerate: false, signals: [] as string[] };
+  const out = withTagsProtected(text ?? "", (prose) => {
+    const res = salvageFromLeak(prose, (s) => leakVerdict(s, opts), (s) => leakVerdict(s, {}));
+    verdict = { mode: res.mode, regenerate: res.regenerate, signals: res.signals };
+    return res.text;
   });
+  return { text: out, ...verdict };
+}
+
+// Pure text-to-text form (quote follow-up, evals). When nothing clean survives
+// it hands the text back untouched: only getAIResponse can regenerate, and it
+// asks assessReasoningLeak, so there the monologue never ships.
+export function stripReasoningLeak(text: string, opts: LeakOptions = {}): string {
+  const res = assessReasoningLeak(text, opts);
+  if (res.mode === "clean" || res.mode === "unsalvageable") return text;
+  console.log(`[AI] reasoning-leak scrubber (${res.mode}, ${res.signals.join("+")}): removed internal monologue from the reply`);
+  return res.text;
+}
+
+// The gate: does ANY monologue remain in what is about to ship? True also for a
+// draft and its re-draft in one reply (the same times offered in two
+// questions), the signature of a monologue made of unknown words.
+export function replyStillLeaks(text: string, opts: LeakOptions = {}): boolean {
+  const prose = (text ?? "").replace(PROTECTED_TAG, " ");
+  if (!prose.trim()) return false;
+  if (hasRedraftedOffer(prose)) return true;
+  return splitSentences(prose).some((s) => leakVerdict(s, opts) !== null);
 }
 
 // ─── Foreign-phone scrubber ────────────────────────────────────────────────
@@ -4211,6 +4249,15 @@ export async function getAIResponse(
     return { text: hardcoded, inputTokens: 0, outputTokens: 0 };
   }
 
+  // REQUESTED TIMES (Julie, WA 2026-09-21): when the client names a time or a
+  // part of the day, CODE looks it up in the schedule note this very message
+  // carries and states the answer as facts (requested-slots.ts). Since
+  // 2026-09-17 each schedule line has two lists (offered + "open only if the
+  // client asks"), and the model crossed them out loud (1,245 characters to a
+  // client), ignored an open hour the client asked for (6 of 6) and accepted an
+  // hour that was not open (4 of 6). Here, so the three channels get it at once.
+  messages = withRequestedTimesNote(messages);
+
   const anthropic = getAnthropic();
 
   // Build system prompt — layer: base prompt + system learnings + client memory.
@@ -4455,7 +4502,39 @@ export async function getAIResponse(
 
     // Never ship the model's internal monologue ("Wait, let me redo this…",
     // "Since the client accepted the quote, I'll escalate.") to a client.
-    cleaned = stripReasoningLeak(cleaned);
+    // Julie (WA 2026-09-21) got 1,245 characters of it. The net judges the
+    // SHAPE of the draft (reasoning-leak.ts), and it fails CLOSED: a light leak
+    // loses its sentence; a draft that cannot be trusted as a whole (a heavy
+    // monologue, a "Wait, …" self-correction, a draft plus its re-draft, or
+    // nothing clean left) is REGENERATED once, with what could be salvaged from
+    // it as the fallback; and when neither is clean the turn goes to the owner
+    // ([NOTIFY_OWNER], the webhooks alert him and send the client nothing).
+    // LEAK_REGENERATE=off skips only the second call.
+    const leakOpts: LeakOptions = {
+      thirdPartyContext: mentionsThirdParty(messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n")),
+    };
+    let leakIn = 0;
+    let leakOut = 0;
+    {
+      const leak = assessReasoningLeak(cleaned, leakOpts);
+      if (leak.mode !== "clean" || leak.regenerate) {
+        console.warn(`[AI] reasoning leak in the draft (${leak.mode}${leak.signals.length ? ", " + leak.signals.join("+") : ""}) | draft: ${cleaned.replace(/\s+/g, " ").slice(0, 500)}`);
+        let shipped = leak.text;
+        if (leak.regenerate && process.env.LEAK_REGENERATE !== "off") {
+          const redo = await regenerateCleanReply(anthropic, stableSystem, dynamicSystem, messages, leakOpts);
+          if (redo) {
+            shipped = redo.text;
+            leakIn = redo.inputTokens;
+            leakOut = redo.outputTokens;
+          }
+        }
+        if (!shipped.trim() || replyStillLeaks(shipped, leakOpts)) {
+          console.error("🚨 [AI] reasoning leak could not be cleaned, the turn goes to the owner instead of the client");
+          shipped = "[NOTIFY_OWNER]";
+        }
+        cleaned = shipped;
+      }
+    }
 
     // SHORT REPLIES (owner, 2026-09-21): a reply that came back as a wall of
     // text is rewritten ONCE, shorter, by the same model under the same rules,
@@ -4662,9 +4741,57 @@ export async function getAIResponse(
     console.log(
       `[AI v4] dash removed: ${hadDash} | tokens in=${response.usage.input_tokens} cacheRead=${cacheRead} cacheWrite=${cacheWrite} out=${response.usage.output_tokens} | preview: ${cleaned.slice(0, 60)}`
     );
-    return { text: cleaned, inputTokens: response.usage.input_tokens + cacheRead + cacheWrite + tightenIn, outputTokens: response.usage.output_tokens + tightenOut };
+    return { text: cleaned, inputTokens: response.usage.input_tokens + cacheRead + cacheWrite + tightenIn + leakIn, outputTokens: response.usage.output_tokens + tightenOut + leakOut };
   }
   return { text: "Sorry, I couldn't generate a response.", inputTokens: 0, outputTokens: 0 };
+}
+
+// ─── Reasoning leak: the second sample (Julie, WA 2026-09-21) ────────────────
+// Same model, same two system blocks and the same cache breakpoint as the main
+// call (the whole prefix is a cache read), with one note on the client's last
+// message. The leaked draft is NOT shown to the model: a monologue in context
+// invites the next one. The sample only counts when it is complete and carries
+// no monologue at all; anything else returns null and the caller falls back to
+// what it salvaged from the first draft.
+async function regenerateCleanReply(
+  anthropic: Anthropic,
+  stableSystem: string,
+  dynamicSystem: string,
+  messages: ChatMessage[],
+  leakOpts: LeakOptions
+): Promise<AIResponse | null> {
+  try {
+    const res = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 400,
+      system: [
+        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+      ],
+      messages: messages.map((m, i) =>
+        i === messages.length - 1 ? { role: m.role, content: `${m.content}\n\n[SYSTEM: ${CLEAN_REPLY_NOTE}]` } : { role: m.role, content: m.content }
+      ),
+    });
+    const b = res.content[0];
+    if (b?.type !== "text" || res.stop_reason === "max_tokens") {
+      console.log("[AI] reasoning-leak regeneration came back empty or truncated, falling back to the salvage");
+      return null;
+    }
+    const text = mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(b.text)))).trim();
+    if (!text || replyStillLeaks(text, leakOpts)) {
+      console.log("[AI] reasoning-leak regeneration leaked again, falling back to the salvage");
+      return null;
+    }
+    console.log("[AI] reasoning-leak regeneration: clean reply, " + visibleLength(text) + " chars");
+    return {
+      text,
+      inputTokens: res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0),
+      outputTokens: res.usage.output_tokens,
+    };
+  } catch (e) {
+    console.error("[AI] reasoning-leak regeneration failed, falling back to the salvage:", e);
+    return null;
+  }
 }
 
 // ─── Slot offer and details request never share a message ───────────────────

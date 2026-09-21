@@ -4,6 +4,7 @@ import {
   removeEmojis,
   stripWrappingQuotes,
   stripReasoningLeak,
+  replyStillLeaks,
   containsSchedulingOffer,
 } from "@/lib/ai";
 
@@ -319,6 +320,12 @@ export async function composeQuoteFollowup(input: QuoteFollowupInput): Promise<C
       const violation = followupPolicyViolation(r.text);
       if (violation) {
         console.warn(`[ENVIAR] attempt ${attempt}: rejeitado (${violation}): ${r.text.slice(0, 90)}`);
+        continue;
+      }
+      // Julie (WA 2026-09-21): a monologue the scrubber could not clean never
+      // ships. The next attempt, the platform draft or the template does.
+      if (replyStillLeaks(r.text)) {
+        console.warn(`[ENVIAR] attempt ${attempt}: rejeitado (raciocínio do modelo no texto): ${r.text.slice(0, 90)}`);
         continue;
       }
       // Oferta de financiamento SEM o link intacto não cumpre o objetivo do

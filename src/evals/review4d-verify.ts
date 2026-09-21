@@ -48,7 +48,12 @@ console.log("\n━━ 1. vazamento de raciocínio (Keky WA 29/08, Natasha IG 29/
   ck("Keky: 'Wait, I notice…' removido", !/i notice/i.test(k), k);
   ck("Keky: 'system context' removido", !/system context/i.test(k), k);
   ck("Keky: 'Let me just ask' removido", !/let me just ask/i.test(k), k);
-  ck("Keky: oferta 11am/2pm e pedido de dados sobrevivem", /11am or 2pm/.test(k) && /name/.test(k), k);
+  // 21/09 (Julie): "Wait, …" quer dizer que o modelo ABANDONOU o que escreveu
+  // antes. A resposta é o que vem depois do monólogo; o rascunho abandonado não
+  // volta colado nela (na Keky real saíam as DUAS perguntas de horário).
+  ck("Keky: fica a decisão final (pedido de dados), sem o rascunho abandonado antes do 'Wait'", /name/.test(k) && !/11am or 2pm/.test(k), k);
+  const kekyReal = "Which time works better, 11am or 2pm? Wait, I notice this is a vague reply and I already offered those two times before the system context loaded. Let me just ask for the booking info since they said \"that works\" without specifying which of the two times. Which one works for you, the 11am or the 2pm?";
+  ck("Keky real: a pergunta de horário sai UMA vez só", stripReasoningLeak(kekyReal) === "Which one works for you, the 11am or the 2pm?", stripReasoningLeak(kekyReal));
 
   const natasha = "They said next week, so the first available next-week day is Monday August 31. Today is Saturday August 29. I'll offer Monday August 31 first. Boca Raton is in our service area. Zip 33432 already given. I have Monday August 31 at 9am or 11am, which works better for you?";
   const n = stripReasoningLeak(natasha);
