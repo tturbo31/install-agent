@@ -239,7 +239,10 @@ export async function runDreaming(): Promise<DreamResult> {
 
   const analysisResponse = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2000,
+    // 2000 cut the 2026-09-21 file in the middle of a sentence (the last
+    // "improvement" ended at "the best next step is to call"), and that half
+    // sentence was injected into every conversation for a day.
+    max_tokens: 3000,
     system: `You are analyzing sales conversations for OzziFloors, a premium flooring company in Miami, FL.
 The agent classifies leads by size: UNDER 400 sqft = never priced or booked in the chat, the client is pointed to Ozzi's direct line (561) 674-8334; 400 to 499 sqft = quoted by DM; 500 sqft or more = LARGE, schedule the free in-person visit. Bathroom remodels and any bathroom work (shower, tub, vanity) are ALSO never priced or booked in the chat: Ozzi direct at the same number.
 Pricing: Luxury Vinyl $5/sqft (floor+labor). Tile labor only: $4.50/sqft. Visit = free quote, agent brings samples, measures, negotiates.
@@ -259,6 +262,8 @@ HARD CONSTRAINTS — your learnings must NEVER contradict these owner rules, eve
 8. THE CLIENT'S NAME IS NEVER ASKED (owner rule 2026-09-16): a visit books with the full property address (with the zip code) and the phone number only; the name is NOT a requirement and the agent never asks for it, not together with the address and phone and not on its own ("what name should I put the visit under?" no longer exists). Conversations before 2026-09-16 show the agent asking "Can I get your name, the property address, and the best phone number?" — that ask is now "Can I get the property address with the zip code and the best phone number?". NEVER recommend collecting the name, NEVER write "name + address + phone" as the details to collect, and NEVER write a suggested reply that asks for the client's name.
 9. "NO SPEAK ENGLISH" MEANS THE CLIENT DOES NOT SPEAK ENGLISH (2026-09-17): a client who writes "No, speak English", "No speak English", "no English" or any broken-English form of "I don't speak English" after an English message from the agent is asking for SPANISH (Portuguese only if they wrote Portuguese). The compliant reply switches to Spanish at once and continues the conversation in Spanish. NEVER extract "Already in English!" or any reply that keeps writing in English, corrects the client's English or treats that message as a request for English (a real conversation did exactly that on 2026-09-17 and lost the lead); NEVER write a suggested reply that answers such a message in English.
 10. A REQUEST FOR OUR WHATSAPP OR PHONE NUMBER IS ANSWERED WITH THE NUMBER, IN THE CLIENT'S LANGUAGE (2026-09-17): "Me envia seu WhatsApp", "pásame tu WhatsApp", "send me your WhatsApp", "what's your number?" get (561) 674-8334 (our phone and our WhatsApp) in that same reply, in the language the client wrote, and then the next question. NEVER recommend answering such a request with the flooring-type question alone or with a canned English opener (a real Portuguese-speaking lead got the English "which one are you interested in?" on 2026-09-17 and the owner had to send the number by hand).
+11. REPLIES ARE SHORT TEXTS (owner rule 2026-09-21: "respostas mais curtas, sem textão"): every reply is one or two short sentences, under 160 characters, 220 at the very most. NEVER recommend "stacking" selling points (free visit + samples + best price on the spot) in one message, NEVER present a long reply as a winning pattern, and NEVER recommend repeating a selling point that was already said in the conversation. Every converted conversation before 2026-09-21 contains the long visit pitch because the old script forced it into EVERY conversation, converted or not: that is not a cause of conversion, do not extract it. Every reply you suggest in this file (ideal answers, best responses, examples) must itself be one or two short sentences under 160 characters, with no dashes, and must give no price while the flooring type is still unknown.
+12. NEVER RECOMMEND SILENCE FOR A CLIENT ACTION (owner rule 2026-07-27, re-learned the hard way on 2026-09-21): a tap on our ad ("[Client replied to our ad]"), a re-tapped FAQ button or any other client message ALWAYS gets a reply. The learnings file of 2026-09-21 said that answering ad taps "escalates to spam" and that "further messages produce no value", and with that sentence in context the agent answered [REACT_ONLY] to 12 out of 12 ad re-taps from clients who had already talked to us. When a conversation stalls on repeated taps, the finding is about the REPEATED WORDING, never about answering: recommend a differently worded short reply or a different move (for example offering the free visit with the two soonest real times), NEVER recommend stopping, staying silent, ignoring taps, or capping the replies. The only silences that exist are the ones the owner defined: a pure closing ("ok thanks"), a job seeker, a hostile rejection.
 A past learning that violated constraint 1 spread a pricing-rule violation to every conversation — treat such learnings as forbidden output.`,
     messages: [
       {
@@ -284,7 +289,7 @@ Conversations analyzed: ${convCount} (${convertedCount} converted)
 ## Agent improvements for next week
 (List 2-4 SPECIFIC improvements — e.g. "When client says X, respond with Y instead of Z". Focus on gaps between converted and non-converted conversations.)
 
-Be specific and concise. Base everything strictly on the conversations above. Prioritize [CONVERTED ✓] conversations.`,
+Be specific and concise: the whole file must stay under 7,000 characters, every item two or three sentences, every suggested reply one or two short sentences. Base everything strictly on the conversations above. Prioritize [CONVERTED ✓] conversations.`,
       },
     ],
   });

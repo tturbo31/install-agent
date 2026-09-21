@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
+import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -121,7 +122,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     id: "see_options_pt",
     // Regra do dono (2026-07-27): pedido de amostras/fotos → manda o LINK DO
     // SITE direto (antes era redirect pro WhatsApp da equipe).
-    response: "Claro! Você pode ver nossos pisos em https://www.ozzifloors.com, e eu também levo todas as amostras na visita grátis para você comparar direto no seu piso. É só uma área ou a casa toda?",
+    response: "Claro, você pode ver nossos pisos em https://www.ozzifloors.com, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?",
     skipIfSubstantive: true,
   },
   {
@@ -153,7 +154,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     id: "see_options_en",
     // Owner rule (2026-07-27): samples/photos requests get the WEBSITE link
     // directly (was: redirect to the team's WhatsApp).
-    response: "Of course! You can see our floors at https://www.ozzifloors.com, and I also bring all the samples to your free visit so you can compare them right on your floor. Is it just one area or the whole house?",
+    response: "Sure, you can see our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit. Is it just one area or the whole house?",
     skipIfSubstantive: true,
   },
   {
@@ -1141,12 +1142,23 @@ export function isConsecutiveDuplicate(history: ChatMessage[], candidate: string
 // the latest user message BEFORE this check runs, so the suffix is stripped
 // per message.
 const AD_PLACEHOLDER_RE = /^\[Client (?:replied to|shared a post\/reel from) our ad[^\]]*\]$/i;
+// Reworded 2026-09-21 (owner: shorter, sound like a person): "Just reply with the
+// word…" read like a phone menu. The previous wordings stay in the LEGACY list
+// so the storm cap keeps counting nudges already sent in live conversations.
 const AD_RETAP_NUDGES_EN = [
+  "Hi again, which floor are you looking at, tile, vinyl, or hardwood? I'll send you the promo for it.",
+  "No rush, whenever you can just tell me tile, vinyl, or hardwood and I'll send that promo over.",
+  "Still here, just tell me tile, vinyl, or hardwood and you'll get the promo right away.",
+];
+const AD_RETAP_NUDGES_ES = [
+  "Hola de nuevo, cuál piso te interesa, tile, vinyl o hardwood? Te mando la promo de ese.",
+  "Sin apuro, cuando puedas dime tile, vinyl o hardwood y te mando esa promoción.",
+  "Sigo por aquí, dime tile, vinyl o hardwood y te mando la promo al momento.",
+];
+const AD_RETAP_NUDGES_LEGACY = [
   "Hi again! Just reply with the word tile, vinyl, or hardwood and I'll send you the current promotion for it. I'm here whenever you're ready.",
   "No rush at all! Whenever you get a chance, just type tile, vinyl, or hardwood and I'll send over that promotion.",
   "I'm still here! One word is all I need, tile, vinyl, or hardwood, and you'll get the current promo right away.",
-];
-const AD_RETAP_NUDGES_ES = [
   "Hola de nuevo! Solo respondeme con la palabra tile, vinyl o hardwood y te mando la promocion actual de ese piso. Aqui estoy cuando gustes.",
   "Sin apuro! Cuando puedas, escribeme tile, vinyl o hardwood y te mando la promocion de ese piso.",
   "Sigo por aqui! Con una sola palabra, tile, vinyl o hardwood, te mando la promo actual al momento.",
@@ -1164,10 +1176,10 @@ export function adRetapNudge(history: ChatMessage[]): string | null {
   // Language from the WHOLE assistant side, not just the last message — a
   // rotated ES variant without the keyword set must not flip the next one to EN.
   const assistantText = history.filter((m) => m.role === "assistant").map((m) => m.content).join(" ");
-  const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n|apuro|escribeme|gustes)\b/i.test(assistantText);
+  const isEs = /\b(hola|cu[aá]l|te interesa|promoci[oó]n|apuro|escribeme|gustes|dime)\b/i.test(assistantText);
   const variants = isEs ? AD_RETAP_NUDGES_ES : AD_RETAP_NUDGES_EN;
   const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
-  const isVariant = (s: string) => variants.some((v) => norm(v) === norm(s));
+  const isVariant = (s: string) => [...variants, ...AD_RETAP_NUDGES_LEGACY].some((v) => norm(v) === norm(s));
   const sent = history.filter((m) => m.role === "assistant" && isVariant(m.content)).length;
   if (sent >= AD_RETAP_NUDGE_CAP) return null; // storm backstop; model decides from here
   // Prefer a wording the client has never seen; once all are used, any variant
@@ -1703,16 +1715,16 @@ const FAQ_REANSWER_LEADS = {
 } as const;
 const FAQ_REANSWERS = {
   en: {
-    process: "We move all the furniture, install the floors, add the quarter round, and clean everything up when we finish, usually 2 to 3 days in total.",
-    discount: "Yes, larger spaces get our best pricing, and the free estimate visit is where you get the exact number on the spot.",
-    location: "We're based in Miami and cover all of South Florida, from Homestead up to Jupiter.",
-    inclusions: "It depends on the floor you pick: our vinyl promo includes the flooring material, the installation labor, and the quarter round, while tile and hardwood cover the installation labor only and you supply the material.",
+    process: "We move the furniture, install the floor, add the quarter round and leave everything clean, about 2 to 3 days in total.",
+    discount: "Yes, larger spaces get our best pricing, and you get the exact number at the free visit.",
+    location: "We're in Miami and cover all of South Florida, from Homestead up to Jupiter.",
+    inclusions: "The vinyl promo includes the floor, the installation and the quarter round. Tile and hardwood are labor only, you supply the material.",
   },
   es: {
-    process: "Movemos todos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio al terminar, normalmente 2 a 3 dias en total.",
-    discount: "Si, los espacios grandes tienen nuestro mejor precio, y en la visita gratuita te doy el numero exacto en el momento.",
-    location: "Estamos en Miami y cubrimos todo el sur de la Florida, desde Homestead hasta Jupiter.",
-    inclusions: "Depende del piso que elijas: la promo de vinil incluye el material, la instalacion y el quarter round, mientras que tile y hardwood incluyen solo la mano de obra y tu pones el material.",
+    process: "Movemos los muebles, instalamos el piso, colocamos el quarter round y dejamos todo limpio, unos 2 a 3 dias en total.",
+    discount: "Si, los espacios grandes tienen nuestro mejor precio, y en la visita gratis te doy el numero exacto.",
+    location: "Estamos en Miami y cubrimos todo el sur de la Florida, de Homestead a Jupiter.",
+    inclusions: "La promo de vinil incluye el piso, la instalacion y el quarter round. Tile y hardwood son solo mano de obra, tu pones el material.",
   },
 } as const;
 const FAQ_REANSWER_TYPE_ASK = {
@@ -1747,7 +1759,9 @@ export function cannedFaqReanswer(lastText: string, messages: ChatMessage[], opt
   if (opts?.quick) {
     // "Here it is again" + the answer, then the free visit (unless a visit is
     // already on the table), never the type question a second time.
-    const visitOffered = messages.some((m) => m.role === "assistant" && /\b(?:visit|visita)\b/i.test(m.content));
+    const visitOffered =
+      messages.some((m) => m.role === "assistant" && /\b(?:visit|visita)\b/i.test(m.content)) ||
+      /\b(?:visit|visita)\b/i.test(FAQ_REANSWERS[lang][fam]);
     return FAQ_REANSWER_LEADS[lang][1] + " " + FAQ_REANSWERS[lang][fam] + (visitOffered ? "" : FAQ_REANSWER_VISIT_PIVOT[lang]);
   }
   const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
@@ -3673,6 +3687,16 @@ export function isAckClosingBurst(history: Array<{ role: string; content: string
 // original text — an awkward reply still beats silence or a broken fragment.
 const REASONING_LEAK_SENTENCE = new RegExp(
   [
+    // Replay 2026-09-21 (af2eb7cc): the model argued with the schedule note out
+    // loud, "Monday has 9am, 11am… listed but NOT 2pm as an open slot (2pm is in
+    // parenthesis)… Hmm, but 2pm is in parenthesis (only if client asks)", 737
+    // characters shipped to a client who had asked "What is your name please?".
+    // The parentheses of the schedule note are internal, a client never reads them.
+    /\bin\s+parenthes[ei]s\b/.source,
+    /\bonly\s+if\s+(?:the\s+)?client\s+asks\b/.source,
+    /\blisted\s+but\s+not\b/.source,
+    /\bas\s+an\s+open\s+slot\b/.source,
+    /(?:^|[.!?]\s+)hmm+,?\s+(?:but|so|wait|actually|let)\b/.source,
     /\bwait,?\s+let\s+me\b/.source,
     /\blet\s+me\s+(?:redo|recalculate|re-?check|recompute|handle\s+this\s+properly|start\s+over|try\s+(?:this|that)\s+again|give\s+the\s+right\s+answer|fix\s+that)\b/.source,
     /\bscratch\s+that\b/.source,
@@ -4433,6 +4457,27 @@ export async function getAIResponse(
     // "Since the client accepted the quote, I'll escalate.") to a client.
     cleaned = stripReasoningLeak(cleaned);
 
+    // SHORT REPLIES (owner, 2026-09-21): a reply that came back as a wall of
+    // text is rewritten ONCE, shorter, by the same model under the same rules,
+    // and the rewrite only ships when every fact the pipeline reads survived
+    // (reply-length.ts). It runs BEFORE the backstops below on purpose, so each
+    // of them still judges the text that actually goes out. REPLY_TIGHTEN=off
+    // is the kill switch.
+    let tightenIn = 0;
+    let tightenOut = 0;
+    if (process.env.REPLY_TIGHTEN !== "off" && needsTightening(cleaned)) {
+      const shorter = await tightenLongReply(anthropic, stableSystem, dynamicSystem, messages, cleaned);
+      if (shorter) {
+        cleaned = shorter.text;
+        tightenIn = shorter.inputTokens;
+        tightenOut = shorter.outputTokens;
+      }
+    }
+
+    // Two times on offer and the details request in the same breath, before the
+    // client picked one: keep the offer, ask which one (rule 7).
+    cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());
+
     // The ONLY phone number allowed in client-facing text is (561) 674-8334 —
     // never echo the client's own number back ([BOOK:{...}] tags are untouched).
     // Exception: the seller's number our own installation confirmation already
@@ -4617,10 +4662,131 @@ export async function getAIResponse(
     console.log(
       `[AI v4] dash removed: ${hadDash} | tokens in=${response.usage.input_tokens} cacheRead=${cacheRead} cacheWrite=${cacheWrite} out=${response.usage.output_tokens} | preview: ${cleaned.slice(0, 60)}`
     );
-    return { text: cleaned, inputTokens: response.usage.input_tokens + cacheRead + cacheWrite, outputTokens: response.usage.output_tokens };
+    return { text: cleaned, inputTokens: response.usage.input_tokens + cacheRead + cacheWrite + tightenIn, outputTokens: response.usage.output_tokens + tightenOut };
   }
   return { text: "Sorry, I couldn't generate a response.", inputTokens: 0, outputTokens: 0 };
 }
+
+// ─── Slot offer and details request never share a message ───────────────────
+// Rule 7: the address and phone are asked ONLY after the client names one of
+// the offered times. While the length rule was being tested (2026-09-21) the
+// model started to save a round trip when the client says "any day and time
+// works for me": "Today at 5pm or 7pm works, what's the full property address
+// with the zip code and the best phone number?" (about 1 reply in 8 with a
+// length block in the dynamic prompt; never in 20 runs of the old code, and
+// never in 16 runs of the final design, which has no such block). The net stays
+// for the day a prompt change brings it back. A client who answers that with only the address has picked
+// no time, so the webhooks' clientConfirmedSlot guard blocks the [BOOK] and the
+// visit costs an extra exchange. While no time was picked yet, a reply that
+// offers two or more times AND asks for booking details keeps the offer and
+// swaps the details request for the "which one" question. Once the client did
+// pick, the details request is exactly right and is never touched.
+const WHICH_SLOT_QUESTION: Record<"en" | "es" | "pt", string> = {
+  en: "which one do you prefer?",
+  es: "cuál te queda mejor?",
+  pt: "qual fica melhor para você?",
+};
+const DETAILS_CLAUSE_START = /(?:^|[.!?]\s+|,\s+|\s+(?:and|y|e)\s+)(?=(?:so\s+|and\s+|y\s+|e\s+)?(?:what(?:'s| is)|can (?:i|you)|could (?:i|you)|may i|shoot me|send me|just (?:need|send)|i(?:'ll)? (?:just )?need|me (?:puedes?|podr[ií]as?|das|pasas)|puedes?|podr[ií]as?|cu[aá]l es|necesito|qual (?:é|e)|pode(?:ria)? me|me (?:passa|manda)|preciso)\b)/i;
+export function splitSlotOfferFromDetailsAsk(reply: string, history: ChatMessage[], lang: "en" | "es" | "pt"): string {
+  if (!reply || /\[BOOK:/i.test(reply)) return reply;
+  if (offeredClockTimes(reply).size < 2 || !isAskingForBookingInfo(reply)) return reply;
+  if (clientConfirmedSlot(history)) return reply;
+  return withTagsProtected(reply, (prose) => {
+    // Walk the clause starts from the left: the first clause that asks for
+    // booking details, and everything after it, goes.
+    const starts: number[] = [];
+    const re = new RegExp(DETAILS_CLAUSE_START.source, "gi");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(prose))) { starts.push(m.index); if (m[0].length === 0) re.lastIndex++; }
+    for (const at of starts) {
+      const head = prose.slice(0, at).replace(/[\s,]+$/, "");
+      const tail = prose.slice(at);
+      if (!ASKING_BOOKING_INFO.test(tail) || ASKING_BOOKING_INFO.test(head.replace(/\bname\b/gi, ""))) continue;
+      if (offeredClockTimes(head).size < 2) continue; // the offer itself must survive whole
+      const tags = (tail.match(/\[#TAG\d+#\]/g) ?? []).join("");
+      const glue = /[.!?]$/.test(head) ? " " + WHICH_SLOT_QUESTION[lang].charAt(0).toUpperCase() + WHICH_SLOT_QUESTION[lang].slice(1) : ", " + WHICH_SLOT_QUESTION[lang];
+      console.log("[AI] slot offer + details request in one message before the client picked a time: kept the offer, asked which one");
+      return head + glue + tags;
+    }
+    return prose;
+  });
+}
+
+// ─── Short replies: the rewrite-once net (owner, 2026-09-21) ─────────────────
+// The judgment (what counts as too long, what a rewrite must preserve) is pure
+// and lives in reply-length.ts; this is only the API call. Same model, same two
+// system blocks and the same cache breakpoint on the client's last message as
+// the main call, so the whole prefix is a cache read and the retry costs the
+// draft plus one short instruction. ANY failure keeps the original reply: an
+// API error, a truncated rewrite, a language flip, or a rewrite that lost a
+// time, a price, what the price covers, a phone, a link, a tag, the details
+// request or the forward question.
+async function tightenLongReply(
+  anthropic: Anthropic,
+  stableSystem: string,
+  dynamicSystem: string,
+  messages: ChatMessage[],
+  draft: string
+): Promise<AIResponse | null> {
+  const before = visibleLength(draft);
+  try {
+    const res = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 400,
+      system: [
+        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+      ],
+      messages: [
+        ...messages.map((m, i) =>
+          i === messages.length - 1
+            ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
+            : { role: m.role, content: m.content }
+        ),
+        { role: "assistant" as const, content: draft },
+        { role: "user" as const, content: tightenInstruction(before) },
+      ],
+    });
+    const b = res.content[0];
+    if (b?.type !== "text" || res.stop_reason === "max_tokens") {
+      console.log("[AI] short-reply rewrite came back empty or truncated, keeping the original");
+      return null;
+    }
+    const rewrite = stripReasoningLeak(mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(b.text))))).trim();
+    const verdict = tightenedIsSafe(draft, rewrite, { asksForDetails: isAskingForBookingInfo, freeAlreadySaid: freeAlreadySaid(messages), clientAskedPrice: clientAskedPrice(messages) });
+    if (!verdict.ok) {
+      console.log("[AI] short-reply rewrite rejected (" + verdict.reason + "), keeping the original " + before + " chars");
+      return null;
+    }
+    if (detectLang(rewrite) !== detectLang(draft)) {
+      console.log("[AI] short-reply rewrite changed the language, keeping the original");
+      return null;
+    }
+    console.log("[AI] short-reply rewrite: " + before + " -> " + visibleLength(rewrite) + " chars");
+    return {
+      text: rewrite,
+      inputTokens: res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0),
+      outputTokens: res.usage.output_tokens,
+    };
+  } catch (e) {
+    console.error("[AI] short-reply rewrite failed, keeping the original:", e);
+    return null;
+  }
+}
+
+// WHY THERE IS NO LENGTH RULE IN THE DYNAMIC BLOCK (owner request 2026-09-21,
+// "respostas mais curtas"): three versions were A/B tested, 6 to 12 live runs a
+// scenario, old code vs new. (1) A detailed MESSAGE LENGTH block appended after
+// the 40 FINAL REMINDERS, (2) a one-paragraph style-only block in the same place
+// and (3) one extra sentence inside rule 3 all made the replies short, and all
+// three changed the FLOW: the model asked the flooring type instead of giving a
+// 480 sqft total right after the vinyl package line (0/6, 0/6 and 15/18, against
+// 18/18 on the old code) and version 1 glued the details request onto the slot
+// offer. Text added at the end of the prompt is read as a reason to re-check
+// every earlier rule. What works with NO flow change (12/12 and 8/8 on the same
+// scenarios, visit proposal down from ~220 to ~150 characters): the budget and
+// SHORT EXAMPLES in the stable prompt, because the model copies the examples,
+// plus the rewrite-once net above for whatever still comes back long.
 
 // ─── Image analysis via Claude claude-haiku-4-5 (vision) ──────────────────────────
 export async function analyzeImageFromBase64(base64DataUrl: string): Promise<string> {

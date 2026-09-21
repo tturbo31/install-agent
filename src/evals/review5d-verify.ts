@@ -38,12 +38,12 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   ck("2 tópicos geram uma resposta combinada", !!two, String(two));
   ck(
     "responde o PROCESSO na combinada",
-    !!two && /move all the furniture/i.test(two),
+    !!two && /move (?:all )?the furniture/i.test(two),
     String(two)
   );
   ck(
     "responde as INCLUSÕES na combinada (por tipo: vinyl material+labor+quarter round, tile/hardwood só labor)",
-    !!two && /vinyl promo already includes/i.test(two) && /tile and hardwood cover the installation labor only/i.test(two),
+    !!two && /vinyl promo already includes/i.test(two) && /tile and hardwood (?:cover the installation labor only|are labor only)/i.test(two),
     String(two)
   );
   ck(

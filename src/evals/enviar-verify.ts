@@ -307,8 +307,17 @@ function main() {
   // ── 8. ECONOMIA DE TOKENS: a integração não pode tocar o cache do cérebro ──
   console.log("\n[8] Economia de tokens (prompt caching) intacta");
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
-  const breakpoints = (aiSrc.match(/cache_control: \{ type: "ephemeral" as const, ttl: "1h" as const \}/g) ?? []).length;
-  ck("ai.ts mantém os 3 breakpoints de cache com TTL 1h", breakpoints === 3, `encontrados: ${breakpoints}`);
+  // A chamada PRINCIPAL (response = await anthropic.messages.create) tem os 3
+  // breakpoints; os retries (REACT_ONLY, resposta curta) reutilizam os mesmos
+  // blocos para LER esse cache, então o arquivo inteiro tem mais de 3. O que
+  // não pode existir é um cache_control sem o TTL de 1h (voltaria ao padrão 5m).
+  const mainCall = aiSrc.slice(aiSrc.indexOf("let response;"));
+  const mainBlock = mainCall.slice(0, mainCall.indexOf("} catch (err) {"));
+  const breakpoints = (mainBlock.match(/cache_control: \{ type: "ephemeral" as const, ttl: "1h" as const \}/g) ?? []).length;
+  const anyTtl = (aiSrc.match(/cache_control:/g) ?? []).length;
+  const oneHour = (aiSrc.match(/cache_control: \{ type: "ephemeral" as const, ttl: "1h" as const \}/g) ?? []).length;
+  ck("ai.ts mantém os 3 breakpoints de cache com TTL 1h na chamada principal", breakpoints === 3, `encontrados: ${breakpoints}`);
+  ck("nenhum cache_control de ai.ts sem o TTL de 1h", anyTtl === oneHour, `${oneHour} de ${anyTtl}`);
   ck("ai.ts ainda separa stableSystem (bloco compartilhado por todas as conversas)", /let stableSystem = SYSTEM_PROMPT;/.test(aiSrc));
   ck("stableSystem NÃO recebe timestamp/data (mataria o cache compartilhado)", !/stableSystem\s*\+=[^;]*(?:new Date|Date\.now|toISOString|getEasternDateContext)/.test(aiSrc));
   const qf = readFileSync(join(process.cwd(), "src/lib/quote-followup.ts"), "utf-8");
