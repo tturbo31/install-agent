@@ -124,7 +124,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     id: "see_options_pt",
     // Regra do dono (2026-07-27): pedido de amostras/fotos → manda o LINK DO
     // SITE direto (antes era redirect pro WhatsApp da equipe).
-    response: "Claro, você pode ver nossos pisos em https://www.ozzifloors.com, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?",
+    response: "Claro, você pode ver nossos pisos em https://ozzifloors.company, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?",
     skipIfSubstantive: true,
   },
   {
@@ -156,7 +156,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     id: "see_options_en",
     // Owner rule (2026-07-27): samples/photos requests get the WEBSITE link
     // directly (was: redirect to the team's WhatsApp).
-    response: "Sure, you can see our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit. Is it just one area or the whole house?",
+    response: "Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?",
     skipIfSubstantive: true,
   },
   {
@@ -463,13 +463,31 @@ export async function classifyAdCreativeType(imageUrl: string): Promise<AdFloori
   }
 }
 
+// Our website (owner, 2026-09-22): the site moved from www.ozzifloors.com to
+// ozzifloors.company. Older assistant turns of ongoing conversations still
+// carry the old address, and the model tends to copy what it sees, so every
+// spelling of the old link (with or without https://, www., a trailing slash)
+// is rewritten to the canonical one before the reply ships. Emails
+// (ozzifloors@gmail.com, ia@ozzifloors.com) and other subdomains
+// (go.ozzifloors.com, instagram.ozzifloors.com) are left untouched.
+export const SITE_URL = "https://ozzifloors.company";
+const SITE_LINK_ANY_RE = /(?<![\w.@-])(?:https?:\/\/)?(?:www\.)?ozzifloors\.com(?:pany)?(?![\w-])/gi;
+export function canonicalizeSiteLink(text: string): string {
+  if (!text || !/ozzifloors\.com/i.test(text)) return text;
+  // Domain first (any scheme, www., old or new TLD), then drop a bare trailing
+  // slash ("…company/," → "…company,") while a real path stays untouched.
+  return text.replace(SITE_LINK_ANY_RE, SITE_URL).replace(/https:\/\/ozzifloors\.company\/(?![\w#?%-])/g, SITE_URL);
+}
+
 // Final safety net: strip [SEND_IMAGES] tags even if the AI generates them
 // Called both inside getAIResponse AND at webhook level as a double guard
+// (and, since 2026-09-22, canonicalizes the website link on the way out).
 export function stripForbiddenTags(text: string): string {
+  text = canonicalizeSiteLink(text);
   if (!/\[SEND_IMAGES/i.test(text)) return text;
   let cleaned = text.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-  if (!cleaned.includes("ozzifloors.com")) {
-    cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
+  if (!cleaned.includes("ozzifloors.company")) {
+    cleaned += "\n\nYou can browse all our options at " + SITE_URL + " and on our Instagram @ozzi.floors.";
   }
   console.log("[AI] [SEND_IMAGES] tag stripped at safety layer");
   return cleaned;
@@ -2794,9 +2812,9 @@ export function smallJobLeak(history: Array<{ role: string; content: string }>, 
 
 const SMALL_JOB_INSIST_RE = /not able to give you a quote|no puedo pasarle un presupuesto|não consigo passar o orçamento/i;
 export function smallJobPhotosMessage(lang: ReturnType<typeof detectLang>): string {
-  if (lang === "pt") return "Você pode ver nossos pisos em https://www.ozzifloors.com, e o Ozzi leva todas as amostras quando se encontra com você. Pode falar com ele no (561) 674-8334.";
-  if (lang === "es") return "Puedes ver nuestros pisos en https://www.ozzifloors.com, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.";
-  return "You can see our floors at https://www.ozzifloors.com, and Ozzi brings all the samples himself when he meets with you. You can reach him at (561) 674-8334.";
+  if (lang === "pt") return "Você pode ver nossos pisos em https://ozzifloors.company, e o Ozzi leva todas as amostras quando se encontra com você. Pode falar com ele no (561) 674-8334.";
+  if (lang === "es") return "Puedes ver nuestros pisos en https://ozzifloors.company, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.";
+  return "You can see our floors at https://ozzifloors.company, and Ozzi brings all the samples himself when he meets with you. You can reach him at (561) 674-8334.";
 }
 export function smallJobReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
   return smallJobReferralSent(history) ? smallJobOzziInsistMessage(lang) : smallJobOzziDirectMessage(lang);
@@ -2808,7 +2826,7 @@ The client stated a project size under 400 square feet (about ${sqft} sqft). Own
 1. ${referralSent ? "You ALREADY gave the client Ozzi's number earlier in this conversation, so keep it short. " : ""}Tell the client, in their language, that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives them the quote himself, and give the number (561) 674-8334. Two short sentences. Example: "For a project under 400 square feet, the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at (561) 674-8334."
 2. NEVER give a price, a total, a per square foot rate, a range, a "starts at" or an estimate for this project, not even "approximate", not even if they insist, not even if they only ask for the rate. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address, phone or zip. NEVER generate [BOOK:...]. NEVER say we don't take the job, that it is too small or that we only do bigger projects: we do it, Ozzi just handles it directly.
 3. If the client insists on getting the number here ("just tell me the price", "a rough idea is fine", "can't you tell me here", "why can't you tell me", "I don't want to call", "no me puedes dar el precio", "me passa o valor aqui"): do NOT give in. Say you are not able to give a quote for that size through here, it really has to come from Ozzi directly, and repeat the number. Example: "I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at (561) 674-8334 and he'll check it and give you the number." Never explain the internal reason, never apologize twice, never invent a reason.
-4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have, can you send photos or samples), answer that part briefly and still give the Ozzi line in the same message. A request for photos, samples, colors, styles or the website is NEVER an insistence on the price: answer it (our floors are at https://www.ozzifloors.com, and Ozzi shows the samples himself) and NEVER use the "not able to give you a quote" line for it.
+4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have, can you send photos or samples), answer that part briefly and still give the Ozzi line in the same message. A request for photos, samples, colors, styles or the website is NEVER an insistence on the price: answer it (our floors are at https://ozzifloors.company, and Ozzi shows the samples himself) and NEVER use the "not able to give you a quote" line for it.
 5. Only if the client states a size of 400 square feet or more, or says it is the whole house or several rooms, return to the normal flow (400 to 499 sqft: quote by DM; 500 or more: the free visit).
 6. If earlier in this conversation a price was given, a visit was offered, a slot was "held" or booking details were collected for this project, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.`;
 }
@@ -4644,12 +4662,17 @@ export async function getAIResponse(
       }
     }
 
+    // Website link (owner, 2026-09-22): any spelling of the old
+    // www.ozzifloors.com the model copied from older turns becomes the
+    // canonical https://ozzifloors.company before anything else looks at it.
+    cleaned = canonicalizeSiteLink(cleaned);
+
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {
       cleaned = cleaned.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
       // Ensure the links are present if not already
-      if (!cleaned.includes("ozzifloors.com")) {
-        cleaned += "\n\nYou can browse all our options at ozzifloors.com and on our Instagram @ozzi.floors.";
+      if (!cleaned.includes("ozzifloors.company")) {
+        cleaned += "\n\nYou can browse all our options at " + SITE_URL + " and on our Instagram @ozzi.floors.";
       }
       console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
     }
@@ -4729,7 +4752,7 @@ export async function getAIResponse(
     // replays, 2026-09-14). The canned see-options intercept was skipped on
     // purpose (it pitches the free visit), so answer the ask here: website,
     // samples with Ozzi, and his number.
-    if (hardcoded && /ozzifloors\.com/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
+    if (hardcoded && /ozzifloors\.company/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
       console.warn("[AI] project under 400 sqft — photos/samples ask answered with the price-insist line; replaced with the website + samples line");
       cleaned = smallJobPhotosMessage(usersLang());
     }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { getAIResponse, analyzeImageFromBase64 } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, canonicalizeSiteLink, SITE_URL } from "@/lib/ai";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 
@@ -137,10 +137,11 @@ export async function POST(req: NextRequest) {
       .replace(/ - /g, ", ")
       .replace(/,\s*,/g, ",")
       .replace(/,\s*\./g, ".");
+    aiResponse = canonicalizeSiteLink(aiResponse);
     if (/\[SEND_IMAGES[^\]]*\]/i.test(aiResponse)) {
       aiResponse = aiResponse.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-      if (!aiResponse.includes("ozzifloors.com")) {
-        aiResponse += "\n\nVeja todas as nossas opções em ozzifloors.com e no Instagram @ozzi.floors.";
+      if (!aiResponse.includes("ozzifloors.company")) {
+        aiResponse += "\n\nVeja todas as nossas opções em " + SITE_URL + " e no Instagram @ozzi.floors.";
       }
     }
 

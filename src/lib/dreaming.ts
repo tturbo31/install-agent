@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
+import { canonicalizeSiteLink } from "./ai";
 
 const SYSTEM_STORE_NAME = "ozzifloors-system";
 
@@ -264,6 +265,7 @@ HARD CONSTRAINTS — your learnings must NEVER contradict these owner rules, eve
 10. A REQUEST FOR OUR WHATSAPP OR PHONE NUMBER IS ANSWERED WITH THE NUMBER, IN THE CLIENT'S LANGUAGE (2026-09-17): "Me envia seu WhatsApp", "pásame tu WhatsApp", "send me your WhatsApp", "what's your number?" get (561) 674-8334 (our phone and our WhatsApp) in that same reply, in the language the client wrote, and then the next question. NEVER recommend answering such a request with the flooring-type question alone or with a canned English opener (a real Portuguese-speaking lead got the English "which one are you interested in?" on 2026-09-17 and the owner had to send the number by hand).
 11. REPLIES ARE SHORT TEXTS (owner rule 2026-09-21: "respostas mais curtas, sem textão"): every reply is one or two short sentences, under 160 characters, 220 at the very most. NEVER recommend "stacking" selling points (free visit + samples + best price on the spot) in one message, NEVER present a long reply as a winning pattern, and NEVER recommend repeating a selling point that was already said in the conversation. Every converted conversation before 2026-09-21 contains the long visit pitch because the old script forced it into EVERY conversation, converted or not: that is not a cause of conversion, do not extract it. Every reply you suggest in this file (ideal answers, best responses, examples) must itself be one or two short sentences under 160 characters, with no dashes, and must give no price while the flooring type is still unknown.
 12. NEVER RECOMMEND SILENCE FOR A CLIENT ACTION (owner rule 2026-07-27, re-learned the hard way on 2026-09-21): a tap on our ad ("[Client replied to our ad]"), a re-tapped FAQ button or any other client message ALWAYS gets a reply. The learnings file of 2026-09-21 said that answering ad taps "escalates to spam" and that "further messages produce no value", and with that sentence in context the agent answered [REACT_ONLY] to 12 out of 12 ad re-taps from clients who had already talked to us. When a conversation stalls on repeated taps, the finding is about the REPEATED WORDING, never about answering: recommend a differently worded short reply or a different move (for example offering the free visit with the two soonest real times), NEVER recommend stopping, staying silent, ignoring taps, or capping the replies. The only silences that exist are the ones the owner defined: a pure closing ("ok thanks"), a job seeker, a hostile rejection.
+13. OUR WEBSITE IS https://ozzifloors.company (owner, 2026-09-22): the old ozzifloors.com address no longer exists. Conversations before 2026-09-22 show the agent sending the old address; that is history, not a pattern. Every mention of our website in this file, in an ideal answer, a best response or an example, uses exactly https://ozzifloors.company. NEVER write ozzifloors.com.
 A past learning that violated constraint 1 spread a pricing-rule violation to every conversation — treat such learnings as forbidden output.`,
     messages: [
       {
@@ -309,9 +311,12 @@ Be specific and concise: the whole file must stay under 7,000 characters, every 
     }
   }
 
-  // 4. Save to system memory store
+  // 4. Save to system memory store. The website link is canonicalized on the
+  // way in (owner, 2026-09-22): the analyzed conversations still carry the old
+  // www.ozzifloors.com in older agent turns, and the memory is injected into
+  // every conversation, so the old address must never be written back here.
   if (newLearnings) {
-    await updateSystemMemory(storeId, newLearnings);
+    await updateSystemMemory(storeId, canonicalizeSiteLink(newLearnings));
   }
 
   // 5. Generate a short summary for the dashboard

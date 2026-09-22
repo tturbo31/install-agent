@@ -26,7 +26,7 @@ async function main() {
   console.log("\n━━ 1. escopo já dito → vai o link e as amostras, sem a pergunta ━━");
   const known = await ask([U("Hi, I'm interested in vinyl"), A("Our vinyl promo is $5 per sqft and that already includes the floor, the installation and the quarter round. Is it one area or the whole house?"), U("The whole house, around 1100 sqft"), A("For that size I need to measure in person, it's free and I bring the samples. When works for you?"), U("before that, can you send me pictures of the colors you have?")]);
   console.log("   →", known);
-  ck("manda o site (regra do dono 27/07)", /https:\/\/www\.ozzifloors\.com/.test(known), known);
+  ck("manda o site NOVO (regra do dono 27/07; link novo 22/09)", /https:\/\/ozzifloors\.company/.test(known) && !/www\.ozzifloors\.com/.test(known), known);
   ck("fala das amostras na visita", /samples/i.test(known), known);
   ck("NÃO pergunta de novo 'one area or the whole house'", !/one area|whole house/i.test(known) && !known.includes("?"), known);
   const knownPt = await ask([U("Oi, quero vinyl"), A("Nossa promo de vinyl é $5 por pé quadrado e já inclui o piso, a instalação e o quarter round. É só uma área ou a casa toda?"), U("a casa toda, uns 1100 pés"), A("Para esse tamanho eu passo para medir, é grátis e levo as amostras. Quando fica bom?"), U("me manda fotos dos pisos?")]);
