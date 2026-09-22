@@ -27,6 +27,7 @@
 // Tudo chamado via waitUntil (fire-and-forget): NUNCA lança para o atendimento.
 import { supabaseAdmin } from "@/lib/supabase";
 import { enviarEventoFunil, resolverMidiasNaPlataforma, type EnvioResultado } from "@/lib/plataforma";
+import { pareceTelefone } from "@/lib/telefone-texto";
 
 export type ConvFunil = { id: string; igsid: string; name?: string | null; username?: string | null; created_at?: string | null };
 export type ReferralIG = {
@@ -589,11 +590,10 @@ const NOSSOS_NUMEROS = ["5616748334", "5614724610", "556294554477"];
 // our ad]") — e trazem numeros do NOSSO material.
 const semBlocosDoSistema = (t: string) => stripSys(t).replace(/\[[^\]]*\]/g, " ");
 
-/** Telefone de verdade: 10 a 15 digitos (EUA tem 10; com o pais, 11). */
-export function pareceTelefone(valor: string | null | undefined): boolean {
-  const d = (valor ?? "").replace(/\D/g, "");
-  return d.length >= 10 && d.length <= 15 && !/^0+$/.test(d.slice(-10));
-}
+// pareceTelefone mora em telefone-texto.ts (pura, testada): desde 22/09/2026
+// ela também barra TEXTO — "Jesus, 3285 Nw 211th St, Miami Gardens, 33056"
+// tinha 12 dígitos e virou a identidade do lead na plataforma.
+export { pareceTelefone };
 
 export function extrairTelefone(texto: string): string | null {
   const t = semBlocosDoSistema(texto);
