@@ -26,6 +26,7 @@
 //  • throttle do sweep de 6h → "funil_check_<epochMs>".
 // Tudo chamado via waitUntil (fire-and-forget): NUNCA lança para o atendimento.
 import { supabaseAdmin } from "@/lib/supabase";
+import { getAdsToken } from "@/lib/ads-token";
 import { enviarEventoFunil, resolverMidiasNaPlataforma, type EnvioResultado } from "@/lib/plataforma";
 import { pareceTelefone } from "@/lib/telefone-texto";
 
@@ -195,7 +196,7 @@ const nomeBaseTpl = (n: string) => (n ?? "").replace(/_Group_\d+$/i, "").trim();
 
 async function templatesDosAnuncios(): Promise<NonNullable<typeof templatesCache> | null> {
   if (templatesCache && Date.now() - templatesCache.em < TEMPLATES_TTL_MS) return templatesCache;
-  const token = process.env.META_ADS_TOKEN;
+  const token = await getAdsToken();
   const acctRaw = process.env.META_AD_ACCOUNT_ID ?? "";
   if (!token || !acctRaw) return templatesCache; // sem credencial, usa o que tiver
   const acct = acctRaw.startsWith("act_") ? acctRaw : `act_${acctRaw}`;
@@ -685,7 +686,7 @@ async function buscarDadosAnuncio(adId: string | null | undefined): Promise<{ ad
   const memo = campanhaCache.get(adId);
   if (memo) return memo;
   const { getFacebookPageToken } = await import("@/lib/fb-token");
-  const token = process.env.META_ADS_TOKEN || (await getFacebookPageToken());
+  const token = (await getAdsToken()) || (await getFacebookPageToken());
   if (!token) return { ad_name: null, campanha: null };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 3_000);

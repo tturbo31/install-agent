@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { isDashboardAuthorized, isStrongAdminSecret } from "@/lib/admin-auth";
 import { getInstagramToken, setInstagramToken, refreshInstagramTokenIfDue } from "@/lib/ig-token";
 import { getFacebookPageToken, setFacebookPageToken, readStoredPageToken } from "@/lib/fb-token";
+import { getAdsToken, setAdsToken, readStoredAdsToken } from "@/lib/ads-token";
 import { sendInstagramMessage } from "@/lib/instagram";
 import { claimSendOnce, releaseSendClaim } from "@/lib/delivery";
 
@@ -76,6 +77,34 @@ export async function GET(req: NextRequest) {
     }
   };
 
+  // Marketing API (ads) token: debug_token says what it is; ads_read/ads_management
+  // is what buscarDadosAnuncio/fetchAdCreative/templatesDosAnuncios need.
+  const checkAdsToken = async (token: string | undefined | null) => {
+    if (!token) return { present: false, valid: false, scopes: [] as string[], expiresAt: null as string | null, error: "absent" };
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v24.0/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`
+      );
+      const body = (await res.json().catch(() => ({}))) as {
+        data?: { is_valid?: boolean; scopes?: string[]; expires_at?: number; type?: string };
+        error?: { message?: string };
+      };
+      const d = body.data;
+      const scopes = d?.scopes ?? [];
+      const valid = !body.error && d?.is_valid !== false && (scopes.includes("ads_read") || scopes.includes("ads_management"));
+      return {
+        present: true,
+        valid,
+        type: d?.type ?? null,
+        scopes,
+        expiresAt: d?.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
+        error: body.error?.message ?? (valid ? null : "invalid or missing ads_read/ads_management"),
+      };
+    } catch (e) {
+      return { present: true, valid: false, scopes: [] as string[], expiresAt: null as string | null, error: String(e).slice(0, 200) };
+    }
+  };
+
   // ── settoken (strong gate: token injection is sensitive) ──
   const newToken = q.get("settoken");
   if (newToken) {
@@ -108,6 +137,22 @@ export async function GET(req: NextRequest) {
   }
 
   // ── standard diagnosis ──
+  // setadstoken: Marketing API (ads) token, pushed by the platform's "Religar
+  // Meta" (2026-09-23) or pasted by hand. Same gate and storage pattern as
+  // setfbtoken; effective within 60s, no deploy.
+  const newAdsToken = q.get("setadstoken");
+  if (newAdsToken) {
+    if (!isStrongAdminSecret(secret)) {
+      return NextResponse.json({ error: "setadstoken requires the strong ADMIN_SECRET" }, { status: 401 });
+    }
+    const check = await checkAdsToken(newAdsToken);
+    if (!check.valid) {
+      return NextResponse.json({ setadstoken: "REJECTED - token is not valid for ads", check }, { status: 400 });
+    }
+    await setAdsToken(newAdsToken);
+    return NextResponse.json({ setadstoken: "OK - stored, effective within 60s", scopes: check.scopes, expiresAt: check.expiresAt });
+  }
+
   const effective = await getInstagramToken();
   const envTok = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
   const { data: tokRows } = await supabaseAdmin
@@ -133,6 +178,14 @@ export async function GET(req: NextRequest) {
     storedAt: storedFb?.setAt ?? null,
     ...fbCheck,
     bridgeViable: fbCheck.valid && !!(fbCheck as { instagramLinked?: unknown }).instagramLinked,
+  };
+
+  const storedAds = await readStoredAdsToken();
+  const effectiveAds = await getAdsToken();
+  out.ads = {
+    effectiveSource: storedAds && effectiveAds !== (process.env.META_ADS_TOKEN ?? "") ? "db" : "env",
+    storedAt: storedAds?.setAt ?? null,
+    ...(await checkAdsToken(effectiveAds)),
   };
 
   if (q.get("refresh") === "1") {

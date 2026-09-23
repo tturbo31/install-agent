@@ -1,4 +1,5 @@
 import { reportSendFailure } from "@/lib/delivery";
+import { getAdsToken } from "@/lib/ads-token";
 import { stripInternalMarkers } from "@/lib/outbound-text";
 import { getFacebookPageToken } from "@/lib/fb-token";
 
@@ -73,7 +74,7 @@ export async function fetchAdCreative(adId: string): Promise<{ text: string | nu
   const empty = { text: null as string | null, imageUrl: null as string | null };
   try {
     if (!adId || !/^\d{3,}$/.test(adId)) return empty;
-    const token = process.env.META_ADS_TOKEN || (await getToken());
+    const token = (await getAdsToken()) || (await getToken());
     const fields = "name,creative{name,title,body,image_url,thumbnail_url,link_url,object_story_spec,asset_feed_spec}";
     const res = await fetch(`${FB_API}/${adId}?fields=${encodeURIComponent(fields)}&access_token=${token}`);
     if (!res.ok) return empty;
