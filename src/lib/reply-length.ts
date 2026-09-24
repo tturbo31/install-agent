@@ -21,6 +21,8 @@ export const REPLY_TARGET_CHARS = 160;
 export const REPLY_TIGHTEN_OVER = 220;
 /** The rewrite must be at least this much shorter to be worth shipping. */
 const MIN_SHRINK = 0.85;
+/** Rule 3 of the prompt: one sentence, two at most (the answer, then one forward question). */
+export const REPLY_MAX_SENTENCES = 2;
 
 // [BOOK:{...}] carries JSON with free text, so it is matched as a whole, exactly
 // like PROTECTED_TAG in ai.ts. Any other [UPPER_CASE] token is an internal tag.
@@ -33,6 +35,28 @@ export function visibleLength(text: string): number {
   return (text || "").replace(BOOK_TAG, " ").replace(PLAIN_TAG, " ").replace(URL_RE, " ").replace(/\s+/g, " ").trim().length;
 }
 
+// "p.m.", "St.", "Blvd." and decimals ("$4.50", "1.200") are not sentence ends.
+const ABBREV_DOT = /\b(?:[ap]\.m\.|st\.|blvd\.|ave\.|rd\.|dr\.|ste\.|apt\.|mr\.|mrs\.|ms\.|sr\.|sra\.|dra?\.|no\.|vs\.|etc\.)/gi;
+const ANY_TAG = /\[[A-Z][A-Z_]{2,}(?::[^\]]*)?\]/g;
+/**
+ * Sentences the client reads (tags and links out). Rule 3 of the prompt allows
+ * one, two at most; the owner's 2026-09-24 review found five of six live
+ * replies at three SHORT sentences, which the character budget alone never
+ * catches, so the sentence count is a trigger of its own.
+ */
+export function sentenceCount(text: string): number {
+  const t = (text || "")
+    .replace(BOOK_TAG, " ").replace(ANY_TAG, " ").replace(URL_RE, " ")
+    .replace(/(\d)[.,](\d)/g, "$1$2")
+    .replace(ABBREV_DOT, (m) => m.replace(/\./g, ""))
+    .replace(/\.{2,}/g, ".")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  if (!t) return 0;
+  const ends = (t.match(/[.!?]+\s*\n+|[.!?]+(?=\s|$)|\n+/g) ?? []).length;
+  return /[.!?]$/.test(t) ? ends : ends + 1;
+}
+
 /**
  * True when the reply is long enough to be rewritten. A reply that books,
  * cancels or stays silent is never touched: the text in front of [BOOK] is
@@ -42,14 +66,15 @@ export function visibleLength(text: string): number {
 export function needsTightening(text: string): boolean {
   const t = text || "";
   if (/\[BOOK:|\[CANCEL_BOOKING\]|\[REACT_ONLY\]/i.test(t)) return false;
-  return visibleLength(t) > REPLY_TIGHTEN_OVER;
+  return visibleLength(t) > REPLY_TIGHTEN_OVER || sentenceCount(t) > REPLY_MAX_SENTENCES;
 }
 
 /** The note the model gets right after its own draft. */
-export function tightenInstruction(draftChars: number): string {
+export function tightenInstruction(draftChars: number, draftSentences = 0): string {
+  const tooMany = draftSentences > REPLY_MAX_SENTENCES;
   return (
-    `[SYSTEM: Your draft above is ${draftChars} characters, too long for a text message: the owner wants short replies because clients stop reading a long one and stop answering. ` +
-    `Rewrite it as the message you will actually send: under ${REPLY_TARGET_CHARS} characters if you can, never over ${REPLY_TIGHTEN_OVER}, in short plain sentences (never one long sentence stuffed with commas). ` +
+    `[SYSTEM: Your draft above is ${draftChars} characters${tooMany ? ` and ${draftSentences} sentences` : ""}, too long for a text message: the owner wants short replies because clients stop reading a long one and stop answering. ` +
+    `Rewrite it as the message you will actually send: at most ${REPLY_MAX_SENTENCES} sentences (the answer, then one forward question only if the draft has one), under ${REPLY_TARGET_CHARS} characters if you can, never over ${REPLY_TIGHTEN_OVER}, in short plain sentences (never one long sentence stuffed with commas). ` +
     "KEEP exactly as they are: the direct answer to what the client asked, every dollar amount together with what it covers (included material, or labor only and the client supplies it), every day and clock time you offered, any phone number, any link, any [TAG], the request for the address with the zip code and the phone if the draft asks for it, and the ONE question that moves the conversation forward. " +
     "DROP everything else: warm-up or empathy phrases, recaps of the offer, selling points already said earlier in this conversation, rates or facts the client did not ask about, a second question. " +
     "Do not add anything that is not in the draft. Same language as the draft, same rules as always (no dashes, no emojis, no inverted Spanish marks). " +
@@ -150,7 +175,14 @@ export function tightenedIsSafe(
   const oLen = visibleLength(o);
   const rLen = visibleLength(r);
   if (rLen < 20) return { ok: false, reason: "rewrite too short to be a message" };
-  if (rLen > oLen * MIN_SHRINK) return { ok: false, reason: `not shorter enough (${oLen} -> ${rLen})` };
+  // Merging three sentences into two barely shrinks the text: there the win is
+  // the sentence count itself (owner, 2026-09-24: short, human replies), as
+  // long as the rewrite did not grow past a few characters ("it includes" to
+  // "included" is the typical merge).
+  const oSent = sentenceCount(o);
+  const rSent = sentenceCount(r);
+  const fewerSentences = oSent > REPLY_MAX_SENTENCES && rSent <= REPLY_MAX_SENTENCES && rLen <= oLen * 1.1;
+  if (rLen > oLen * MIN_SHRINK && !fewerSentences) return { ok: false, reason: `not shorter enough (${oLen} -> ${rLen} chars, ${oSent} -> ${rSent} sentences)` };
   if (META.test(deaccent(r))) return { ok: false, reason: "rewrite talks about the rewrite" };
   if (/\[BOOK:|\[CANCEL_BOOKING\]|\[REACT_ONLY\]/i.test(r)) return { ok: false, reason: "rewrite introduced a booking / silence tag" };
   if (/[\u2012\u2013\u2014\u2015]| - /.test(r)) return { ok: false, reason: "dash in the rewrite" };

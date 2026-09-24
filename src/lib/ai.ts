@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
-import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
+import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
 import { withRequestedTimesNote } from "@/lib/requested-slots";
 
@@ -791,6 +791,98 @@ export function fixShowroomDenial(text: string, lang: "en" | "es" | "pt" = "en")
       if (redundant) out = out.slice(0, idx + answer.length) + " " + after.slice(redundant[0].length).trimStart();
     }
     return out.replace(/[ \t]{2,}/g, " ").trim();
+  });
+}
+
+// RECOMENDAÇÃO = VINIL (Khushal, Messenger 24/09/2026). O cliente tem um
+// restaurante e disse "whatever you recommend"; o prompt não dizia o que
+// recomendar e o modelo puxou do conhecimento geral "porcelain tile handles
+// heavy foot traffic". Quando o cliente perguntou "vinyl is not good for a
+// restaurant?", dobrou a aposta ("vinyl can work but tile holds up better").
+// Regra do dono: a recomendação é SEMPRE o nosso vinil, casa ou comércio. O
+// prompt ganhou a regra (WHAT WE RECOMMEND em system-prompt.ts + reminder 41)
+// e esta rede segura o que escapar: se o cliente NÃO escolheu tile/hardwood
+// por conta própria e a reply recomenda tile/porcelanato/hardwood ou rebaixa o
+// vinil, cada frase dessas vira a recomendação de vinil no idioma do cliente e
+// o resto da reply (a pergunta de continuidade, o pedido de dados) fica igual.
+// VINYL_RECO_BACKSTOP=off desliga. Sem preço na frase enlatada de propósito:
+// ela pode cair numa conversa abaixo de 400 sqft ou de 500+ (regras 12 e 18).
+const TILE_OR_WOOD_SRC = String.raw`(?:porcelain|ceramic|tiles?|hardwood|solid\s+wood|engineered\s+(?:wood|hardwood)|porcelanato|cer[aáâ]mica|azulejos?|madera|madeira)`;
+const AGAINST_VINYL_SENTENCE: RegExp[] = [
+  new RegExp(String.raw`\b(?:i'?d|i\s+would|we'?d|we\s+would|you\s+should|better\s+to|best\s+to)\s+(?:go|stick|stay)\s+with\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
+  new RegExp(String.raw`\b(?:i'?d|i\s+would|we'?d|i|we)\s+(?:definitely\s+|strongly\s+|honestly\s+|really\s+)?(?:recommend|suggest)(?:ing)?\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
+  new RegExp(String.raw`\b(?:my\s+recommendation|the\s+(?:better|best|right)\s+(?:option|choice|bet|call|fit|pick))\s+(?:would\s+be|is|here\s+is|here\s+would\s+be)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:holds?\s+up\s+better|is\s+(?:the\s+)?(?:better|best|right|ideal|smarter|safer|stronger)\s+(?:choice|option|call|bet|fit|way|pick)|would\s+be\s+(?:the\s+)?(?:better|best|ideal|right|smarter|safer)|is\s+(?:more\s+durable|easier\s+to\s+clean|tougher|more\s+resistant)|handles?\s+(?:the\s+)?(?:heavy\s+)?(?:foot\s+)?traffic)`, "i"),
+  /\bvinyl\b[^.!?\n]{0,30}?\b(?:can|could|would|might|does|will)\s+work,?\s+but\b/i,
+  /\bvinyl\b[^.!?\n]{0,30}?\b(?:is|isn'?t|is\s+not|won'?t|wouldn'?t|might\s+not|may\s+not|not)\s+(?:be\s+)?(?:the\s+)?(?:ideal|best|great|good|recommended|right|durable\s+enough|suited|suitable|my\s+(?:first\s+)?(?:pick|choice|recommendation)|hold\s+up)/i,
+  /\bstick\s+with\s+(?:that|my|the|this)\s+recommendation\b/i,
+  new RegExp(String.raw`\b(?:te\s+|le\s+)?(?:recomiendo|recomendar[ií]a|sugiero|ir[ií]a\s+con|me\s+ir[ií]a\s+con|me\s+quedar[ií]a\s+con)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
+  /\bvinyl\b[^.!?\n]{0,30}?\b(?:no\s+es|no\s+ser[ií]a|no\s+aguanta|no\s+resiste|puede\s+funcionar,?\s+pero|funciona,?\s+pero)\b/i,
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:aguanta|resiste|dura)\s+(?:m[aá]s|mejor)\b`, "i"),
+  new RegExp(String.raw`\b(?:eu\s+)?(?:recomendo|recomendaria|sugiro|iria\s+de|iria\s+com|ficaria\s+com)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
+  /\bvinil\b[^.!?\n]{0,30}?\b(?:n[aã]o\s+[eé]|n[aã]o\s+seria|n[aã]o\s+aguenta|n[aã]o\s+resiste|pode\s+funcionar,?\s+mas|funciona,?\s+mas)\b/i,
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:aguenta|resiste|dura)\s+(?:mais|melhor)\b`, "i"),
+];
+const RECO_SENTENCE = /[^.!?\n]+(?:[.!?]+|\n+|$)\s*/g;
+function stripProtectedTags(text: string): string {
+  return (text || "").replace(PROTECTED_TAG, " ").replace(/\[[A-Z][A-Z_]{2,}(?::[^\]]*)?\]/g, " ");
+}
+/** A reply that recommends tile/porcelain/hardwood over vinyl, or talks vinyl down. */
+export function replyRecommendsAgainstVinyl(text: string): boolean {
+  const prose = normalizeSmartPunct(stripProtectedTags(text));
+  for (const s of prose.match(RECO_SENTENCE) ?? []) if (AGAINST_VINYL_SENTENCE.some((re) => re.test(s))) return true;
+  return false;
+}
+// O cliente escolheu tile/hardwood por conta própria? Só conta uma mensagem que
+// nomeia o tipo SEM pergunta, SEM comparação ("tile or vinyl", "qual é melhor")
+// e SEM falar do piso EXISTENTE ("there is tiles there right now, install vinyl
+// on top"). Na dúvida devolve null, e aí a rede pode agir, o que é o lado certo
+// para errar: sem escolha do cliente, tile por cima do vinil nunca é resposta.
+const CLIENT_TYPE_WORD = new RegExp(String.raw`\b(${TILE_OR_WOOD_SRC})\b`, "i");
+const NOT_A_TYPE_CHOICE = /\?|\b(?:or|vs\.?|versus|better|best|recommend\w*|suggest\w*|should|which|what|whatever|existing|current|currently|old|over|on\s+top|right\s+now|already|there\s+is|there'?s|there\s+are|have\s+tiles?|remove|removing|rip|replace|replacing|instead\s+of|get\s+rid|cover|covering|underneath|beneath|below|o|mejor|recomiend\w*|actual\w*|encima|sobre|quitar|ya\s+tengo|ou|melhor|recomend\w*|atual\w*|em\s+cima|tirar|j[aá]\s+tenho|vinyl|vinil|vin[ií]lico|lvp|lvt|spc|laminate|laminado|carpet|carpete|alfombra)(?![a-zà-ÿ])/i;
+export function clientChoseTileOrHardwood(messages: Array<{ role: string; content: string }>): "tile" | "hardwood" | null {
+  let chosen: "tile" | "hardwood" | null = null;
+  for (const m of messages ?? []) {
+    if (m.role !== "user") continue;
+    const t = normalizeSmartPunct(m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ");
+    const w = t.match(CLIENT_TYPE_WORD);
+    if (!w || NOT_A_TYPE_CHOICE.test(t)) continue;
+    chosen = /hardwood|solid\s+wood|engineered|madera|madeira/i.test(w[1]) ? "hardwood" : "tile";
+  }
+  return chosen;
+}
+const VINYL_RECO: Record<"en" | "es" | "pt", { reco: string; yes: string }> = {
+  en: {
+    reco: "I'd go with our luxury vinyl, it's 100% waterproof, scratch resistant and holds up great to heavy traffic.",
+    yes: "Vinyl is a great fit, it's 100% waterproof, scratch resistant and holds up great to heavy traffic, that's what I'd go with.",
+  },
+  es: {
+    reco: "Yo iría con nuestro vinyl de lujo, es 100% impermeable, resistente a rayones y aguanta muy bien el tráfico pesado.",
+    yes: "El vinyl es una excelente opción, es 100% impermeable, resistente a rayones y aguanta muy bien el tráfico pesado, es lo que yo elegiría.",
+  },
+  pt: {
+    reco: "Eu iria com o nosso vinil de luxo, é 100% à prova d'água, resistente a riscos e aguenta muito bem tráfego pesado.",
+    yes: "O vinil é uma ótima opção, é 100% à prova d'água, resistente a riscos e aguenta muito bem tráfego pesado, é o que eu escolheria.",
+  },
+};
+/** Every sentence that recommends tile/hardwood over vinyl becomes the vinyl recommendation (first one) or disappears (the rest); everything else stays. */
+export function fixVinylRecommendation(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  const canned = VINYL_RECO[lang] ?? VINYL_RECO.en;
+  return withTagsProtected(text, (prose) => {
+    const parts = normalizeSmartPunct(prose).match(RECO_SENTENCE);
+    if (!parts) return prose;
+    let replaced = false;
+    const out: string[] = [];
+    for (const s of parts) {
+      if (!AGAINST_VINYL_SENTENCE.some((re) => re.test(s))) { out.push(s); continue; }
+      if (replaced) continue;
+      replaced = true;
+      // Answering "is vinyl good for X?" ("Vinyl can work but…") reads better as
+      // a yes than as a fresh recommendation.
+      const answeringVinyl = /^\s*(?:the\s+|el\s+|o\s+)?vin(?:yl|il)\b/i.test(s) || /\bvin(?:yl|il)\b[^.!?\n]{0,30}?\b(?:but|pero|mas)\b/i.test(s);
+      out.push((answeringVinyl ? canned.yes : canned.reco) + " ");
+    }
+    return replaced ? out.join("").replace(/[ \t]{2,}/g, " ").trim() : prose;
   });
 }
 
@@ -4614,8 +4706,9 @@ export async function getAIResponse(
       }
     }
 
-    // SHORT REPLIES (owner, 2026-09-21): a reply that came back as a wall of
-    // text is rewritten ONCE, shorter, by the same model under the same rules,
+    // SHORT REPLIES (owner, 2026-09-21 and 2026-09-24): a reply that came back
+    // as a wall of text, or with three or more sentences however short, is
+    // rewritten ONCE, shorter, by the same model under the same rules,
     // and the rewrite only ships when every fact the pipeline reads survived
     // (reply-length.ts). It runs BEFORE the backstops below on purpose, so each
     // of them still judges the text that actually goes out. REPLY_TIGHTEN=off
@@ -4659,6 +4752,17 @@ export async function getAIResponse(
           cleaned = fixed;
           console.log("[AI] showroom backstop: replaced 'no showroom' denial with the mobile showroom answer");
         }
+      }
+    }
+
+    // Recomendação é SEMPRE vinil (dono, 24/09/2026): tile/porcelanato/hardwood
+    // recomendado por cima do vinil, sem o cliente ter escolhido esse tipo, vira
+    // a recomendação de vinil; a pergunta de continuidade fica.
+    if (process.env.VINYL_RECO_BACKSTOP !== "off" && replyRecommendsAgainstVinyl(cleaned) && !clientChoseTileOrHardwood(messages)) {
+      const fixed = fixVinylRecommendation(cleaned, usersLang());
+      if (fixed !== cleaned) {
+        cleaned = fixed;
+        console.log("[AI] vinyl recommendation backstop: the reply recommended tile/hardwood over vinyl, replaced with the vinyl recommendation");
       }
     }
 
@@ -4943,45 +5047,65 @@ async function tightenLongReply(
   draft: string
 ): Promise<AIResponse | null> {
   const before = visibleLength(draft);
+  const convo: Array<{ role: "user" | "assistant"; content: string | Array<{ type: "text"; text: string; cache_control: { type: "ephemeral"; ttl: "1h" } }> }> = [
+    ...messages.map((m, i) =>
+      i === messages.length - 1
+        ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
+        : { role: m.role, content: m.content }
+    ),
+    { role: "assistant" as const, content: draft },
+    { role: "user" as const, content: tightenInstruction(before, sentenceCount(draft)) },
+  ];
+  let inputTokens = 0;
+  let outputTokens = 0;
   try {
-    const res = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 400,
-      system: [
-        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-      ],
-      messages: [
-        ...messages.map((m, i) =>
-          i === messages.length - 1
-            ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
-            : { role: m.role, content: m.content }
-        ),
-        { role: "assistant" as const, content: draft },
-        { role: "user" as const, content: tightenInstruction(before) },
-      ],
-    });
-    const b = res.content[0];
-    if (b?.type !== "text" || res.stop_reason === "max_tokens") {
-      console.log("[AI] short-reply rewrite came back empty or truncated, keeping the original");
-      return null;
+    // Two tries at most. The second only happens when the first rewrite lost a
+    // fact it was told to keep (the price, a time, the question, the details
+    // request): told exactly what it dropped, the model fixes that reliably,
+    // and without the retry a 240-character draft shipped as is (live replay
+    // 2026-09-24, 2 of 6 recommendation replies).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await anthropic.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 400,
+        system: [
+          { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+          { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+        ],
+        messages: convo,
+      });
+      inputTokens += res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);
+      outputTokens += res.usage.output_tokens;
+      const b = res.content[0];
+      if (b?.type !== "text" || res.stop_reason === "max_tokens") {
+        console.log("[AI] short-reply rewrite came back empty or truncated, keeping the original");
+        return null;
+      }
+      const rewrite = stripReasoningLeak(mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(b.text))))).trim();
+      const verdict = tightenedIsSafe(draft, rewrite, { asksForDetails: isAskingForBookingInfo, freeAlreadySaid: freeAlreadySaid(messages), clientAskedPrice: clientAskedPrice(messages) });
+      if (!verdict.ok) {
+        if (attempt === 0 && /dropped|lost|changed/.test(verdict.reason)) {
+          console.log("[AI] short-reply rewrite rejected (" + verdict.reason + "), asking once more");
+          convo.push(
+            { role: "assistant" as const, content: rewrite },
+            { role: "user" as const, content: `[SYSTEM: That rewrite was rejected: ${verdict.reason}. Rewrite the draft again, just as short, keeping that part exactly as it was in the draft. Output ONLY the message, nothing before or after it.]` }
+          );
+          continue;
+        }
+        console.log("[AI] short-reply rewrite rejected (" + verdict.reason + "), keeping the original " + before + " chars");
+        return null;
+      }
+      // Only an English <-> Spanish/Portuguese flip is a real language change:
+      // detectLang tells PT from ES by a few accents and a short PT rewrite reads
+      // as ES to it, which threw away good rewrites (replay 2026-09-24).
+      if ((detectLang(rewrite) === "en") !== (detectLang(draft) === "en")) {
+        console.log("[AI] short-reply rewrite changed the language, keeping the original");
+        return null;
+      }
+      console.log("[AI] short-reply rewrite: " + before + " -> " + visibleLength(rewrite) + " chars" + (attempt ? " (second try)" : ""));
+      return { text: rewrite, inputTokens, outputTokens };
     }
-    const rewrite = stripReasoningLeak(mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(b.text))))).trim();
-    const verdict = tightenedIsSafe(draft, rewrite, { asksForDetails: isAskingForBookingInfo, freeAlreadySaid: freeAlreadySaid(messages), clientAskedPrice: clientAskedPrice(messages) });
-    if (!verdict.ok) {
-      console.log("[AI] short-reply rewrite rejected (" + verdict.reason + "), keeping the original " + before + " chars");
-      return null;
-    }
-    if (detectLang(rewrite) !== detectLang(draft)) {
-      console.log("[AI] short-reply rewrite changed the language, keeping the original");
-      return null;
-    }
-    console.log("[AI] short-reply rewrite: " + before + " -> " + visibleLength(rewrite) + " chars");
-    return {
-      text: rewrite,
-      inputTokens: res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0),
-      outputTokens: res.usage.output_tokens,
-    };
+    return null;
   } catch (e) {
     console.error("[AI] short-reply rewrite failed, keeping the original:", e);
     return null;

@@ -41,7 +41,7 @@ import {
   OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, SYSTEM_PROMPT,
 } from "../lib/system-prompt";
 import {
-  visibleLength, needsTightening, tightenedIsSafe, tightenInstruction, clockTokens, dayTokens, dollarTokens, clientAskedPrice, freeAlreadySaid,
+  visibleLength, sentenceCount, needsTightening, tightenedIsSafe, tightenInstruction, clockTokens, dayTokens, dollarTokens, clientAskedPrice, freeAlreadySaid,
   REPLY_TARGET_CHARS, REPLY_TIGHTEN_OVER,
 } from "../lib/reply-length";
 
@@ -82,7 +82,7 @@ async function main() {
   ck("a rede roda depois do scrubber de raciocínio e ANTES de todos os backstops", iLeak > 0 && iNet > iLeak && iPhones > iNet && iSmall > iNet, `${iLeak} ${iNet} ${iPhones} ${iSmall}`);
   ck("chave de emergência REPLY_TIGHTEN=off", /process\.env\.REPLY_TIGHTEN !== "off"/.test(ai));
   ck("falha da reescrita nunca derruba a resposta (try/catch devolve null)", /short-reply rewrite failed, keeping the original/.test(ai));
-  ck("reescrita usa o MESMO modelo e os mesmos blocos de sistema (cache)", /async function tightenLongReply[\s\S]{0,900}model: "claude-sonnet-4-6"[\s\S]{0,500}text: stableSystem[\s\S]{0,200}text: dynamicSystem/.test(ai));
+  ck("reescrita usa o MESMO modelo e os mesmos blocos de sistema (cache)", /async function tightenLongReply[\s\S]{0,1800}model: "claude-sonnet-4-6"[\s\S]{0,500}text: stableSystem[\s\S]{0,200}text: dynamicSystem/.test(ai));
   ck("Dreaming: trava 11 (respostas curtas, nunca empilhar argumentos)", /11\. REPLIES ARE SHORT TEXTS/.test(dr) && /NEVER recommend "stacking" selling points/.test(dr));
   ck("Dreaming: trava 12 (nunca recomendar SILÊNCIO para toque no anúncio / ação do cliente)", /12\. NEVER RECOMMEND SILENCE FOR A CLIENT ACTION/.test(dr) && /NEVER recommend stopping, staying silent, ignoring taps, or capping the replies/.test(dr));
   ck("Dreaming: teto de tokens não corta mais o arquivo no meio", /max_tokens: 3000/.test(dr) && /whole file must stay under 7,000 characters/.test(dr));
@@ -126,6 +126,13 @@ async function main() {
   ck("needsTightening: resposta normal (<= 220) → não", !needsTightening("For 1,600 sqft I need to measure in person to give you the best price, it's free and I bring samples. Thursday at 9am or 1pm?"));
   ck("needsTightening: NUNCA com [BOOK], [CANCEL_BOOKING] ou [REACT_ONLY]", !needsTightening(LONG_VISIT + '[BOOK:{"name":""}]') && !needsTightening(LONG_VISIT + "[CANCEL_BOOKING]") && !needsTightening("[REACT_ONLY]"));
   ck("tightenInstruction manda manter preço+cobertura, horários, telefone, link, tag, zip e UMA pergunta", /every dollar amount together with what it covers/.test(tightenInstruction(300)) && /every day and clock time/.test(tightenInstruction(300)) && /zip code/.test(tightenInstruction(300)) && /Output ONLY the rewritten message/.test(tightenInstruction(300)));
+  ck("sentenceCount: decimais, p.m., abreviações, links e tags não contam como fim de frase", sentenceCount("Tile is $4.50 per sqft labor only. See https://ozzifloors.company for photos, ok?") === 2 && sentenceCount("I have 3 p.m. or 5 p.m. tomorrow. Which works?") === 2 && sentenceCount("Perfect, see you then!") === 1 && sentenceCount("Ok, noted.[NOTIFY_OWNER: client asked for photos. Send them.]") === 1 && sentenceCount("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?") === 3);
+  ck("needsTightening: 3 frases curtas (123 chars) → sim (dono 24/09: nunca 3 frases, mesmo curtas)", needsTightening("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?"));
+  ck("needsTightening: 2 frases → não", !needsTightening("Vinyl is perfect for restaurants, at $5 per sqft with the floor and installation included. How many square feet is the space?"));
+  ck("tightenInstruction pede no máximo 2 frases e cita as frases do rascunho quando são 3+", /at most 2 sentences/.test(tightenInstruction(123, 3)) && /and 3 sentences/.test(tightenInstruction(123, 3)) && !/and 0 sentences/.test(tightenInstruction(300)));
+  ck("tightenedIsSafe: 3 frases → 2 frases quase do mesmo tamanho é aceita", why("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?", "Vinyl is perfect for restaurants, at $5 per sqft with the floor and installation included. How many square feet is the space?") === "ok");
+  ck("tightenedIsSafe: 3 frases → 3 frases sem encolher 15% é recusada", why("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?", "Vinyl is perfect for restaurants. At $5 per sqft it includes floor and installation. How many square feet is the space?").startsWith("not shorter enough"));
+  ck("tightenedIsSafe: 3 frases → 2 frases mas MAIS longa é recusada", why("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?", "Vinyl is perfect for restaurants, at $5 per sqft with the floor, the installation labor and the quarter round all included for you. How many square feet is the space?").startsWith("not shorter enough"));
   ck("clockTokens: 9am / 11:30 am / 5 p.m. / a las 5 / noon", [...clockTokens("9am, 11:30 am o 5 p.m.")].sort().join() === "11:30a,5:00p,9:00a" && clockTokens("te queda a las 5?").has("5:00?") && clockTokens("noon").has("12:00p"));
   ck("clockTokens: '$165 a month' e 'as 2 rooms' NÃO são horários", clockTokens("around $165 a month").size === 0 && clockTokens("as 2 rooms").size === 0);
   ck("dayTokens EN/ES/PT com acento", [...dayTokens("sábado o miércoles, amanhã")].sort().join() === "sat,tomorrow,wed");
