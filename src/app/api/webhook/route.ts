@@ -48,7 +48,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -58,7 +58,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -160,6 +160,13 @@ async function processBookingCommand(
   // TRAILER / MOBILE HOME guard (owner rule 2026-09-15): we do not work in
   // trailers, mobile homes, manufactured homes, RVs or campers. A [BOOK] while
   // the client said the property is one of those is replaced by the decline.
+  // PORT ST. LUCIE guard (owner rule 2026-09-26): we serve it, but the owner
+  // sets up the quote himself. A [BOOK] while the client is there is replaced
+  // by the owner handoff (the alert already fired on the turn the city came up).
+  if (portStLucieStanding(history)) {
+    console.warn("[IG] booking blocked — Port St. Lucie (the owner sets up the quote); sending the owner handoff");
+    return { response: portStLucieHandoffMessage(lang, portStLucieAskPhone(history)), booked: false };
+  }
   if (mobileHomeStanding(history)) {
     console.warn("[IG] booking blocked — trailer / mobile home (we do not work in them); sending the decline");
     return { response: mobileHomeDeclineMessage(lang), booked: false };
@@ -413,7 +420,8 @@ async function processNotifyOwner(
   aiResponse: string,
   conversationId: string,
   clientName: string | null,
-  clientId: string
+  clientId: string,
+  alert?: string | null
 ): Promise<string> {
   if (!/\[NOTIFY_OWNER\]/i.test(aiResponse)) return aiResponse;
   const clean = aiResponse.replace(/\[NOTIFY_OWNER\]/gi, "").trim();
@@ -429,6 +437,7 @@ async function processNotifyOwner(
       clientName,
       clientId,
       recentMessages: (recentMsgs ?? []).reverse(),
+      alert: alert ?? null,
     });
   } catch (err) {
     console.error("IG processNotifyOwner error:", err);
@@ -1937,6 +1946,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       safeAiText = mobileHomeDeclineMessage(lang);
     }
 
+    // PORT ST. LUCIE backstop (owner rule 2026-09-26): a slot / visit offer, a
+    // price, a details ask, a [BOOK] or a decline while the client is there is
+    // replaced by the owner handoff.
+    if (!isBookingConfirmed && portStLucieLeak(history, safeAiText)) {
+      console.warn("[IG] Port St. Lucie — model offered a visit / priced / declined; replacing with the owner handoff");
+      safeAiText = portStLucieHandoffMessage(lang, portStLucieAskPhone(history));
+    }
+
     // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
     // size is under 400 sqft, a price, a visit or slot offer, a booking-details
     // ask or a [BOOK] from the model is replaced by the Ozzi direct line (and the
@@ -2024,11 +2041,13 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       afterBookingText = semRepeticao;
     }
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id, conversation.username ?? null, lang);
-    const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid);
+    const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid, portStLucieStanding(history) ? PORT_ST_LUCIE_ALERT : null);
     // Owner rule 2026-09-14: any "Ozzi / the team will reach out" left in the
     // reply becomes his direct number. The owner alert (below) still fires.
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
-    const finalResponse = stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang));
+    // Port St. Lucie (owner rule 2026-09-26) is the one flow where "Ozzi will
+    // reach out" is the intended answer: no redirect to his number there.
+    const finalResponse = stripForbiddenTags(portStLucieStanding(history) ? afterNotify : redirectOwnerPromiseToPhone(afterNotify, lang));
 
     // Never send an empty message. When the model emits only a tag (a bare
     // [NOTIFY_OWNER], or a [BOOK]/[REACT_ONLY] that strips to nothing), the text

@@ -2011,6 +2011,26 @@ export function mobileHomeDeclineMessage(lang: Lang): string {
     : "Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!";
 }
 
+// PORT ST. LUCIE (owner rule 2026-09-26): we are starting to serve it, but the
+// quote there is arranged by the owner himself, never by the chat. Sent by the
+// brain on the turn the client says they are there (with [NOTIFY_OWNER]) and
+// by the brain / the webhooks whenever a slot, a visit, a price, a [BOOK] or a
+// decline leaks while it stands. `askPhone` adds the number question on
+// Instagram / Messenger when the client has not typed one (WhatsApp already
+// has it). No "visit" / "free estimate" / "pessoalmente" words: those trip the
+// leak detectors. The "will reach out" promise is deliberate here, the
+// webhooks skip the 2026-09-14 redirect for this flow.
+export function portStLucieHandoffMessage(lang: Lang, askPhone: boolean): string {
+  if (lang === "pt") return "Port St. Lucie a gente atende sim, estamos começando por aí. O Ozzi, dono da empresa, vai entrar em contato com você direto para combinar o orçamento" + (askPhone ? ", qual o melhor número para falar com você?" : ".");
+  if (lang === "es") return "Port St. Lucie sí lo atendemos, estamos empezando en esa zona. Ozzi, el dueño de la empresa, se va a comunicar con usted directamente para coordinar el presupuesto" + (askPhone ? ", cuál es el mejor número para contactarlo?" : ".");
+  return "Port St. Lucie works, we're just starting to serve that area. Ozzi, the owner, will reach out to you directly to arrange your quote" + (askPhone ? ", what's the best number to reach you?" : ".");
+}
+export function portStLucieAckMessage(lang: Lang): string {
+  if (lang === "pt") return "Perfeito, anotado. O Ozzi, dono da empresa, vai entrar em contato com você em breve para combinar o orçamento.";
+  if (lang === "es") return "Perfecto, anotado. Ozzi, el dueño de la empresa, se va a comunicar con usted en breve para coordinar el presupuesto.";
+  return "Perfect, got it. Ozzi, the owner, will reach out to you shortly to arrange your quote.";
+}
+
 // We do NOT do epoxy, concrete/cement, microcement, resin, pavers or terrazzo
 // floors (owner rule 2026-09-09, JuanCarlos Briones / Frank Fernandez cases: a
 // paver-floor photo and an "Epoxy flooring / Self leveling concrete" request

@@ -2,7 +2,7 @@ import { zipsInText } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
@@ -2515,6 +2515,82 @@ export const MOBILE_HOME_NOTE = [
   "6. Our \"mobile showroom\" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.",
 ].join("\n");
 
+// ─── PORT ST. LUCIE (owner rule 2026-09-26) ──────────────────────────────────
+// We are starting to serve Port St. Lucie, but NOT through this chat: the
+// moment the client says they are there (the city in any spelling, "PSL", St.
+// Lucie West / County, or one of its ZIP codes), the reply says we serve it and
+// that Ozzi, the owner, will reach out personally to arrange the quote; the
+// owners get the WhatsApp alert ([NOTIFY_OWNER] reaches both numbers) and the
+// reply asks for the best phone only where we do not have it. No slots, no
+// visit offer, no price, no [BOOK], and no decline: until this date the prompt
+// declined Port St. Lucie as "north of Jupiter", so the model may still try.
+// Only the client's own words count. This is the ONE flow where "Ozzi will
+// reach out" is the intended answer: the webhooks skip the 2026-09-14
+// redirectOwnerPromiseToPhone while it stands.
+const PORT_ST_LUCIE_RE = /(?<![a-zà-ÿ])(?:port\s*(?:st\.?|saint|santa?|s\.)\s*luc[ií][ae]|porto\s+s[aã]o\s+l[uú]cio|puerto\s+san(?:ta)?\s+luc[ií]a|psl|(?:st\.?|saint)\s*lucie\s+(?:west|county))(?![a-zà-ÿ])/i;
+const PORT_ST_LUCIE_ZIPS = new Set(["34952", "34953", "34983", "34984", "34985", "34986", "34987", "34988"]);
+export function isPortStLucieMention(text: string): boolean {
+  const t = clientTextOnly(text);
+  if (!t) return false;
+  if (PORT_ST_LUCIE_RE.test(normalizeSmartPunct(t))) return true;
+  return zipsInText(t).some((z) => PORT_ST_LUCIE_ZIPS.has(z));
+}
+export function portStLucieStanding(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "user" && isPortStLucieMention(m.content));
+}
+// Our own handoff line (any language), so the leak check never flags it and
+// the client's next turn is not answered with the same canned text again.
+const PORT_ST_LUCIE_HANDOFF_RE = /\bozzi\b[^.!?\n]{0,60}\b(?:owner|dueñ[oa]|dono)\b|\b(?:owner|dueñ[oa]|dono)\b[^.!?\n]{0,60}\bozzi\b/i;
+export function isPortStLucieHandoff(text: string): boolean {
+  const t = text || "";
+  return /port\s*st\.?\s*lucie/i.test(t) && PORT_ST_LUCIE_HANDOFF_RE.test(t);
+}
+export function portStLucieHandoffGiven(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "assistant" && isPortStLucieHandoff(m.content));
+}
+// The client's phone is known on WhatsApp (the channel note says so) or when
+// the client typed one in any bubble. Otherwise the handoff asks for it.
+const PSL_PHONE_RE = /(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/;
+export function clientTypedPhone(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "user" && PSL_PHONE_RE.test(clientTextOnly(m.content)));
+}
+export function lastClientBubbleHasPhone(history: Array<{ role: string; content: string }>): boolean {
+  const last = [...(history ?? [])].reverse().find((m) => m.role === "user");
+  return !!last && PSL_PHONE_RE.test(clientTextOnly(last.content));
+}
+export function portStLucieAskPhone(history: Array<{ role: string; content: string }>): boolean {
+  if ((history ?? []).some((m) => /\[WHATSAPP CHANNEL/i.test(m.content || ""))) return false;
+  return !clientTypedPhone(history);
+}
+// Post-model backstop while Port St. Lucie stands: a slot or visit offer, a
+// price, a booking-details ask, a [BOOK], or a decline ("outside our area",
+// "we don't cover") is replaced by the handoff.
+const OUT_OF_AREA_DENIAL = /\b(?:outside|out\s+of)\s+(?:our|the)\s+(?:service\s+)?(?:area|range|zone)|\b(?:don'?t|do\s+not|can'?t|cannot|won'?t)\s+(?:currently\s+)?(?:serve|cover|service|reach|go\s+(?:up|out)\s+(?:there|that\s+far))\b|\bnorth\s+of\s+jupiter\b|\bonly\s+(?:serve|cover|service)\b|\bfuera\s+de\s+(?:nuestra\s+)?(?:zona|[aá]rea)|\bno\s+(?:cubrimos|atendemos|llegamos|damos\s+servicio)\b|\bfora\s+da\s+(?:nossa\s+)?(?:[aá]rea|zona)|\bn[aã]o\s+(?:atendemos|cobrimos|chegamos)\b/i;
+export function portStLucieLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!portStLucieStanding(history)) return false;
+  const t = aiText || "";
+  if (isPortStLucieHandoff(t)) return false;
+  // Asking for the phone is part of this flow (the handoff asks it too): only
+  // an address / zip request counts as a booking-details leak here.
+  const asksAddress = t.includes("?") && /\b(?:address|property\s+address|zip(?:\s*code)?|postal\s+code|c[oó]digo\s+postal|cep|direcci[oó]n|endere[çc]o)\b/i.test(t);
+  if (/\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || asksAddress || OUT_OF_AREA_DENIAL.test(normalizeSmartPunct(t))) return true;
+  // "Ozzi will reach out to set up your free estimate" is the right answer in
+  // this flow, so the visit-offer words only count in a sentence that does not
+  // hand the visit to Ozzi.
+  return (t.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) ?? []).some((sentence) => !/\bozzi\b/i.test(sentence) && VISIT_OFFER.test(sentence));
+}
+// The line on top of the owners' WhatsApp alert (no accents on purpose, like
+// the rest of that message).
+export const PORT_ST_LUCIE_ALERT = "LEAD DE PORT ST. LUCIE: o chat NAO agenda la. O dono precisa entrar em contato com o cliente para marcar o orcamento.";
+export const PORT_ST_LUCIE_NOTE = [
+  "CRITICAL, PORT ST. LUCIE (THE OWNER SETS UP THE QUOTE HIMSELF):",
+  "The client is in Port St. Lucie. Owner rule (2026-09-26): we DO serve Port St. Lucie now, it is the ONE exception to the Homestead-to-Jupiter service area, but the quote there is arranged by Ozzi, the owner, personally, never by this chat.",
+  "1. NEVER say we don't cover, don't serve or don't reach Port St. Lucie, never call it outside our area or north of our limit. NEVER offer visit times, NEVER propose or set up a visit or an estimate yourself, NEVER quote a price or a rate, NEVER ask for the address, NEVER generate [BOOK:...].",
+  "2. Answer whatever the client asks briefly (the floors we install, how it works, product facts) and, when it fits, remind them in one short clause that Ozzi, the owner, will reach out to them directly to arrange the quote. One or two short sentences, in the client's language.",
+  "3. If the client sends their phone number, or asks when they will be contacted, thank them briefly, say Ozzi will reach out shortly, and add [NOTIFY_OWNER] at the end.",
+  "4. Do NOT tell the client to call or message Ozzi themselves: in this flow the owner contacts them.",
+].join("\n");
+
 // ─── "Send me your WhatsApp" / "what's your number?" ────────────────────────
 // Stela Cunha (FB 2026-09-17): first message "Me envi seu WhatsApp aí eu te
 // chamo" (PT: "send me your WhatsApp and I'll message you"). No "?", and not
@@ -4403,6 +4479,22 @@ export async function getAIResponse(
   if (langSwitch) console.log("[AI] language switch requested: " + langSwitch.target + " (" + langSwitch.reason + ")");
   const usersLang = (): "en" | "es" | "pt" => langSwitch?.target ?? detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" "));
 
+  // PORT ST. LUCIE (owner rule 2026-09-26): the turn the client says they are
+  // there gets the deterministic handoff + the owner alert (both WhatsApps); a
+  // later turn that carries their phone gets the short thank-you + alert.
+  // Everything else in that flow goes to the model with the PSL note and the
+  // leak net below.
+  if (portStLucieStanding(messages)) {
+    if (!portStLucieHandoffGiven(messages)) {
+      console.log("[AI] Port St. Lucie — sending the owner handoff + owner alert");
+      return { text: portStLucieHandoffMessage(usersLang(), portStLucieAskPhone(messages)) + "[NOTIFY_OWNER]", inputTokens: 0, outputTokens: 0 };
+    }
+    if (lastClientBubbleHasPhone(messages)) {
+      console.log("[AI] Port St. Lucie — client sent the phone; thank-you + owner alert");
+      return { text: portStLucieAckMessage(usersLang()) + "[NOTIFY_OWNER]", inputTokens: 0, outputTokens: 0 };
+    }
+  }
+
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns
   const hardcoded = langSwitch ? null : checkHardcodedResponse(messages);
   // A size under 400 sqft stands (owner rule 2026-09-11): the canned intercepts
@@ -4533,6 +4625,13 @@ export async function getAIResponse(
     dynamicSystem += "\n\n---\n\n" + MOBILE_HOME_NOTE;
   }
 
+  // PORT ST. LUCIE standing → the owner-sets-up-the-quote block (owner rule
+  // 2026-09-26): never a decline, never a slot, the owner reaches out.
+  if (portStLucieStanding(messages)) {
+    console.log("[AI] Port St. Lucie stands — injecting the owner-handles-it block");
+    dynamicSystem += "\n\n---\n\n" + PORT_ST_LUCIE_NOTE;
+  }
+
   // LANGUAGE SWITCH → the note is read last (Leticia, FB 2026-09-17: "No,
   // speak English" got "Already in English!").
   if (langSwitch) {
@@ -4569,7 +4668,7 @@ export async function getAIResponse(
     const firstBurst = messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n");
     if (
       clientTextOnly(firstBurst).trim() && !openerCoversMessage(firstBurst) && !mentionsRejection(firstBurst) &&
-      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)
+      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)
     ) {
       console.log("[AI] First message says something specific — injecting the answer-it-first block");
       dynamicSystem += "\n\n---\n\n" + firstMessageContentNote(firstBurst);
@@ -4881,6 +4980,15 @@ export async function getAIResponse(
       cleaned = mobileHomeDeclineMessage(usersLang());
     }
 
+    // PORT ST. LUCIE backstop (owner rule 2026-09-26): while the client is in
+    // Port St. Lucie, a slot / visit offer, a price, a details ask, a [BOOK] or
+    // a decline is replaced by the owner handoff (no alert again: it fired on
+    // the turn the city came up).
+    if (portStLucieLeak(messages, cleaned)) {
+      console.warn("[AI] Port St. Lucie — model offered a visit / priced / declined; replaced with the owner handoff. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 220));
+      cleaned = portStLucieHandoffMessage(usersLang(), portStLucieAskPhone(messages));
+    }
+
     // Never claim to be a human (2026-09-21): asked "person or bot?", the team
     // line stays and the claim goes. Only on the turn where the client asked.
     if (clientAskedBotOrHuman(messages)) cleaned = stripHumanClaim(cleaned, usersLang());
@@ -4888,7 +4996,7 @@ export async function getAIResponse(
     // "What's your number?" while a visit is being set up (Brickell, FB
     // 2026-09-14): the number alone ended the booking. Append the pending
     // question. The referral flows own their replies and are left alone.
-    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
       const kept = keepBookingThreadAfterPhone(messages, cleaned, usersLang());
       if (kept !== cleaned) {
         console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
@@ -4899,7 +5007,7 @@ export async function getAIResponse(
     // "Send me your WhatsApp" / "what's your number?" and the reply came back
     // without the number (Stela Cunha, FB 2026-09-17): prepend our WhatsApp
     // line in the client's language. The referral flows own their replies.
-    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
       const withNumber = ensureContactNumber(messages, cleaned, usersLang());
       if (withNumber !== cleaned) {
         console.warn("[AI] contact request — reply had no number; prepended our WhatsApp line");
@@ -4911,7 +5019,7 @@ export async function getAIResponse(
     // do not speak English (or asked for a language) and the reply is still in
     // the wrong language, or comments "Already in English": ship the
     // deterministic language-confirming line instead.
-    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages)) {
+    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
       const inLang = enforceLanguageSwitch(messages, cleaned, langSwitch);
       if (inLang !== cleaned) {
         console.warn("[AI] language switch to " + langSwitch.target + " — reply was in the wrong language; replaced with the language-confirming line");
