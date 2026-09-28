@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { withEarlierBookingFacts } from "@/lib/booking-facts";
-import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners } from "@/lib/whatsapp";
+import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
@@ -23,6 +23,7 @@ import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal, quoteHandoffActive, isTalkToOzziRequest, talkToOzziLang, talkToOzziMessage, QUOTE_HANDOFF_SUFFIX, QUOTE_TALK_TO_OZZI_ALERT, QUOTE_AFTER_HANDOFF_ALERT } from "@/lib/quote-reply";
 import { findRecentInstallationConfirmation, isInstallAck, installHandoffMessage, INSTALL_STAGE_ALERT } from "@/lib/instalacao";
+import { findReviewContext, composeReviewReply, isReviewRefusal, reviewHandoffActive, reviewPhotoReply, REVIEW_HANDOFF_SUFFIX, REVIEW_PHOTO_ALERT, REVIEW_REFERRAL_ALERT, REVIEW_HANDOFF_ALERT, REVIEW_AFTER_HANDOFF_ALERT } from "@/lib/review-reply";
 import { isWaEditCallback, waEditAction, waEditStoreId, phoneFromWaIgsid, isRealWaPhone } from "@/lib/wa-edit-policy";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
@@ -737,9 +738,16 @@ async function handleWaMessage(body: Record<string, unknown>) {
       return;
     }
 
+    // ── FOTO DE CLIENTE DE REVIEW (28/09/2026) ──────────────────────────────
+    // Quem recebeu o pedido de review (marcador [SYSTEM: REVIEW_REQUEST] no
+    // histórico) e manda uma imagem está mandando o PRINT do review, não uma
+    // planta baixa: nada de análise de piso. O tratamento (dono com a foto,
+    // plataforma, agradecimento) vem logo depois de gravar a mensagem.
+    const reviewPhotoCtx = imageUrl ? await findReviewContext(conv.id).catch(() => null) : null;
+
     // Pre-fetch image
     let preFetchedImageBase64: string | null = null;
-    if (imageUrl) {
+    if (imageUrl && !reviewPhotoCtx) {
       preFetchedImageBase64 = await downloadZApiImage(imageUrl).catch(() => null);
     }
     // Analyze the photo BEFORE storing / debouncing (Briones, IG 2026-09-05):
@@ -752,7 +760,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
         if (a && !a.toLowerCase().includes("could not") && a.length > 20) preAnalysis = a;
       } catch (err) { console.warn("[WA] pre-debounce image analysis failed:", err); }
     }
-    const storedText = preAnalysis ? `[Floor plan analysis: ${preAnalysis}]` : rawText;
+    const storedText = reviewPhotoCtx ? "[review screenshot]" : preAnalysis ? `[Floor plan analysis: ${preAnalysis}]` : rawText;
 
     // Store message immediately
     const { data: insertedMsg, error: insertErr } = await supabaseAdmin
@@ -794,7 +802,67 @@ async function handleWaMessage(body: Record<string, unknown>) {
       waitUntil(maybeRunFunilSilenceCheck()); // sweep parou_de_responder, no máx. a cada 6h
     }
 
+    // ── PRINT DO REVIEW recebido (28/09/2026) ───────────────────────────────
+    // Roda ANTES do gate de modo humano: o dono precisa saber que a prova
+    // chegou (para pagar a recompensa) mesmo com a conversa pausada. Aviso ao
+    // dono COM a foto, evento review_foto_recebida na plataforma (tela
+    // Follow-up > Reviews) e um agradecimento fixo ao cliente (sem modelo) —
+    // uma vez só, mesmo que ele mande dois prints (Google + Yelp).
+    if (imageUrl && reviewPhotoCtx) {
+      const nomeCliente = (conv.name ?? conv.username ?? null) as string | null;
+      try {
+        await enviarEventoFunil("review_foto_recebida", { telefone: phone, canal: "whatsapp", foto_url: imageUrl });
+      } catch (err) {
+        console.error("[WA] review_foto_recebida error:", err);
+      }
+      try {
+        await notifyOwnersReviewPhoto({ phone, clientName: nomeCliente, imageUrl, alert: REVIEW_PHOTO_ALERT });
+      } catch (err) {
+        console.error("[WA] review photo notify error:", err);
+      }
+      if (conv.mode !== "human") {
+        const reply = reviewPhotoReply(reviewPhotoCtx.idioma);
+        const { data: lastBotRow } = await supabaseAdmin
+          .from("instagram_messages")
+          .select("content")
+          .eq("conversation_id", conv.id)
+          .eq("role", "assistant")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const jaAgradeceu = !!lastBotRow?.content && lastBotRow.content.split(/\n\n?\[SYSTEM:/)[0].trim() === reply;
+        if (jaAgradeceu) {
+          await sendWhatsAppReaction(phone, messageId, "👍");
+        } else {
+          const sent = await sendWhatsAppMessage(phone, reply);
+          if (sent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: reply });
+            await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
+          } else {
+            await reportSendFailure("whatsapp", phone, sent.error ?? "unknown");
+          }
+        }
+      }
+      console.log(`[WA] review: print recebido de ${phone} — dono e plataforma avisados`);
+      return;
+    }
+
     if (conv.mode === "human") {
+      // Cliente de REVIEW respondeu com a conversa em modo humano: a plataforma
+      // registra a resposta (e a recusa) do mesmo jeito — a tela do dono não
+      // pode depender do bot estar ativo.
+      waitUntil(
+        (async () => {
+          if (await findReviewContext(conv.id)) {
+            await enviarEventoFunil(
+              "review_respondeu",
+              isReviewRefusal(rawText)
+                ? { telefone: phone, canal: "whatsapp", recusou: true, texto: rawText.slice(0, 200) }
+                : { telefone: phone, canal: "whatsapp", texto: rawText.slice(0, 200) }
+            );
+          }
+        })().catch((e) => console.error("[WA] review_respondeu (human mode) error:", e))
+      );
       // Cliente de FOLLOW-UP respondeu com a conversa em modo humano: a cadência
       // da plataforma PRECISA parar mesmo assim — o encerramento não pode
       // depender do bot estar ativo (caso Grittel 2026-07-25: mode=human desde
@@ -1026,6 +1094,93 @@ async function handleWaMessage(body: Record<string, unknown>) {
           console.error("WA earlier-slot ack notify error:", err);
         }
         return;
+      }
+    }
+
+    // ── Cliente de REVIEW respondeu (28/09/2026) ────────────────────────────
+    // A obra está concluída e a plataforma pediu o review + indicação pelo
+    // /api/enviar (marcador [SYSTEM: REVIEW_REQUEST] no histórico). Vai ANTES
+    // da etapa de instalação e do follow-up de orçamento: o pedido de review é
+    // o contexto mais novo dessa conversa, e o cliente NUNCA pode cair no funil
+    // de venda nova (visita, preço, financiamento). Cérebro estreito em
+    // review-reply.ts: print → dono paga; texto → agradece/pede o print/explica
+    // a indicação; indicação ou dúvida → repasse ao Ozzi; "ok" → só 👍.
+    if (!engageReschedule) {
+      try {
+        const reviewCtx = await findReviewContext(conv.id);
+        if (reviewCtx) {
+          const recusou = isReviewRefusal(rawText);
+          await enviarEventoFunil(
+            "review_respondeu",
+            recusou
+              ? { telefone: phone, canal: "whatsapp", recusou: true, texto: rawText.slice(0, 200) }
+              : { telefone: phone, canal: "whatsapp", texto: rawText.slice(0, 200) }
+          );
+          const { data: recentMsgs } = await supabaseAdmin
+            .from("instagram_messages")
+            .select("role, content")
+            .eq("conversation_id", conv.id)
+            .order("created_at", { ascending: false })
+            .limit(12);
+          const historico = (recentMsgs ?? []).reverse();
+          const nomeCliente = (conv.name ?? conv.username ?? null) as string | null;
+          if (isAckOnlyBurst(historico) || isPureClosing(rawText)) {
+            await sendWhatsAppReaction(phone, messageId, "👍");
+            console.log("[WA] review-reply: ack/fechamento — só 👍, nada de texto");
+            return;
+          }
+          if (reviewHandoffActive(historico)) {
+            console.log("[WA] review-reply: repasse ao Ozzi já feito — silêncio, avisando o dono");
+            await notifyOwners({
+              platform: "WhatsApp",
+              clientName: nomeCliente,
+              clientId: phone,
+              recentMessages: historico.slice(-8),
+              alert: REVIEW_AFTER_HANDOFF_ALERT,
+            }).catch((e) => console.error("[WA] review notify (pós-repasse) error:", e));
+            return;
+          }
+          const reviewBurst = unansweredUserBurst(historico) || rawText;
+          const reply = await composeReviewReply({ ctx: reviewCtx, history: historico, clientText: reviewBurst });
+          if (reply.reactOnly) {
+            await sendWhatsAppReaction(phone, messageId, "👍");
+            console.log("[WA] review-reply: modelo pediu [REACT_ONLY] — só 👍");
+            return;
+          }
+          const sent = await sendWhatsAppMessage(phone, reply.text);
+          if (sent.ok) {
+            await supabaseAdmin.from("instagram_messages").insert({
+              conversation_id: conv.id,
+              role: "assistant",
+              content: reply.notifyOwner ? reply.text + REVIEW_HANDOFF_SUFFIX : reply.text,
+            });
+            await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
+            if (reply.notifyOwner) {
+              const indicou = /\b(?:refer|friend|neighbou?r|family|sister|brother|cousin|coworker|amig|vecin|famili|herman|prim|compa[ñn]er|indic|recomend|conhecid)/i.test(reviewBurst);
+              await notifyOwners({
+                platform: "WhatsApp",
+                clientName: nomeCliente,
+                clientId: phone,
+                recentMessages: [...historico.slice(-7), { role: "assistant", content: reply.text }],
+                alert: indicou ? REVIEW_REFERRAL_ALERT : REVIEW_HANDOFF_ALERT,
+              });
+            }
+            console.log(`[WA] review-reply enviado (${reply.source}) notify=${reply.notifyOwner}`);
+            return;
+          }
+          console.error(`[WA] review-reply falhou no envio: ${sent.error} — avisando o dono`);
+          await reportSendFailure("whatsapp", phone, sent.error ?? "unknown");
+          await notifyOwners({
+            platform: "WhatsApp",
+            clientName: nomeCliente,
+            clientId: phone,
+            recentMessages: historico.slice(-8),
+            alert: "Cliente de review respondeu e o envio da resposta falhou. Responda você.",
+          }).catch(() => {});
+          return;
+        }
+      } catch (err) {
+        console.error("WA review-reply error (seguindo o fluxo normal):", err);
       }
     }
 

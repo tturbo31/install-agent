@@ -12,7 +12,9 @@
 export function stripInternalMarkers(text: string): string {
   return stripInvertedPunctuation(
     (text || "")
-      .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*|SEND_FAILED)\]/g, "")
+      // REVIEW_REQUEST/REVIEW_HANDOFF (28/09/2026): pedido de review e repasse
+      // ao Ozzi do cliente de review — mesmo contrato, só no banco.
+      .replace(/\n{0,2}\[SYSTEM: ?(?:FOLLOWUP_NUDGE|QUOTE_FOLLOWUP[^\]]*|QUOTE_HANDOFF|REVIEW_REQUEST[^\]]*|REVIEW_HANDOFF|SEND_FAILED)\]/g, "")
       .trim()
   );
 }

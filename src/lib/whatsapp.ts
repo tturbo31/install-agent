@@ -76,6 +76,45 @@ export async function sendWhatsAppReaction(
   }
 }
 
+// Envia uma IMAGEM (URL pública) com legenda pela Z-API — usado para repassar
+// ao dono o print do review que o cliente mandou (28/09/2026). Uma tentativa
+// só: quem chama cai no texto com o link quando falhar.
+export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string): Promise<WaSendResult> {
+  const url = `${ZAPI_BASE}/instances/${getInstanceId()}/token/${getToken()}/send-image`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Client-Token": getClientToken() },
+      body: JSON.stringify({ phone, image: imageUrl, caption: stripInternalMarkers(caption) }),
+    });
+    if (res.ok) return { ok: true, status: res.status };
+    const errBody = await res.text().catch(() => "");
+    console.error(`🚨 sendWhatsAppImage FAILED phone=${phone} status=${res.status} body=${errBody.slice(0, 300)}`);
+    return { ok: false, status: res.status, error: errBody.slice(0, 300) };
+  } catch (err) {
+    console.error(`🚨 sendWhatsAppImage EXCEPTION phone=${phone}:`, err);
+    return { ok: false, status: 0, error: String(err).slice(0, 300) };
+  }
+}
+
+// Aviso ao dono com a FOTO do review anexada (legenda = alerta + cliente). Se a
+// imagem não sair, vai o texto com o link da foto — o aviso nunca se perde.
+export async function notifyOwnersReviewPhoto(params: {
+  phone: string;
+  clientName: string | null;
+  imageUrl: string;
+  alert: string;
+}): Promise<void> {
+  const { phone, clientName, imageUrl, alert } = params;
+  const caption = [`OzziFloors - REVIEW recebido!`, ``, alert, ``, `Cliente: ${clientName || phone}`, `WhatsApp: ${phone}`].join("\n");
+  await Promise.allSettled(
+    OWNER_PHONES.map(async (owner) => {
+      const r = await sendWhatsAppImage(owner, imageUrl, caption);
+      if (!r.ok) await sendWhatsAppMessage(owner, `${caption}\n\nFoto: ${imageUrl}`);
+    })
+  );
+}
+
 export async function downloadZApiImage(imageUrl: string): Promise<string | null> {
   try {
     const res = await fetch(imageUrl, { redirect: "follow" });

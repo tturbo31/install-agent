@@ -15,7 +15,9 @@ export type EventoFunil =
   | "agendamento_marcado"
   | "visita_realizada"
   | "no_show"
-  | "followup_respondeu"; // cliente de follow-up de orçamento respondeu → plataforma encerra a cadência
+  | "followup_respondeu" // cliente de follow-up de orçamento respondeu → plataforma encerra a cadência
+  | "review_respondeu" // cliente do pedido de review respondeu (recusou=true quando pediu para parar)
+  | "review_foto_recebida"; // cliente mandou o print do review → dono paga a recompensa
 
 export type EnvioResultado = { ok: boolean; status: number; body?: string };
 

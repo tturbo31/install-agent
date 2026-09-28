@@ -16,6 +16,7 @@ import {
   type QuoteFollowupInput,
 } from "@/lib/quote-followup";
 import { buildQuoteCtxMarker } from "@/lib/quote-reply";
+import { buildReviewCtxMarker, reviewAlreadySent, type ReviewEtapa } from "@/lib/review-reply";
 import { enviarEventoFunil } from "@/lib/plataforma";
 
 // ─── POST /api/enviar — outbound WhatsApp for the Ozzi Plataforma ────────────
@@ -35,12 +36,24 @@ import { enviarEventoFunil } from "@/lib/plataforma";
 //     → WE write the message from that context, then send it and record it in the
 //       client's conversation history.
 //
-//   Optional on both: "dry": true → build/compose only, send nothing (preview).
+//   {"tipo":"review","telefone":"...","idioma":"en"|"es","etapa":"pedido"|"lembrete",
+//    "cliente":{"nome":"...","primeiro_nome":"..."},
+//    "mensagens":["texto 1","texto 2"],                       (1 a 3 textos, prontos)
+//    "contexto":{"google_url":"https://...","yelp_url":"https://...",
+//                "valor_google":25,"valor_yelp":25,"comissao_pct":10},
+//    "idempotency_key":"<id da etapa>"}
+//     → pedido de REVIEW + programa de INDICAÇÃO a cliente com obra concluída
+//       (28/09/2026). O texto vem PRONTO da plataforma (links exatos, valores
+//       editáveis lá); nós enviamos na ordem, gravamos cada um no histórico com
+//       o marcador [SYSTEM: REVIEW_REQUEST {...}] e, quando o cliente responder
+//       (texto ou o PRINT do review), o wa-webhook cai no cérebro de review.
+//
+//   Optional on all: "dry": true → build/compose only, send nothing (preview).
 //
 // Responses: 200 {"ok":true,...} on send; >=400 {"ok":false,"erro":"..."} otherwise.
 export const maxDuration = 60;
 
-const OK_TIPOS = ["mensagem_direta", "followup"] as const;
+const OK_TIPOS = ["mensagem_direta", "followup", "review"] as const;
 type Tipo = (typeof OK_TIPOS)[number];
 
 function erro(status: number, msg: string) {
@@ -54,6 +67,16 @@ function normalizePhone(raw: unknown): string | null {
   const digits = String(raw ?? "").replace(/\D/g, "");
   if (digits.length < 8 || digits.length > 15) return null;
   return digits;
+}
+
+function urlSegura(raw: unknown): string | null {
+  const u = typeof raw === "string" ? raw.trim() : "";
+  return /^https:\/\/[^\s\[\]]+$/.test(u) ? u : null;
+}
+
+function numeroOu(v: unknown, padrao: number): number {
+  const n = typeof v === "number" ? v : Number(String(v ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? n : padrao;
 }
 
 // Best effort: put the message we just sent into the client's history so the
@@ -132,7 +155,7 @@ export async function POST(req: NextRequest) {
 
   const dry = body.dry === true;
 
-  // ── Recusa de follow-up: a conversa manda ──────────────────────────────────
+  // ── Recusa de follow-up/review: a conversa manda ───────────────────────────
   // O drip da plataforma não vê o histórico; NÓS vemos. Nunca empurrar mensagem
   // pronta quando (a) o dono assumiu a conversa (mode=human) ou (b) a última
   // palavra é do CLIENTE, recente e sem resposta — caso Grittel 2026-07-25: ela
@@ -141,7 +164,8 @@ export async function POST(req: NextRequest) {
   // conversa está VIVA: avisa a plataforma para encerrar a cadência (o webhook
   // followup_respondeu fecha as etapas pendentes) e devolve 200 enviado:false
   // (a plataforma trata como recusa, não como falha — nunca re-tenta).
-  if (tipo === "followup" && !dry) {
+  // Para o REVIEW a plataforma só ADIA a etapa (não há cadência a encerrar).
+  if ((tipo === "followup" || tipo === "review") && !dry) {
     try {
       const { data: conv } = await supabaseAdmin
         .from("instagram_conversations")
@@ -164,8 +188,8 @@ export async function POST(req: NextRequest) {
             conv.mode === "human"
               ? "conversa em atendimento humano"
               : "cliente aguardando resposta na conversa";
-          console.log(`[ENVIAR] followup RECUSADO phone=${telefone} motivo=${motivo}`);
-          await enviarEventoFunil("followup_respondeu", { telefone });
+          console.log(`[ENVIAR] ${tipo} RECUSADO phone=${telefone} motivo=${motivo}`);
+          if (tipo === "followup") await enviarEventoFunil("followup_respondeu", { telefone });
           return NextResponse.json({ ok: true, enviado: false, recusado: true, motivo });
         }
       }
@@ -174,6 +198,73 @@ export async function POST(req: NextRequest) {
       // envio legítimo (a plataforma re-tentaria e dobraria a mensagem).
       console.error("[ENVIAR] checagem de conversa falhou (seguindo com envio):", err);
     }
+  }
+
+  // ── REVIEW: textos prontos, 1 a 3 mensagens, marcador no histórico ─────────
+  if (tipo === "review") {
+    const idioma: FollowupLang = body.idioma === "es" ? "es" : "en";
+    const etapa: ReviewEtapa = body.etapa === "lembrete" ? "lembrete" : "pedido";
+    const brutas = Array.isArray(body.mensagens) ? body.mensagens : [];
+    const mensagens = brutas
+      .filter((m): m is string => typeof m === "string" && m.trim() !== "")
+      .map((m) => stripInvertedPunctuation(m.trim()));
+    if (mensagens.length === 0 || mensagens.length > 3) return erro(400, "mensagens: envie de 1 a 3 textos prontos");
+    const longa = mensagens.find((m) => m.length > MAX_MESSAGE_LENGTH);
+    if (longa) return erro(400, `mensagem muito longa (${longa.length}), o limite do WhatsApp e ${MAX_MESSAGE_LENGTH} caracteres`);
+    const ctxIn = (body.contexto && typeof body.contexto === "object" ? body.contexto : {}) as Record<string, unknown>;
+    const chave = typeof body.idempotency_key === "string" && body.idempotency_key.trim() ? body.idempotency_key.trim().slice(0, 80) : null;
+    const marcador = buildReviewCtxMarker({
+      idioma,
+      etapa,
+      google_url: urlSegura(ctxIn.google_url) ?? "",
+      yelp_url: urlSegura(ctxIn.yelp_url) ?? "",
+      valor_google: numeroOu(ctxIn.valor_google, 25),
+      valor_yelp: numeroOu(ctxIn.valor_yelp, 25),
+      comissao_pct: numeroOu(ctxIn.comissao_pct, 10),
+      chave,
+    });
+
+    if (dry) {
+      return NextResponse.json({ ok: true, dry: true, enviado: false, mensagens, etapa, idioma });
+    }
+
+    // Reenvio da plataforma após timeout ambíguo: a chave já gravada = já saiu.
+    // Um cliente NUNCA recebe o pedido de review duas vezes.
+    if (chave && (await reviewAlreadySent(telefone, chave))) {
+      console.log(`[ENVIAR] review DUPLICADO ignorado phone=${telefone} chave=${chave}`);
+      return NextResponse.json({ ok: true, enviado: true, duplicado: true, mensagens_enviadas: 0 });
+    }
+
+    let enviadas = 0;
+    let registradas = 0;
+    for (const [i, texto] of mensagens.entries()) {
+      const result = await sendWhatsAppMessage(telefone, texto);
+      if (!result.ok) {
+        console.error(`[ENVIAR] review Z-API falhou phone=${telefone} msg=${i + 1}/${mensagens.length} status=${result.status} erro=${result.error}`);
+        if (i === 0) {
+          const raw = result.status;
+          const status = raw >= 400 && raw <= 599 && raw !== 401 && raw !== 403 ? raw : 502;
+          return NextResponse.json(
+            { ok: false, erro: `falha ao enviar pelo WhatsApp: ${result.error ?? "erro desconhecido"}`, zapiStatus: result.status },
+            { status }
+          );
+        }
+        // A 1ª já foi entregue: nunca virar erro (a plataforma reenviaria tudo).
+        break;
+      }
+      enviadas++;
+      if (await recordInHistory(telefone, texto + marcador)) registradas++;
+      if (i < mensagens.length - 1) await new Promise((r) => setTimeout(r, 1500));
+    }
+    console.log(`[ENVIAR] ok tipo=review etapa=${etapa} phone=${telefone} enviadas=${enviadas}/${mensagens.length} registradas=${registradas}`);
+    return NextResponse.json({
+      ok: true,
+      enviado: true,
+      etapa,
+      mensagens_enviadas: enviadas,
+      mensagens_previstas: mensagens.length,
+      registrado: registradas === enviadas,
+    });
   }
 
   // ── Build the text ─────────────────────────────────────────────────────────
