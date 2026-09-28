@@ -33,7 +33,7 @@ const brian = [
   U("What is the installation process?"), A("Great question, we move all the furniture, install the floors, add the quarter round, and clean everything up when we finish. Which flooring are you thinking about, tile, vinyl, or hardwood?"),
   U("can we set up a meeting next week  to come to the house and get a quote"), U("vinyl or hardwood"), A("For next week I have Monday the 17th at 9am or 11am, which works better for you?"),
   U("monday the 17th at 9Am is perfect"), A("Perfect, Monday the 17th at 9am works! Can I get your name, the full property address with the zip code, and the best phone number for the visit?"),
-  U("brian ander\n2940 E aviary \ncooper city Fl 33026\n8477079611"), A("Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi."),
+  U("brian a\n2940 E Sample Ave \ncooper city Fl 33026\n5615550123"), A("Appointment confirmed. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi."),
   U("thank you"), U("Do you offer any discounts or promotions?"),
 ];
 const ep = bookingEpisodeHistory(brian);
@@ -49,7 +49,7 @@ check("Melissa (WA 27/09): oferta e escolha no episódio novo passam", clientCon
 console.log("\n── 2. Claudio (WA 26/09): 'Ok lunes' com 1pm ou 3pm ofertados → perguntar a hora ──");
 const claudio = [
   U("Ahí que medir pero más menos unos 3000"), A("Para ese tamaño necesito medir en persona para darte el precio exacto, la visita es gratis y llevo todas las muestras. Te viene mejor manana domingo a la 1pm o 3pm?"),
-  U("2001 NW 21st ST FL 33142"), A("Tienen razon, ya lo tengo. Manana domingo puedo a la 1pm o 3pm, cual les viene mejor?"),
+  U("2001 NW 100th ST FL 33142"), A("Tienen razon, ya lo tengo. Manana domingo puedo a la 1pm o 3pm, cual les viene mejor?"),
   U("Hoy"), U("O el lunes"), A("Hoy estoy completo, pero el lunes tengo la 1pm o 3pm. Cual le viene mejor?"),
   U("Ok lunes"),
 ];
@@ -60,7 +60,7 @@ check("'the first one' → não pede", !dayOnlyPickNeedsTime([...claudio.slice(0
 check("oferta com UMA hora para o dia ('Monday at 3pm?') → dia basta", !dayOnlyPickNeedsTime([U("hi"), A("For that size I need to measure in person, it's free. Does Monday at 3pm work?"), U("Monday works")]));
 check("vários dias: 'Monday 3pm or 4pm, Tuesday 2pm or 3pm' → 'Tuesday' pede a hora", dayOnlyPickNeedsTime([U("hi"), A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday")]));
 check("vários dias: 'Monday at 3pm or Tuesday at 2pm' → 'Tuesday' basta (1 hora nesse dia)", !dayOnlyPickNeedsTime([U("hi"), A("I have Monday at 3pm or Tuesday at 2pm, which works?"), U("Tuesday")]));
-check("sem dia na rajada (endereço) → não interfere", !dayOnlyPickNeedsTime([...claudio.slice(0, -1), U("2001 NW 21st ST 33142")]));
+check("sem dia na rajada (endereço) → não interfere", !dayOnlyPickNeedsTime([...claudio.slice(0, -1), U("2001 NW 100th ST 33142")]));
 
 console.log("\n── 3. Claudio (WA 26/09): pedir o ZIP que acabou de ser digitado, sem hora escolhida → repete a oferta ──");
 const claudioZip = claudio.slice(0, 3);
@@ -69,8 +69,8 @@ const r3 = rewriteBookingDataAsk(zipAsk, claudioZip, true, "es");
 check("a frase deixa de pedir o ZIP", !/c[oó]digo postal|zip/i.test(r3), r3);
 check("e vira a escolha do horário ofertado (1pm o 3pm)", /1pm o 3pm/.test(r3) && /\?/.test(r3), r3);
 check("com hora já escolhida a frase fica para o retry forçado (inalterada)", rewriteBookingDataAsk(zipAsk, [...claudioZip, U("la 1pm")], true, "es") === zipAsk);
-check("pedido de item que FALTA continua igual (telefone no IG)", /phone/i.test(rewriteBookingDataAsk("Can I get the best phone number to reach you?", [U("Tuesday @2pm is perfect"), U("1012 NE 117th Street Biscayne Park, FL 33161")], false, "en")));
-check("Davide (IG 26/09): endereço+ZIP dados, telefone não → pede só o telefone", /phone/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 117th Street Biscayne Park, FL 33161 Davide Bianca")], false, "en")) && !/address/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 117th Street Biscayne Park, FL 33161 Davide Bianca")], false, "en")));
+check("pedido de item que FALTA continua igual (telefone no IG)", /phone/i.test(rewriteBookingDataAsk("Can I get the best phone number to reach you?", [U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161")], false, "en")));
+check("Davide (IG 26/09): endereço+ZIP dados, telefone não → pede só o telefone", /phone/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161 David B")], false, "en")) && !/address/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161 David B")], false, "en")));
 
 console.log("\n── 4. fb_26945544551739375 (27/09): '1pm tomorrow is confirmed!' sem [BOOK] ──");
 const soft = softenVisitClaim("1pm tomorrow is confirmed! Can I get the full property address with the zip code and your best phone number?", "en");

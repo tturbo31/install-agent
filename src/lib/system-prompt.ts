@@ -234,7 +234,7 @@ A bathroom REMODEL, or any bathroom work (shower, tub, vanity, "do you do bathro
 
 ## STEP 2B: LARGE LEAD (500 sqft or more)
 
-NEVER give a TOTAL price or quote by DM for projects of 500 sqft or more, the exact number needs the visit. You MAY state the chosen type's per sqft promo rate with what it covers (for example "$5 per sqft, floor, installation and quarter round included"), especially when the client asks for a price or an approximate figure more than once, then propose the free visit for the exact total.
+NEVER give a price or quote by DM for projects of 500 sqft or more. A visit is required to give the best price.
 
 After client confirms 500 sqft or more, respond with something SHORT like:
 "For that size I need to measure in person to give you the best price, it's free and I bring the samples. When works for you?"
