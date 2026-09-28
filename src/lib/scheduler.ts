@@ -1114,6 +1114,61 @@ export function hoursNamed(text: string): Set<number> {
   return out;
 }
 
+// ─── Episódio de agendamento (Brian Ander, Messenger 27/09/2026) ─────────────
+// Cliente que marcou (e fez) uma visita em agosto voltou 47 dias depois com um
+// toque no botão "Do you offer any discounts?" e ganhou uma visita nova para
+// 5/10 às 9am: o único "9am", a única escolha de horário e todos os dados eram
+// da conversa de agosto, e as guardas de slot olhavam o histórico inteiro.
+// Depois da NOSSA confirmação de visita ("Appointment confirmed…", "Cita
+// confirmada…", remarcação), nada do que veio antes justifica um [BOOK] novo:
+// o episódio corrente começa na bolha seguinte à última confirmação. A
+// remarcação de uma visita que existe não passa por aqui (o cliente pode
+// manter "o mesmo horário").
+const BOOKING_CONFIRMATION_LINE = /(?:^|\n)\s*(?:Appointment confirmed|Cita confirmada|Visita confirmada|Your visit is confirmed for|Tu visita est[aá] confirmada|Sua visita est[aá] confirmada|All set, your visit has been rescheduled|Listo, tu visita|Pronto, sua visita)/i;
+export function bookingEpisodeHistory<T extends { role: string; content: string }>(history: T[]): T[] {
+  const h = history ?? [];
+  for (let i = h.length - 1; i >= 0; i--) {
+    if (h[i].role === "assistant" && BOOKING_CONFIRMATION_LINE.test((h[i].content || "").split(/\n\n?\[SYSTEM:/)[0])) return h.slice(i + 1);
+  }
+  return h;
+}
+
+// ─── Dia sem hora quando o dia tinha 2+ horários (Claudio, WA 26/09/2026) ───
+// "el lunes tengo la 1pm o 3pm, cual le viene mejor?" → "Ok lunes" → o modelo
+// gravou 1pm sozinho. O dia escolhido só vale como horário quando a oferta
+// daquele dia trazia UMA hora; com duas ou mais, a hora é do cliente. Julga a
+// rajada final do cliente inteira (uma hora em qualquer bolha dela decide).
+const DAY_WORD_RE = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|tomorrow|lunes|martes|mi[eé]rcoles|jueves|viernes|s[áa]bado|domingo|hoy|ma[ñn]ana|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|hoje|amanh[ãa])\b/gi;
+export function dayOnlyPickNeedsTime(history: Array<{ role: string; content: string }>): boolean {
+  const msgs = history ?? [];
+  const strip = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
+  // a rajada final do cliente
+  let i = msgs.length - 1;
+  const burst: string[] = [];
+  while (i >= 0 && msgs[i].role === "user") { burst.unshift(strip(msgs[i].content)); i--; }
+  if (!burst.length) return false;
+  const joined = burst.join("\n");
+  if (SLOT_TIME_REF.test(joined) || SLOT_ORDINAL.test(joined) || LETS_DO_HOUR.test(joined) || MOVE_TO_HOUR.test(joined)) return false;
+  if (burst.some((b) => BARE_HOUR_PICK.test(b))) return false;
+  const deaccent = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const dayMatch = deaccent(joined).match(DAY_WORD_RE);
+  if (!dayMatch) return false;
+  const pickedDay = dayMatch[dayMatch.length - 1];
+  // a última oferta nossa com horas antes da rajada
+  for (; i >= 0; i--) {
+    if (msgs[i].role !== "assistant") continue;
+    const t = deaccent(strip(msgs[i].content));
+    if (![...t.matchAll(CLOCK_TIME_TOKEN)].length) continue;
+    // Oferta com vários dias ("Monday 3pm or 4pm, Tuesday 2pm or 3pm"): só as
+    // horas do dia escolhido contam; se a oferta não nomeia esse dia, todas.
+    const parts = t.split(new RegExp("(?=" + DAY_WORD_RE.source + ")", "i"));
+    const mine = parts.filter((p) => p.trim().startsWith(pickedDay));
+    const scope = mine.length ? mine.join(" ") : t;
+    return [...scope.matchAll(CLOCK_TIME_TOKEN)].length >= 2;
+  }
+  return false;
+}
+
 export function clientConfirmedSlot(history: Array<{ role: string; content: string }>): boolean {
   const msgs = history ?? [];
   // Smart-quote normalization mirrors normalizeSmartPunct in ai.ts: phone
@@ -2042,10 +2097,10 @@ export function portStLucieAckMessage(lang: Lang): string {
 // question must not read as a scheduling push ("work for you" trips
 // containsSchedulingOffer and the message would flag itself as a leak).
 export function unsupportedFloorDeclineMessage(lang: Lang): string {
-  if (lang === "pt") return "Esse tipo de piso não é algo que a gente faça, não trabalhamos com epóxi, concreto, cimento, microcimento nem pavers. O que instalamos é piso vinílico de luxo (acabamento madeira ou pedra, vai direto por cima da cerâmica existente), porcelanato e cerâmica, madeira maciça e carpete. Algum desses serviria pra você?";
+  if (lang === "pt") return "Esse tipo de piso a gente não faz, não trabalhamos com epóxi, concreto, cimento, microcimento nem pavers. Instalamos piso vinílico de luxo, porcelanato e cerâmica, madeira maciça e carpete, algum desses serviria pra você?";
   return lang === "es"
-    ? "Ese tipo de piso no es algo que hagamos, no trabajamos con epoxy, concreto, cemento, microcemento ni pavers. Lo que instalamos es vinyl de lujo (acabado madera o piedra, va directo sobre la cerámica existente), porcelanato y cerámica, madera natural y alfombra. Alguno de esos le sirve?"
-    : "That's not something we do, we don't work with epoxy, concrete, cement, microcement or paver floors. What we install is luxury vinyl plank (wood or stone look, it goes right over existing tile), porcelain and ceramic tile, hardwood and carpet. Would one of those be a good fit for your space?";
+    ? "Ese tipo de piso no lo hacemos, no trabajamos con epoxy, concreto, cemento, microcemento ni pavers. Instalamos vinyl de lujo, porcelanato y cerámica, madera natural y alfombra, alguno de esos le sirve?"
+    : "That's not something we do, we don't work with epoxy, concrete, cement, microcement or paver floors. We install luxury vinyl plank, porcelain and ceramic tile, hardwood and carpet, would one of those be a good fit for your space?";
 }
 
 // The client's PHOTO shows a concrete / paver / epoxy-type floor and they have

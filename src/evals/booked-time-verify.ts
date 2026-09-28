@@ -128,8 +128,9 @@ async function main() {
   ] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports bookedTimeSeenInConversation + needTimeChoiceMessage`, /bookedTimeSeenInConversation/.test(src) && /needTimeChoiceMessage/.test(src), rel);
-    ck(`${name}: blocks when the booked hour was never mentioned`, /!bookedTimeSeenInConversation\(history,\s*bookingData\.time\)\)\s*\{[\s\S]{0,260}needTimeChoiceMessage\(lang,\s*bookingData\.date(?:,\s*bookingData\.address)?\)/.test(src), rel);
-    ck(`${name}: guard sits before createBooking`, src.indexOf("bookedTimeSeenInConversation(history") < src.indexOf("createBooking("), rel);
+    // 27/09/2026: a guarda lê o EPISÓDIO corrente (slotHistory), caso Brian Ander.
+    ck(`${name}: blocks when the booked hour was never mentioned`, /!bookedTimeSeenInConversation\(slotHistory,\s*bookingData\.time\)\)\s*\{[\s\S]{0,260}needTimeChoiceMessage\(lang,\s*bookingData\.date(?:,\s*bookingData\.address)?\)/.test(src), rel);
+    ck(`${name}: guard sits before createBooking`, src.indexOf("bookedTimeSeenInConversation(slotHistory") < src.indexOf("createBooking("), rel);
   }
   const sched = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8");
   ck("prompt: 'NEVER offer a day without stating its available times' rule present", /NEVER offer a day without stating its available times/.test(sched));

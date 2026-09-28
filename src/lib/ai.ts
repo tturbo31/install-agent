@@ -663,6 +663,11 @@ export function stripSchedulingPush(text: string): string {
       // work" from "Does tomorrow work, 9am or 1pm?") is a headless fragment,
       // not information: it shipped as "Does tomorrow work." (27/08/2026).
       .filter((cl) => !(cl.trim().length < 45 && QUESTION_LEAD_IN.test(cl.trim())));
+    // A pergunta perdeu a parte que perguntava: o que sobrou é o preâmbulo dela
+    // ("For the apartment's interior." de "For the apartment's interior, does
+    // today at 7pm or Monday at 4pm work?", mbameera IG 27/09/2026). Curto e
+    // sem "?" depois de uma frase que terminava em "?" = toco, não informação.
+    if (/\?\s*$/.test(s.trim()) && clauses.length > 0 && !clauses.some((cl) => cl.includes("?")) && clauses.join(", ").trim().length < 45) continue;
     // If the only thing left is a single leading-connector clause, it is
     // usually a dangling lead-in to the removed scheduling clause. Drop it when
     // SHORT ("Since you get off at 5:30.") — but a substantive clause is the
@@ -677,6 +682,30 @@ export function stripSchedulingPush(text: string): string {
     const rebuilt = clauses.join(", ").trim().replace(/[,\s]+$/, "");
     if (rebuilt) kept.push(/[.!?]$/.test(rebuilt) ? rebuilt : rebuilt + ".");
   }
+  const result = kept.join(" ").trim();
+  // Só quando algo foi cortado: a pergunta de escolha que ficou sem opções e o
+  // dia solto são tocos do corte, nunca informação.
+  return result === text.trim() ? result : dropOrphanSchedulingStumps(result);
+}
+
+// Depois de cortar os horários, "Which one is better for you?" / "which one do
+// you prefer?" (fb_28561144770208248 e Pucha WA, 27/09/2026) e "Sunday."
+// (tranquile_58 IG, 26/09/2026) ficaram sozinhos no fim da resposta. Uma
+// pergunta de escolha sem vírgula nem "or" não tem opções; um dia sozinho não
+// diz nada. A pergunta do tipo ("Which one is it, tile, vinyl, or hardwood?")
+// tem opções e fica.
+const ORPHAN_CHOICE_Q = /^(?:so\s+|then\s+|and\s+)?(?:which|what)\s+(?:one|time|day|option|slot)?\s*(?:is|works?|would\s+work|do\s+you\s+prefer|fits?|suits?|sounds?|do\s+you\s+like|would\s+you\s+(?:prefer|like))\b[^?]*\?$/i;
+const ORPHAN_DAY = /^(?:(?:on|for|this|next)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight)(?:\s+(?:then|works?|it\s+is|is\s+fine))?[.!]?$/i;
+const CLOCK_OR_DAY_WORD = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow|tonight)\b/i;
+export function dropOrphanSchedulingStumps(text: string): string {
+  const sentences = (text || "").split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((s) => {
+    const t = s.trim();
+    if (!t || t.includes("[")) return true;
+    if (ORPHAN_DAY.test(t)) return false;
+    if (ORPHAN_CHOICE_Q.test(t) && !CLOCK_OR_DAY_WORD.test(t) && !/,|\bor\b/i.test(t)) return false;
+    return true;
+  });
   return kept.join(" ").trim();
 }
 
@@ -2783,7 +2812,7 @@ export function stripHumanClaim(text: string, lang: "en" | "es" | "pt" = "en"): 
 // "over N" figure, or a floor-plan analysis marked LARGE PROJECT switch the
 // guard OFF: a false "off" only falls back to the model and the prompt, a
 // false "on" would send a 1,500 sqft lead to the phone.
-type SqSignal = { v: number; q: "exact" | "under" | "over" };
+type SqSignal = { v: number; q: "exact" | "under" | "over"; dim?: boolean };
 const SQ_NUM = String.raw`\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?`;
 const SQ_UNIT = String.raw`sq\.?\s*(?:ft|feet|foot)\.?|sf\b|sqft\b|sqf\b|square\s*(?:feet|foot|ft)\b|ft2\b|ft²|pies\s*(?:cuadrados?|²|2)\b|p[eé]s\s*(?:quadrados?|²|2)\b|sqm\b|sq\.?\s*m\b|m2\b|m²|mts?2\b|metros?\s*(?:cuadrados?|quadrados?|²|2)\b|square\s*met(?:er|re)s?\b`;
 const SQ_LESS = String.raw`under|less\s+than|below|no\s+more\s+than|max(?:imum)?(?:\s+of)?|up\s+to|menos\s+de|m[aá]ximo(?:\s+de)?|menor\s+(?:que|de)|at[eé]|hasta|no\s+m[aá]s\s+de|n[aã]o\s+mais\s+(?:que|de)`;
@@ -2791,7 +2820,7 @@ const SQ_MORE = String.raw`over|more\s+than|above|at\s+least|min(?:imum)?(?:\s+o
 const SQ_APPROX = String.raw`(?:about|around|approximately|approx\.?|roughly|maybe|like|some|only|just|aprox\.?|aproximadamente|unos|unas|uns|umas|casi|quase|s[oó]lo|solo|apenas|~)\s*`;
 const SQFT_STATEMENT_SRC = String.raw`(?:\b(${SQ_LESS})\s+|\b(${SQ_MORE})\s+)?(?:${SQ_APPROX})?(?<![\d.,$])(${SQ_NUM})\s*(?:(?:-|–|to|a|at[eé]|hasta|and|or|ou|o|y|e)\s*(${SQ_NUM})\s*)?(${SQ_UNIT})`;
 const DIM_UNIT = String.raw`(?:'|(?:ft\.?|feet|foot|pies|p[eé]s|mts?|metros?|meters?|metres?|m)\b)`;
-const SQ_DIMS_SRC = String.raw`(?<![\d.,$])(\d{1,2}(?:[.,]\d)?)\s*(${DIM_UNIT})?\s*(?:x|×|by|por)\s*(\d{1,2}(?:[.,]\d)?)\s*(${DIM_UNIT})?(?![\d.,]|\s*(?:in\b|inch|"|''|cm\b|mm\b|tiles?\b|planks?\b|porcelain|ceramic|format|size|pieces?|boxes?|sq|m2|m²))`;
+const SQ_DIMS_SRC = String.raw`(?<![\d.,$])(\d{1,2}(?:[.,]\d)?)\s*(${DIM_UNIT})?\s*(?:x|×|by|por)\s*(\d{1,2}(?:[.,]\d)?)\s*(${DIM_UNIT})?(?!\d|[.,]\d|\s*(?:in\b|inch|"|''|cm\b|mm\b|tiles?\b|planks?\b|porcelain|ceramic|format|size|pieces?|boxes?|sq|m2|m²))`;
 const ROOM_CUE = /\b(?:rooms?|bed\s*rooms?|kitchen|living|family\s+room|dining|area|space|garage|office|den|patio|basement|hallway|closet|bath(?:room)?|apartment|studio|condo|habitaci[oó]n|cuarto|rec[aá]mara|dormitorio|sala|cocina|comedor|[aá]rea|espacio|garaje|quarto|cozinha|espa[çc]o|garagem|c[oô]modo)\b/i;
 const TILE_SIZE_CTX = /\b(?:tiles?|porcelain|ceramic|planks?|inch(?:es)?|pulgadas?|polegadas?|cm|mm|format)\b|"|''/i;
 const WHOLE_HOUSE_SIGNAL = /\b(?:whole|entire|full|complete)\s+(?:house|home|apartment|apt|condo|place|unit|floor|property|thing)\b|\ball\s+(?:the\s+|of\s+the\s+|my\s+)?(?:rooms|bedrooms|floors|house|home)\b|\b(?:several|multiple|many|[2-9]|\d{2})\s+(?:rooms|bedrooms|areas)\b|\btoda\s+(?:a|la|mi|minha|nuestra|nossa)\s+casa\b|\btodo\s+(?:o|el|mi|meu)\s+(?:apartamento|apto|piso|departamento|dpto)\b|\bcasa\s+(?:toda|inteira|entera|completa)\b|\b(?:apartamento|departamento|apto)\s+(?:todo|inteiro|entero|completo)\b/i;
@@ -2835,7 +2864,7 @@ function clientSqftSignals(t: string): SqSignal[] {
     if (!(a >= 3 && b >= 3)) continue;
     const metric = !!u && /^m/i.test(u);
     const v = Math.round(a * b * (metric ? 10.764 : 1));
-    if (v >= 20) out.push({ v, q: "exact" });
+    if (v >= 20) out.push({ v, q: "exact", dim: true });
   }
   return out;
 }
@@ -2919,15 +2948,26 @@ export function bathroomProjectSignal(text: string): boolean {
 // The size the client stated when it is UNDER 400 sqft (the figure), or null
 // when no small size stands (nothing stated, 400+ stated anywhere, a later
 // "whole house", a remodel, a LARGE PROJECT plan).
+// Escopo de vários cômodos dito pelo cliente: "two bedrooms", "living dining
+// kitchen", "downstairs", "townhouse". Revisão 2 dias 25-27/09/2026 (Ashley IG:
+// "(3) 10by 10 rooms, (1) 12by18, all rooms"; YAMIL WA: "two bedrooms,
+// downstairs is living dining kitchen… the kitchen is 10x10"): a medida de UM
+// cômodo foi lida como o projeto inteiro e o lead foi mandado ligar por
+// "menos de 400 sqft". Com esse escopo, só um total explícito em sqft decide.
+const MULTI_ROOM_SIGNAL = /\b(?:two|three|four|five|six|dos|tres|cuatro|cinco|duas|dois|tr[eê]s|quatro|cinco)\s+(?:rooms|bedrooms|beds|areas|habitaciones|cuartos|rec[aá]maras|dormitorios|quartos|c[oô]modos)\b|\b(?:living|dining|kitchen|bedroom|family\s+room|hallway|den)\b[^.!?\n]{0,24}\b(?:living|dining|kitchen|bedroom|family\s+room|hallway|den)\b|\b(?:downstairs|upstairs|first\s+floor|second\s+floor|ground\s+floor|main\s+floor|planta\s+baja|primer\s+piso|andar\s+de\s+baixo|andar\s+de\s+cima)\b|\btown\s?house\b|\b(?:sala|cocina|comedor|cozinha|quarto|dormitorio)\b[^.!?\n]{0,24}\b(?:sala|cocina|comedor|cozinha|quarto|dormitorio)\b/i;
 export function smallJobStanding(history: Array<{ role: string; content: string }>): number | null {
   let small: number | null = null;
+  let smallFromDim = false;
+  let multiRoom = false;
   for (const m of history ?? []) {
     if (m.role !== "user") continue;
     const raw = m.content || "";
     const t = clientTextOnly(raw);
     if (t && (REMODEL_MENTION.test(t) || bathroomProjectSignal(t))) return null;
     if (/LARGE PROJECT/.test(raw)) return null;
-    const signals = [...clientSqftSignals(t), ...analysisSqftSignals(raw)];
+    if (t && (WHOLE_HOUSE_SIGNAL.test(t) || MULTI_ROOM_SIGNAL.test(t))) multiRoom = true;
+    const allSignals = [...clientSqftSignals(t), ...analysisSqftSignals(raw)];
+    const signals = multiRoom ? allSignals.filter((s) => !s.dim) : allSignals;
     let sum = 0;
     let stated = false;
     for (const s of signals) {
@@ -2942,7 +2982,8 @@ export function smallJobStanding(history: Array<{ role: string; content: string 
     if (stated) {
       if (sum >= 400) return null;
       small = sum;
-    } else if (small !== null && t && WHOLE_HOUSE_SIGNAL.test(t)) {
+      smallFromDim = signals.every((s) => s.dim);
+    } else if (small !== null && t && (WHOLE_HOUSE_SIGNAL.test(t) || (smallFromDim && MULTI_ROOM_SIGNAL.test(t)))) {
       small = null;
     }
   }
@@ -3226,6 +3267,10 @@ const APPOINTMENT_BELIEF_PATTERNS: RegExp[] = [
   /\b(?:we|i)\s+already\s+have\b[^.!?\n]{0,24}\b(?:appointment|appt|cita|agendamento)\b/i,
   /\b(?:we|i)\s+have\b[^.!?\n]{0,24}\b(?:appointment|appt|cita|agendamento)\b[^.!?\n]{0,16}\balready\b/i,
   /\b(?:my|our)\s+(?:appointment|appt)\b|\bmi\s+cita\b|\bnuestra\s+cita\b|\bminha\s+visita\b|\bmeu\s+agendamento\b/i,
+  // "I scheduled an appointment for tomorrow at 9 AM" (Niki, WA 26/09/2026):
+  // marcado fora do bot, o scheduler não tinha a visita e o bot "remarcou" no vazio.
+  /\b(?:i|we)\s+(?:have\s+)?(?:scheduled|booked|set\s+up|made)\b[^.!?\n]{0,24}\b(?:appointment|appt|visit|cita|visita|estimate)\b/i,
+  /\b(?:agend[eé]|reserv[eé]|marquei|agendei|hice|hicimos)\b[^.!?\n]{0,24}\b(?:cita|visita|agendamento)\b/i,
   // "the appointment/visit was confirmed", "can you confirm my appointment"
   /\b(?:appointment|appt|visit|cita|visita|agendamento)\b[^.!?\n]{0,32}\bconfirm/i,
   /\bconfirm(?:ed|ada|ado)?\b[^.!?\n]{0,32}\b(?:appointment|appt|visit|cita|visita|agendamento)\b/i,
@@ -3520,6 +3565,11 @@ const HOSTILE_CORE: RegExp[] = [
   /\b(?:f|eff)\s+(?:off|you|u)\b/i,
   /\bscrew\s+(?:you|off)\b/i,
   /\bpiss\s+off\b|\bgtfo\b|\bstfu\b|\bgo\s+to\s+hell\b|\bget\s+off\s+my\s+phone\b/i,
+  // Revisão 2 dias 25-27/09/2026 (IG): "Can you get ur AI off my D", "They
+  // need to turn that shit off" receberam resposta; proposta sexual no
+  // WhatsApp virou oferta de visita (Christian Diorsini). Rejeição: silêncio.
+  /\b(?:get|turn|take|shut)\s+(?:your|ur|that|this|the|it)\s+(?:ai|bot|shit|crap|spam|robot|thing|ads?)?\s*off\b/i,
+  /\bblow\s+(?:you|u|me|him)\b|\bnudes?\b|\bhorny\b|\bsend\s+(?:me\s+)?(?:pics?|photos?)\s+of\s+(?:you|u|yourself)\b|\bwanna\s+(?:f\W?ck|smash|hook\s*up)\b/i,
   // "get lost" only as the ENTIRE message — "if you get lost just call me
   // when you get to the gate" is a booked client giving directions
   /^[\s.,!]*(?:get\s+lost|buzz\s+off|blocked(?:\s+and\s+reported)?|chega|vaza|basta|ya\s+basta)[\s.,!]*$/i,
@@ -3615,6 +3665,20 @@ export function isHostileRejection(text: string): boolean {
 // model, which closes politely.
 const POLITE_DECLINE_PATTERNS: RegExp[] = [
   /\b(?:not|no\s+longer)\s+interested\b/i,
+  // Revisão 2 dias 25-27/09/2026: "None", "Not", "Not at all. Didn't know the
+  // ad was for flooring.", "just looking", "No. Need polish", "No we do epoxy",
+  // "What? No thanks", "I'm a kid", "Ahora mismo no pero…" e "amen" levaram o
+  // opener (ou uma resposta) no primeiro contato. Tudo isso é recusa: silêncio.
+  /^[\s.,!]*(?:none|nothing|nada|nenhum[ao]?|ningun[ao]?|not)[\s.,!]*$/i,
+  /^[\s.,!]*not\s+at\s+all\b/i,
+  /^[\s.,!]*(?:just|only|i'?m\s+just|im\s+just|we'?re\s+just|estoy\s+solo|s[oó]lo\s+estoy|s[oó]\s+estou)\s+(?:looking|browsing|curious|window\s+shopping|mirando|viendo|olhando|curios[oa])\b[^?]{0,40}$/i,
+  /^[\s.,!]*(?:what|huh|que|qu[eé]|eh)[.!,\s]+(?:no+|nope|nah)[\s.,!]*(?:thanks?|thank\s+(?:you|u)|ty|gracias)?[\s.,!]*$/i,
+  // ("Nope, hopefully in the future" fica com o modelo: porta aberta, decisão da revisão de 31/08)
+  /^[\s.,!]*(?:no+|nope|nah)[.!,]+\s+(?!.*\b(?:floors?|flooring|pisos?|tiles?|vinyl|hardwood|carpet|laminate|quote|estimate|price|precio|cotizaci[oó]n|or[çc]amento|visit|visita|future|later|soon|maybe|next\s+(?:week|month|year)|m[aá]s\s+adelante|luego|despu[eé]s|depois|talvez|quiz[aá]s|pr[oó]xim\w*|english|spanish|portuguese|espa[ñn]ol|ingl[eé]s|portugu[eê]s|speak|hablo?|habla|fal[oa])\b)[^?]{1,40}$/i,
+  /^[\s.,!]*no+[\s.,!]*\s*(?:we|i|yo|nosotros)\s+(?:do|install|sell|are|make|hacemos|instalamos|vendemos|somos)\b/i,
+  /\b(?:i'?m|i\s+am|im|soy|sou)\s+(?:a\s+|un\s+|una\s+|um\s+|uma\s+)?(?:kid|child|minor|ni[ñn][oa]|menor(?:\s+de\s+edad)?|crian[çc]a)\b/i,
+  /\b(?:ahora|por\s+ahora|por\s+el\s+momento|de\s+momento|agora|por\s+enquanto)\s+(?:mismo\s+)?no\b|\bno\s+por\s+(?:ahora|el\s+momento)\b|\bagora\s+n[aã]o\b/i,
+  /^[\s.,!]*(?:amen|hallelujah|aleluya|aleluia|bendiciones|god\s+bless(?:\s+you)?)[\s.,!]*$/i,
   /\bno\s+(?:estoy|estamos)\s+interesad[oa]s?\b|\bno\s+me\s+interesa\b/i,
   /\bn[aã]o\s+(?:tenho|temos|t[oô])\s+interesse\b|\bn[aã]o\s+me\s+interessa\b/i,
   // "não quero O vinil, quero tile" keeps its answer (the interest check also
@@ -3687,11 +3751,16 @@ const INTEREST_AFFIRM = /(?<!\bno\s)(?<!\bn[aã]o\s)\b(?:quiero|quero|necesito|n
 // ("[Client replied to our ad]") so whole-message patterns can see "No." as
 // the entire real message.
 function cleanRejectionText(burst: string): string {
-  return normalizeSmartPunct(burst || "")
+  // Revisão 2 dias 25-27/09/2026: "Nooooooooooo !!!🤦🚫🫷" e "No?????????????
+  // STOP Spamming" levaram o opener. Os emojis saem antes de julgar a frase e
+  // uma fileira de "?" colada num "no"/"what" é ênfase, não pergunta (o "?"
+  // é o sinal de interesse que manda a rajada para o modelo).
+  return removeEmojis(normalizeSmartPunct(burst || ""))
     .split(/\n\n?\[SYSTEM:/)[0]
+    .replace(/\b(no+|nope|nah|not|what|huh|que|qu[eé]|eh)\?+/gi, "$1.")
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l && !/^\[[^\]]*\]$/.test(l))
+    .filter((l) => l && !/^\[[^\]]*\]$/.test(l) && /[a-z0-9À-ɏ]/i.test(l))
     .join("\n")
     .trim();
 }
@@ -4326,10 +4395,17 @@ export async function getAIResponse(
   const unansweredBurst = unansweredUserBurst(messages);
   if (unansweredBurst.trim()) {
     const newestBubble = (messages[messages.length - 1]?.role === "user" ? messages[messages.length - 1].content : "").split(/\n\n?\[SYSTEM:/)[0];
+    // Revisão 2 dias 25-27/09/2026: um "No" / "None" / "not interested" que
+    // abre um EPISÓDIO NOVO (o cliente voltou depois de 6h+ de silêncio, em
+    // geral respondendo a uma nudge ou a um anúncio) é a mesma recusa do
+    // primeiro contato, não uma resposta à nossa pergunta de dias atrás
+    // (fb_28208613102057585: "No" → "No problem, which flooring…" + nudge).
+    const newEpisode = lastAssistantIdx !== -1 && staleThreadGapHours(messages) !== null;
     const rejected =
       lastAssistantIdx === -1
         ? isFirstContactRejection(unansweredBurst)
-        : isHostileRejection(newestBubble) && !isCancelRequest(newestBubble) && !containsBookingInfo(newestBubble);
+        : (isHostileRejection(newestBubble) && !isCancelRequest(newestBubble) && !containsBookingInfo(newestBubble)) ||
+          (newEpisode && isFirstContactRejection(newestBubble) && !isCancelRequest(newestBubble));
     if (rejected) {
       console.log("[AI] client rejected the contact — REACT_ONLY (total silence, no promo, no apology)");
       return { text: "[REACT_ONLY]", inputTokens: 0, outputTokens: 0 };
@@ -5488,6 +5564,7 @@ const CLAIM_SOFTEN_EN: Array<[RegExp, string]> = [
   [/\bi(?:'ve| have|'m| am)\s+(?:booked|booking|scheduled|scheduling)\s+you\b/gi, "I'm penciling you in"],
   [/\bgot\s+you\s+(?:down|booked|scheduled)\b/gi, "penciling you in"],
   [/\b(visit|appointment|estimate)\s+is\s+(?:now\s+)?(?:set|booked|scheduled|confirmed|on the (?:calendar|books))\b/gi, "$1 is penciled in"],
+  [/\b(?:is|are)\s+(?:now\s+)?confirmed\b/gi, "is penciled in"],
 ];
 const CLAIM_SOFTEN_ES: Array<[RegExp, string]> = [
   [/\b(te|se)\s+(?:lo\s+|la\s+)?(?:agendo|agend[eé]|reservo|reserv[eé]|apunto|apunt[eé]|anoto|anot[eé])\b/gi, "$1 lo aparto"],
@@ -5500,9 +5577,13 @@ const CLAIM_SOFTEN_PT: Array<[RegExp, string]> = [
   [/\b(visita|hor[aá]rio)\s+(est[aá]\s+)?(?:agendad|marcad|confirmad)([oa])\b/gi, "$1 $2anotad$3 por enquanto"],
   [/\b(est[aá]|fica|ficou)\s+(?:agendad|marcad|reservad|confirmad)([oa])\b/gi, "$1 anotad$2 por enquanto"],
 ];
+// "1pm tomorrow is confirmed!" (fb_26945544551739375, 27/09/2026) saiu sem
+// [BOOK] e sem endereço; a visita não existia e o cliente foi embora quando o
+// 1pm apareceu ocupado. "is/are confirmed" sem a linha enlatada é sempre claim.
+const BARE_CONFIRMED_CLAIM = /\b(?:is|are|está|esta|fica|queda)\s+(?:now\s+)?confirm(?:ed|ad[oa])\b/i;
 export function softenVisitClaim(text: string, lang: "en" | "es" | "pt" = "en"): string {
   if (!text || CANNED_VISIT_LINE.test(text)) return text;
-  if (!claimsVisitScheduled(text)) return text;
+  if (!claimsVisitScheduled(text) && !BARE_CONFIRMED_CLAIM.test(text)) return text;
   const rules = lang === "pt" ? [...CLAIM_SOFTEN_PT, ...CLAIM_SOFTEN_EN] : [...CLAIM_SOFTEN_ES, ...CLAIM_SOFTEN_EN, ...CLAIM_SOFTEN_PT];
   return withTagsProtected(text, (prose) => {
     let out = prose;
@@ -5652,6 +5733,7 @@ export function rewriteBookingDataAsk(
   const given = bookingItemsGiven(history, phoneKnown);
   if (!given.size) return text;
   let changed = false;
+  let slotAsk = false;
   const out = withTagsProtected(text, (prose) => {
     const sentences = prose.split(/(?<=[.!?])\s+|\n+/);
     const rebuilt = sentences.map((s) => {
@@ -5667,16 +5749,50 @@ export function rewriteBookingDataAsk(
       if (!wanted.length && mentioned.length === 1 && mentioned[0] === "name") {
         for (const k of REQUIRED_ITEMS) if (!given.has(k)) wanted.push(k);
       }
-      if (!wanted.length) return s;
-      changed = true;
       // A protected tag ([NOTIFY_OWNER]…) riding on this sentence stays with it.
       const tagsHere = s.match(/\[#TAG\d+#\]/g) ?? [];
+      if (!wanted.length) {
+        // Revisão 2 dias 25-27/09/2026 (Claudio, WA): a frase inteira pedia o
+        // ZIP que o cliente tinha acabado de digitar e nenhum horário estava
+        // escolhido. Tudo o que ela pede já foi dado: em vez de repetir o
+        // pedido, a frase vira a escolha do horário, o único item que falta, com
+        // a oferta que ficou em aberto repetida (o modelo já a escreveu).
+        if (!clientConfirmedSlot(history)) {
+          const restated = restateOpenSlotOffer(history, lang);
+          if (restated) {
+            changed = true;
+            slotAsk = true;
+            return restated + tagsHere.join("");
+          }
+        }
+        return s;
+      }
+      changed = true;
       return cannedDetailsAsk(wanted, lang) + tagsHere.join("");
     });
     return rebuilt.join(" ").replace(/[ \t]{2,}/g, " ").trim();
   });
-  if (changed) console.log("[AI] details-ask backstop: dropped the items the client already typed (" + [...given].join(",") + ")");
+  if (changed && slotAsk) console.log("[AI] details-ask backstop: the ask only repeated data the client already typed and no time is chosen yet, restated the open time offer instead");
+  else if (changed) console.log("[AI] details-ask backstop: dropped the items the client already typed (" + [...given].join(",") + ")");
   return changed ? out : text;
+}
+
+// A última oferta de horário nossa (frases com hora do relógio) nas últimas 4
+// falas, com um "anotado" na frente, no idioma da conversa. null quando não há
+// oferta em aberto para repetir.
+function restateOpenSlotOffer(history: Array<{ role: string; content: string }>, lang: "en" | "es" | "pt"): string | null {
+  const h = history ?? [];
+  let seen = 0;
+  for (let i = h.length - 1; i >= 0 && seen < 4; i--) {
+    if (h[i].role !== "assistant") continue;
+    seen++;
+    const prose = (h[i].content || "").split(/\n\n?\[SYSTEM:/)[0].replace(/\[[A-Z_]+(?::[\s\S]*?)?\]/g, " ");
+    const offer = prose.split(/(?<=[.!?])\s+|\n+/).filter((s) => /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(s)).map((s) => s.trim());
+    if (!offer.length) continue;
+    const ack = lang === "es" ? "Perfecto, anotado." : lang === "pt" ? "Perfeito, anotado." : "Got it, thanks.";
+    return ack + " " + offer.join(" ");
+  }
+  return null;
 }
 
 export const BOOK_NOW_NOTE =

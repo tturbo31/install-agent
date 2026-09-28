@@ -100,7 +100,8 @@ async function main() {
   for (const lang of ["en", "es", "pt"] as const) {
     const m = installHandoffMessage(lang);
     ck(`${lang}: menciona Ozzi`, /ozzi/i.test(m), m);
-    ck(`${lang}: sem número de telefone`, !/\d{3}[\s.-]?\d{4}/.test(m), m);
+    // Regra do dono 14/09/2026 (aplicada aqui em 27/09): nunca prometer retorno, dar o número do Ozzi.
+    ck(`${lang}: dá o número do Ozzi e não promete retorno`, /674[\s.-]?8334/.test(m) && !/get in touch|se comunicar|entrar[áa] em contato|shortly|en breve/i.test(m), m);
     ck(`${lang}: uma frase só`, (m.match(/[.!?]/g) ?? []).length === 1, m);
   }
 

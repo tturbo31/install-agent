@@ -176,8 +176,10 @@ function main() {
   ] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports clientConfirmedSlot + needSlotConfirmationMessage`, /clientConfirmedSlot/.test(src) && /needSlotConfirmationMessage/.test(src), rel);
-    ck(`${name}: blocks the booking when slot not confirmed`, /!clientConfirmedSlot\(history\)\)\s*\{[\s\S]{0,160}needSlotConfirmationMessage\(lang\)/.test(src), rel);
-    ck(`${name}: guard sits before createBooking`, src.indexOf("clientConfirmedSlot(history)") < src.indexOf("createBooking("), rel);
+    // 27/09/2026: a guarda lê o EPISÓDIO corrente (slotHistory = bookingEpisodeHistory(history)), caso Brian Ander.
+    ck(`${name}: blocks the booking when slot not confirmed`, /!clientConfirmedSlot\(slotHistory\)\)\s*\{[\s\S]{0,160}needSlotConfirmationMessage\(lang\)/.test(src), rel);
+    ck(`${name}: guard sits before createBooking`, src.indexOf("clientConfirmedSlot(slotHistory)") < src.indexOf("createBooking("), rel);
+    ck(`${name}: slot guards read the current booking episode only`, /const slotHistory = isReschedule \? history : bookingEpisodeHistory\(history\);/.test(src), rel);
   }
   // Prompt reinforcement present.
   const ai = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");

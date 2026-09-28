@@ -43,7 +43,7 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   );
   ck(
     "responde as INCLUSÕES na combinada (por tipo: vinyl material+labor+quarter round, tile/hardwood só labor)",
-    !!two && /vinyl promo already includes/i.test(two) && /tile and hardwood (?:cover the installation labor only|are labor only)/i.test(two),
+    !!two && /vinyl promo (?:already )?includes/i.test(two) && /tile and hardwood (?:cover the installation labor only|are labor only)/i.test(two),
     String(two)
   );
   ck(
@@ -55,7 +55,7 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   const three = composeAdFaqOpener(["inclusions", "discount", "process"], "en");
   ck(
     "3 tópicos: responde os três",
-    !!three && /furniture/i.test(three) && /best pricing/i.test(three) && /vinyl promo already includes/i.test(three),
+    !!three && /furniture/i.test(three) && /best pricing/i.test(three) && /vinyl promo (?:already )?includes/i.test(three),
     String(three)
   );
   ck("3 tópicos: uma única pergunta no fim", (String(three).match(/\?/g) ?? []).length === 1, String(three));
@@ -72,7 +72,7 @@ console.log("\n1) RAJADA COM VÁRIOS BOTÕES DE FAQ (17 de 24 vinham incompletas
   const ordered = composeAdFaqOpener(["inclusions", "location"], "en") ?? "";
   ck(
     "ordem fixa: localização antes das inclusões",
-    ordered.indexOf("Miami") < ordered.indexOf("vinyl promo already includes"),
+    ordered.indexOf("Homestead") < ordered.search(/vinyl promo (?:already )?includes/i),
     ordered
   );
 

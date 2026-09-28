@@ -58,7 +58,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -209,7 +209,11 @@ async function processBookingCommand(
     // SLOT CONFIRMATION guard: never book a day/time the client never picked
     // (RODOLFO, 2026-07-16: booked off a volunteered address+phone with no slot
     // chosen). Address and phone are not slot selections.
-    if (bookingData.date && bookingData.time && !clientConfirmedSlot(history)) {
+    // Episódio corrente (Brian Ander, 27/09/2026): depois da nossa última
+    // confirmação de visita, só o que o cliente disse DEPOIS conta para as
+    // guardas de horário. Remarcação de visita existente mantém o histórico.
+    const slotHistory = isReschedule ? history : bookingEpisodeHistory(history);
+    if (bookingData.date && bookingData.time && !clientConfirmedSlot(slotHistory)) {
       console.warn(`[IG] booking blocked — client never picked a specific slot; asking to choose`);
       return { response: needSlotConfirmationMessage(lang), booked: false };
     }
@@ -217,7 +221,13 @@ async function processBookingCommand(
     // TIME-INVENTION guard: the client picked a DAY but the booked HOUR never
     // appeared in the conversation → the model invented it (AXEL, 2026-07-30,
     // Messenger). Block and re-offer with that day's real open times.
-    if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(history, bookingData.time)) {
+    // Dia sem hora (Claudio, WA 26/09/2026): "el lunes tengo la 1pm o 3pm" →
+    // "Ok lunes" gravou 1pm. Duas horas ofertadas para o dia = a hora é do cliente.
+    if (!isReschedule && bookingData.date && bookingData.time && dayOnlyPickNeedsTime(slotHistory)) {
+      console.warn("[IG] booking blocked — client picked the day but that day had two or more times on offer; asking which time");
+      return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+    }
+    if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(slotHistory, bookingData.time)) {
       console.warn(`[IG] booking blocked — time ${bookingData.time} never appeared in the conversation; asking client to choose`);
       return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
     }
@@ -228,7 +238,7 @@ async function processBookingCommand(
     // 25th at 1pm — a day+time the offer list contained, so every other guard
     // passed; the client waited all Sunday for a visit sitting two days later).
     if (bookingData.date && bookingData.time) {
-      const pm = bookedSlotMismatchesPromise(history, bookingData.date, bookingData.time);
+      const pm = bookedSlotMismatchesPromise(slotHistory, bookingData.date, bookingData.time);
       if (pm.mismatch) {
         console.warn(`[IG] booking blocked — ${pm.reason}; re-offering real times`);
         return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date), booked: false };

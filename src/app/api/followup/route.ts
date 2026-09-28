@@ -4,7 +4,12 @@ import { maybeRunFunilSilenceCheck } from "@/lib/funil";
 import { refreshInstagramTokenIfDue } from "@/lib/ig-token";
 import { retryFailedSends, watchWaQueue } from "@/lib/delivery";
 
-// One-shot follow-up sweep for hot leads that went quiet mid-scheduling.
+// Follow-up sweep for leads that went quiet mid-scheduling. Owner rule
+// 2026-09-27: the first nudge only after 2 full days of client silence, one
+// more 2 days later, never a third, WhatsApp only (Meta's 24h window closes
+// before the 2-day mark). The sweep itself may run as often as it likes (the
+// platform's pg_cron calls it every 30 min): with the 2-day gate almost every
+// run finds nothing to send.
 // Triggered by the daily Vercel Cron (see vercel.json) and manually:
 //   GET /api/followup?secret=...&run=1        → live sweep (sends, capped at 25)
 //   GET /api/followup?secret=...&run=1&dry=1  → dry run (lists candidates, sends NOTHING)

@@ -112,8 +112,11 @@ export function formatInstallDateTime(iso: string): string | null {
 // Acknowledgment curto que NÃO é pergunta: "ok", "perfect", "sounds good",
 // "yes", "got it", "see you tomorrow", um emoji, "👍". Mensagem com "?" ou
 // palavra de pergunta nunca é ack.
+// "Perfect we are ready" (Nathalie, WA 27/09/2026) não era ack e virou
+// "I'll pass this along to Ozzi, who will get in touch": quem confirma que está
+// pronto para a instalação de amanhã só precisa do 👍.
 const ACK_WORDS =
-  /^(?:ok(?:ay)?|k|kk|perfect|perfecto|perfeito|great|awesome|cool|sure|yes|yep|yeah|ya|si|sí|sim|claro|dale|vale|listo|got it|noted|sounds? (?:good|great|perfect)|that (?:works|sounds (?:good|great|better))|all good|good|nice|alright|all right|will do|see (?:you|ya)(?: (?:then|tomorrow|soon|there))?|nos vemos(?: mañana)?|até (?:amanhã|lá)|ha+|haha+|lol)[\s!.…]*$/i;
+  /^(?:(?:ok(?:ay)?|perfect|perfecto|perfeito|great|awesome|yes|yep|si|sí|sim|sure|alright|listo)[\s,!.]+)?(?:ok(?:ay)?|k|kk|perfect|perfecto|perfeito|great|awesome|cool|sure|yes|yep|yeah|ya|si|sí|sim|claro|dale|vale|listo|got it|noted|sounds? (?:good|great|perfect)|that (?:works|sounds (?:good|great|better))|all good|good|nice|alright|all right|will do|see (?:you|ya)(?: (?:then|tomorrow|soon|there))?|nos vemos(?: mañana)?|até (?:amanhã|lá)|ha+|haha+|lol|(?:we(?:'re| are)?|i(?:'m| am)?|im|estamos|estoy|estou)?\s*(?:all\s+)?(?:ready|set|listos?|prontos?)(?:\s+(?:for\s+)?(?:you|tomorrow|them|it|mañana|amanhã))?|confirmed|confirmado|confirmo|we(?:'ll| will)\s+be\s+(?:here|home|there|ready)|estaremos(?: aquí| en casa)?|aqui estaremos)[\s!.…]*$/i;
 const QUESTION_MARKERS =
   /\?|\b(?:what|when|where|why|which|who|how|can|could|would|will|is|are|do|does|did|should|qué|que|cuándo|cuando|dónde|donde|cómo|como|por qué|porque|puede|pueden|quando|onde|pode|podem)\b/i;
 
@@ -122,6 +125,10 @@ export function isInstallAck(raw: string): boolean {
   if (!t) return false;
   // Só emoji / símbolos (👍, ❤️, 🙏, "!!")
   if (!/[a-z0-9À-ɏ]/i.test(t)) return true;
+  // "Perfect we are ready" / "Ok we will be here" (Nathalie, 27/09/2026): o
+  // "are"/"will" dos marcadores de pergunta não desfaz um ack inteiro (o ack
+  // nunca termina em "?", então uma pergunta de verdade não passa aqui).
+  if (t.length <= 60 && ACK_WORDS.test(t)) return true;
   if (QUESTION_MARKERS.test(t)) return false;
   if (isPureClosing(t)) return true;
   if (t.length > 60) return false;
@@ -131,11 +138,13 @@ export function isInstallAck(raw: string): boolean {
   return chunks.every((c) => ACK_WORDS.test(c) || isPureClosing(c));
 }
 
-// Frase única, sem pronome para o Ozzi, sem prometer horário ou resposta.
+// Frase única, sem prometer horário, resposta ou retorno: regra do dono
+// 14/09/2026 (nunca "o Ozzi entra em contato", dar o número). O dono continua
+// avisado pelo INSTALL_STAGE_ALERT.
 export function installHandoffMessage(lang: Lang): string {
-  if (lang === "es") return "Le paso su mensaje a Ozzi, quien se comunicará con usted en breve.";
-  if (lang === "pt") return "Vou repassar sua mensagem ao Ozzi, que entrará em contato em breve.";
-  return "I'll pass this along to Ozzi, who will get in touch with you shortly.";
+  if (lang === "es") return "Para cualquier detalle de su instalación, lo mejor es hablar directo con Ozzi al (561) 674-8334.";
+  if (lang === "pt") return "Para qualquer detalhe da sua instalação, o melhor é falar direto com o Ozzi no (561) 674-8334.";
+  return "For anything about your installation, the best is to reach Ozzi directly at (561) 674-8334.";
 }
 
 export const INSTALL_STAGE_ALERT =

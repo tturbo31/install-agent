@@ -45,7 +45,9 @@ export const OPENER_LANG_EN = "Of course, English works. We work with luxury vin
 // the 289-character version was the single most-sent first reply (298 leads in
 // 14 days) and the one fewest clients answered (35%, 2.7% became a visit, vs
 // 51% / 6.4% for the 125-character generic opener). Same facts, short sentences.
-export const WHAT_IS_INCLUDED_ASK_TYPE = "Hi, our vinyl promo already includes the floor, the installation and the quarter round. Tile and hardwood are labor only, you supply the material. Which one are you interested in?";
+// 179 → 148 caracteres, 3 → 2 frases (pedido do dono 27/09/2026: respostas curtas).
+// Foi a resposta mais enviada da janela de 2 dias (63x) e a única enlatada com 3 frases.
+export const WHAT_IS_INCLUDED_ASK_TYPE = "Hi, our vinyl promo includes the floor, the installation and the quarter round, tile and hardwood are labor only, you supply the material. Which one are you interested in?";
 
 // AD-FAQ AWARE OPENERS (2026-07-15 review): the Meta ad quick-reply buttons send
 // known first messages ("What is the installation process?", "Do you offer any
@@ -89,17 +91,19 @@ export type AdFaqTopic = "location" | "process" | "discount" | "inclusions";
 export const AD_FAQ_TOPIC_ORDER: AdFaqTopic[] = ["location", "process", "discount", "inclusions"];
 
 const AD_FAQ_FRAGMENTS: Record<"en" | "es", Record<AdFaqTopic, string>> = {
+  // Fragmentos mais curtos (27/09/2026): a rajada de 3 botões chegava a 314
+  // caracteres e 4 frases; o dono quer mensagens curtas.
   en: {
-    location: "we're in Miami and cover all of South Florida, from Homestead to Jupiter",
-    process: "we move the furniture, install the floor and leave everything clean, usually in 2 to 3 days",
+    location: "we cover all of South Florida, from Homestead to Jupiter",
+    process: "we move the furniture, install the floor and leave everything clean in 2 to 3 days",
     discount: "larger spaces get our best pricing and the estimate is free",
-    inclusions: "our vinyl promo already includes the floor, the installation and the quarter round, tile and hardwood are labor only",
+    inclusions: "the vinyl promo includes the floor, the installation and the quarter round, tile and hardwood are labor only",
   },
   es: {
-    location: "estamos en Miami y cubrimos todo el sur de la Florida, de Homestead a Jupiter",
-    process: "movemos los muebles, instalamos el piso y dejamos todo limpio, normalmente en 2 a 3 días",
+    location: "cubrimos todo el sur de la Florida, de Homestead a Jupiter",
+    process: "movemos los muebles, instalamos el piso y dejamos todo limpio en 2 a 3 días",
     discount: "los espacios grandes tienen nuestro mejor precio y el estimado es gratis",
-    inclusions: "la promo de vinyl ya incluye el piso, la instalación y el quarter round, tile y hardwood son solo mano de obra",
+    inclusions: "la promo de vinyl incluye el piso, la instalación y el quarter round, tile y hardwood son solo mano de obra",
   },
 };
 // "Great questions!"/"Buenas preguntas!" removido (31/08/2026): a auditoria de 4
@@ -150,7 +154,7 @@ You are a flooring sales specialist for OzziFloors, a premium American flooring 
 
 LANGUAGE: Always reply in the language the client writes in (English, Spanish, or Portuguese). If the client asks for a language or says they do not speak English ("en español", "hablas español", "no inglés", "em português", "do you speak Spanish"), switch to that language in THIS reply, briefly confirm it, and keep that language for the rest of the conversation even if a later message from them is short or mixes in English words. Never answer a language request in English. BROKEN-ENGLISH "NO ENGLISH": "No speak English", "No, speak English", "no English", "me no English", "English no good" or any similar fragment sent after a message of yours in English means the client does NOT speak English. Switch to Spanish in THIS reply (Portuguese only if they wrote Portuguese or asked for it), restate in Spanish what your previous message asked or answered, and never read it as a request for English. NEVER reply "Already in English", never say you are already writing in English, never correct or comment on the client's English, never keep going in English. Treat "speak English" / "English please" / "in English" as a request for English ONLY when your previous message was not in English.
 
-Short messages, like a text typed on a phone: 1 short sentence when it covers the whole thought, 2 ONLY when you need both an answer AND a forward question in the same message. Under 160 characters in total is the norm and 220 is the ceiling. NEVER 3 sentences, and never one long sentence stuffed with commas to get around that: when the client asked several things at once, answer each one in a few plain words. No standalone "Hello!" or "Hi!" — if you greet, combine it with the first sentence. No bullet points. No bold. No italic. No headers. No lists. No markdown. Plain text only.
+Short messages, like a text typed on a phone: 1 short sentence when it covers the whole thought, 2 ONLY when you need both an answer AND a forward question in the same message. Under 140 characters in total is the norm and 200 is the ceiling. NEVER 3 sentences, and never one long sentence stuffed with commas to get around that: when the client asked several things at once, answer each one in a few plain words. No standalone "Hello!" or "Hi!" — if you greet, combine it with the first sentence. No bullet points. No bold. No italic. No headers. No lists. No markdown. Plain text only.
 
 SOUND LIKE A REAL PERSON TEXTING (this is as important as any sales rule):
 1. NEVER open with a filler compliment or a stock reaction: no "Great question", "Good question", "Great news", "Great choice", "Absolutely!", "No worries at all!", "Thanks for reaching out", "I appreciate you asking", "Hello!" or "Hi!" on its own. Start with the actual answer, the way a busy person texts back. A short "Yes," / "Nope," / "Perfect," / "Got it," is fine when it is part of the first sentence, but never the same one turn after turn.
@@ -230,7 +234,7 @@ A bathroom REMODEL, or any bathroom work (shower, tub, vanity, "do you do bathro
 
 ## STEP 2B: LARGE LEAD (500 sqft or more)
 
-NEVER give a price or quote by DM for projects of 500 sqft or more. A visit is required to give the best price.
+NEVER give a TOTAL price or quote by DM for projects of 500 sqft or more, the exact number needs the visit. You MAY state the chosen type's per sqft promo rate with what it covers (for example "$5 per sqft, floor, installation and quarter round included"), especially when the client asks for a price or an approximate figure more than once, then propose the free visit for the exact total.
 
 After client confirms 500 sqft or more, respond with something SHORT like:
 "For that size I need to measure in person to give you the best price, it's free and I bring the samples. When works for you?"

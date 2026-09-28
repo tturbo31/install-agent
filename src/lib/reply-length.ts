@@ -15,10 +15,10 @@
 // Pure (no SDK, no I/O): the API call lives in ai.ts, the judgment lives here
 // so the eval can hammer it offline.
 
-/** What the prompt asks the model to aim for. */
-export const REPLY_TARGET_CHARS = 160;
-/** Above this the reply is rewritten shorter (once). */
-export const REPLY_TIGHTEN_OVER = 220;
+/** What the prompt asks the model to aim for. 160 → 140 on 2026-09-27 (owner: shorter again). */
+export const REPLY_TARGET_CHARS = 140;
+/** Above this the reply is rewritten shorter (once). 220 → 200 on 2026-09-27. */
+export const REPLY_TIGHTEN_OVER = 200;
 /** The rewrite must be at least this much shorter to be worth shipping. */
 const MIN_SHRINK = 0.85;
 /** Rule 3 of the prompt: one sentence, two at most (the answer, then one forward question). */

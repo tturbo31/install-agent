@@ -65,7 +65,7 @@ async function main() {
   console.log("[1] prompt, ordem da rede, Dreaming");
   const ai = src("src/lib/ai.ts");
   const dr = src("src/lib/dreaming.ts");
-  ck("prompt estável: orçamento em caracteres (160 norma, 220 teto)", /Under 160 characters in total is the norm and 220 is the ceiling/.test(SYSTEM_PROMPT));
+  ck("prompt estável: orçamento em caracteres (160 norma, 220 teto)", /Under 140 characters in total is the norm and 200 is the ceiling/.test(SYSTEM_PROMPT));
   ck("prompt estável: proíbe o período único cheio de vírgulas", /never one long sentence stuffed with commas/.test(SYSTEM_PROMPT));
   ck("prompt estável: proposta de visita em UMA frase curta, sem empilhar argumentos", /Propose the visit in ONE short sentence/.test(SYSTEM_PROMPT) && /Do not stack more selling points/.test(SYSTEM_PROMPT));
   ck("prompt estável: o exemplo de 3 frases da proposta de visita saiu", !/I bring the floor samples so you can pick right there\. When would work for you\?/.test(SYSTEM_PROMPT));
@@ -108,7 +108,7 @@ async function main() {
   ck(`rajada de 3 botões: ${three.length} <= 340 (era 380+)`, three.length > 0 && three.length <= 340, three);
   const longest = (t: string) => Math.max(...t.split(/(?<=[.?!])\s+/).map((s) => s.length));
   ck("rajada em frases curtas (nenhuma passa de 130), não num período só", longest(three) <= 130 && longest(threeEs) <= 130, `${longest(three)} / ${longest(threeEs)}`);
-  ck("rajada responde os 3 e pede o tipo no fim", /furniture/i.test(three) && /best pricing/i.test(three) && /vinyl promo already includes/i.test(three) && /tile, vinyl, or hardwood\?$/.test(three), three);
+  ck("rajada responde os 3 e pede o tipo no fim", /furniture/i.test(three) && /best pricing/i.test(three) && /vinyl promo (?:already )?includes/i.test(three) && /tile, vinyl, or hardwood\?$/.test(three), three);
   ck("rajada ES sem ¿¡ e com os 3", !/[¿¡]/.test(threeEs) && /muebles/.test(threeEs) && /mejor precio/.test(threeEs) && /solo mano de obra/.test(threeEs), threeEs);
   const PH = "[Client replied to our ad]";
   const n1 = adRetapNudge([U(PH), A(OPENER_EN), U(PH)]) ?? "";

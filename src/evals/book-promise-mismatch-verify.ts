@@ -171,8 +171,9 @@ async function main() {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports bookedSlotMismatchesPromise`, /bookedSlotMismatchesPromise/.test(src), rel);
     ck(`${name}: blocks on mismatch and re-offers the promised day's real times`,
-      /bookedSlotMismatchesPromise\(history,\s*bookingData\.date,\s*bookingData\.time\)[\s\S]{0,300}needTimeChoiceMessage\(lang,\s*pm\.promisedDate\s*\?\?\s*bookingData\.date(?:,\s*bookingData\.address)?\)/.test(src), rel);
-    ck(`${name}: guard sits before createBooking`, src.indexOf("bookedSlotMismatchesPromise(history") < src.indexOf("createBooking("), rel);
+      // 27/09/2026: a guarda lê o EPISÓDIO corrente (slotHistory), caso Brian Ander.
+      /bookedSlotMismatchesPromise\(slotHistory,\s*bookingData\.date,\s*bookingData\.time\)[\s\S]{0,300}needTimeChoiceMessage\(lang,\s*pm\.promisedDate\s*\?\?\s*bookingData\.date(?:,\s*bookingData\.address)?\)/.test(src), rel);
+    ck(`${name}: guard sits before createBooking`, src.indexOf("bookedSlotMismatchesPromise(slotHistory") < src.indexOf("createBooking("), rel);
   }
 
   console.log(`\n========== BOOK-PROMISE-MISMATCH-VERIFY: ${pass} passed, ${fail} failed ==========`);
