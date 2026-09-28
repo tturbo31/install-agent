@@ -23,7 +23,7 @@ import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal, quoteHandoffActive, isTalkToOzziRequest, talkToOzziLang, talkToOzziMessage, QUOTE_HANDOFF_SUFFIX, QUOTE_TALK_TO_OZZI_ALERT, QUOTE_AFTER_HANDOFF_ALERT } from "@/lib/quote-reply";
 import { findRecentInstallationConfirmation, isInstallAck, installHandoffMessage, INSTALL_STAGE_ALERT } from "@/lib/instalacao";
-import { findReviewContext, composeReviewReply, isReviewRefusal, reviewHandoffActive, reviewPhotoReply, REVIEW_HANDOFF_SUFFIX, REVIEW_PHOTO_ALERT, REVIEW_REFERRAL_ALERT, REVIEW_HANDOFF_ALERT, REVIEW_AFTER_HANDOFF_ALERT } from "@/lib/review-reply";
+import { findReviewContext, composeReviewReply, isReviewRefusal, reviewHandoffActive, reviewPhotoReply, looksLikeNewProjectRequest, imageAnalysisIsRealFloor, REVIEW_HANDOFF_SUFFIX, REVIEW_PHOTO_ALERT, REVIEW_REFERRAL_ALERT, REVIEW_HANDOFF_ALERT, REVIEW_AFTER_HANDOFF_ALERT } from "@/lib/review-reply";
 import { isWaEditCallback, waEditAction, waEditStoreId, phoneFromWaIgsid, isRealWaPhone } from "@/lib/wa-edit-policy";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + audio download/transcription
@@ -743,11 +743,11 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // histórico) e manda uma imagem está mandando o PRINT do review, não uma
     // planta baixa: nada de análise de piso. O tratamento (dono com a foto,
     // plataforma, agradecimento) vem logo depois de gravar a mensagem.
-    const reviewPhotoCtx = imageUrl ? await findReviewContext(conv.id).catch(() => null) : null;
+    let reviewPhotoCtx = imageUrl ? await findReviewContext(conv.id).catch(() => null) : null;
 
     // Pre-fetch image
     let preFetchedImageBase64: string | null = null;
-    if (imageUrl && !reviewPhotoCtx) {
+    if (imageUrl) {
       preFetchedImageBase64 = await downloadZApiImage(imageUrl).catch(() => null);
     }
     // Analyze the photo BEFORE storing / debouncing (Briones, IG 2026-09-05):
@@ -759,6 +759,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
         const a = await analyzeImageFromBase64(preFetchedImageBase64);
         if (a && !a.toLowerCase().includes("could not") && a.length > 20) preAnalysis = a;
       } catch (err) { console.warn("[WA] pre-debounce image analysis failed:", err); }
+    }
+    // Cliente de review mandou FOTO DE PISO (reclamação, obra nova), não um
+    // print: segue o fluxo normal, exatamente como antes (regra do dono 28/09:
+    // nada muda para quem não está mandando o print do review).
+    if (reviewPhotoCtx && preAnalysis && imageAnalysisIsRealFloor(preAnalysis)) {
+      console.log("[WA] review: a imagem é foto de piso, não print de review — fluxo normal");
+      reviewPhotoCtx = null;
     }
     const storedText = reviewPhotoCtx ? "[review screenshot]" : preAnalysis ? `[Floor plan analysis: ${preAnalysis}]` : rawText;
 
@@ -1108,7 +1115,12 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (!engageReschedule) {
       try {
         const reviewCtx = await findReviewContext(conv.id);
-        if (reviewCtx) {
+        // Orçamento NOVO de quem já é cliente ("quote for my other house", "how
+        // much for 800 sqft") não é assunto de review: sai daqui e cai no fluxo
+        // de vendas de sempre, o que marca a visita. Regra do dono (28/09).
+        if (reviewCtx && looksLikeNewProjectRequest(rawText)) {
+          console.log("[WA] review: cliente pede orçamento novo — fluxo normal de vendas");
+        } else if (reviewCtx) {
           const recusou = isReviewRefusal(rawText);
           await enviarEventoFunil(
             "review_respondeu",

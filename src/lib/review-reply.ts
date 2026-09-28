@@ -184,6 +184,32 @@ export function isReviewDoneClaim(text: string): boolean {
   return REVIEW_DONE.test(t);
 }
 
+// ─── O cérebro de VENDAS não muda (regra do dono, 28/09/2026) ────────────────
+// Cliente de review que volta pedindo ORÇAMENTO NOVO (outra casa, outro cômodo,
+// "how much for 800 sqft") é lead de novo: sai do modo review e cai no fluxo
+// normal, o mesmo de sempre, que marca a visita. Só fica no modo review quando
+// a mensagem é sobre review/indicação (o "my friend wants a quote" é indicação).
+const NEW_PROJECT =
+  /\b(?:estimate|quote|quotation|install(?:ation|ed|ing)?|new\s+(?:floors?|project|job)|another\s+(?:room|house|property|project|job|floor)|sq\s*\.?\s*ft|square\s+f(?:ee|oo)t|price\s+for|how\s+much\s+(?:for|to|would|is|does)|cotizaci[oó]n|presupuesto|instalar|instalaci[oó]n|otr[oa]\s+(?:trabajo|proyecto|piso|casa|cuarto)|cu[aá]nto\s+(?:cuesta|sale|cobran|ser[ií]a)|or[çc]amento|quanto\s+(?:custa|fica))\b/i;
+const REVIEW_TOPIC =
+  /\b(?:reviews?|rese[ñn]as?|google|yelp|screenshots?|captura|print|refer(?:ral|red|ring)?|friend|neighbou?r|family|amig[oa]s?|vecin[oa]s?|famili\w*|comisi[oó]n|commission|reward|recompensa|indica\w*|recomend\w*|stars?|estrellas?)\b/i;
+
+export function looksLikeNewProjectRequest(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0];
+  if (!t.trim()) return false;
+  return NEW_PROJECT.test(t) && !REVIEW_TOPIC.test(t);
+}
+
+// A análise de imagem (a mesma de sempre, prompt de planta/piso) termina com
+// "Floor type: X". Um PRINT de review vira "not a floor"; foto de piso de
+// verdade (reclamação, obra nova) segue o fluxo normal, como antes.
+const REAL_FLOORS = new Set(["tile", "vinyl plank", "laminate", "hardwood", "carpet", "marble", "concrete", "epoxy", "microcement", "pavers", "terrazzo", "subfloor"]);
+export function imageAnalysisIsRealFloor(analysis: string): boolean {
+  const m = /floor\s+type\s*:\s*([a-z ]+)/i.exec(analysis || "");
+  if (!m) return false;
+  return REAL_FLOORS.has(m[1].trim().toLowerCase());
+}
+
 // ─── Textos fixos ────────────────────────────────────────────────────────────
 // Sem modelo, sem risco: nunca oferecem horário, preço nem prometem prazo de
 // pagamento. Quem paga é o Ozzi; a mensagem só confirma o recebimento.

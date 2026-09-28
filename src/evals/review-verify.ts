@@ -19,6 +19,8 @@ import {
   reviewHandoffActive,
   reviewPhotoReply,
   reviewAskScreenshotReply,
+  looksLikeNewProjectRequest,
+  imageAnalysisIsRealFloor,
 } from "../lib/review-reply";
 import { stripInternalMarkers } from "../lib/outbound-text";
 import { containsSchedulingOffer } from "../lib/ai";
@@ -105,10 +107,33 @@ function main() {
   ck("webhook: bloco de review existe", iRev > 0);
   ck("webhook: review vem ANTES da etapa de instalação", iRev > 0 && iInst > 0 && iRev < iInst);
   ck("webhook: review vem ANTES do follow-up de orçamento", iRev > 0 && iQuote > 0 && iRev < iQuote);
-  const iPhotoCtx = wa.indexOf("const reviewPhotoCtx = imageUrl ? await findReviewContext(conv.id)");
+  const iPhotoCtx = wa.indexOf("let reviewPhotoCtx = imageUrl ? await findReviewContext(conv.id)");
   const iAnalyse = wa.indexOf("preFetchedImageBase64 = await downloadZApiImage(imageUrl)");
   ck("webhook: contexto de review é lido ANTES de baixar/analisar a imagem", iPhotoCtx > 0 && iAnalyse > 0 && iPhotoCtx < iAnalyse);
-  ck("webhook: imagem de review NÃO passa pela análise de planta", wa.includes("if (imageUrl && !reviewPhotoCtx) {"));
+  ck("webhook: foto de PISO de cliente de review volta ao fluxo normal (não é print)", wa.includes("if (reviewPhotoCtx && preAnalysis && imageAnalysisIsRealFloor(preAnalysis)) {") && wa.includes("reviewPhotoCtx = null;"));
+  ck("webhook: orçamento novo de cliente de review cai no fluxo de vendas", wa.includes("if (reviewCtx && looksLikeNewProjectRequest(rawText)) {"));
+  // O cérebro de VENDAS (ai.ts / system-prompt.ts / scheduler.ts) não importa
+  // nada do review: o que a IA responde a lead continua exatamente igual.
+  for (const f of ["../lib/ai.ts", "../lib/system-prompt.ts", "../lib/scheduler.ts", "../lib/quote-followup.ts", "../lib/quote-reply.ts"]) {
+    ck(`cérebro de vendas intacto: ${f} não importa review-reply`, !readFileSync(join(__dirname, f), "utf8").includes("review-reply"));
+  }
+  // O bloco de review só roda quando a conversa tem o marcador (findReviewContext
+  // devolve null para todo mundo mais) e sempre dentro de try/catch que segue o
+  // fluxo normal em erro.
+  ck("webhook: erro no bloco de review segue o fluxo normal", wa.includes('console.error("WA review-reply error (seguindo o fluxo normal):", err);'));
+
+  // ── 8. Cliente de review que vira lead de novo ─────────────────────────────
+  console.log("\n[8] looksLikeNewProjectRequest / imageAnalysisIsRealFloor");
+  for (const t of ["Can I get a quote for my mom's house?", "How much for 800 sqft of vinyl?", "I want to install floors in another room", "Quiero una cotización para otra casa", "Cuánto cuesta instalar 100 m2", "Quanto custa o orçamento pra outra casa"]) {
+    ck(`✔ orçamento novo: "${t}"`, looksLikeNewProjectRequest(t));
+  }
+  for (const t of ["My friend wants a quote, can I refer her?", "How much do I get for the review?", "Where do I leave the Google review?", "Done, here is the screenshot", "ok thanks", "Mi vecino quiere una cotización, lo recomiendo"]) {
+    ck(`✘ assunto de review/indicação: "${t}"`, !looksLikeNewProjectRequest(t));
+  }
+  ck("análise 'Floor type: not a floor' = print (fica no review)", !imageAnalysisIsRealFloor("A screenshot of a Google review page.\nFloor type: not a floor"));
+  ck("análise 'Floor type: tile' = piso de verdade (fluxo normal)", imageAnalysisIsRealFloor("Photo of a bathroom.\nFloor type: tile"));
+  ck("análise 'Floor type: floor plan' = não é piso", !imageAnalysisIsRealFloor("Floor type: floor plan"));
+  ck("análise sem linha final = não decide (fica no review)", !imageAnalysisIsRealFloor("could not analyze"));
   const iPhotoHandler = wa.indexOf('await enviarEventoFunil("review_foto_recebida"');
   const iHumanGate = wa.indexOf('if (conv.mode === "human") {\n      // Cliente de REVIEW respondeu com a conversa em modo humano');
   ck("webhook: print do review é tratado ANTES do gate de modo humano (dono sempre avisado)", iPhotoHandler > 0 && iHumanGate > 0 && iPhotoHandler < iHumanGate);
