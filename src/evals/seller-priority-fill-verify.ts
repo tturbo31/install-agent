@@ -1,11 +1,13 @@
 // Owner rule 2026-09-17: "lotar a agenda de UM vendedor antes do próximo, ordem
 // estrita; lotar o dia mais próximo de todos os vendedores, nenhum dia picado".
-// ORDER since 2026-09-29 (owner): Diego → Alexandre → Chris (it was
-// Alexandre → Diego → Chris from 17/09 to 29/09). The order lives in
-// sellers.priority of the Ozzi Plataforma; the bot's platform user cannot UPDATE
-// that table (RLS), so applySellerPriorityOrder (scheduler.ts) swaps Diego and
-// Alexandre after every read while the table still holds the 17/09 snapshot
-// (Alexandre 1, Diego 2). Any other order set by the owner in the platform wins.
+// ORDER since the evening of 2026-09-29 (owner: "prioridade para o Diego; Alex
+// e Chris iguais"): Diego first, then Alexandre and Chris as ONE tier (it was
+// Alexandre → Diego → Chris from 17/09 to the morning of 29/09, and Diego →
+// Alexandre → Chris for a few hours). The order lives in sellers.priority of
+// the Ozzi Plataforma; the bot's platform user cannot UPDATE that table (RLS),
+// so applySellerPriorityOrder (scheduler.ts) maps Diego 1 / Alexandre 2 /
+// Chris 2 after every read while the table still holds the 17/09 snapshot
+// (Alexandre 1, Diego 2, Chris 3). Any other order set in the platform wins.
 // The schedule the model reads used to be a seller-less union of every open
 // hour, so with the first seller's 9am taken it still listed 9am (Chris's) and
 // the next client landed on Chris while the first seller had hours open. Now:
@@ -43,8 +45,8 @@ function loadEnv() {
   }
 }
 loadEnv();
-// Esta eval cobre o modo ESTRITO (regra de 17/09), que desde 29/09 vive atrás da chave
-// SELLER_FILL_STRICT (dono: "pode tirar as hierarquias"). Liga a chave só neste processo.
+// Esta eval cobre o modo ESTRITO (regra de 17/09). A chave SELLER_FILL_STRICT nasce
+// LIGADA desde a noite de 29/09 (dono: "prioridade para o Diego"); garante aqui.
 process.env.SELLER_FILL_STRICT = "on";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -57,10 +59,10 @@ const clockTimes = (t: string) => [...t.matchAll(/\b(\d{1,2})(?::\d{2})?\s*(am|p
 
 // The real grids (scheduler DB): Diego Mon-Fri 2/4/6/8pm + Sunday 9..7pm;
 // Alexandre Mon-Sat 9/11/1/3/5; Chris Sun-Fri 9/11/1/3/5/7pm.
-// Priorities as they are EFFECTIVE since 2026-09-29: Diego 1, Alexandre 2, Chris 3.
+// Priorities as they are EFFECTIVE since the evening of 2026-09-29: Diego 1, Alexandre 2, Chris 2.
 const D: Seller = { id: "D", name: "Diego", priority: 1, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["14:00", "16:00", "18:00", "20:00"], weekday_time_slots: { "0": ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"] }, active: true };
 const A: Seller = { id: "A", name: "Alexandre", priority: 2, enabled_weekdays: [1, 2, 3, 4, 5, 6], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00"], weekday_time_slots: null, active: true };
-const C: Seller = { id: "C", name: "Chris", priority: 3, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"], weekday_time_slots: null, active: true };
+const C: Seller = { id: "C", name: "Chris", priority: 2, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"], weekday_time_slots: null, active: true };
 const SELLERS = [C, A, D]; // deliberately unsorted
 const bk = (seller_id: string, booking_date: string, booking_time: string): BookingRow => ({ seller_id, booking_date, booking_time });
 const THU = "2026-09-17"; // weekday 4
@@ -74,7 +76,7 @@ const ID_C = "35f950e6-c1dd-4742-b77f-5071dbc3508b";
 const j = (r: { preferred: string[]; onRequest: string[] }) => `${r.preferred.join(",")} | ${r.onRequest.join(",")}`;
 
 async function main() {
-  console.log("\n[1] DETERMINISTIC — splitDaySlotsByPriority, strict order Diego → Alexandre → Chris");
+  console.log("\n[1] DETERMINISTIC — splitDaySlotsByPriority, strict order Diego → (Alexandre = Chris)");
   const FULL_D = ["14:00", "16:00", "18:00", "20:00"].map((t) => bk("D", THU, t));
   const FULL_A = ["09:00", "11:00", "13:00", "15:00", "17:00"].map((t) => bk("A", THU, t));
   const FULL_C = ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"].map((t) => bk("C", THU, t));
@@ -90,17 +92,17 @@ async function main() {
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_D.slice(0, 3), noOff);
-    ck("Diego has ONE hour left (8pm): offer = 8pm + Alexandre's earliest (9am), same day", r.preferred.join(",") === "09:00,20:00", j(r));
-    ck("…the rest of Alexandre's day and Chris's 7pm stay in the parenthesis", r.onRequest.join(",") === "11:00,13:00,15:00,17:00,19:00", j(r));
+    ck("Diego has ONE hour left (8pm): offer = 8pm + the next tier's earliest (9am), same day", r.preferred.join(",") === "09:00,20:00", j(r));
+    ck("…the rest of Alexandre's and Chris's day stays in the parenthesis", r.onRequest.join(",") === "11:00,13:00,15:00,17:00,19:00", j(r));
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_D, noOff);
-    ck("Diego FULL: Alexandre's day is offered (9am, 11am, 1pm, 3pm, 5pm), Chris still waits (7pm)", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00" && r.onRequest.join(",") === "19:00", j(r));
+    ck("Diego FULL: Alexandre's AND Chris's day open together (9am, 11am, 1pm, 3pm, 5pm, 7pm), nothing on request", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r.onRequest.length === 0, j(r));
     const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_D, bk("A", THU, "09:00")], noOff);
-    ck("Diego full, Alexandre's 9am taken: 9am (Chris) is NOT offered, goes to the parenthesis", !r2.preferred.includes("09:00") && r2.onRequest.includes("09:00"), j(r2));
-    ck("…and the offer is Alexandre's 11am, 1pm, 3pm, 5pm only", r2.preferred.join(",") === "11:00,13:00,15:00,17:00" && r2.onRequest.join(",") === "09:00,19:00", j(r2));
+    ck("Diego full, Alexandre's 9am taken: 9am (Chris, same tier) is STILL offered", r2.preferred.includes("09:00") && r2.onRequest.length === 0, j(r2));
+    ck("…and the offer is the whole tier: 9am, 11am, 1pm, 3pm, 5pm, 7pm", r2.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00", j(r2));
     const r3 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_D, ...FULL_A.slice(0, 4)], noOff);
-    ck("Diego full, Alexandre has ONE hour left (5pm): offer = Chris's 9am + 5pm, same day", r3.preferred.join(",") === "09:00,17:00" && r3.onRequest.join(",") === "11:00,13:00,15:00,19:00", j(r3));
+    ck("Diego full, Alexandre has ONE hour left (5pm): Chris's hours are the same tier, whole day offered", r3.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r3.onRequest.length === 0, j(r3));
     const r4 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_D, ...FULL_A], noOff);
     ck("Diego AND Alexandre full: Chris's whole day opens (9am first), nothing on request", r4.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r4.onRequest.length === 0, j(r4));
     const r5 = splitDaySlotsByPriority(SELLERS, THU, 4, [...FULL_D, ...FULL_A, ...FULL_C], noOff);
@@ -108,7 +110,7 @@ async function main() {
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, [], new Set<string>([`D|${THU}`]));
-    ck("Diego on a day off: Alexandre's day is offered, Chris waits", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00" && r.onRequest.join(",") === "19:00", j(r));
+    ck("Diego on a day off: Alexandre's and Chris's day is offered together, nothing waits", r.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r.onRequest.length === 0, j(r));
     const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [], new Set<string>([`D|${THU}`, `A|${THU}`]));
     ck("Diego and Alexandre off: Chris's day is offered normally", r2.preferred.join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && r2.onRequest.length === 0, j(r2));
   }
@@ -128,7 +130,7 @@ async function main() {
   }
   {
     const r = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_D, noOff, "12:30");
-    ck("today, notice at 12:30: Diego full → Alexandre's 1pm, 3pm, 5pm offered, Chris's 7pm on request", r.preferred.join(",") === "13:00,15:00,17:00" && r.onRequest.join(",") === "19:00", j(r));
+    ck("today, notice at 12:30: Diego full → 1pm, 3pm, 5pm, 7pm (Alexandre + Chris) offered, nothing on request", r.preferred.join(",") === "13:00,15:00,17:00,19:00" && r.onRequest.length === 0, j(r));
     const r2 = splitDaySlotsByPriority(SELLERS, THU, 4, [bk("D", THU, "14:00")], noOff, "12:30");
     ck("today, notice at 12:30, Diego still has 4pm/6pm/8pm: offer = those; everything else on request", r2.preferred.join(",") === "16:00,18:00,20:00" && r2.onRequest.join(",") === "13:00,15:00,17:00,19:00", j(r2));
     const r3 = splitDaySlotsByPriority(SELLERS, THU, 4, FULL_D.slice(0, 3), noOff, "12:30");
@@ -150,20 +152,23 @@ async function main() {
     ck("slotsForWeekday still the only grid source (Diego Sunday override)", slotsForWeekday(D, 0).join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && slotsForWeekday(D, 4).join(",") === "14:00,16:00,18:00,20:00");
   }
 
-  console.log("\n[1b] DETERMINISTIC — applySellerPriorityOrder (platform still Alexandre 1 / Diego 2 → Diego 1 / Alexandre 2)");
+  console.log("\n[1b] DETERMINISTIC — applySellerPriorityOrder (platform still Alexandre 1 / Diego 2 / Chris 3 → Diego 1 / Alexandre 2 / Chris 2)");
   {
     const snap = [{ id: ID_A, name: "Alexandre", priority: 1 }, { id: ID_D, name: "Diego", priority: 2 }, { id: ID_C, name: "Chris", priority: 3 }];
     const r = applySellerPriorityOrder(snap);
-    ck("17/09 snapshot → Diego 1, Alexandre 2, Chris 3, sorted", r.map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2,Chris=3", JSON.stringify(r));
-    ck("input rows are not mutated", snap[0].priority === 1 && snap[1].priority === 2 && snap[0].name === "Alexandre");
-    const already = [{ id: ID_D, name: "Diego", priority: 1 }, { id: ID_A, name: "Alexandre", priority: 2 }, { id: ID_C, name: "Chris", priority: 3 }];
-    ck("platform already Diego-first → untouched (no-op, same array)", applySellerPriorityOrder(already) === already);
+    ck("17/09 snapshot → Diego 1, Alexandre 2, Chris 2, sorted (Alexandre before Chris, stable)", r.map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2,Chris=2", JSON.stringify(r));
+    ck("input rows are not mutated", snap[0].priority === 1 && snap[1].priority === 2 && snap[2].priority === 3 && snap[0].name === "Alexandre");
+    const already = [{ id: ID_D, name: "Diego", priority: 1 }, { id: ID_A, name: "Alexandre", priority: 2 }, { id: ID_C, name: "Chris", priority: 2 }];
+    ck("platform already Diego 1 / Alexandre 2 / Chris 2 → untouched (no-op, same array)", applySellerPriorityOrder(already) === already);
     const other = [{ id: ID_A, name: "Alexandre", priority: 1 }, { id: ID_C, name: "Chris", priority: 2 }, { id: ID_D, name: "Diego", priority: 3 }];
     ck("any other order set by the owner in the platform wins (untouched)", applySellerPriorityOrder(other) === other);
+    const chrisMoved = [{ id: ID_A, name: "Alexandre", priority: 1 }, { id: ID_D, name: "Diego", priority: 2 }, { id: ID_C, name: "Chris", priority: 1 }];
+    ck("Chris changed in the platform (not 3) → platform wins (untouched)", applySellerPriorityOrder(chrisMoved) === chrisMoved);
     ck("Alexandre inactive/missing → untouched", applySellerPriorityOrder(snap.filter((s) => s.id !== ID_A)).map((s) => s.name).join(",") === "Diego,Chris");
     ck("Diego inactive/missing → untouched", applySellerPriorityOrder(snap.filter((s) => s.id !== ID_D)).map((s) => s.name).join(",") === "Alexandre,Chris");
+    ck("Chris inactive/missing → Diego 1 / Alexandre 2 still applied", applySellerPriorityOrder(snap.filter((s) => s.id !== ID_C)).map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2");
     const four = [...snap, { id: "new-seller", name: "Novo", priority: 4 }];
-    ck("a 4th seller keeps its own priority and place", applySellerPriorityOrder(four).map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2,Chris=3,Novo=4");
+    ck("a 4th seller keeps its own priority and place", applySellerPriorityOrder(four).map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2,Chris=2,Novo=4");
     ck("keyed by id, not by name (a renamed row still swaps)", applySellerPriorityOrder(snap.map((s) => ({ ...s, name: s.name.toUpperCase() }))).map((s) => s.name).join(",") === "DIEGO,ALEXANDRE,CHRIS");
     const real = applySellerPriorityOrder([{ ...A, id: ID_A, priority: 1 }, { ...D, id: ID_D, priority: 2 }, { ...C, id: ID_C, priority: 3 }]);
     const split = splitDaySlotsByPriority(real, THU, 4, [], noOff);
@@ -174,7 +179,8 @@ async function main() {
   const sc = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8").replace(/\r\n/g, "\n");
   const ai = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8").replace(/\r\n/g, "\n");
   ck("every sellers read goes through applySellerPriorityOrder (6 sites, none bare)", (sc.match(/const sellers = applySellerPriorityOrder\(\(sellersData \?\? \[\]\) as Seller\[\]\);/g) ?? []).length === 6 && !/const sellers = \(sellersData \?\? \[\]\) as Seller\[\];/.test(sc), String((sc.match(/const sellers = applySellerPriorityOrder/g) ?? []).length));
-  ck("override keyed by the real ids and only on the 17/09 snapshot (any other platform order wins)", /SELLER_ID_ALEXANDRE = "8aa8842e-c903-42b3-aa11-28252024713f"/.test(sc) && /SELLER_ID_DIEGO = "c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4"/.test(sc) && /alexandre\.priority !== 1 \|\| diego\.priority !== 2\) return sellers;/.test(sc));
+  ck("override keyed by the real ids and only on the 17/09 snapshot (any other platform order wins)", /SELLER_ID_ALEXANDRE = "8aa8842e-c903-42b3-aa11-28252024713f"/.test(sc) && /SELLER_ID_DIEGO = "c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4"/.test(sc) && /SELLER_ID_CHRIS = "35f950e6-c1dd-4742-b77f-5071dbc3508b"/.test(sc) && /alexandre\.priority !== 1 \|\| diego\.priority !== 2 \|\| \(chris && chris\.priority !== 3\)\) return sellers;/.test(sc));
+  ck("strict fill is the default (SELLER_FILL_STRICT=off disables it)", /return process\.env\.SELLER_FILL_STRICT !== "off";/.test(sc));
   ck("getRealAvailabilityContext uses splitDaySlotsByPriority and prints the parenthesis", /const \{ preferred, onRequest \} = splitDaySlotsByPriority\(sellers, dateStr, weekday, bookings, daysOff, notBefore\);\s*const slots = preferred;/.test(sc) && /open only if the client asks for one of these: " \+ onRequest\.map\(fmt12\)/.test(sc) && /\$\{onRequestNote\}`\);/.test(sc));
   ck("getNextOpenSlots uses the split (preferred first)", /const times = preferred\.length > 0 \? preferred : onRequest;\s*if \(times\.length > 0\) out\.push/.test(sc));
   ck("getPreferredSlots exists and the canned offers use it", /export async function getPreferredSlots\(dateStr: string\)/.test(sc) && /let slots = await getPreferredSlots\(dateStr\);/.test(sc) && /await getPreferredSlots\(requestedDate\)\)\.filter/.test(sc));
@@ -201,9 +207,10 @@ async function main() {
     console.log("   platform priorities:", raw.map((s) => `${s.name}=${s.priority}`).join(", "));
     const eff = applySellerPriorityOrder(raw);
     console.log("   effective order    :", eff.map((s) => `${s.name}=${s.priority}`).join(", "));
-    ck("effective order is Diego → Alexandre → Chris", eff.map((s) => s.name).join(" → ") === "Diego → Alexandre → Chris", eff.map((s) => s.name).join(" → "));
-    const platformDiegoFirst = raw.find((s) => s.id === ID_D)?.priority === 1;
-    console.log(platformDiegoFirst ? "   (platform already holds Diego first — applySellerPriorityOrder is a no-op and can be removed)" : "   (platform still holds Alexandre first — override active until the owner updates the platform)");
+    ck("effective order is Diego → Alexandre → Chris (stable: Alexandre before Chris at the same hour)", eff.map((s) => s.name).join(" → ") === "Diego → Alexandre → Chris", eff.map((s) => s.name).join(" → "));
+    ck("effective priorities are Diego 1, Alexandre 2, Chris 2 (one tier behind Diego)", eff.map((s) => `${s.name}=${s.priority}`).join(",") === "Diego=1,Alexandre=2,Chris=2", eff.map((s) => `${s.name}=${s.priority}`).join(","));
+    const platformDone = raw.find((s) => s.id === ID_D)?.priority === 1 && raw.find((s) => s.id === ID_A)?.priority === 2 && raw.find((s) => s.id === ID_C)?.priority === 2;
+    console.log(platformDone ? "   (platform already holds Diego 1 / Alexandre 2 / Chris 2 — applySellerPriorityOrder is a no-op and can be removed)" : "   (platform still holds the 17/09 snapshot — override active until the owner updates the platform)");
   }
   const avail = await getRealAvailabilityContext();
   const dayLines = avail.split("\n").filter((l) => l.startsWith("• "));

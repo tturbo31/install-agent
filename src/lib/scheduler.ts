@@ -190,9 +190,12 @@ function pickSellerForSlot(
 // ─── Owner rule 2026-09-17: one seller's day fills before the next seller's ──
 // "Lotar a agenda do Alexandre primeiro, depois o Diego, depois o Chris. Tem
 // que ser nessa ordem." (owner, 2026-09-17, twice). ORDER CHANGED 2026-09-29
-// (owner): Diego first, then Alexandre, then Chris — see
-// applySellerPriorityOrder below; the mechanism here is unchanged and reads
-// the order from `priority`. The schedule the model
+// (owner, morning): Diego first, then Alexandre, then Chris. SAME DAY, evening
+// (owner): "dar prioridade para o Diego; Alex e Chris iguais" — Diego's day
+// fills first, Alexandre and Chris form ONE tier behind him (their hours open
+// together, no order between them) — see applySellerPriorityOrder below; the
+// mechanism here is unchanged and reads the order from `priority`. The
+// schedule the model
 // reads used to be a union of every seller's open hours, so with Alexandre's
 // 9am taken the union still showed 9am (Chris's) and the next client got
 // Chris's 9am while Alexandre had 1pm, 3pm and 5pm open. The OFFER follows the
@@ -250,18 +253,18 @@ export function zipFirstNote(history?: HistoryMsg[]): string | null {
   );
 }
 
-// Chave de 29/09/2026 (revisão da conversão). DESLIGADA por decisão do dono
-// na mesma tarde ("pode tirar as hierarquias, deixa do jeito que mais irá
-// converter; se não atrapalhar, de preferência para o Alex em vez do Chris"):
-// a oferta volta ao formato anterior a 17/09, TODOS os horários livres do dia,
-// de qualquer vendedor, e a prioridade (Diego → Alexandre → Chris) fica só
-// como desempate de QUEM atende quando dois estão livres na mesma hora
-// (pickSellerForSlot), coisa que o cliente nunca vê. Medido 01–14/09 (sem a
-// regra): 35% das ofertas traziam um horário de manhã e 46% delas confirmaram;
-// 22–27/09 (com a regra): 8% e 0%. SELLER_FILL_STRICT=on religa a regra de
-// 17/09 (um vendedor lota antes do próximo, horários dos outros em parêntese).
+// Chave de 29/09/2026 (revisão da conversão). Foi DESLIGADA à tarde ("pode
+// tirar as hierarquias, deixa do jeito que mais irá converter") e RELIGADA à
+// noite pelo dono ("faça ela dar prioridade para o Diego; Alex e Chris
+// iguais"): o dia do Diego lota primeiro, os horários do Alexandre e do Chris
+// (uma camada só) ficam no parêntese "open only if the client asks" até o
+// Diego não ter mais horário no dia. Medido 01–14/09 (sem a regra): 35% das
+// ofertas traziam um horário de manhã e 46% delas confirmaram; 22–27/09 (com a
+// regra de 3 camadas): 8% e 0%. SELLER_FILL_STRICT=off desliga (oferta com
+// TODOS os horários livres do dia, prioridade só como desempate de quem
+// atende a mesma hora em pickSellerForSlot).
 export function sellerFillStrict(): boolean {
-  return process.env.SELLER_FILL_STRICT === "on";
+  return process.env.SELLER_FILL_STRICT !== "off";
 }
 
 export function splitDaySlotsByPriority(
@@ -308,24 +311,30 @@ export function splitDaySlotsByPriority(
   return { preferred: [...preferred].sort(), onRequest: [...onRequest].sort() };
 }
 
-// ─── Owner rule 2026-09-29: fill order is Diego → Alexandre → Chris ─────────
-// "Primeiro Diego, depois o Alexandre e depois o Chris" (owner, 2026-09-29).
+// ─── Owner rule 2026-09-29 (evening): Diego first, Alexandre and Chris equal ──
+// "Faça ela dar prioridade para o Diego; o Alex e o Chris igual" (owner,
+// 2026-09-29, replacing the morning's Diego → Alexandre → Chris). Effective
+// priorities: Diego 1, Alexandre 2, Chris 2 (one tier: their hours open
+// together once Diego's day is full; at the same hour pickSellerForSlot keeps
+// the stable order Alexandre before Chris, which the client never sees).
 // The order lives in sellers.priority of the Ozzi Plataforma, but the bot's
 // platform user (ia@ozzifloors.com) has no UPDATE right on `sellers` (RLS: the
-// update returns zero rows and no error), so the swap is applied here after
+// update returns zero rows and no error), so the mapping is applied here after
 // every read of the table. It only fires while the table still holds the
-// 17/09 snapshot (Alexandre priority 1, Diego priority 2): the moment the
-// owner changes either of those two priorities in the platform, the platform
-// wins and this is a no-op — at that point this block can be deleted. Chris
-// and any other seller keep their own priority. Rows are never mutated.
+// 17/09 snapshot (Alexandre 1, Diego 2 and, when present, Chris 3): the moment
+// the owner changes any of those in the platform, the platform wins and this
+// is a no-op — at that point this block can be deleted. Any other seller keeps
+// its own priority. Rows are never mutated.
 const SELLER_ID_ALEXANDRE = "8aa8842e-c903-42b3-aa11-28252024713f";
 const SELLER_ID_DIEGO = "c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4";
+const SELLER_ID_CHRIS = "35f950e6-c1dd-4742-b77f-5071dbc3508b";
 export function applySellerPriorityOrder<T extends { id: string; priority: number }>(sellers: T[]): T[] {
   const alexandre = sellers.find((s) => s.id === SELLER_ID_ALEXANDRE);
   const diego = sellers.find((s) => s.id === SELLER_ID_DIEGO);
-  if (!alexandre || !diego || alexandre.priority !== 1 || diego.priority !== 2) return sellers;
+  const chris = sellers.find((s) => s.id === SELLER_ID_CHRIS);
+  if (!alexandre || !diego || alexandre.priority !== 1 || diego.priority !== 2 || (chris && chris.priority !== 3)) return sellers;
   return sellers
-    .map((s) => (s.id === SELLER_ID_DIEGO ? { ...s, priority: 1 } : s.id === SELLER_ID_ALEXANDRE ? { ...s, priority: 2 } : s))
+    .map((s) => (s.id === SELLER_ID_DIEGO ? { ...s, priority: 1 } : s.id === SELLER_ID_ALEXANDRE || s.id === SELLER_ID_CHRIS ? { ...s, priority: 2 } : s))
     .sort((a, b) => a.priority - b.priority);
 }
 
