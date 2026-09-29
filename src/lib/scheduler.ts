@@ -250,15 +250,18 @@ export function zipFirstNote(history?: HistoryMsg[]): string | null {
   );
 }
 
-// Chave de 29/09/2026 (revisão da conversão): SELLER_FILL_STRICT=off devolve a
-// oferta anterior a 17/09 (TODOS os horários livres do dia, de qualquer
-// vendedor; a prioridade continua decidindo QUEM atende no mesmo horário em
-// pickSellerForSlot). Padrão "on" = regra do dono de 17/09 (lotar um vendedor
-// antes do próximo). Medido 01–14/09 (regra desligada): 35% das ofertas
-// traziam um horário de manhã e 46% delas confirmaram; 22–27/09 (regra
-// ligada): 8% e 0%.
+// Chave de 29/09/2026 (revisão da conversão). DESLIGADA por decisão do dono
+// na mesma tarde ("pode tirar as hierarquias, deixa do jeito que mais irá
+// converter; se não atrapalhar, de preferência para o Alex em vez do Chris"):
+// a oferta volta ao formato anterior a 17/09, TODOS os horários livres do dia,
+// de qualquer vendedor, e a prioridade (Diego → Alexandre → Chris) fica só
+// como desempate de QUEM atende quando dois estão livres na mesma hora
+// (pickSellerForSlot), coisa que o cliente nunca vê. Medido 01–14/09 (sem a
+// regra): 35% das ofertas traziam um horário de manhã e 46% delas confirmaram;
+// 22–27/09 (com a regra): 8% e 0%. SELLER_FILL_STRICT=on religa a regra de
+// 17/09 (um vendedor lota antes do próximo, horários dos outros em parêntese).
 export function sellerFillStrict(): boolean {
-  return process.env.SELLER_FILL_STRICT !== "off";
+  return process.env.SELLER_FILL_STRICT === "on";
 }
 
 export function splitDaySlotsByPriority(

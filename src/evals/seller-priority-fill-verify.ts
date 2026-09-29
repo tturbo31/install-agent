@@ -43,6 +43,9 @@ function loadEnv() {
   }
 }
 loadEnv();
+// Esta eval cobre o modo ESTRITO (regra de 17/09), que desde 29/09 vive atrás da chave
+// SELLER_FILL_STRICT (dono: "pode tirar as hierarquias"). Liga a chave só neste processo.
+process.env.SELLER_FILL_STRICT = "on";
 
 let pass = 0, fail = 0; const fails: string[] = [];
 function ck(name: string, cond: boolean, detail = "") {

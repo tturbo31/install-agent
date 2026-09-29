@@ -52,6 +52,7 @@ async function run() {
   ck("ZIP já pedido e não respondido → nota 'não pergunte de novo'", /you already asked for the zip code once/.test(availAsked));
   ck("sem PRIORITY DAY / fill rate / preferred seller", !/PRIORITY DAY|fill rate|preferred seller|% booked|offer first/i.test(avail));
   ck("regra SOONEST DAY FIRST continua (dia mais próximo + primeiros horários)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST two open times/.test(avail));
+  ck("hierarquia de vendedores fora da oferta (dono 29/09): nenhum horário em parêntese, nenhum bullet de 'one team member'", process.env.SELLER_FILL_STRICT === "on" || (!/open only if the client asks/.test(avail) && !/ONE TEAM MEMBER'S DAY FILLS/.test(avail)));
 
   // Primeiro dia com vaga (linha da agenda) e seus horários.
   const dayLines = avail.split("\n").filter((l) => l.startsWith("• ") && !/fully booked/.test(l));
