@@ -1604,7 +1604,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // Only fetch availability when no booking is confirmed yet.
       // After booking, showing availability causes the AI to see the booked slot as
       // "taken" and generate "that slot just got taken" on follow-up messages.
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {

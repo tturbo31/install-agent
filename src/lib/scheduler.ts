@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "./supabase";
+import { zipsInText } from "./zip-text";
 
 const SCHEDULER_URL = "https://wtyezgfzzetfrhoaqemt.supabase.co";
 const SCHEDULER_ANON_KEY =
@@ -210,6 +211,56 @@ function pickSellerForSlot(
 // model reaching into the next day for the second option while today still
 // has hours. Sellers with the same priority form one tier and never hold each
 // other back.
+
+// ─── ZIP CODE FIRST (fluxo restaurado em 29/09/2026) ────────────────────────
+// Até 16/09 a proposta da visita terminava com a pergunta do ZIP e os dois
+// horários vinham na mensagem SEGUINTE; a remoção da rota (pedido do dono,
+// 16/09) levou a pergunta junto. Medido em setembro, conversas engajadas:
+// 01–15/09 proposta com o ZIP antes → 31% confirmaram, oferta direta → 21%;
+// 16–27/09 só oferta direta → 15%. A nota volta SEM rota nenhuma: só a
+// pergunta, uma vez, e nunca quando o cliente já disse o ZIP, o endereço ou
+// já nomeou um dia/horário (aí os horários vêm na hora, como sempre).
+export const ZIP_FIRST_NOTE_HEADER = "ZIP CODE FIRST";
+type HistoryMsg = { role: string; content: string };
+const CLIENT_GENERATED_BRACKETS = /\[(?:Client (?:shared|replied)|Floor plan analysis|Image|Photo|Attachment|Sticker|Video)[^\]]*\]/gi;
+const STREET_ADDRESS = /\b\d{1,6}\s+(?:[nsew]{1,2}\.?\s+)?[a-z0-9'.]+(?:\s+[a-z0-9'.]+){0,3}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|calle|avenida|rua)\b/i;
+const AREA_CITY = /\b(?:homestead|cutler bay|coral gables|miami|hialeah|doral|kendall|pembroke pines|hollywood|fort lauderdale|ft lauderdale|pompano|coral springs|sunrise|boca raton|boca|delray|boynton|west palm|palm beach|jupiter|aventura|sunny isles|brickell|wellington|weston|davie|plantation|miramar|deerfield|lake worth|palm beach gardens|port st\.? lucie|port saint lucie|tampa|orlando|naples|fort myers|ft myers|key largo|key west|stuart|vero beach)\b/i;
+export function zipAlreadyAskedInHistory(history: HistoryMsg[]): boolean {
+  return (history ?? []).some(
+    (m) => m.role === "assistant" && /\bzip\b|zip\s*code|c[oó]digo\s+postal|\bcep\b/i.test((m.content || "").split(/\n\n?\[SYSTEM:/)[0])
+  );
+}
+// O cliente já disse onde é (ZIP digitado, endereço com número e rua, ou uma cidade)?
+export function clientLocationKnown(history: HistoryMsg[]): boolean {
+  return (history ?? []).some((m) => {
+    if (m.role !== "user") return false;
+    const t = (m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_GENERATED_BRACKETS, " ");
+    return zipsInText(t).length > 0 || STREET_ADDRESS.test(t) || AREA_CITY.test(t);
+  });
+}
+export function zipFirstNote(history?: HistoryMsg[]): string | null {
+  if (!history || history.length === 0) return null;
+  if (clientLocationKnown(history)) return null;
+  if (zipAlreadyAskedInHistory(history)) {
+    return `${ZIP_FIRST_NOTE_HEADER}: you already asked for the zip code once and the client has not sent it. Do NOT ask for it again now and do not mention it. Simply follow all your normal rules as if this note did not exist (answer what the client asked; name time slots only when your normal rules call for it, never as an add-on to an informational answer), and collect the zip code later together with the full address, as usual.`;
+  }
+  return (
+    `${ZIP_FIRST_NOTE_HEADER}: the client's zip code or city is not known yet. The ONLY change to your normal flow: in the SAME message where you propose the free visit (or when the client asks about availability, days, or times), do not list the time slots yet; instead ask, in ONE short natural question in the client's language, for the zip code of the property (for example "What's the zip code of the property?" / "Cuál es el código postal de la propiedad?" / "Qual é o zip code do imóvel?"). Keep everything else about that message exactly as you normally write it (same tone, same sales points, no dashes, no emojis). As soon as they send the zip code (or the city), confirm in a few words that we cover it and offer your usual two time slots in that next message (SOONEST DAY FIRST, the earliest two of the soonest day with open times).` +
+    ` Exceptions, so a sale is never lost: if the client already named a specific day or time they want, if they already sent their full address, or if they ask for the times again after your question, do NOT ask for the zip code on its own: continue exactly as you normally would (confirm or offer the slots, then ask for the full address with the zip code and the phone together, as usual). Ask for the zip code at most ONCE. Never explain why you ask it, and never write this note or your reasoning in the reply.`
+  );
+}
+
+// Chave de 29/09/2026 (revisão da conversão): SELLER_FILL_STRICT=off devolve a
+// oferta anterior a 17/09 (TODOS os horários livres do dia, de qualquer
+// vendedor; a prioridade continua decidindo QUEM atende no mesmo horário em
+// pickSellerForSlot). Padrão "on" = regra do dono de 17/09 (lotar um vendedor
+// antes do próximo). Medido 01–14/09 (regra desligada): 35% das ofertas
+// traziam um horário de manhã e 46% delas confirmaram; 22–27/09 (regra
+// ligada): 8% e 0%.
+export function sellerFillStrict(): boolean {
+  return process.env.SELLER_FILL_STRICT !== "off";
+}
+
 export function splitDaySlotsByPriority(
   sellers: Seller[],
   dateStr: string,
@@ -220,6 +271,7 @@ export function splitDaySlotsByPriority(
 ): { preferred: string[]; onRequest: string[] } {
   const sorted = [...sellers].filter((s) => s.active).sort((a, b) => a.priority - b.priority);
   const minSlot = notBefore ? hhmm(notBefore) : null;
+  const strict = sellerFillStrict();
   // Tiers in priority order; only sellers with at least one open hour count.
   const tiers: Array<{ priority: number; hours: Set<string> }> = [];
   for (const s of sorted) {
@@ -230,6 +282,11 @@ export function splitDaySlotsByPriority(
     const last = tiers[tiers.length - 1];
     if (last && last.priority === s.priority) for (const h of open) last.hours.add(h);
     else tiers.push({ priority: s.priority, hours: new Set(open) });
+  }
+  if (!strict) {
+    const all = new Set<string>();
+    for (const t of tiers) for (const h of t.hours) all.add(h);
+    return { preferred: [...all].sort(), onRequest: [] };
   }
   const preferred = new Set<string>();
   const onRequest = new Set<string>();
@@ -1493,7 +1550,7 @@ export async function hasExistingBooking(igsid: string): Promise<boolean> {
   }
 }
 
-export async function getRealAvailabilityContext(): Promise<string> {
+export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }> }): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
 
@@ -1570,7 +1627,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
         "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. If that line has only one open time, offer it plus the first open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case' (a short line usually means the rest of that day sits in the parenthesis, not that the day is nearly full). Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
-        "\n- ONE TEAM MEMBER'S DAY FILLS BEFORE THE NEXT ONE'S (owner's rule 2026-09-17): the times listed BEFORE a parenthesis are the ONLY ones you offer. Times inside a parenthesis marked 'open only if the client asks for one of these' are NEVER offered, listed, hinted at or counted by you: they belong to the team members next in line (the second, then the third), and each one's day only opens once the one before them is full. If the client, on their own, asks for one of those parenthesis times, it IS open: accept it and book it normally, never say it is not available." +
+        (sellerFillStrict() ? "\n- ONE TEAM MEMBER'S DAY FILLS BEFORE THE NEXT ONE'S (owner's rule 2026-09-17): the times listed BEFORE a parenthesis are the ONLY ones you offer. Times inside a parenthesis marked 'open only if the client asks for one of these' are NEVER offered, listed, hinted at or counted by you: they belong to the team members next in line (the second, then the third), and each one's day only opens once the one before them is full. If the client, on their own, asks for one of those parenthesis times, it IS open: accept it and book it normally, never say it is not available." : "") +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
@@ -1582,6 +1639,11 @@ export async function getRealAvailabilityContext(): Promise<string> {
         "\n- Until the visit is actually confirmed, do NOT tell the client a time is 'locked in', 'all set' or 'confirmed'. Say you are holding it while you collect their address and phone. Nine clients in five days were told a slot was theirs and then had it taken away." +
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
+
+    // ZIP CODE FIRST (29/09/2026): só quando o webhook passa o histórico e o
+    // cliente ainda não disse onde é. A nota vai DEPOIS das regras da agenda.
+    const zipNote = zipFirstNote(opts?.history);
+    if (zipNote) lines.push("\n" + zipNote);
 
     return lines.join("\n");
   } catch (err) {

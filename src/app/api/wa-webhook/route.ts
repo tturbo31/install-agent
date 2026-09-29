@@ -1730,7 +1730,7 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
       // Only load availability when booking not yet confirmed
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext();
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)

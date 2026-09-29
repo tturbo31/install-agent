@@ -1,11 +1,11 @@
 /**
- * Validação ao vivo (16/09/2026) — rota REMOVIDA a pedido do dono.
+ * Validação ao vivo (16/09/2026, atualizada 29/09/2026) — rota REMOVIDA a pedido do dono; ZIP CODE FIRST restaurado SEM rota.
  * Prova, com a agenda REAL e o modelo REAL:
  *  A. getRealAvailabilityContext() não traz nota ROUTE PRIORITY / ZIP CODE FIRST / PRIORITY DAY;
  *     a regra SOONEST DAY FIRST continua.
  *  B. needTimeChoiceMessage / slotConflictRecoveryMessage oferecem os PRIMEIROS horários do dia (ordem do relógio).
- *  C. Modelo: proposta de visita SEM pedir ZIP antes; oferece exatamente 2 horários = os dois primeiros
- *     do dia mais próximo com vaga; cliente escolhe → pede endereço com ZIP + telefone juntos, SEM pedir o nome (regra do dono 16/09).
+ *  C. Modelo: proposta de visita PEDE o ZIP (sem horários); ZIP respondido → exatamente 2 horários = os dois primeiros
+ *     do dia mais próximo com vaga; cliente escolhe → pede endereço + telefone juntos, SEM re-pedir o ZIP e SEM pedir o nome (regra do dono 16/09).
  * Run: npx tsx src/evals/no-route-verify.ts
  */
 import { readFileSync } from "fs";
@@ -43,7 +43,13 @@ async function run() {
   console.log(avail.split("\n").slice(0, 6).join("\n"));
   ck("agenda lida (linhas de dias presentes)", /REAL-TIME SCHEDULE AVAILABILITY/.test(avail) && /\[\d{4}-\d{2}-\d{2}\]/.test(avail), avail.slice(0, 200));
   ck("sem nota ROUTE PRIORITY", !/ROUTE PRIORITY/.test(avail));
-  ck("sem nota ZIP CODE FIRST", !/ZIP CODE FIRST/.test(avail));
+  ck("sem histórico → sem nota ZIP CODE FIRST", !/ZIP CODE FIRST/.test(avail));
+  const availZip = await getRealAvailabilityContext({ history: [{ role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." }] });
+  ck("histórico sem localização → nota ZIP CODE FIRST presente (29/09)", /ZIP CODE FIRST: the client's zip code or city is not known yet/.test(availZip));
+  const availKnown = await getRealAvailabilityContext({ history: [{ role: "user", content: "Hi, I want vinyl, I'm in Homestead 33032" }] });
+  ck("cliente já disse o ZIP → sem nota", !/ZIP CODE FIRST/.test(availKnown));
+  const availAsked = await getRealAvailabilityContext({ history: [{ role: "user", content: "vinyl 1200 sqft" }, { role: "assistant", content: "For that size I need to measure in person, it's free. What's the zip code of the property?" }, { role: "user", content: "is it waterproof?" }] });
+  ck("ZIP já pedido e não respondido → nota 'não pergunte de novo'", /you already asked for the zip code once/.test(availAsked));
   ck("sem PRIORITY DAY / fill rate / preferred seller", !/PRIORITY DAY|fill rate|preferred seller|% booked|offer first/i.test(avail));
   ck("regra SOONEST DAY FIRST continua (dia mais próximo + primeiros horários)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST two open times/.test(avail));
 
@@ -72,35 +78,47 @@ async function run() {
   }
 
   console.log("\n━━ C. modelo real com a agenda real ━━");
-  const sys = () => `\n\n[SYSTEM: ${[getEasternDateContext(), avail].join("\n\n")}]`;
+  const sys = (a: string = avail) => `\n\n[SYSTEM: ${[getEasternDateContext(), a].join("\n\n")}]`;
   const first2 = firstTimes.slice(0, 2).map((t) => t.replace(/:\d{2}/, ""));
   const listedSet = new Set(firstTimes.map((t) => t.replace(/:\d{2}/, "")));
 
-  // C1: lead grande, primeiro contato, sem ZIP nenhum → proposta com 2 horários, sem pedir ZIP antes.
+  // C0: lead grande, primeiro contato, sem localização → a proposta PEDE o ZIP e não lista horários (fluxo restaurado 29/09).
+  const t0 = await ai([
+    { role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." },
+    { role: "assistant", content: "Our vinyl promo is $5 per sqft with the floor, the installation and the quarter round included. Is it one area or the whole house?" },
+    { role: "user", content: `The whole house, around 1200 sqft.${sys(availZip)}` },
+  ]);
+  console.log("   C0 →", t0.replace(/\s+/g, " ").slice(0, 320));
+  ck("C0: proposta da visita PEDE o ZIP", ZIP_ASK.test(t0) && /\?/.test(t0), t0);
+  ck("C0: sem horários antes do ZIP", clockTimes(t0).length === 0, t0);
+  ck("C0: fala da visita gratuita", /free|gratis/i.test(t0), t0);
+  ck("C0: nenhum vazamento", !LEAK.test(t0) && !/ZIP CODE FIRST/i.test(t0), t0);
+
+  // C1: cliente respondeu o ZIP → confirma a área e oferece exatamente 2 horários = os dois primeiros do dia mais próximo.
   const t1 = await ai([
     { role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." },
-    { role: "assistant", content: "For that size, I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. When works for you?" },
-    { role: "user", content: `I'm flexible, any day and time works for me.${sys()}` },
+    { role: "assistant", content: "For that size I need to measure in person to give you the best price, it's free and I bring the samples. What's the zip code of the property?" },
+    { role: "user", content: `33024${sys()}` },
   ]);
   console.log("   C1 →", t1.replace(/\s+/g, " ").slice(0, 320));
   const c1 = clockTimes(t1);
-  ck("C1: NÃO pede o ZIP antes de oferecer horários", !ZIP_ASK.test(t1), t1);
+  ck("C1: não re-pede o ZIP", !ZIP_ASK.test(t1), t1);
   ck("C1: oferece horários (clock times)", c1.length >= 1, t1);
   ck("C1: exatamente DOIS horários distintos", new Set(c1).size === 2, `${c1.join(",")} | ${t1}`);
   ck(`C1: os dois são os PRIMEIROS do dia mais próximo com vaga (${first2.join(", ")})`, c1.length === 2 && c1.every((t) => first2.includes(t)), `${c1.join(",")} | ${t1}`);
   ck("C1: nenhum vazamento (rota/prioridade/regra do dono)", !LEAK.test(t1), t1);
 
-  // C2: cliente escolhe o primeiro horário → pede nome + endereço COM ZIP + telefone, sem [BOOK] ainda.
+  // C2: cliente escolhe o primeiro horário → pede endereço + telefone, sem re-pedir o ZIP (já dado), sem nome, sem [BOOK] ainda.
   const t2 = await ai([
     { role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." },
-    { role: "assistant", content: "For that size, I need to visit and measure in person to give you the best price, and I bring the samples so you can pick right there. When works for you?" },
-    { role: "user", content: "I'm flexible, any day and time works for me." },
+    { role: "assistant", content: "For that size I need to measure in person to give you the best price, it's free and I bring the samples. What's the zip code of the property?" },
+    { role: "user", content: "33024" },
     { role: "assistant", content: t1.split("\n\n[SYSTEM:")[0] },
     { role: "user", content: `${first2[0]} works${sys()}` },
   ]);
   console.log("   C2 →", t2.replace(/\s+/g, " ").slice(0, 320));
   ck("C2: NÃO pede o nome (regra do dono 16/09)", !/\bname\b/i.test(t2), t2);
-  ck("C2: pede o endereço com o zip code", /\baddress\b/i.test(t2) && ZIP_ASK.test(t2), t2);
+  ck("C2: pede o endereço SEM re-pedir o zip (ZIP ALREADY GIVEN)", /\baddress\b/i.test(t2) && !ZIP_ASK.test(t2), t2);
   ck("C2: pede o telefone", /\bphone\b|\bnumber\b/i.test(t2), t2);
   ck("C2: não gera [BOOK] sem os dados", !/\[BOOK:/i.test(t2), t2);
   ck("C2: nenhum vazamento", !LEAK.test(t2), t2);
@@ -114,8 +132,8 @@ async function run() {
   ]);
   console.log("   C3 →", t3.replace(/\s+/g, " ").slice(0, 320));
   const c3 = clockTimes(t3);
-  ck("C3 (ES): NÃO pede o código postal antes de oferecer horários", !ZIP_ASK.test(t3), t3);
-  ck("C3 (ES): oferece horário(s) da agenda", c3.length >= 1 && c3.every((t) => listedSet.has(t) || /pm$/.test(t)), `${c3.join(",")} | ${t3}`);
+  ck("C3 (ES): cliente já deu a janela → ou pergunta o código postal uma vez, ou já oferece horários (nunca os dois vazios)", (ZIP_ASK.test(t3) && c3.length === 0) || c3.length >= 1, t3);
+  ck("C3 (ES): se ofereceu, são horários da agenda", c3.length === 0 || c3.every((t) => listedSet.has(t) || /pm$/.test(t)), `${c3.join(",")} | ${t3}`);
   ck("C3 (ES): respeita a restrição (só horários >= 5pm) ou explica", c3.length === 0 || c3.every((t) => /pm$/.test(t) && parseInt(t, 10) >= 5 && parseInt(t, 10) < 12), `${c3.join(",")} | ${t3} | listados tarde: ${late.join(",")}`);
   ck("C3 (ES): sem ¿ ¡", !/[¿¡]/.test(t3), t3);
   ck("C3 (ES): nenhum vazamento", !LEAK.test(t3), t3);

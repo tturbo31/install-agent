@@ -173,13 +173,18 @@ const H = 3600_000;
 // qualify; WhatsApp via Z-API has no window, capped at 5 days so a sweep that
 // was down for a while never wakes a week-old lead.
 export const FOLLOWUP_DELAY_H = 48;
+// 29/09/2026 (revisão da conversão): o lead ENGAJADO (conversou de verdade e
+// sumiu depois da oferta/pergunta de agendamento, ou logo depois do preço)
+// volta ao ritmo anterior a 17/09: UMA nudge após 3h de silêncio, dentro da
+// janela do canal (Instagram e Messenger ≤22h). A regra de 2 dias do dono
+// (27/09) continua valendo para o fantasma do botão, que era o spam.
+export const ENGAGED_DELAY_H = 3;
 export const NUDGE_GAP_H = 48;
 export const MAX_NUDGES_PER_CONVERSATION = 2;
-const MIN_SILENCE_H = FOLLOWUP_DELAY_H;
-const WINDOW_H: Record<Channel, { min: number; max: number }> = {
-  instagram: { min: MIN_SILENCE_H, max: 22 },
-  facebook: { min: MIN_SILENCE_H, max: 22 },
-  whatsapp: { min: MIN_SILENCE_H, max: 5 * 24 },
+const WINDOW_H: Record<Channel, { max: number }> = {
+  instagram: { max: 22 },
+  facebook: { max: 22 },
+  whatsapp: { max: 5 * 24 },
 };
 
 // engaged = o alvo original (conversou, recebeu a oferta de visita, sumiu);
@@ -202,7 +207,6 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
 
   if (!messages.length) return no("empty");
   const win = WINDOW_H[channelOfIgsid(igsid)];
-  if (win.min > win.max) return no("channel-window-closes-before-2-days");
   const priorNudges = messages.filter((m) => m.role === "assistant" && FOLLOWUP_MARKER.test(m.content)).length;
   if (priorNudges >= MAX_NUDGES_PER_CONVERSATION) return no("max-nudges-reached");
 
@@ -240,6 +244,12 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     else return no("last-bot-msg-not-a-scheduling-ask");
   }
 
+  // Silêncio mínimo por alvo: fantasma do botão só depois de 2 dias (regra do
+  // dono 27/09, o que ele chamou de spam); lead engajado após 3h (ritmo
+  // anterior a 17/09).
+  const minSilenceH = kind === "faq_ghost" ? FOLLOWUP_DELAY_H : ENGAGED_DELAY_H;
+  if (minSilenceH > win.max) return no("channel-window-closes-before-2-days");
+
   if (kind !== "faq_ghost") {
     // Genuine engagement: at least one real (non-FAQ-button) client message
     // AFTER our first reply (the ghost path above is the only exception).
@@ -262,11 +272,11 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
 
   const ageH = (nowMs - Date.parse(lastUser.created_at)) / H;
   if (!Number.isFinite(ageH)) return no("bad-timestamp");
-  if (ageH < win.min) return no(`too-fresh(${ageH.toFixed(1)}h)`);
+  if (ageH < minSilenceH) return no(`too-fresh(${ageH.toFixed(1)}h)`);
   if (ageH > win.max) return no(`window-closed(${ageH.toFixed(1)}h)`);
-  // Our own last line must also have had the full 2 days with no answer.
+  // Our own last line must also have gone the same silence with no answer.
   const botAgeH = (nowMs - Date.parse(last.created_at)) / H;
-  if (Number.isFinite(botAgeH) && botAgeH < MIN_SILENCE_H) return no(`bot-msg-too-fresh(${botAgeH.toFixed(1)}h)`);
+  if (Number.isFinite(botAgeH) && botAgeH < minSilenceH) return no(`bot-msg-too-fresh(${botAgeH.toFixed(1)}h)`);
 
   return { eligible: true, reason: "ok", lang, kind, financing };
 }

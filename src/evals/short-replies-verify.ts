@@ -42,7 +42,7 @@ import {
 } from "../lib/system-prompt";
 import {
   visibleLength, sentenceCount, needsTightening, tightenedIsSafe, tightenInstruction, clockTokens, dayTokens, dollarTokens, clientAskedPrice, freeAlreadySaid,
-  REPLY_TARGET_CHARS, REPLY_TIGHTEN_OVER,
+  REPLY_TARGET_CHARS, REPLY_TIGHTEN_OVER, REPLY_PROMPT_TARGET_CHARS, REPLY_PROMPT_CEILING_CHARS,
 } from "../lib/reply-length";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -76,7 +76,7 @@ async function main() {
   ck("regra 3 dos FINAL REMINDERS intocada (nenhuma frase de tamanho nova no bloco dinâmico)", /3\. LENGTH RULE: Use 1 sentence when the message is complete with just the answer\. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question\. Never 3 sentences\. NEVER use a standalone opener like/.test(ai));
   ck("nenhum bloco de tamanho pendurado DEPOIS dos FINAL REMINDERS", !/dynamicSystem \+= MESSAGE_LENGTH_NOTE/.test(ai) && !/MESSAGE LENGTH, THE LAST CHECK/.test(ai) && !/LENGTH_RULE_BUDGET\}/.test(ai));
   ck("o porquê está escrito no código (para ninguém repetir a tentativa)", /WHY THERE IS NO LENGTH RULE IN THE DYNAMIC BLOCK/.test(ai));
-  ck("orçamento (160 / 220) no prompt estável bate com as constantes da rede", SYSTEM_PROMPT.includes("Under " + REPLY_TARGET_CHARS + " characters in total is the norm and " + REPLY_TIGHTEN_OVER + " is the ceiling"));
+  ck("orçamento do prompt (140 / 200) bate com as constantes do prompt; a rede (220) é mais folgada que o teto do prompt (29/09)", SYSTEM_PROMPT.includes("Under " + REPLY_PROMPT_TARGET_CHARS + " characters in total is the norm and " + REPLY_PROMPT_CEILING_CHARS + " is the ceiling") && REPLY_TIGHTEN_OVER >= REPLY_PROMPT_CEILING_CHARS && REPLY_TARGET_CHARS >= REPLY_PROMPT_TARGET_CHARS);
   ck("trava oferta + pedido de dados roda logo depois da rede, dentro do cérebro (vale para os 3 canais)", ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") > ai.indexOf("needsTightening(cleaned)") && ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") < ai.indexOf("cleaned = scrubForeignPhones(cleaned"));
   const iNet = ai.indexOf("needsTightening(cleaned)"), iLeak = ai.indexOf("const leak = assessReasoningLeak(cleaned, leakOpts);"), iPhones = ai.indexOf("cleaned = scrubForeignPhones(cleaned"), iSmall = ai.indexOf("if (smallJobLeak(messages, cleaned))");
   ck("a rede roda depois do scrubber de raciocínio e ANTES de todos os backstops", iLeak > 0 && iNet > iLeak && iPhones > iNet && iSmall > iNet, `${iLeak} ${iNet} ${iPhones} ${iSmall}`);
@@ -127,7 +127,8 @@ async function main() {
   ck("needsTightening: NUNCA com [BOOK], [CANCEL_BOOKING] ou [REACT_ONLY]", !needsTightening(LONG_VISIT + '[BOOK:{"name":""}]') && !needsTightening(LONG_VISIT + "[CANCEL_BOOKING]") && !needsTightening("[REACT_ONLY]"));
   ck("tightenInstruction manda manter preço+cobertura, horários, telefone, link, tag, zip e UMA pergunta", /every dollar amount together with what it covers/.test(tightenInstruction(300)) && /every day and clock time/.test(tightenInstruction(300)) && /zip code/.test(tightenInstruction(300)) && /Output ONLY the rewritten message/.test(tightenInstruction(300)));
   ck("sentenceCount: decimais, p.m., abreviações, links e tags não contam como fim de frase", sentenceCount("Tile is $4.50 per sqft labor only. See https://ozzifloors.company for photos, ok?") === 2 && sentenceCount("I have 3 p.m. or 5 p.m. tomorrow. Which works?") === 2 && sentenceCount("Perfect, see you then!") === 1 && sentenceCount("Ok, noted.[NOTIFY_OWNER: client asked for photos. Send them.]") === 1 && sentenceCount("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?") === 3);
-  ck("needsTightening: 3 frases curtas (123 chars) → sim (dono 24/09: nunca 3 frases, mesmo curtas)", needsTightening("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?"));
+  ck("needsTightening: 3 frases curtas (123 chars) → NÃO (29/09: a rede só pega textão ou 4+ frases)", !needsTightening("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?"));
+  ck("needsTightening: 4 frases curtas → sim", needsTightening("Vinyl is perfect for restaurants. It is waterproof. At $5 per sqft it includes the floor and installation. How many square feet is the space?"));
   ck("needsTightening: 2 frases → não", !needsTightening("Vinyl is perfect for restaurants, at $5 per sqft with the floor and installation included. How many square feet is the space?"));
   ck("tightenInstruction pede no máximo 2 frases e cita as frases do rascunho quando são 3+", /at most 2 sentences/.test(tightenInstruction(123, 3)) && /and 3 sentences/.test(tightenInstruction(123, 3)) && !/and 0 sentences/.test(tightenInstruction(300)));
   ck("tightenedIsSafe: 3 frases → 2 frases quase do mesmo tamanho é aceita", why("Vinyl is perfect for restaurants. At $5 per sqft it includes the floor and installation. How many square feet is the space?", "Vinyl is perfect for restaurants, at $5 per sqft with the floor and installation included. How many square feet is the space?") === "ok");
@@ -222,7 +223,7 @@ async function main() {
 
   const b = await ask([U("Hi"), A(OPENER_EN), U("vinyl"), A("Our vinyl promo is $5 per sqft, floor, installation and quarter round included. One area or the whole house?"), U("the whole house, about 1800 sqft" + sys())]);
   show("4b casa toda", b);
-  ck("4b: propõe a visita com DOIS horários da agenda", clockTokens(b).size === 2 && [...clockTokens(b)].every((t) => ["9:00a", "11:00a", "1:00p", "3:00p"].includes(t)), b);
+  ck("4b: propõe a visita e PEDE o ZIP (fluxo 29/09), sem listar horários ainda; ou, se já listou, são DOIS da agenda", (/\bzip\b/i.test(b) && clockTokens(b).size === 0) || (clockTokens(b).size === 2 && [...clockTokens(b)].every((t) => ["9:00a", "11:00a", "1:00p", "3:00p"].includes(t))), b);
   ck("4b: diz que é grátis, sem total em dólar", /free/i.test(b) && !/\$\s?\d{3,}/.test(b), b);
   ck(`4b: <= ${CEIL} caracteres (era ~250 com 3 frases)`, visibleLength(b) <= CEIL, b);
 
@@ -233,7 +234,7 @@ async function main() {
 
   const dd = await ask([U("Hola"), A(OPENER_ES), U("vinyl, es toda la casa como 1500 pies" + sys())]);
   show("4d espanhol", dd);
-  ck("4d: responde em espanhol, com 2 horários, sem ¿¡", /visita|medir|gratis/i.test(dd) && clockTokens(dd).size === 2 && !/[¿¡]/.test(dd), dd);
+  ck("4d: responde em espanhol, pede o código postal (fluxo 29/09) ou dá 2 horários, sem ¿¡", /visita|medir|gratis/i.test(dd) && ((/c[oó]digo\s+postal/i.test(dd) && clockTokens(dd).size === 0) || clockTokens(dd).size === 2) && !/[¿¡]/.test(dd), dd);
   ck(`4d: <= ${CEIL} caracteres`, visibleLength(dd) <= CEIL, dd);
 
   const e = await ask([U("Hi"), A(OPENER_EN), U("tile, about 450 sqft" + sys())]);

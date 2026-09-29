@@ -39,6 +39,8 @@ export async function GET(req: NextRequest) {
   }
 
   const out: Record<string, unknown> = {};
+  // Deploy em produção (29/09/2026): commit e chaves de comportamento, para conferir o que está no ar sem adivinhar.
+  out.deploy = { commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null, ref: process.env.VERCEL_GIT_COMMIT_REF ?? null, sellerFillStrict: process.env.SELLER_FILL_STRICT !== "off", replyTighten: process.env.REPLY_TIGHTEN !== "off" };
 
   const checkIgToken = async (token: string | undefined | null) => {
     if (!token) return { present: false };

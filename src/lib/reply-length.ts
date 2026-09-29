@@ -15,10 +15,13 @@
 // Pure (no SDK, no I/O): the API call lives in ai.ts, the judgment lives here
 // so the eval can hammer it offline.
 
-/** What the prompt asks the model to aim for. 160 → 140 on 2026-09-27 (owner: shorter again). */
-export const REPLY_TARGET_CHARS = 140;
-/** Above this the reply is rewritten shorter (once). 220 → 200 on 2026-09-27. */
-export const REPLY_TIGHTEN_OVER = 200;
+/** The budget the PROMPT states to the model (owner, 2026-09-27: "respostas curtas"). */
+export const REPLY_PROMPT_TARGET_CHARS = 140;
+export const REPLY_PROMPT_CEILING_CHARS = 200;
+/** What the rewrite instruction asks for. 160 → 140 on 2026-09-27, back to 160 on 2026-09-29 (conversion review: replies shrank 175 → 139 chars and the booking rate fell with them; the prompt keeps asking for 140, the NET only rewrites real walls of text). */
+export const REPLY_TARGET_CHARS = 160;
+/** Above this the reply is rewritten shorter (once). 220 → 200 on 2026-09-27, back to 220 on 2026-09-29. */
+export const REPLY_TIGHTEN_OVER = 220;
 /** The rewrite must be at least this much shorter to be worth shipping. */
 const MIN_SHRINK = 0.85;
 /** Rule 3 of the prompt: one sentence, two at most (the answer, then one forward question). */
@@ -66,7 +69,10 @@ export function sentenceCount(text: string): number {
 export function needsTightening(text: string): boolean {
   const t = text || "";
   if (/\[BOOK:|\[CANCEL_BOOKING\]|\[REACT_ONLY\]/i.test(t)) return false;
-  return visibleLength(t) > REPLY_TIGHTEN_OVER || sentenceCount(t) > REPLY_MAX_SENTENCES;
+  // 2026-09-29: three SHORT sentences no longer trigger the rewrite (the 24/09
+  // trigger cut the visit proposal to two clauses and the booking rate kept
+  // falling); the net catches a wall of text or a 4+ sentence lecture.
+  return visibleLength(t) > REPLY_TIGHTEN_OVER || sentenceCount(t) > REPLY_MAX_SENTENCES + 1;
 }
 
 /** The note the model gets right after its own draft. */

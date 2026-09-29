@@ -12,6 +12,7 @@ import {
   lastTouchTemplate,
   FOLLOWUP_MARKER,
   FOLLOWUP_DELAY_H,
+  ENGAGED_DELAY_H,
   NUDGE_GAP_H,
   MAX_NUDGES_PER_CONVERSATION,
   isAdFaqButton,
@@ -45,28 +46,33 @@ const target = (h: number): FollowupMsg[] => [
   m("assistant", VISIT_OFFER, h - 0.05),
 ];
 
-console.log("\n── 0. The owner's cadence (2026-09-27) ──");
-check("first nudge only after 48h of silence", FOLLOWUP_DELAY_H === 48);
+console.log("\n── 0. The cadence: ghost after 2 days (owner 2026-09-27), engaged lead after 3h (flow before 17/09, restored 2026-09-29) ──");
+check("ghost nudge only after 48h of silence", FOLLOWUP_DELAY_H === 48);
+check("engaged lead nudge after 3h of silence", ENGAGED_DELAY_H === 3);
 check("second touch 48h after the first", NUDGE_GAP_H === 48);
 check("never more than 2 nudges per conversation", MAX_NUDGES_PER_CONVERSATION === 2);
 
-console.log("\n── 1. The real target: engaged lead + scheduling ask + quiet for 2 days (WhatsApp) ──");
+console.log("\n── 1. The real target: engaged lead + scheduling ask + quiet for 3h (WhatsApp) ──");
 let d = decideFollowup(WA, target(50), NOW);
 check("engaged lead, visit offered, 50h silent → ELIGIBLE", d.eligible && d.kind === "engaged", d.reason);
 check("english conversation → english template", d.lang === "en", d.lang);
 d = decideFollowup(WA, target(9.5), NOW);
-check("9.5h silent (the old target) → too fresh now", !d.eligible && /too-fresh/.test(d.reason), d.reason);
-d = decideFollowup(WA, target(47.5), NOW);
-check("47.5h silent → still too fresh", !d.eligible && /too-fresh/.test(d.reason), d.reason);
+check("9.5h silent → ELIGIBLE (engaged, 3h rule)", d.eligible && d.kind === "engaged", d.reason);
+d = decideFollowup(WA, target(3.5), NOW);
+check("3.5h silent → ELIGIBLE (engaged, 3h rule)", d.eligible && d.kind === "engaged", d.reason);
+d = decideFollowup(WA, target(2), NOW);
+check("2h silent → too fresh", !d.eligible && /too-fresh/.test(d.reason), d.reason);
 d = decideFollowup(WA, target(24 * 5 + 1), NOW);
 check("5 days and 1h → window closed (never wake a week-old lead)", !d.eligible && /window-closed/.test(d.reason), d.reason);
 
-console.log("\n── 2. Instagram and Messenger never get the 2-day follow-up (Meta 24h window) ──");
+console.log("\n── 2. Instagram and Messenger: engaged nudge inside the 22h window, nothing after it ──");
 for (const id of ["fb_123", "1777752696862664"]) {
   d = decideFollowup(id, target(50), NOW);
-  check(`${id.startsWith("fb_") ? "Messenger" : "Instagram"}, 50h → blocked (channel window closes before 2 days)`, !d.eligible && d.reason === "channel-window-closes-before-2-days", d.reason);
+  check(`${id.startsWith("fb_") ? "Messenger" : "Instagram"}, 50h → blocked (Meta 24h window closed)`, !d.eligible && /window-closed/.test(d.reason), d.reason);
   d = decideFollowup(id, target(1.2), NOW);
-  check(`${id.startsWith("fb_") ? "Messenger" : "Instagram"}, 1.2h → blocked too (no more 45-minute nudges)`, !d.eligible, d.reason);
+  check(`${id.startsWith("fb_") ? "Messenger" : "Instagram"}, 1.2h → too fresh (no more 45-minute nudges)`, !d.eligible && /too-fresh/.test(d.reason), d.reason);
+  d = decideFollowup(id, target(5), NOW);
+  check(`${id.startsWith("fb_") ? "Messenger" : "Instagram"}, 5h → ELIGIBLE (engaged nudge is back)`, d.eligible && d.kind === "engaged", d.reason);
 }
 
 console.log("\n── 3. Fantasma do botão (17/09/2026): still a target, but only after 2 days, WhatsApp only ──");
@@ -137,9 +143,9 @@ console.log("\n── 8. Unanswered client message is NOT this feature's job ─
 d = decideFollowup(WA, [...target(60), m("user", "do you take credit cards?", 50)], NOW);
 check("client has the last word → blocked (webhook flow owns that)", !d.eligible && d.reason === "client-has-last-word", d.reason);
 
-console.log("\n── 9. Our own last line must also be 2 days old ──");
-d = decideFollowup(WA, [...target(60).slice(0, 3), m("assistant", VISIT_OFFER, 20)], NOW);
-check("bot's own message only 20h old → blocked (bot-msg-too-fresh)", !d.eligible && /bot-msg-too-fresh/.test(d.reason), d.reason);
+console.log("\n── 9. Our own last line must also be silent for the same 3h ──");
+d = decideFollowup(WA, [...target(60).slice(0, 3), m("assistant", VISIT_OFFER, 1)], NOW);
+check("bot's own message only 1h old → blocked (bot-msg-too-fresh)", !d.eligible && /bot-msg-too-fresh/.test(d.reason), d.reason);
 
 console.log("\n── 10. Language matching ──");
 check("Spanish convo → es", pickLang(["Hola, necesito piso para mi casa", "porcelanato, toda la casa"]) === "es");

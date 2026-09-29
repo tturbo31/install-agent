@@ -600,6 +600,25 @@ export function containsSchedulingOffer(text: string): boolean {
   return isSchedulingPush(text || "");
 }
 
+// ZIP CODE FIRST (fluxo restaurado em 29/09/2026, sem a rota de 27/08): a
+// proposta da visita pede o ZIP em vez de listar horários ("...I bring the
+// samples. What's the zip code of the property?"). Não tem clock time nem
+// "what time works", mas É a proposta da visita — conta como push para o
+// anti-pressão não deixar o próximo turno informativo ganhar uma lista de
+// horários.
+export function isVisitProposalWithZipAsk(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return /\b(?:visit|measure|samples?|estimate|visita|medir|muestras|amostras|or[cç]amento)\b/i.test(t) && /\bzip\b|c[oó]digo\s+postal/i.test(t) && /\?/.test(t);
+}
+
+// Resposta curta de localização ("33024", "Homestead", "Coral Gables FL"):
+// sem pergunta, até 4 palavras.
+export function isLocationAnswer(userText: string): boolean {
+  const t = (userText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t) return false;
+  return t.split(/\s+/).length <= 4 && !/\?/.test(t);
+}
+
 // Our OWN lines that RESTATE the booked day and time are not offers. Since
 // 2026-08-25 the booking confirmation carries the slot ("Appointment confirmed
 // for Thursday, August 27 at 2pm"), so containsSchedulingOffer read it as an
@@ -934,8 +953,17 @@ export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
   const recentAssistantPushed = [...messages]
     .filter((m) => m.role === "assistant")
     .slice(-3)
-    .some((m) => isSchedulingPush(m.content));
+    .some((m) => isSchedulingPush(m.content) || isVisitProposalWithZipAsk(m.content));
   const lastMsg = messages[messages.length - 1];
+  // Resposta ao pedido de ZIP (fluxo restaurado 29/09/2026): nossa última
+  // mensagem pediu o ZIP na proposta da visita e o cliente respondeu com o
+  // ZIP, a cidade ou uma resposta curta sem pergunta → o próximo turno DEVE
+  // oferecer os horários; isso é o fluxo, não pressão. Uma pergunta
+  // informativa ("is it waterproof?") continua protegida.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  if (lastMsg?.role === "user" && lastAssistant && isVisitProposalWithZipAsk(lastAssistant.content) && isLocationAnswer(lastMsg.content)) {
+    return false;
+  }
   return (
     recentAssistantPushed &&
     lastMsg?.role === "user" &&
