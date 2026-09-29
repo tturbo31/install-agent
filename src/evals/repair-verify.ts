@@ -76,6 +76,26 @@ const PRITI_UP_TO_BOOK: ChatMessage[] = [
   u("[Client replied to our ad]"),
 ];
 
+// ── The two 2026-09-29 leaks ────────────────────────────────────────────────
+// Messenger fb_28104189355856705: repair declined on 09-27, then on 09-29 three
+// ad FAQ taps ("vinyl", "installation" clear the flag) and the typed message.
+const FB_MATCH_HISTORY: ChatMessage[] = [
+  u("Yes . I need a repair/replacement."),
+  a("We only do full new installations, we don't do repairs of any kind. If you ever need a whole new floor put in, I'm happy to help!"),
+  u("No just a repair . Can you recommend someone?"),
+  a("Honestly, for repairs the best bet is to search for a local handyman or tile repair specialist on Google or Yelp in your area. Hope you find someone soon!"),
+  u("I can't find the matching floor."),
+  a("That's a tough one. For matching an existing floor, places like Floor & Decor or Tile Shop often carry a wide range of styles and can help you find something close."),
+  u("Thank You ☺️"),
+  u("What types of vinyl flooring do you offer?"),
+  u("How long does the installation process take?"),
+  u("Can I get a free quote for the installation?"),
+  a("Waterproof, 20-year warranty, wood and marble finishes, installs in 2 to 3 days, and the quote is free. One area or the whole house?"),
+  u("I want to replace a damaged wood floor. The floor goes throughout the whole house so I just want to find a match if possible and replace it"),
+];
+// IG Lily Antonijuan-Estevez, first message.
+const LILY_MSG = "Good afternoon, I got some wood in the kitchen that needs to be replaced. I got boxes of the floor. Is this something you do? If so how much do you charge? Thank you Lily";
+
 async function main() {
   console.log("\n================ NO-REPAIRS VERIFICATION ================");
 
@@ -93,6 +113,13 @@ async function main() {
     "Oi, tenho umas peças do piso quebradas, vocês consertam?",
     "Preciso de um reparo no piso, algumas placas soltaram",
     "One of the tiles is broken, how much to replace it?",
+    // 2026-09-29 leaks: matching the existing floor / already has boxes of it
+    "I want to replace a damaged wood floor. The floor goes throughout the whole house so I just want to find a match if possible and replace it",
+    "Good afternoon, I got some wood in the kitchen that needs to be replaced. I got boxes of the floor. Is this something you do? If so how much do you charge? Thank you Lily",
+    "Some planks got water damage, I have leftover boxes of the same floor, can you swap them?",
+    "A few boards in the hallway need to be replaced, I still have 2 boxes from the original install",
+    "Tengo unas tablas dañadas en la cocina, me quedaron cajas del mismo piso, las pueden cambiar?",
+    "Tenho umas tábuas estragadas, sobraram caixas do mesmo piso, vocês trocam?",
   ]) ck(`repair: "${s.slice(0, 60)}"`, isRepairRequest(s), s);
 
   console.log("\n[1b] isRepairRequest — negatives (must stay install / other flows)");
@@ -106,6 +133,13 @@ async function main() {
     "Podemos arreglar una cita para el martes?",
     "My tiles are cracked, I want vinyl instead",
     "Replace all my floors with hardwood, 3 bedrooms",
+    "I want to replace the whole floor with something that matches the kitchen tile",
+    "Replace it all, the whole house is damaged, I want new hardwood that matches the stairs",
+    "I have 3 boxes of vinyl left over, can you install them in the closet?",
+    "I want the same floor as the kitchen in the two bedrooms, about 400 sqft",
+    "Can you match the price I got from another company? 1200 sqft vinyl",
+    "Hi. Yes I am getting estimates to repair drywall and paint first and then will reach out to schedule the flooring.",
+    "We are fixing the roof this month, after that we want new floors in 3 bedrooms",
     "Hi, I'm interested in the promotion",
     "[Floor plan analysis: photo of existing flooring with cracked, broken tiles that need repair]",
     "[Client replied to our ad]",
@@ -118,6 +152,8 @@ async function main() {
   ck("clears when the client pivots to a whole new floor",
     !repairRequestActive([...PRITI_UP_TO_BOOK, u("Actually we want to redo the whole floor with new vinyl, about 900 sqft")]));
   ck("not active on a plain bathroom-remodel history", !repairRequestActive(PRITI_UP_TO_REPAIR.slice(0, 5)));
+  ck("fb_28104189355856705 (2026-09-29): active again after the FAQ taps + 'find a match' message", repairRequestActive(FB_MATCH_HISTORY));
+  ck("Lily (IG 2026-09-29): active on the first message", repairRequestActive([u(LILY_MSG)]));
 
   console.log("\n[1d] repairVisitOfferLeak — the post-model backstop");
   const leakOffer = "Of course, for a tile replacement I need to come measure in person, so let me set up your free visit. I have Tuesday at 3pm or Wednesday at 11am, which works better?";
@@ -130,6 +166,16 @@ async function main() {
   ck("the decline itself is NOT a leak", !repairVisitOfferLeak(PRITI_UP_TO_REPAIR, decline), decline);
   ck("same offer with NO repair in history → not a leak", !repairVisitOfferLeak(PRITI_UP_TO_REPAIR.slice(0, 1), leakOffer), leakOffer);
   ck("decline message ES mentions no repairs", /no hacemos reparaciones/i.test(repairDeclineMessage("es")));
+  // 2026-09-29: "Yes, we do!" / "we can do that" / a price on the repair turn is a leak too
+  const leakAffirmPrice = "Yes, we do! Since you have the material, it's $3.20 per sqft for the labor. How many square feet is the kitchen?";
+  const leakAffirmZip = "Perfect, we can do that! What's the zip code of the property?";
+  ck("Lily: 'Yes, we do! $3.20 per sqft' → leak", repairVisitOfferLeak([u(LILY_MSG)], leakAffirmPrice), leakAffirmPrice);
+  ck("fb match case: 'Perfect, we can do that! zip code?' → leak", repairVisitOfferLeak(FB_MATCH_HISTORY, leakAffirmZip), leakAffirmZip);
+  ck("Lily: the decline itself is NOT a leak", !repairVisitOfferLeak([u(LILY_MSG)], decline), decline);
+  const declinePlusVinyl = "We don't do repairs of any kind, only full installations over 500 square feet. Our vinyl promo is $5 per sqft with material and labor included.";
+  ck("decline + unrelated vinyl price → NOT a leak", !repairVisitOfferLeak([u("Can you fix my 3 broken tiles? Also how much is your vinyl per sqft?")], declinePlusVinyl), declinePlusVinyl);
+  const bathroomAfterRepair = [u("Can you fix a few broken tiles in my kitchen?"), a(decline), u("Ok. Do you do bathrooms?")];
+  ck("'Yes we do bathrooms' two turns after the repair → NOT a leak (last message is not a repair)", !repairVisitOfferLeak(bathroomAfterRepair, "Yes, we do bathroom remodels! Ozzi handles those directly at (561) 674-8334."));
   ck("decline message PT mentions no repairs", /não fazemos reparos/i.test(repairDeclineMessage("pt")));
 
   // ── 2. LIVE MODEL ─────────────────────────────────────────────────────────
@@ -168,6 +214,20 @@ async function main() {
   console.log("   →", r5.replace(/\s+/g, " ").slice(0, 220));
   ck("declines the few-tiles replacement", DECLINES_REPAIR(r5), r5);
   ck("no visit offered", !PROPOSES_VISIT(r5), r5);
+
+  console.log("\n[2f] LIVE: fb_28104189355856705 replay (2026-09-29) — 'find a match and replace it' after the FAQ taps");
+  const r5b = await ai(FB_MATCH_HISTORY);
+  console.log("   →", r5b.replace(/\s+/g, " ").slice(0, 220));
+  ck("declines the matching replacement", DECLINES_REPAIR(r5b), r5b);
+  ck("does NOT say 'we can do that' / 'yes we do'", !/we\s+can\s+do\s+that|yes,?\s+we\s+do\b/i.test(r5b), r5b);
+  ck("no zip / address / price / visit", !ASKS_DETAILS(r5b) && !HAS_PRICE(r5b) && !PROPOSES_VISIT(r5b), r5b);
+
+  console.log("\n[2g] LIVE: Lily replay (IG 2026-09-29) — 'some wood needs to be replaced, I got boxes of the floor'");
+  const r5c = await ai([u(LILY_MSG)]);
+  console.log("   →", r5c.replace(/\s+/g, " ").slice(0, 220));
+  ck("declines the plank replacement", DECLINES_REPAIR(r5c), r5c);
+  ck("does NOT say 'yes we do' / quote a labor rate", !/yes,?\s+we\s+do\b/i.test(r5c) && !HAS_PRICE(r5c), r5c);
+  ck("does NOT ask the square footage or send to Ozzi as a small job", !/how\s+many\s+square|how\s+big|what(?:'s|\s+is)\s+the\s+(?:size|square\s+footage)|\bsize\s+of\b|674[\s.-]*8334/i.test(r5c), r5c);
 
   // ── 3. REGRESSIONS ────────────────────────────────────────────────────────
   console.log("\n[3] REGRESSION: cracked tiles under the liquid ad → vinyl OVER tile, not a decline");

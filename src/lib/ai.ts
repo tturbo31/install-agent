@@ -2079,7 +2079,26 @@ const DAMAGE = /\b(damaged?|broken|crack(?:s|ed)?|chip(?:s|ped)?|loose|lifting|h
 const FLOOR_PIECE = /\b(tiles?|planks?|boards?|pieces?|grout|azulejos?|baldosas?|losas?|losetas?|porcelanatos?|cer[aâ]mic[ao]s?|tablas?|tablones?|l[aá]minas?|r[eé]guas?|pe[çc]as?|piezas?|floors?|flooring|pisos?|suelos?|ch[aã]o)\b/i;
 // "a few / some / 3 (broken) tiles": a partial replacement is a repair even
 // with no repair verb ("some tiles are cracked, can you give me a quote?").
-const FEW_PIECES = /\b(a\s+few|few|some|a\s+couple(?:\s+of)?|couple(?:\s+of)?|several|one|two|three|four|five|six|\d{1,2}|algun[oa]s|unos|unas|un\s+par\s+de|varios|varias|alguns|algumas|umas?|poucos|poucas|dos|tres|dois|tr[eê]s)\s+(?:of\s+(?:the|my|our)\s+)?(?:broken|cracked|damaged|loose|chipped|missing|rot[oa]s|quebrad[oa]s|da[ñn]ad[oa]s)?\s*(tiles?|planks?|boards?|pieces?|azulejos?|baldosas?|losas?|losetas?|porcelanatos?|pe[çc]as?|piezas?|tablas?)\b/i;
+const FEW_PIECES = /\b(a\s+few|few|some|a\s+couple(?:\s+of)?|couple(?:\s+of)?|several|one|two|three|four|five|six|\d{1,2}|algun[oa]s|unos|unas|un\s+par\s+de|varios|varias|alguns|algumas|umas?|poucos|poucas|dos|tres|dois|tr[eê]s)\s+(?:of\s+(?:the|my|our)\s+)?(?:broken|cracked|damaged|loose|chipped|missing|rot[oa]s|quebrad[oa]s|da[ñn]ad[oa]s)?\s*(tiles?|planks?|boards?|pieces?|wood|azulejos?|baldosas?|losas?|losetas?|porcelanatos?|pe[çc]as?|piezas?|tablas?|maderas?|madeiras?|t[aá]buas?)\b/i;
+// MATCHING the existing floor (fb_28104189355856705, Messenger 2026-09-29: "I
+// want to replace a damaged wood floor. The floor goes throughout the whole
+// house so I just want to find a match if possible and replace it" → "Perfect,
+// we can do that! What's the zip code?"; Lily Antonijuan-Estevez, IG 2026-09-29:
+// "I got some wood in the kitchen that needs to be replaced. I got boxes of the
+// floor. Is this something you do?" → "Yes, we do! $3.20 per sqft"). A client
+// who wants to MATCH the rest of the floor, or already has boxes of the same
+// floor, is replacing a damaged SECTION: a repair, even when the floor "goes
+// throughout the whole house" (that describes the EXISTING floor, not a new
+// one). Read BEFORE the new-floor exclusion below.
+const MATCH_EXISTING = /\b(?:find|get|locate|source|buy|order)\s+(?:a|the|something\s+(?:that|to))\s*(?:match|matching|close(?:\s+match)?|similar)|\bmatch(?:es|ing)?\s+(?:the|my|our|it|them|what(?:'s|\s+is)\s+there|(?:the\s+)?(?:existing|current|old|rest|same|original))|\ba\s+match\b|\bsame\s+(?:floors?|flooring|tiles?|planks?|wood|color|style|material)\s+(?:as|that|than|i|we|of)\b|\b(?:leftover|left\s*over|extra|spare|remaining)\s+(?:boxes?|planks?|tiles?|material|flooring|wood)\b|\b(?:have|got|kept|still\s+have|there\s+are)\s+(?:some\s+|a\s+few\s+|extra\s+|\d+\s+)?(?:boxes|cajas|caixas)\b|\bboxes\s+of\s+(?:the|this|that|my|our|same)\s+(?:same\s+)?(?:floors?|flooring|tiles?|planks?|material|wood)\b|\b(?:igual|parecid[oa]|similar)\s+(?:al?|que)\s+(?:que\s+)?(?:ya\s+)?(?:tengo|hay|est[aá])\b|\b(?:el\s+)?mismo\s+(?:piso|suelo|material|azulejo|porcelanato)\b|\b(?:o\s+)?mesmo\s+(?:piso|material|porcelanato)\b|\b(?:tengo|sobraron|quedaron|me\s+quedan)\s+(?:unas?\s+|algunas?\s+)?cajas\b|\b(?:tenho|sobraram|ficaram)\s+(?:umas?\s+|algumas?\s+)?caixas\b/i;
+// A partial area / a few pieces of the existing floor (not the whole thing).
+const PARTIAL_AREA = /\b(?:some|a\s+few|few|part\s+of|a\s+part|a\s+(?:small\s+)?(?:section|spot|area|portion|patch|piece)|(?:one|a\s+couple(?:\s+of)?|couple(?:\s+of)?|several|two|three|four|five|\d{1,2})\s+(?:of\s+(?:the|my|our)\s+)?(?:tiles?|planks?|boards?|pieces?|spots?|areas?)|parte\s+d[eo]l?|un\s+(?:pedazo|tramo|[aá]rea|sector)|alguna?s|unos|unas|alguns|algumas|umas?|um\s+(?:peda[çc]o|trecho|canto)|uma\s+parte)\b/i;
+// "needs to be replaced / fixed" carries the damage even with no damage word
+// ("some wood in the kitchen that needs to be replaced").
+const NEEDS_REPLACING = /\b(?:needs?|have\s+to\s+be|has\s+to\s+be|must\s+be|got\s+to\s+be|necesit[ao]n?|hay\s+que|precis[ao]m?|tem\s+que\s+ser|t[eê]m\s+que\s+ser)\s+(?:to\s+be\s+)?(?:replac|repair|fix|swap|chang|cambi|reemplaz|arregl|repar|troc|substitu|consert|arrum)/i;
+// "replace it all / all of it / everything": the client means the WHOLE floor,
+// the matching rule must not fire on that.
+const REPLACE_ALL = /\b(?:replace|redo|change|rip|tear)\s+(?:it\s+)?(?:all\s+)?(?:out\s+)?all\b|\ball\s+(?:of\s+)?(?:it|them|the\s+floors?|my\s+floors?|the\s+house)\b|\beverything\b|\btodo\s+(?:el\s+piso|eso|el\s+suelo)\b|\btudo\b/i;
 // Scheduling / pricing uses of "fix" and "arreglar" are NOT repairs.
 const FIX_NOT_REPAIR = /\b(?:fix(?:ed|ing)?|arregl\w+|arrum\w+)\s+(?:up\s+)?(?:a|an|the|una?|el|la|um|uma|o)?\s*(?:time|date|day|appointment|visit|slot|schedule|meeting|price|rate|cost|fee|quote|cita|visita|hora|horario|hor[aá]rio|d[ií]a|fecha|reuni[oó]n|precio|pre[çc]o)\b|\bfixed[\s-]+(?:price|rate|cost|fee|quote)\b/gi;
 // The client wants a NEW floor (or the vinyl-over-tile install from the "liquid"
@@ -2106,16 +2125,30 @@ function clientTextForRepair(text: string): string {
 // "repair" solto disparava a recusa e matou um lead real de 1700 sqft.
 const REPAIR_HANDLED_ELSEWHERE = /\b(?:i(?:'ll|\s+will)|we(?:'ll|\s+will)|i\s+can|we\s+can|i'?m\s+going\s+to|we'?re\s+going\s+to|voy\s+a|vamos\s+a|eu\s+vou|vou)\s+(?:look\s+into|handle|take\s+care\s+of|deal\s+with|get\s+(?:someone|somebody|a\s+contractor)\s+(?:for|to)|find\s+(?:someone|somebody)\s+(?:for|to)|ver|resolver|cuidar\s+d[eo])\b[^.!?\n]{0,50}\b(?:repairs?|reparaci[oó]n(?:es)?|reparos?|consertos?|arreglos?)\b/gi;
 
+// A repair of something that is NOT a floor (drywall, paint, roof, plumbing...)
+// is another trade, not our decline (fb 8701c748, 2026-09-13: "getting
+// estimates to repair drywall and paint first, then the flooring").
+const NON_FLOOR_REPAIR = /\b(?:repair(?:s|ed|ing)?|fix(?:es|ed|ing)?|reparar|arreglar|consertar|reparaci[oó]n\s+de|reparo\s+d[eo]|arreglo\s+de)\s+(?:the\s+|my\s+|our\s+|some\s+|el\s+|la\s+|los\s+|las\s+|o\s+|a\s+|os\s+|as\s+)?(?:drywall|walls?|paint(?:ing)?|roof(?:ing)?|plumbing|pipes?|leaks?|a\/?c|hvac|ac\s+unit|electric\w*|wiring|ceiling|windows?|doors?|cabinets?|countertops?|fence|pool|garage\s+door|pared(?:es)?|techo|tuber[ií]a|plomer[ií]a|pintura|ventanas?|puertas?|parede|telhado|encanamento|pintura|janelas?|portas?)\b/gi;
+
 export function isRepairRequest(text: string): boolean {
   const t0 = clientTextForRepair(text);
   if (!t0) return false;
-  const t = t0.replace(REPAIR_HANDLED_ELSEWHERE, " ");
+  const t = t0.replace(REPAIR_HANDLED_ELSEWHERE, " ").replace(NON_FLOOR_REPAIR, " ");
+  const stripped = t.replace(FIX_NOT_REPAIR, " ");
+  // Replacing a damaged / partial section and MATCHING the existing floor (or
+  // the client already has boxes of it) is a repair even when "the floor goes
+  // throughout the whole house" (2026-09-29, two leaks in one day). A sized
+  // job or "replace it all" is not.
+  if (!ANY_SQFT.test(t) && !REPLACE_ALL.test(t) &&
+      (REPLACE_VERB.test(stripped) || REPAIR_VERB.test(stripped)) && MATCH_EXISTING.test(stripped) &&
+      (DAMAGE.test(stripped) || PARTIAL_AREA.test(stripped) || NEEDS_REPLACING.test(stripped))) return true;
   if (NEW_FLOOR_SIGNAL.test(t) || ANY_SQFT.test(t)) return false;
   if (REPAIR_NOUN.test(t)) return true;
-  const stripped = t.replace(FIX_NOT_REPAIR, " ");
   if (REPAIR_VERB.test(stripped) && (DAMAGE.test(stripped) || FLOOR_PIECE.test(stripped))) return true;
   if (REPLACE_VERB.test(t) && DAMAGE.test(t)) return true;
   if (FEW_PIECES.test(t) && DAMAGE.test(t)) return true;
+  // "some wood / a few planks ... needs to be replaced" (Lily, IG 2026-09-29).
+  if (FEW_PIECES.test(t) && NEEDS_REPLACING.test(t)) return true;
   return false;
 }
 
@@ -2139,10 +2172,21 @@ export function repairRequestActive(history: Array<{ role: string; content: stri
 // asked for the booking details, or wrote a [BOOK] anyway. The webhook swaps the
 // reply for the deterministic decline (scheduler.repairDeclineMessage).
 const VISIT_OFFER = /\b(free\s+(?:visit|estimate|quote)|in.?person|come\s+(?:by|out|over|measure|take\s+a\s+look|and\s+(?:measure|take))|stop\s+by|set\s+up\s+(?:a|your|the)\s+(?:free\s+)?(?:visit|estimate)|schedule\s+(?:a|the|your)\s+(?:free\s+)?(?:visit|estimate)|(?:which|what)\s+(?:day|time|one)\s+works|visita|presencial|pessoalmente|qu[eé]\s+d[ií]a\s+(?:te|le)\s+(?:queda|viene|funciona)|que\s+dia\s+(?:fica|funciona))\b/i;
+// "Yes, we do!" / "Perfect, we can do that" / a per-sqft price in the reply to
+// the repair message itself (Lily IG + fb_28104189355856705, 2026-09-29). Only
+// on the turn whose LAST client message is the repair ask, and never when the
+// reply already states the decline (it may still answer an unrelated question
+// with a price, note item 3).
+const REPAIR_AFFIRM = /\b(?:yes|yeah|yep|sure|absolutely|of\s+course|perfect|great)\b[^.!?\n]{0,30}\b(?:we\s+(?:do|can|handle|offer|install)|that'?s\s+something\s+we|i\s+can\s+help)\b|\bwe\s+(?:can|do)\s+(?:do|handle|take\s+care\s+of|help\s+with)\s+(?:that|this|it|those|them)\b|\bwe\s+do\s+(?:that|this)\b|\bclaro\s+que\s+s[ií]\b|\bs[ií],?\s+(?:lo|eso|claro)?\s*(?:hacemos|podemos)\b|\bpodemos\s+hacer(?:lo)?\b|\bsim,?\s+(?:a\s+gente\s+)?(?:faz|fazemos|podemos)\b|\bfazemos\s+(?:isso|sim)\b|\ba\s+gente\s+faz\b/i;
+const REPAIR_DECLINE_SAID = /\b(?:don'?t|do\s+not|can'?t|cannot|not\s+able\s+to|aren'?t\s+able\s+to|no\s+longer|not\s+(?:currently\s+)?(?:offering|doing|taking|handling))\b[^.!?\n]{0,40}\brepairs?\b|\brepairs?\b[^.!?\n]{0,40}\b(?:isn'?t|is\s+not|aren'?t|are\s+not)\s+something\s+we\b|\bonly\s+(?:do|handle|offer|take\s+on)\s+(?:full|new|complete|brand\s+new)\b|\bno\s+(?:hacemos|realizamos|ofrecemos)\b[^.!?\n]{0,30}\b(?:reparaci|arreglo)|\bsolo\s+(?:hacemos\s+)?instalaci|\bn[aã]o\s+(?:fazemos|trabalhamos\s+com|pegamos)\b[^.!?\n]{0,30}\b(?:reparo|conserto)|\bs[oó]\s+fazemos\s+instala/i;
 export function repairVisitOfferLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
   if (!repairRequestActive(history)) return false;
   const t = aiText || "";
-  return /\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t);
+  if (/\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t)) return true;
+  const lastUser = [...(history ?? [])].reverse().find((m) => m.role === "user");
+  if (!lastUser || !isRepairRequest(lastUser.content)) return false;
+  if (REPAIR_DECLINE_SAID.test(t)) return false;
+  return REPAIR_AFFIRM.test(t) || /\$\s?\d/.test(t);
 }
 
 export const REPAIR_REQUEST_NOTE = `CRITICAL, REPAIR REQUEST (WE DO NOT DO REPAIRS OF ANY KIND):
@@ -2152,7 +2196,8 @@ The client is asking to FIX or REPLACE damaged, broken, cracked, chipped or loos
 3. If the same message also asks something unrelated, answer that part normally.
 4. Only if the client clearly says they want a whole NEW floor installed (not the damaged pieces fixed) return to the normal flow.
 5. If earlier in this conversation a visit was already offered, a slot was "held" or the name, address or phone were collected for this repair, that was a MISTAKE: do NOT confirm it, do NOT write [BOOK:...], apologize briefly and give the decline above instead.
-6. Keep the figure as 500 square feet (pies cuadrados / pés quadrados), never convert it to square meters.`;
+6. Keep the figure as 500 square feet (pies cuadrados / pés quadrados), never convert it to square meters.
+7. STILL A REPAIR: "replace the damaged part and find a match for the rest" (even if that floor runs through the whole house), and "some planks / boards need to be replaced, I already have boxes of the floor" (even if the client has the material). The job is the damaged section, not a new floor. NEVER answer "Yes, we do!" or "Perfect, we can do that", NEVER give a labor rate, NEVER ask the zip code or the square footage for it, NEVER send it to Ozzi as a small job. The decline above, nothing else.`;
 
 // ─── Floors we do NOT do: epoxy, concrete/cement, microcement, resin, pavers, terrazzo ───
 // THE BUG (JuanCarlos Briones, IG 2026-09-05 → visit 09-09): "Need floor for new
@@ -4676,7 +4721,7 @@ export async function getAIResponse(
 36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, tell them to reach Ozzi directly at (561) 674-8334 right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
-39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair.
+39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair. Replacing the damaged PART of a floor and MATCHING the rest ("find a match", "same floor", the client has leftover boxes of it) IS a repair even when that floor covers the whole house, and a client who already has the material for the damaged planks is STILL asking for a repair: never "Yes, we do", never a labor price, never the zip code or the square footage, never Ozzi's number for being small.
 40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
