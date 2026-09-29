@@ -42,8 +42,8 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 
 // ── the REAL sellers table on 2026-08-28 ─────────────────────────────────────
-const ALEXANDRE: Seller = { id: "8aa8842e", name: "Alexandre", priority: 1, enabled_weekdays: [1, 2, 3, 4, 5, 6], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00"], weekday_time_slots: null, active: true };
-const DIEGO: Seller = { id: "c6fcb045", name: "Diego", priority: 2, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["14:00", "16:00", "18:00", "20:00"], weekday_time_slots: { "0": ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"] }, active: true };
+const ALEXANDRE: Seller = { id: "8aa8842e", name: "Alexandre", priority: 2, enabled_weekdays: [1, 2, 3, 4, 5, 6], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00"], weekday_time_slots: null, active: true };
+const DIEGO: Seller = { id: "c6fcb045", name: "Diego", priority: 1, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["14:00", "16:00", "18:00", "20:00"], weekday_time_slots: { "0": ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"] }, active: true };
 const CHRIS: Seller = { id: "35f950e6", name: "Chris", priority: 3, enabled_weekdays: [0, 1, 2, 3, 4, 5], time_slots: ["09:00", "11:00", "13:00", "15:00", "17:00", "19:00"], weekday_time_slots: null, active: true };
 const SELLERS = [ALEXANDRE, DIEGO, CHRIS];
 

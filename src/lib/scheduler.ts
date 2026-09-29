@@ -188,7 +188,10 @@ function pickSellerForSlot(
 
 // ─── Owner rule 2026-09-17: one seller's day fills before the next seller's ──
 // "Lotar a agenda do Alexandre primeiro, depois o Diego, depois o Chris. Tem
-// que ser nessa ordem." (owner, 2026-09-17, twice). The schedule the model
+// que ser nessa ordem." (owner, 2026-09-17, twice). ORDER CHANGED 2026-09-29
+// (owner): Diego first, then Alexandre, then Chris — see
+// applySellerPriorityOrder below; the mechanism here is unchanged and reads
+// the order from `priority`. The schedule the model
 // reads used to be a union of every seller's open hours, so with Alexandre's
 // 9am taken the union still showed 9am (Chris's) and the next client got
 // Chris's 9am while Alexandre had 1pm, 3pm and 5pm open. The OFFER follows the
@@ -243,6 +246,27 @@ export function splitDaySlotsByPriority(
     for (const h of hours) if (!preferred.has(h)) onRequest.add(h);
   }
   return { preferred: [...preferred].sort(), onRequest: [...onRequest].sort() };
+}
+
+// ─── Owner rule 2026-09-29: fill order is Diego → Alexandre → Chris ─────────
+// "Primeiro Diego, depois o Alexandre e depois o Chris" (owner, 2026-09-29).
+// The order lives in sellers.priority of the Ozzi Plataforma, but the bot's
+// platform user (ia@ozzifloors.com) has no UPDATE right on `sellers` (RLS: the
+// update returns zero rows and no error), so the swap is applied here after
+// every read of the table. It only fires while the table still holds the
+// 17/09 snapshot (Alexandre priority 1, Diego priority 2): the moment the
+// owner changes either of those two priorities in the platform, the platform
+// wins and this is a no-op — at that point this block can be deleted. Chris
+// and any other seller keep their own priority. Rows are never mutated.
+const SELLER_ID_ALEXANDRE = "8aa8842e-c903-42b3-aa11-28252024713f";
+const SELLER_ID_DIEGO = "c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4";
+export function applySellerPriorityOrder<T extends { id: string; priority: number }>(sellers: T[]): T[] {
+  const alexandre = sellers.find((s) => s.id === SELLER_ID_ALEXANDRE);
+  const diego = sellers.find((s) => s.id === SELLER_ID_DIEGO);
+  if (!alexandre || !diego || alexandre.priority !== 1 || diego.priority !== 2) return sellers;
+  return sellers
+    .map((s) => (s.id === SELLER_ID_DIEGO ? { ...s, priority: 1 } : s.id === SELLER_ID_ALEXANDRE ? { ...s, priority: 2 } : s))
+    .sort((a, b) => a.priority - b.priority);
 }
 
 type SchedulerDb = Awaited<ReturnType<typeof getAuthenticatedClient>>;
@@ -453,7 +477,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
     }
 
-    const sellers = (sellersData ?? []) as Seller[];
+    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
     const bookings = (bookedData ?? []) as BookingRow[];
 
     if (sellers.length === 0) {
@@ -674,7 +698,7 @@ export async function rescheduleClientBooking(
       console.error("[reschedule] get_booked_slots failed — refusing to move blind:", bookedErr.message);
       return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
     }
-    const sellers = (sellersData ?? []) as Seller[];
+    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
     const bookings = (bookedData ?? []) as BookingRow[];
     const seller = pickSellerForSlot(sellers, bookings, newDate, newTime, daysOff);
     if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
@@ -1496,7 +1520,7 @@ export async function getRealAvailabilityContext(): Promise<string> {
     // cair no catch e dizer que não conseguiu ler a agenda.
     if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-    const sellers = (sellersData ?? []) as Seller[];
+    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
     const bookings = (bookedData ?? []) as BookingRow[];
 
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
@@ -1598,7 +1622,7 @@ export async function getNextOpenSlots(
   // oferecer horário fantasma.
   if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-  const sellers = (sellersData ?? []) as Seller[];
+  const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
   const bookings = (bookedData ?? []) as BookingRow[];
   const nowET = easternNowHM();
   const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
@@ -2323,7 +2347,7 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     // (needSlotConfirmationMessage / "mais cedo geral" / handoff).
     if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-    const sellers = (sellersData ?? []) as Seller[];
+    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
     const bookings = (bookedData ?? []) as BookingRow[];
     const date = new Date(dateStr + "T12:00:00");
     const weekday = date.getDay();
@@ -2365,7 +2389,7 @@ export async function getPreferredSlots(dateStr: string): Promise<string[]> {
       getDaysOff(db, dateStr, dateStr),
     ]);
     if (bookedErr) throw new Error("get_booked_slots: " + bookedErr.message);
-    const sellers = (sellersData ?? []) as Seller[];
+    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
     const bookings = (bookedData ?? []) as BookingRow[];
     const weekday = new Date(dateStr + "T12:00:00").getDay();
     const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff);
