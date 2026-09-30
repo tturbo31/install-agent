@@ -111,6 +111,8 @@ const SHARED: Check[] = [
   { label: "Bathroom post-model backstop (price / visit offer / details ask replaced)", test: (s) => /bathroomLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}bathroomReply\(history, lang\)/.test(s) },
   { label: "Photo analyzed BEFORE the debounce and stored as the message text", test: (s) => /let preAnalysis: string \| null = null;[\s\S]{0,900}content: storedText,/.test(s) && /preAnalysis \?\?/.test(s) },
   { label: "Chronological canned recovery (needTimeChoice/slotConflictRecovery get no [BOOK] address)", test: (s) => (s.match(/needTimeChoiceMessage\(lang, (?:bookingData\.date|pm\.promisedDate \?\? bookingData\.date)\)/g) ?? []).length === 2 && /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time\)/.test(s) && !/(?:needTimeChoiceMessage|slotConflictRecoveryMessage)\([^)]*bookingData\.address/.test(s) },
+  // Accepted slot that filled up (wa_17329668249, 30/09/2026): note before the model, canned apology as backstop, [BOOK] date anchored on the accepted offer
+  { label: "Accepted-slot-gone note + backstop, weekday guard gets the [BOOK] hour", test: (s) => /acceptedGone = acceptedSlotGone\(messagesForAI, availability, lang\)/.test(s) && /replyIgnoresGoneSlot\((?:afterBooking|afterBookingText), acceptedGone\)/.test(s) && /reconcileBookingWeekday\(bookingData\.date, history, bookingData\.time\)/.test(s) },
 ];
 
 // ── INTENTIONAL per-platform differences (informational, NOT failures) ───────

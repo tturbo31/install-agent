@@ -8,7 +8,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -133,7 +133,7 @@ async function processBookingCommand(
     // day's date for the weekday the client picked (a "Thursday" visit was
     // booked on Friday, 2026-07-16). Snap it back before anything is written.
     if (bookingData.date) {
-      const rec = reconcileBookingWeekday(bookingData.date, history);
+      const rec = reconcileBookingWeekday(bookingData.date, history, bookingData.time);
       if (rec.corrected) {
         console.warn(`[WA] booking date corrected: ${rec.reason}`);
         bookingData.date = rec.date;
@@ -1727,6 +1727,10 @@ async function handleWaMessage(body: Record<string, unknown>) {
     type AiMsg = { role: "user" | "assistant"; content: string; at?: string };
     let messagesForAI: AiMsg[] = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content, at: m.created_at as string | undefined }));
 
+    // Horário aceito que já encheu (wa_17329668249, WhatsApp 30/09/2026): "Ok 6
+    // will work" quatro horas depois da oferta, com o 6pm já ocupado, virou
+    // "I'm holding that 6pm for you!". Preenchido no bloco abaixo, usado no backstop.
+    let acceptedGone: AcceptedSlotGone | null = null;
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
       // Only load availability when booking not yet confirmed
@@ -1749,6 +1753,16 @@ async function handleWaMessage(body: Record<string, unknown>) {
       // pedido outro dia. Uma vez basta — a menos que o CLIENTE retome o horário.
       const slotApologyNote = slotApologyAlreadyGivenNote(messagesForAI);
       if (slotApologyNote) systemParts.push(slotApologyNote);
+      // O cliente está aceitando AGORA um horário que ofertamos e que já saiu da
+      // linha do dia (encheu entre a oferta e a resposta): o modelo recebe o
+      // horário aceito, o dia e os horários reais para assumir e reofertar.
+      if (availability) {
+        acceptedGone = acceptedSlotGone(messagesForAI, availability, lang);
+        if (acceptedGone) {
+          console.warn(`[WA] client accepted ${acceptedGone.slot.label} on ${acceptedGone.slot.date} but it is no longer open — note injected`);
+          systemParts.push(acceptedGone.note);
+        }
+      }
       if (isRescheduling) {
         // CANCEL intent gets its own framing: routing "I need to cancel" into a
         // note that says the client "wants to MOVE the visit" made the model push
@@ -2108,6 +2122,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // perdidas na semana de 29/08 (Josue Gonzalez / wa_13057903205) porque o
     // cliente acreditou num slot que nunca existiu ou que escapou no meio.
     if (!booked && !isBookingConfirmed) afterBooking = softenPrematureLockIn(afterBooking);
+    // Backstop da nota ACCEPTED TIME NO LONGER OPEN: se o modelo ainda assim
+    // "segurou" o horário morto (ou pediu o endereço como se estivesse marcado),
+    // sai a desculpa enlatada com os horários reais do dia.
+    if (!booked && acceptedGone && replyIgnoresGoneSlot(afterBooking, acceptedGone)) {
+      console.warn(`[WA] reply still holds the ${acceptedGone.slot.label} that filled up — replaced with the apology + real times`);
+      afterBooking = acceptedGone.reply;
+    }
     // Revisão 09-14/09/2026: a claim with data still missing becomes "penciling
     // in" (never a handoff), and a details ask never repeats a zip / address /
     // phone / name the client already typed.

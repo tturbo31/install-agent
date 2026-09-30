@@ -198,7 +198,8 @@ function main() {
   ] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports reconcileBookingWeekday`, /reconcileBookingWeekday/.test(src), rel);
-    ck(`${name}: calls the guard inside processBookingCommand`, /const rec = reconcileBookingWeekday\(bookingData\.date, history\)/.test(src), rel);
+    // 30/09/2026: the guard also gets the [BOOK] hour (accepted-slot anchor, see accepted-slot-gone-verify).
+    ck(`${name}: calls the guard inside processBookingCommand`, /const rec = reconcileBookingWeekday\(bookingData\.date, history(?:, bookingData\.time)?\)/.test(src), rel);
     ck(`${name}: only overwrites when corrected`, /if \(rec\.corrected\)\s*\{[\s\S]{0,120}bookingData\.date = rec\.date/.test(src), rel);
     ck(`${name}: passes history into processBookingCommand`, /processBookingCommand\([\s\S]{0,200}history\s*\)/.test(src), rel);
   }

@@ -866,11 +866,37 @@ export type BookingReconciliation = {
 
 export function reconcileBookingWeekday(
   bookingDate: string,
-  history: Array<{ role: string; content: string }>
+  history: Array<{ role: string; content: string; at?: string; created_at?: string }>,
+  bookingTime?: string
 ): BookingReconciliation {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(bookingDate || "")) return { date: bookingDate, corrected: false };
   const bookedWeekday = ymd(bookingDate).weekday;
   const msgs = history ?? [];
+
+  // THE ACCEPTED SLOT COMES FIRST (wa_17329668249, WhatsApp 30/09/2026): the bot
+  // offered "Today I have 6pm or 8pm", then "Today I only have 6pm or 8pm, but
+  // Sunday I have 9am or 1pm"; the client picked "Ok 6 will work" and sent the
+  // address. The [BOOK] said today 18:00, but the last bot message naming a
+  // weekday was the Sunday one and the client never typed "today", so rule 2
+  // below snapped the date to SUNDAY, a day with no 18:00, and the client got
+  // "that same day I can do 9am, 11am or 1pm". When the [BOOK] hour is the hour
+  // the client accepted from our offer, the date is the day that offer segment
+  // named (see acceptedOfferSlot); the weekday words are not consulted at all.
+  const bookedHM = /^(\d{1,2}):(\d{2})/.exec((bookingTime ?? "").trim());
+  if (bookedHM) {
+    const acc = acceptedOfferSlot(bookingEpisodeHistory(msgs));
+    if (acc && acc.hour12 === parseInt(bookedHM[1], 10) % 12 && acc.date >= easternTodayStr()) {
+      const intendedWeekday = ymd(acc.date).weekday;
+      if (acc.date === bookingDate) return { date: bookingDate, corrected: false, intendedWeekday };
+      return {
+        date: acc.date,
+        corrected: true,
+        from: bookingDate,
+        intendedWeekday,
+        reason: `client accepted the ${acc.label} offered for ${acc.date} (${DAY_NAMES[intendedWeekday]}) but [BOOK] date ${bookingDate} is ${DAY_NAMES[bookedWeekday]}; snapped to ${acc.date}`,
+      };
+    }
+  }
 
   // Scope the intent to the CURRENT scheduling round, anchored on the bot's last
   // slot offer (its last message naming any weekday). This is what stops a stale
@@ -910,7 +936,11 @@ export function reconcileBookingWeekday(
   if (clientWeekday !== null) {
     intended = clientWeekday;
   } else if (offerIdx >= 0 && offerDays.length === 1 && !clientRelative) {
-    intended = offerDays[0];
+    // An offer that puts TWO days on the table ("Today I only have 6pm or 8pm,
+    // but Sunday I have 9am or 1pm") does not make its weekday the client's
+    // day: without a resolved accepted slot above, the model's date stands.
+    const offerBase = messageDateStr(msgs[offerIdx], easternTodayStr());
+    if (!offerNamesTwoDays(msgs[offerIdx].content.split(/\n\n?\[SYSTEM:/)[0], offerBase)) intended = offerDays[0];
   } else if (offerIdx < 0) {
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role !== "user") continue;
@@ -1141,16 +1171,20 @@ const SLOT_MONTH_DATE = new RegExp(`\\b(?:${MONTH_WORDS})\\s+\\d{1,2}\\b|\\b\\d{
 const HOUR_PICK_UNIT_AFTER = /^\s*(?:am|pm|a\.?m\b|p\.?m\b|:|\d|sq|square|ft|feet|foot|rooms?|bed(?:room)?s?|bath(?:room)?s?|people|persons?|days?|weeks?|hours?|hrs?|minutes?|mins?|months?|years?|yrs?|%|k\b|st\b|nd\b|rd\b|th\b|x\b|dogs?|cats?|kids?|floors?|areas?|units?|boxes|cajas|cuartos?|habitaciones|rec[aá]maras|pisos?|personas|d[ií]as|semanas|meses|horas|a[ñn]os|quartos?|c[oô]modos|pies|metros|m2|sqm)\b/i;
 const HOUR_PICK_NOT_A_PICK = /\$|#|\bsq\b|\bsqft\b|\bsquare\b|\bunit\b|\bapt\b|\bapartment\b|\bsuite\b|\bste\b|\bbldg\b|\bbuilding\b|\blot\b|\bzip\b|\bbox\b|\bcalle\b|\bavenida\b/i;
 export function hourPickedInPhrase(text: string, offeredHours: Set<number>): boolean {
+  return pickedHourInPhrase(text, offeredHours) !== null;
+}
+// Same rule, returning the hour (mod 12) the client picked, or null.
+export function pickedHourInPhrase(text: string, offeredHours: Set<number>): number | null {
   const t = normalizeClockSpacing((text || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]).trim();
-  if (!t || t.length > 90 || offeredHours.size === 0) return false;
-  if (STREET_ADDRESS.test(t) || HOUR_PICK_NOT_A_PICK.test(t) || /\d[\d\s().-]{8,}\d/.test(t)) return false;
+  if (!t || t.length > 90 || offeredHours.size === 0) return null;
+  if (STREET_ADDRESS.test(t) || HOUR_PICK_NOT_A_PICK.test(t) || /\d[\d\s().-]{8,}\d/.test(t)) return null;
   for (const m of t.matchAll(/(?<![\d$#:\/-])\b(\d{1,2})\b/g)) {
     const h = parseInt(m[1], 10);
     if (h < 1 || h > 12 || !offeredHours.has(h % 12)) continue;
     if (HOUR_PICK_UNIT_AFTER.test(t.slice((m.index ?? 0) + m[0].length))) continue;
-    return true;
+    return h % 12;
   }
-  return false;
+  return null;
 }
 
 // Every distinct clock HOUR (mod 12) a message names: "6pm", "6:00 pm", bare
@@ -1541,6 +1575,339 @@ export function bookedSlotMismatchesPromise(
   };
 }
 
+// ─── The slot the client ACCEPTED from our offer (wa_17329668249, 30/09/2026) ─
+// The bot offered "Today I have 6pm or 8pm" at 8:41am, answered a request for
+// a morning with "Today I only have 6pm or 8pm, but Sunday I have 9am or 1pm",
+// and the client came back at 12:53pm with "Ok 6 will work". Two failures at
+// once: 6pm today had filled at 10:33am and nothing checked the ACCEPTED slot
+// against the schedule, so the model wrote "I'm holding that 6pm for you!"; and
+// when the address arrived, the [BOOK] for today 18:00 was snapped to SUNDAY by
+// reconcileBookingWeekday (the last bot message naming a weekday was the Sunday
+// one, the client never typed "today", so its rule 2 took Sunday). Sunday has no
+// 18:00, so the client got "that same day I can do 9am, 11am or 1pm" — the
+// mornings of a day she never chose. This resolves the (date, time) pair the
+// client actually accepted: the hour they picked, on the day of the offer
+// segment that carried it ("Today ... 6pm or 8pm" → the offer's own date).
+export type AcceptedOfferSlot = {
+  date: string; // YYYY-MM-DD the accepted hour belongs to
+  time: string; // "HH:MM" 24h
+  hour12: number; // hour mod 12 (what the client typed)
+  label: string; // "6pm" / "1:30pm", as offered
+  offerIdx: number; // index of the bot message the pick answers
+  pickIdx: number; // index of the client message that picked
+};
+type HistMsg = { role: string; content: string; at?: string; created_at?: string };
+type ClockTok = { index: number; hour24: number; minute: number; hour12: number; label: string };
+type DayRef = { index: number; kind: "today" | "tomorrow" | "weekday" | "date"; weekday?: number; month?: number; day?: number };
+
+const deaccentLowerText = (s: string) => (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const stripSystemNote = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
+
+// Eastern calendar date of a message (from its timestamp), else `fallback`.
+function messageDateStr(m: HistMsg | undefined, fallback: string): string {
+  const raw = m?.at ?? m?.created_at;
+  if (!raw) return fallback;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return fallback;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: ET_TZ }).format(d);
+}
+
+// Clock tokens WITH am/pm, in text order (the only form our offers use).
+function clockTokensOf(text: string): ClockTok[] {
+  const out: ClockTok[] = [];
+  for (const m of text.matchAll(/(?<![a-z0-9])(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?![a-z])/gi)) {
+    const h = parseInt(m[1], 10);
+    if (h < 1 || h > 12) continue;
+    const minute = m[2] ? parseInt(m[2], 10) : 0;
+    const pm = m[3].toLowerCase() === "pm";
+    out.push({ index: m.index ?? 0, hour24: (h % 12) + (pm ? 12 : 0), minute, hour12: h % 12, label: `${h}${minute ? ":" + String(minute).padStart(2, "0") : ""}${pm ? "pm" : "am"}` });
+  }
+  return out;
+}
+
+// Day references with their positions, on DEACCENTED lowercase text. "la/de/una
+// manana" is the morning, not tomorrow. Month dates ("october 4", "4 de
+// octubre") count too; a bare ordinal ("the 4th") is too ambiguous and is ignored.
+const DAY_REF_WORDS = /(?<![a-z])(today|tonight|hoy|hoje|tomorrow|manana|amanha|sunday|domingo|monday|lunes|segunda|tuesday|tues|martes|terca|wednesday|wed|miercoles|quarta|thursday|thurs|thur|jueves|quinta|friday|viernes|sexta|saturday|sabado)(?![a-z])/g;
+const DAY_REF_WEEKDAY: Record<string, number> = {
+  sunday: 0, domingo: 0, monday: 1, lunes: 1, segunda: 1, tuesday: 2, tues: 2, martes: 2, terca: 2,
+  wednesday: 3, wed: 3, miercoles: 3, quarta: 3, thursday: 4, thurs: 4, thur: 4, jueves: 4, quinta: 4,
+  friday: 5, viernes: 5, sexta: 5, saturday: 6, sabado: 6,
+};
+const DAY_REF_MONTH_DATE = new RegExp(`(?<![a-z])(${MONTH_WORDS})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?![a-z0-9:])|(?<![a-z0-9])(\\d{1,2})\\s+de\\s+(${MONTH_WORDS})(?![a-z])`, "gi");
+function dayRefsOf(flat: string): DayRef[] {
+  const out: DayRef[] = [];
+  for (const m of flat.matchAll(DAY_REF_WORDS)) {
+    const w = m[1];
+    const index = m.index ?? 0;
+    if (w === "today" || w === "tonight" || w === "hoy" || w === "hoje") out.push({ index, kind: "today" });
+    else if (w === "tomorrow" || w === "manana" || w === "amanha") {
+      if (w === "manana" && /(?:^|\s)(?:la|de|una|esta)\s$/.test(flat.slice(0, index))) continue; // "la manana" = the morning
+      out.push({ index, kind: "tomorrow" });
+    } else out.push({ index, kind: "weekday", weekday: DAY_REF_WEEKDAY[w] });
+  }
+  for (const m of flat.matchAll(DAY_REF_MONTH_DATE)) {
+    const monthWord = m[1] ?? m[4];
+    const day = parseInt(m[2] ?? m[3], 10);
+    const month = monthIndexOf(monthWord);
+    if (month === null || day < 1 || day > 31) continue;
+    out.push({ index: m.index ?? 0, kind: "date", month, day });
+  }
+  return out.sort((a, b) => a.index - b.index);
+}
+function resolveDayRef(ref: DayRef, baseDate: string): string | null {
+  if (ref.kind === "today") return baseDate;
+  if (ref.kind === "tomorrow") return addDaysStr(baseDate, 1);
+  if (ref.kind === "weekday") {
+    for (let d = baseDate, k = 0; k < 7; d = addDaysStr(d, 1), k++) if (ymd(d).weekday === ref.weekday) return d;
+    return null;
+  }
+  const y = ymd(baseDate).year;
+  for (const year of [y, y + 1]) {
+    const d = `${year}-${String((ref.month ?? 0) + 1).padStart(2, "0")}-${String(ref.day).padStart(2, "0")}`;
+    if (ymd(d).day !== ref.day) continue; // e.g. February 30
+    if (d >= baseDate) return d;
+  }
+  return null;
+}
+// The date of the offer's day segment that carries `hour12`: the nearest day
+// word BEFORE that clock token ("Today ... 6pm or 8pm, but Sunday ... 9am or
+// 1pm"), else the offer's first day word ("I have 6pm or 8pm today"). When the
+// same hour sits on two segments that resolve to different days → null.
+function offerSegmentDate(offerText: string, hour12: number, baseDate: string): string | null {
+  const flat = deaccentLowerText(offerText);
+  const toks = clockTokensOf(flat).filter((c) => c.hour12 === hour12);
+  const refs = dayRefsOf(flat);
+  if (toks.length === 0 || refs.length === 0) return null;
+  const dates = new Set<string>();
+  for (const tok of toks) {
+    const before = refs.filter((r) => r.index < tok.index);
+    const ref = before.length ? before[before.length - 1] : refs[0];
+    const d = resolveDayRef(ref, baseDate);
+    if (!d) return null;
+    dates.add(d);
+  }
+  return dates.size === 1 ? [...dates][0] : null;
+}
+// What the client's message does with the offer: picks one of its hours (the
+// hour, plus the exact 24h time when they typed am/pm), counters with a time we
+// did not offer, or neither (address, phone, name, small talk).
+function clientPickOfOffer(text: string, offered: ClockTok[]): { hour12: number; hour24?: number } | "counter" | null {
+  const t = text.trim();
+  if (!t) return null;
+  const offeredHours = new Set(offered.map((c) => c.hour12));
+  const typed = clockTokensOf(t);
+  if (typed.length) {
+    const hit = typed.find((c) => offeredHours.has(c.hour12));
+    return hit ? { hour12: hit.hour12, hour24: hit.hour24 } : "counter";
+  }
+  for (const m of t.matchAll(/\b(\d{1,2}):\d{2}\b|(?:^|\W)(?:a\s+las?|[àa]s)\s+(\d{1,2})\b|\b(\d{1,2})\s*o'?clock\b/gi)) {
+    const h = parseInt(m[1] ?? m[2] ?? m[3], 10) % 12;
+    if (offeredHours.has(h)) return { hour12: h };
+  }
+  const lets = t.match(LETS_DO_HOUR);
+  if (lets && offeredHours.has(parseInt(lets[1], 10) % 12)) return { hour12: parseInt(lets[1], 10) % 12 };
+  const bare = t.match(BARE_HOUR_PICK);
+  if (bare) {
+    const h = parseInt(bare[1] ?? bare[2], 10);
+    if (h >= 1 && h <= 12 && offeredHours.has(h % 12)) return { hour12: h % 12 };
+  }
+  const phrase = pickedHourInPhrase(t, offeredHours);
+  if (phrase !== null) return { hour12: phrase };
+  const distinct = [...new Map(offered.map((c) => [c.label, c])).values()];
+  const flat = deaccentLowerText(t);
+  if (distinct.length >= 1 && /\b(?:the\s+)?(?:first|1st)\b|\b(?:el\s+|la\s+)?primer[oa]?\b/.test(flat)) return { hour12: distinct[0].hour12, hour24: distinct[0].hour24 };
+  if (distinct.length >= 2 && /\b(?:the\s+)?(?:second|2nd)\b|\b(?:el\s+|la\s+)?segund[oa]?\b/.test(flat)) return { hour12: distinct[1].hour12, hour24: distinct[1].hour24 };
+  if (distinct.length === 1 && (SLOT_AFFIRMATIVE.test(t) || /\bese\s+(?:horario|dia)\b|\besa\s+hora\b|\bthat\s+(?:one|time|day)\b/.test(flat))) return { hour12: distinct[0].hour12, hour24: distinct[0].hour24 };
+  return null;
+}
+
+export function acceptedOfferSlot(history: HistMsg[], todayStr: string = easternTodayStr()): AcceptedOfferSlot | null {
+  const msgs = history ?? [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== "user") continue;
+    // The offer this message answers: the nearest earlier bot message with clock times.
+    let j = i - 1;
+    while (j >= 0 && !(msgs[j].role === "assistant" && clockTokensOf(stripSystemNote(msgs[j].content)).length > 0)) j--;
+    if (j < 0) return null;
+    const offerText = stripSystemNote(msgs[j].content);
+    const offered = clockTokensOf(offerText);
+    const text = stripSystemNote(msgs[i].content);
+    const pick = clientPickOfOffer(text, offered);
+    if (pick === "counter") return null;
+    const clientRefs = dayRefsOf(deaccentLowerText(text));
+    if (!pick) {
+      if (clientRefs.length > 0) return null; // "can we do tomorrow instead?" supersedes any older pick
+      continue; // address / phone / name / small talk after the pick: keep looking back
+    }
+    let date: string | null = null;
+    if (clientRefs.length === 1) date = resolveDayRef(clientRefs[0], messageDateStr(msgs[i], todayStr));
+    else if (clientRefs.length === 0) {
+      date = offerSegmentDate(offerText, pick.hour12, messageDateStr(msgs[j], todayStr));
+      // An echo without a day ("Perfect, 6pm it is") → the earlier offer that named this hour with its day.
+      for (let k = j - 1; k >= Math.max(0, j - 6) && !date; k--) {
+        if (msgs[k].role !== "assistant") continue;
+        const txt = stripSystemNote(msgs[k].content);
+        if (!clockTokensOf(txt).some((c) => c.hour12 === pick.hour12)) continue;
+        date = offerSegmentDate(txt, pick.hour12, messageDateStr(msgs[k], todayStr));
+      }
+    }
+    if (!date) return null;
+    const tok = offered.find((c) => c.hour12 === pick.hour12) ?? offered[0];
+    const hour24 = pick.hour24 ?? tok.hour24;
+    const h12 = hour24 % 12 || 12;
+    const label = `${h12}${tok.minute ? ":" + String(tok.minute).padStart(2, "0") : ""}${hour24 >= 12 ? "pm" : "am"}`;
+    return { date, time: `${String(hour24).padStart(2, "0")}:${String(tok.minute).padStart(2, "0")}`, hour12: pick.hour12, label, offerIdx: j, pickIdx: i };
+  }
+  return null;
+}
+
+// Does one bot message put TWO different days on the table ("Today ... but
+// Sunday ...")? Then its weekday word alone is not the day the client picked.
+function offerNamesTwoDays(offerText: string, baseDate: string): boolean {
+  const dates = new Set<string>();
+  for (const ref of dayRefsOf(deaccentLowerText(offerText))) {
+    const d = resolveDayRef(ref, baseDate);
+    if (d) dates.add(d);
+  }
+  return dates.size > 1;
+}
+
+// ─── Accepted slot that is no longer open: note for the model + backstop ────
+// The schedule text the model reads is the source of truth here (what it shows
+// is what the client can book), parsed line by line: "• Wednesday, September
+// 30, 2026 [2026-09-30]: 5pm" / "...: fully booked".
+type ScheduleLine = { date: string; display: string; times: string[] };
+function scheduleLinesOf(availability: string): ScheduleLine[] {
+  const out: ScheduleLine[] = [];
+  for (const m of (availability || "").matchAll(/^•\s*(.*?)\s*\[(\d{4}-\d{2}-\d{2})\]:\s*(.*)$/gm)) {
+    const body = m[3].trim();
+    out.push({ date: m[2], display: m[1].trim(), times: /fully booked/i.test(body) ? [] : body.split(/\s*,\s*/).filter((t) => /\d/.test(t)) });
+  }
+  return out;
+}
+function labelMinutes(label: string): number {
+  const m = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i.exec((label || "").trim());
+  if (!m) return -1;
+  const h = parseInt(m[1], 10) % 12 + (m[3].toLowerCase() === "pm" ? 12 : 0);
+  return h * 60 + (m[2] ? parseInt(m[2], 10) : 0);
+}
+function joinTimes(lang: Lang, times: string[]): string {
+  if (times.length <= 1) return times[0] ?? "";
+  const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
+  return `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
+}
+// "today" / "tomorrow" / "Thursday" (EN), "hoy" / "mañana" / "el jueves" (ES), "hoje" / "amanhã" / "quinta" (PT).
+function dayPhrase(lang: Lang, dateStr: string, todayStr: string): string {
+  const wd = ymd(dateStr).weekday;
+  if (dateStr === todayStr) return lang === "en" ? "today" : lang === "es" ? "hoy" : "hoje";
+  if (dateStr === addDaysStr(todayStr, 1)) return lang === "en" ? "tomorrow" : lang === "es" ? "mañana" : "amanhã";
+  return lang === "en" ? DAY_NAMES[wd] : lang === "es" ? `el ${DAY_NAMES_ES[wd]}` : DAY_NAMES_PT[wd];
+}
+const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+// The apology + real times, in the shape parseSlotGoneApology (ai.ts) reads, so
+// the NEXT turn's "already apologized" note and backstop recognize it. Owner
+// rules: short, no dashes, no emojis, no inverted punctuation in Spanish.
+export function acceptedSlotGoneReply(
+  lang: Lang,
+  slot: { date: string; label: string },
+  sameDayTimes: string[],
+  nextDay: { date: string; times: string[] } | null,
+  todayStr: string = easternTodayStr()
+): string {
+  const stale = slot.date < todayStr;
+  const dp = dayPhrase(lang, slot.date, todayStr);
+  const relative = slot.date === todayStr || slot.date === addDaysStr(todayStr, 1) || stale;
+  let head: string;
+  if (lang === "es") {
+    const que = relative && !stale ? `ese horario de las ${slot.label} de ${dp}` : `ese ${dp.replace(/^el /, "")} a las ${slot.label}`;
+    head = stale ? `Lo siento, ${que} ya no está disponible.` : `Lo siento, ${que} se llenó mientras hablábamos.`;
+  } else if (lang === "pt") {
+    const que = relative && !stale ? `esse horário das ${slot.label} de ${dp}` : `essa ${dp} às ${slot.label}`;
+    head = stale ? `Desculpa, ${que} não está mais disponível.` : `Desculpa, ${que} encheu enquanto a gente conversava.`;
+  } else {
+    const that = relative && !stale ? `that ${slot.label} ${dp}` : `that ${dp} ${slot.label}`;
+    head = stale ? `I'm sorry, ${that} is no longer open.` : `I'm sorry, ${that} filled up while we were talking.`;
+  }
+  let tail: string;
+  if (sameDayTimes.length > 0) {
+    const list = joinTimes(lang, sameDayTimes);
+    const many = sameDayTimes.length >= 2;
+    tail =
+      lang === "es"
+        ? `${cap(dp)} todavía tengo ${list}, ${many ? "cuál te queda mejor?" : "te funciona?"}`
+        : lang === "pt"
+          ? `${cap(dp)} ainda tenho ${list}, ${many ? "qual fica melhor para você?" : "funciona para você?"}`
+          : `${cap(dp)} I still have ${list}, ${many ? "which works better for you?" : "does that work for you?"}`;
+  } else if (nextDay && nextDay.times.length > 0) {
+    const nd = dayPhrase(lang, nextDay.date, todayStr);
+    const list = joinTimes(lang, nextDay.times.slice(0, 2));
+    const many = nextDay.times.length >= 2;
+    tail =
+      lang === "es"
+        ? `Lo más pronto que tengo ahora es ${nd} a las ${list}, ${many ? "cuál te queda mejor?" : "te funciona?"}`
+        : lang === "pt"
+          ? `O mais cedo que tenho agora é ${nd} às ${list}, ${many ? "qual fica melhor para você?" : "funciona para você?"}`
+          : `The closest I have now is ${nd} at ${list}, ${many ? "which works better for you?" : "does that work for you?"}`;
+  } else {
+    tail = lang === "es" ? "Qué otro día te queda bien?" : lang === "pt" ? "Que outro dia fica bom para você?" : "What other day works for you?";
+  }
+  return `${head} ${tail}`;
+}
+
+export type AcceptedSlotGone = { slot: AcceptedOfferSlot; note: string; reply: string; sameDayTimes: string[] };
+
+// The client is accepting NOW (their latest burst) an hour we offered, and that
+// hour is no longer on its day's schedule line → the note the model gets and
+// the canned reply the backstop sends if the model holds the dead slot anyway.
+// Null when the accepted slot is still open, when there is no pick in the
+// burst, or when the day is outside the schedule window.
+export function acceptedSlotGone(history: HistMsg[], availability: string, lang: Lang, todayStr: string = easternTodayStr()): AcceptedSlotGone | null {
+  const msgs = history ?? [];
+  let burst = 0;
+  for (let i = msgs.length - 1; i >= 0 && msgs[i].role === "user"; i--) burst++;
+  if (burst === 0) return null;
+  const episode = bookingEpisodeHistory(msgs);
+  const slot = acceptedOfferSlot(episode, todayStr);
+  if (!slot || slot.pickIdx < episode.length - burst) return null;
+  const lines = scheduleLinesOf(availability);
+  if (lines.length === 0) return null;
+  const line = lines.find((l) => l.date === slot.date);
+  const want = labelMinutes(slot.label);
+  if (slot.date >= todayStr) {
+    if (!line) return null; // beyond the window we show: nothing to check against
+    if (line.times.some((t) => labelMinutes(t) === want)) return null; // still open
+  }
+  const sameDayTimes = line ? line.times.filter((t) => labelMinutes(t) !== want).slice(0, 3) : [];
+  const next = sameDayTimes.length ? null : (lines.find((l) => l.date > slot.date && l.date >= todayStr && l.times.length > 0) ?? null);
+  if (!sameDayTimes.length && !next) return null; // nothing to offer: the model / handoff handles it
+  const where = line ? `${line.display} [${line.date}]` : slot.date;
+  const offerPart = sameDayTimes.length
+    ? `the real open times on that same day: ${sameDayTimes.join(", ")}`
+    : `the earliest open times of the next day that has any: ${next!.display} [${next!.date}] at ${next!.times.slice(0, 2).join(" or ")}`;
+  const note =
+    `[ACCEPTED TIME NO LONGER OPEN: the client is accepting the ${slot.label} you offered for ${where}, and that time is NOT open anymore` +
+    (slot.date < todayStr ? " (that day has already passed)" : " (it is not on that day's line above)") +
+    `. Do NOT say you are holding it, do NOT confirm it, and do NOT ask for the address or phone yet. Open with ONE short apology that it filled up since you offered it, then offer ${offerPart}. One short message, no [BOOK].]`;
+  return { slot, note, reply: acceptedSlotGoneReply(lang, slot, sameDayTimes, next ? { date: next.date, times: next.times } : null, todayStr), sameDayTimes };
+}
+
+// True when the reply still treats the dead slot as held/confirmed: it names
+// only that hour with no acknowledgement that it is gone, or names no hour and
+// asks for the booking data as if the slot were set.
+const GONE_ACKNOWLEDGED = /filled\s+up|got\s+(?:taken|booked|filled)|was\s+(?:taken|booked|filled)|just\s+(?:got\s+)?taken|no\s+longer|(?:isn'?t|is\s+not|not)\s+(?:open|available|free)|is\s+(?:taken|full|booked)|se\s+llen|se\s+ocup|ya\s+no\s|ya\s+fue|no\s+lo\s+tengo|no\s+la\s+tengo|encheu|lotou|nao\s+tenho\s+mais|nao\s+esta\s+mais|ja\s+foi|foi\s+ocupad|nao\s+(?:esta|tenho)\s+(?:mais\s+)?dispon/;
+const ASKS_BOOKING_DATA = /address|direccion|endereco|zip|phone|telefono|telefone|celular|number|numero|\bname\b|nombre|\bnome\b/;
+export function replyIgnoresGoneSlot(reply: string, gone: AcceptedSlotGone): boolean {
+  const prose = (reply || "").replace(/\[BOOK:[\s\S]*?\]/gi, " ").replace(/\[[A-Z_]+\]/g, " ");
+  const flat = deaccentLowerText(prose);
+  if (!flat.trim()) return false;
+  if (GONE_ACKNOWLEDGED.test(flat)) return false;
+  const hours = hoursNamed(prose);
+  if (hours.size === 0) return /\?/.test(flat) && ASKS_BOOKING_DATA.test(flat);
+  return hours.size === 1 && hours.has(gone.slot.hour12);
+}
+
 // Date context injected into the AI prompt — always Eastern, never UTC.
 export function getEasternDateContext(): string {
   const todayStr = easternTodayStr();
@@ -1745,6 +2112,16 @@ export async function slotConflictRecoveryMessage(
 ): Promise<string | null> {
   try {
     let msg: string | null = null;
+    const todayStr = easternTodayStr();
+
+    // The slot that failed is the one the client ACCEPTED from our offer (it
+    // filled between the offer and the address): the mandatory "own it" rule
+    // of the schedule text applies to the canned recovery too. "That exact
+    // time isn't open on my end" after "I'm holding that 6pm for you!" reads
+    // as a contradiction (wa_17329668249, 30/09/2026).
+    const failedHM0 = /^(\d{1,2}):(\d{2})/.exec((requestedTime ?? "").trim());
+    const acc = history?.length && failedHM0 ? acceptedOfferSlot(bookingEpisodeHistory(history)) : null;
+    const accepted = !!(acc && acc.date === requestedDate && acc.hour12 === parseInt(failedHM0![1], 10) % 12);
 
     // Same-day alternatives first: the client picked that day for a reason.
     if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
@@ -1767,7 +2144,9 @@ export async function slotConflictRecoveryMessage(
           });
         }
         const times = slots.slice(0, 3).map(fmt12);
-        if (times.length > 0) {
+        if (times.length > 0 && accepted && acc) {
+          msg = acceptedSlotGoneReply(lang, acc, times, null, todayStr);
+        } else if (times.length > 0) {
           const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
           const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
           msg =
@@ -1787,7 +2166,9 @@ export async function slotConflictRecoveryMessage(
       if (open.length === 0) return null;
       const first = open[0];
       const times = first.times.slice(0, 2).map(fmt12);
-      if (lang === "pt") {
+      if (accepted && acc) {
+        msg = acceptedSlotGoneReply(lang, acc, [], { date: first.dateStr, times }, todayStr);
+      } else if (lang === "pt") {
         const wd = DAY_NAMES_PT[first.weekday];
         const t = times.length >= 2 ? `${times[0]} ou ${times[1]}` : times[0];
         msg =
