@@ -231,8 +231,14 @@ export function tightenedIsSafe(
   // once the client has read it, repeating it is exactly the padding we cut.
   if (oClock.size > 0 && !opts.freeAlreadySaid && FREE_WORD.test(od) && !FREE_WORD.test(rd)) return { ok: false, reason: "first visit proposal lost the word free" };
   if (/\?/.test(o) && !/\?/.test(r)) return { ok: false, reason: "the forward question was dropped" };
+  // "That 6pm filled up while we were talking" is the one clause the owner's
+  // rule makes mandatory when a client accepts a time that is gone; a rewrite
+  // that keeps the new times and drops the acknowledgement is the silent slot
+  // swap all over again (wa_17329668249, 2026-09-30).
+  if (SLOT_GONE_ACK.test(od) && !SLOT_GONE_ACK.test(rd)) return { ok: false, reason: "the slot-gone acknowledgement was dropped" };
   return { ok: true };
 }
+const SLOT_GONE_ACK = /filled up|got (?:taken|booked|filled)|was (?:taken|booked|filled)|just (?:got )?taken|no longer (?:open|available|free)|(?:isn'?t|is not|not) (?:open|available|free)|se llen|se ocup|ya no (?:esta|tengo|lo tengo|la tengo)|encheu|lotou|nao tenho mais|nao esta mais/;
 
 const PRICE_ASK = /\bhow much\b|\bprices?\b|\bpricing\b|\bcosts?\b|\bquote\b|\bestimate\b|\brates?\b|\bper sq|\bcheap|\bcuanto\b|\bprecios?\b|\bcuesta\b|\bcosto\b|\bpresupuesto\b|\bcotiza|\bquanto\b|\bprecos?\b|\bcusta\b|\bvalor\b|\borcamento\b|\$/;
 /** True when the client's un-answered burst asks about price. */

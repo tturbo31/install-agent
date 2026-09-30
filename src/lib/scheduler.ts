@@ -884,8 +884,16 @@ export function reconcileBookingWeekday(
   // named (see acceptedOfferSlot); the weekday words are not consulted at all.
   const bookedHM = /^(\d{1,2}):(\d{2})/.exec((bookingTime ?? "").trim());
   if (bookedHM) {
-    const acc = acceptedOfferSlot(bookingEpisodeHistory(msgs));
-    if (acc && acc.hour12 === parseInt(bookedHM[1], 10) % 12 && acc.date >= easternTodayStr()) {
+    const todayStr = easternTodayStr();
+    const ep = bookingEpisodeHistory(msgs);
+    const acc = acceptedOfferSlot(ep);
+    // The client naming the [BOOK] date themselves ("on 9/30", "Sabado 26")
+    // after the offer settles it: their own words beat our reading of the offer.
+    const clientNamedBookedDate = !!acc && ep.slice(acc.offerIdx).some((m) => m.role === "user" && singleDateNamed(deaccentLowerText(stripSystemNote(m.content)), messageDateStr(m, todayStr)) === bookingDate);
+    // A [BOOK] on the very day the answered offer put that hour on is right by
+    // construction: never moved, whatever else the client's text seems to say.
+    const offerSaysBookedDate = !!acc && offerSegmentDate(stripSystemNote(ep[acc.offerIdx].content), acc.hour12, messageDateStr(ep[acc.offerIdx], todayStr)) === bookingDate;
+    if (acc && acc.hour12 === parseInt(bookedHM[1], 10) % 12 && acc.date >= todayStr && !clientNamedBookedDate && !offerSaysBookedDate) {
       const intendedWeekday = ymd(acc.date).weekday;
       if (acc.date === bookingDate) return { date: bookingDate, corrected: false, intendedWeekday };
       return {
@@ -1598,7 +1606,7 @@ export type AcceptedOfferSlot = {
 };
 type HistMsg = { role: string; content: string; at?: string; created_at?: string };
 type ClockTok = { index: number; hour24: number; minute: number; hour12: number; label: string };
-type DayRef = { index: number; kind: "today" | "tomorrow" | "weekday" | "date"; weekday?: number; month?: number; day?: number };
+type DayRef = { index: number; end: number; kind: "today" | "tomorrow" | "weekday" | "date" | "dom"; weekday?: number; month?: number; day?: number; next?: boolean };
 
 const deaccentLowerText = (s: string) => (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const stripSystemNote = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
@@ -1626,8 +1634,12 @@ function clockTokensOf(text: string): ClockTok[] {
 }
 
 // Day references with their positions, on DEACCENTED lowercase text. "la/de/una
-// manana" is the morning, not tomorrow. Month dates ("october 4", "4 de
-// octubre") count too; a bare ordinal ("the 4th") is too ambiguous and is ignored.
+// manana" is the morning, not tomorrow. Besides the words, a month date
+// ("september 30", "4 de octubre"), a numeric date ("9/30") and a day of the
+// month ("the 29th", "el 26", "sabado 26", "tuesday the 29th") all count: the
+// audit of 21 days of visits (30/09/2026) showed the weekday word alone
+// misreading "Tuesday the 29th" as next Tuesday and "9am on Wednesday
+// September 30" as this Wednesday. A bare number never counts on its own.
 const DAY_REF_WORDS = /(?<![a-z])(today|tonight|hoy|hoje|tomorrow|manana|amanha|sunday|domingo|monday|lunes|segunda|tuesday|tues|martes|terca|wednesday|wed|miercoles|quarta|thursday|thurs|thur|jueves|quinta|friday|viernes|sexta|saturday|sabado)(?![a-z])/g;
 const DAY_REF_WEEKDAY: Record<string, number> = {
   sunday: 0, domingo: 0, monday: 1, lunes: 1, segunda: 1, tuesday: 2, tues: 2, martes: 2, terca: 2,
@@ -1635,45 +1647,132 @@ const DAY_REF_WEEKDAY: Record<string, number> = {
   friday: 5, viernes: 5, sexta: 5, saturday: 6, sabado: 6,
 };
 const DAY_REF_MONTH_DATE = new RegExp(`(?<![a-z])(${MONTH_WORDS})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?![a-z0-9:])|(?<![a-z0-9])(\\d{1,2})\\s+de\\s+(${MONTH_WORDS})(?![a-z])`, "gi");
+// "9/30", "09/30/2026" (US order). Never a clock ("9:30") and never inside a longer number.
+const DAY_REF_NUMERIC_DATE = /(?<![\d/:])(\d{1,2})\/(\d{1,2})(?:\/(?:20)?\d{2})?(?![\d/])/g;
+// "the 29th", "el 26", "dia 26", "26th": a number is a day of the month ONLY with
+// that lead-in or an ordinal suffix, and never when a clock unit follows.
+// "12955 sw 16th ct" / "NW 7th St" / "3rd floor" are street ordinals, never a day
+// (fb_28373764588956146, 21/09/2026: "16th ct" in the client's address read as
+// October 16 and would have moved a correct Wednesday visit).
+const DAY_REF_DOM = /(?:(?<![a-z])(?:the|el|dia|on the)\s+(\d{1,2})(?:st|nd|rd|th)?|(?<![\d$:/#-])(?<!\b(?:sw|nw|ne|se|n|s|e|w)\s)(\d{1,2})(?:st|nd|rd|th))(?![\d:/]|\s*(?:am|pm|a\.m|p\.m|h\b|hs\b|hrs\b|horas?\b|sq|pies|rooms?|bed|bath|people|days?|weeks?|min|%|k\b|de\s+(?:la\s+)?(?:manana|tarde|noche)|floor\b|fl\b|st\b|street\b|ave\b|avenue\b|ct\b|court\b|ter\b|terrace\b|dr\b|drive\b|rd\b|road\b|ln\b|lane\b|pl\b|place\b|way\b|blvd\b|boulevard\b|cir\b|circle\b|hwy\b|highway\b|pkwy\b|parkway\b|calle\b|avenida\b))/g;
+// "sabado 26" / "tuesday 29": the number right after a weekday word is its day of the month.
+const DAY_REF_WEEKDAY_DOM = new RegExp(`(?<![a-z])(${Object.keys(DAY_REF_WEEKDAY).join("|")})[,\\s]+(?:the\\s+|el\\s+|dia\\s+)?(\\d{1,2})(?:st|nd|rd|th)?(?![\\d:/]|\\s*(?:am|pm|a\\.m|p\\.m|h\\b|hs\\b|sq|pies|rooms?|bed|bath|people|days?|weeks?|min|%|k\\b))`, "g");
 function dayRefsOf(flat: string): DayRef[] {
   const out: DayRef[] = [];
+  const nextWord = (index: number, len: number) => /(?:^|\s)(?:next|this\s+coming|el\s+proximo|proximo|la\s+proxima|proxima|no\s+proximo|na\s+proxima)\s$/.test(flat.slice(0, index)) || /^\s+(?:que\s+viene|que\s+vem)\b/.test(flat.slice(index + len));
   for (const m of flat.matchAll(DAY_REF_WORDS)) {
     const w = m[1];
     const index = m.index ?? 0;
-    if (w === "today" || w === "tonight" || w === "hoy" || w === "hoje") out.push({ index, kind: "today" });
+    if (w === "today" || w === "tonight" || w === "hoy" || w === "hoje") out.push({ index, end: index + w.length, kind: "today" });
     else if (w === "tomorrow" || w === "manana" || w === "amanha") {
-      if (w === "manana" && /(?:^|\s)(?:la|de|una|esta)\s$/.test(flat.slice(0, index))) continue; // "la manana" = the morning
-      out.push({ index, kind: "tomorrow" });
-    } else out.push({ index, kind: "weekday", weekday: DAY_REF_WEEKDAY[w] });
+      if (w === "manana" && /(?:^|\s)(?:la|de|una|esta|por\s+la)\s$/.test(flat.slice(0, index))) continue; // "la manana" = the morning
+      out.push({ index, end: index + w.length, kind: "tomorrow" });
+    } else out.push({ index, end: index + w.length, kind: "weekday", weekday: DAY_REF_WEEKDAY[w], next: nextWord(index, w.length) });
   }
   for (const m of flat.matchAll(DAY_REF_MONTH_DATE)) {
     const monthWord = m[1] ?? m[4];
     const day = parseInt(m[2] ?? m[3], 10);
     const month = monthIndexOf(monthWord);
     if (month === null || day < 1 || day > 31) continue;
-    out.push({ index: m.index ?? 0, kind: "date", month, day });
+    out.push({ index: m.index ?? 0, end: (m.index ?? 0) + m[0].length, kind: "date", month, day });
+  }
+  for (const m of flat.matchAll(DAY_REF_NUMERIC_DATE)) {
+    const month = parseInt(m[1], 10) - 1;
+    const day = parseInt(m[2], 10);
+    if (month < 0 || month > 11 || day < 1 || day > 31) continue;
+    out.push({ index: m.index ?? 0, end: (m.index ?? 0) + m[0].length, kind: "date", month, day });
+  }
+  const covered = (i: number) => out.some((r) => i >= r.index && i < r.end);
+  for (const m of flat.matchAll(DAY_REF_WEEKDAY_DOM)) {
+    const day = parseInt(m[2], 10);
+    if (day < 1 || day > 31) continue;
+    // Marks the number as the weekday's day of the month (the weekday ref itself is already listed).
+    const numAt = (m.index ?? 0) + m[0].lastIndexOf(m[2]);
+    if (!covered(numAt)) out.push({ index: numAt, end: numAt + m[2].length, kind: "dom", day });
+  }
+  for (const m of flat.matchAll(DAY_REF_DOM)) {
+    const day = parseInt(m[1] ?? m[2], 10);
+    if (day < 1 || day > 31) continue;
+    const numStr = m[1] ?? m[2];
+    const numAt = (m.index ?? 0) + m[0].indexOf(numStr);
+    if (!covered(numAt)) out.push({ index: numAt, end: numAt + numStr.length, kind: "dom", day });
   }
   return out.sort((a, b) => a.index - b.index);
 }
-function resolveDayRef(ref: DayRef, baseDate: string): string | null {
-  if (ref.kind === "today") return baseDate;
-  if (ref.kind === "tomorrow") return addDaysStr(baseDate, 1);
-  if (ref.kind === "weekday") {
-    for (let d = baseDate, k = 0; k < 7; d = addDaysStr(d, 1), k++) if (ymd(d).weekday === ref.weekday) return d;
-    return null;
-  }
-  const y = ymd(baseDate).year;
-  for (const year of [y, y + 1]) {
-    const d = `${year}-${String((ref.month ?? 0) + 1).padStart(2, "0")}-${String(ref.day).padStart(2, "0")}`;
-    if (ymd(d).day !== ref.day) continue; // e.g. February 30
-    if (d >= baseDate) return d;
+// The refs that belong together ("tomorrow Thursday", "Tuesday the 29th",
+// "Wednesday September 30", "sabado 26"): neighbours separated only by filler.
+const REF_GLUE = /^[\s,]*(?:the|el|de|dia|of|on|next|proximo|proxima|que\s+viene)?[\s,]*$/;
+function refGroupAround(refs: DayRef[], at: number, flat: string): DayRef[] {
+  const group = [refs[at]];
+  for (let i = at - 1; i >= 0 && REF_GLUE.test(flat.slice(refs[i].end, group[0].index)); i--) group.unshift(refs[i]);
+  for (let i = at + 1; i < refs.length && REF_GLUE.test(flat.slice(group[group.length - 1].end, refs[i].index)); i++) group.push(refs[i]);
+  return group;
+}
+function nextDateWithDom(day: number, baseDate: string, weekday?: number): string | null {
+  for (let d = baseDate, k = 0; k < 62; d = addDaysStr(d, 1), k++) {
+    const f = ymd(d);
+    if (f.day === day && (weekday === undefined || f.weekday === weekday)) return d;
   }
   return null;
 }
-// The date of the offer's day segment that carries `hour12`: the nearest day
-// word BEFORE that clock token ("Today ... 6pm or 8pm, but Sunday ... 9am or
-// 1pm"), else the offer's first day word ("I have 6pm or 8pm today"). When the
-// same hour sits on two segments that resolve to different days → null.
+// One date for a group of refs, or null when they disagree or stay ambiguous
+// (a weekday equal to the base date's own weekday, with no "next" and no day of
+// the month, could be today or next week: not decided here).
+function resolveRefGroup(group: DayRef[], baseDate: string): string | null {
+  const weekday = group.find((r) => r.kind === "weekday");
+  const dom = group.find((r) => r.kind === "dom");
+  const date = group.find((r) => r.kind === "date");
+  const today = group.some((r) => r.kind === "today");
+  const tomorrow = group.some((r) => r.kind === "tomorrow");
+  let resolved: string | null = null;
+  if (date) {
+    const y = ymd(baseDate).year;
+    for (const year of [y, y + 1]) {
+      const d = `${year}-${String((date.month ?? 0) + 1).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
+      if (ymd(d).day !== date.day) continue; // e.g. February 30
+      if (d >= baseDate) { resolved = d; break; }
+    }
+  } else if (dom) {
+    resolved = nextDateWithDom(dom.day!, baseDate, weekday?.weekday);
+  } else if (today) resolved = baseDate;
+  else if (tomorrow) resolved = addDaysStr(baseDate, 1);
+  else if (weekday) {
+    const baseWd = ymd(baseDate).weekday;
+    if (weekday.weekday === baseWd) resolved = weekday.next ? addDaysStr(baseDate, 7) : null;
+    else for (let d = baseDate, k = 0; k < 7; d = addDaysStr(d, 1), k++) if (ymd(d).weekday === weekday.weekday) { resolved = d; break; }
+  }
+  if (!resolved) return null;
+  // Every other ref in the group has to agree with the winner.
+  const f = ymd(resolved);
+  if (weekday && f.weekday !== weekday.weekday) return null;
+  if (today && resolved !== baseDate) return null;
+  if (tomorrow && resolved !== addDaysStr(baseDate, 1)) return null;
+  if (dom && f.day !== dom.day) return null;
+  return resolved;
+}
+function resolveDayRef(ref: DayRef, baseDate: string): string | null {
+  return resolveRefGroup([ref], baseDate);
+}
+// The date the whole text names, when all its refs resolve to ONE date
+// (a client's "Sabado 26 a las 11am", "Wednesday 2pm", "tomorrow at 7").
+function singleDateNamed(flat: string, baseDate: string): string | null | "none" {
+  // Inside a street address a bare day-of-month is a house or unit number.
+  const refs = STREET_ADDRESS.test(flat) ? dayRefsOf(flat).filter((r) => r.kind !== "dom") : dayRefsOf(flat);
+  if (refs.length === 0) return "none";
+  const dates = new Set<string>();
+  for (let i = 0; i < refs.length; i++) {
+    const group = refGroupAround(refs, i, flat);
+    const d = resolveRefGroup(group, baseDate);
+    if (!d) return null;
+    dates.add(d);
+  }
+  return dates.size === 1 ? [...dates][0] : null;
+}
+// The date of the offer's day segment that carries `hour12`: the day reference
+// group nearest BEFORE that clock token ("Today ... 6pm or 8pm, but Sunday ...
+// 9am or 1pm"), else the nearest AFTER it ("I have 9am on Wednesday September
+// 30"). When the same hour sits on two segments that resolve to different
+// days → null.
 function offerSegmentDate(offerText: string, hour12: number, baseDate: string): string | null {
   const flat = deaccentLowerText(offerText);
   const toks = clockTokensOf(flat).filter((c) => c.hour12 === hour12);
@@ -1681,9 +1780,10 @@ function offerSegmentDate(offerText: string, hour12: number, baseDate: string): 
   if (toks.length === 0 || refs.length === 0) return null;
   const dates = new Set<string>();
   for (const tok of toks) {
-    const before = refs.filter((r) => r.index < tok.index);
-    const ref = before.length ? before[before.length - 1] : refs[0];
-    const d = resolveDayRef(ref, baseDate);
+    let at = -1;
+    for (let i = 0; i < refs.length; i++) if (refs[i].index < tok.index) at = i;
+    if (at < 0) at = 0; // nothing before the token: the first ref after it
+    const d = resolveRefGroup(refGroupAround(refs, at, flat), baseDate);
     if (!d) return null;
     dates.add(d);
   }
@@ -1735,14 +1835,16 @@ export function acceptedOfferSlot(history: HistMsg[], todayStr: string = eastern
     const text = stripSystemNote(msgs[i].content);
     const pick = clientPickOfOffer(text, offered);
     if (pick === "counter") return null;
-    const clientRefs = dayRefsOf(deaccentLowerText(text));
+    // The client's own day words, resolved from the day they wrote them.
+    const clientDate = singleDateNamed(deaccentLowerText(text), messageDateStr(msgs[i], todayStr));
     if (!pick) {
-      if (clientRefs.length > 0) return null; // "can we do tomorrow instead?" supersedes any older pick
+      if (clientDate !== "none") return null; // "can we do tomorrow instead?" supersedes any older pick
       continue; // address / phone / name / small talk after the pick: keep looking back
     }
+    if (clientDate === null) return null; // day words that do not settle on one date: not decided here
     let date: string | null = null;
-    if (clientRefs.length === 1) date = resolveDayRef(clientRefs[0], messageDateStr(msgs[i], todayStr));
-    else if (clientRefs.length === 0) {
+    if (clientDate !== "none") date = clientDate;
+    else {
       date = offerSegmentDate(offerText, pick.hour12, messageDateStr(msgs[j], todayStr));
       // An echo without a day ("Perfect, 6pm it is") → the earlier offer that named this hour with its day.
       for (let k = j - 1; k >= Math.max(0, j - 6) && !date; k--) {
@@ -1765,9 +1867,15 @@ export function acceptedOfferSlot(history: HistMsg[], todayStr: string = eastern
 // Does one bot message put TWO different days on the table ("Today ... but
 // Sunday ...")? Then its weekday word alone is not the day the client picked.
 function offerNamesTwoDays(offerText: string, baseDate: string): boolean {
+  const flat = deaccentLowerText(offerText);
+  const refs = dayRefsOf(flat);
   const dates = new Set<string>();
-  for (const ref of dayRefsOf(deaccentLowerText(offerText))) {
-    const d = resolveDayRef(ref, baseDate);
+  const seen = new Set<DayRef>();
+  for (let i = 0; i < refs.length; i++) {
+    if (seen.has(refs[i])) continue;
+    const group = refGroupAround(refs, i, flat);
+    for (const g of group) seen.add(g);
+    const d = resolveRefGroup(group, baseDate);
     if (d) dates.add(d);
   }
   return dates.size > 1;

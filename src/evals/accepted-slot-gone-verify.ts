@@ -31,7 +31,8 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getAIResponse, parseSlotGoneApology, forcedBookRetryReason, retryForBookTag, type ChatMessage } from "../lib/ai";
+import { getAIResponse, parseSlotGoneApology, forcedBookRetryReason, retryForBookTag, isAskingForBookingInfo, type ChatMessage } from "../lib/ai";
+import { tightenedIsSafe } from "../lib/reply-length";
 import {
   acceptedOfferSlot, acceptedSlotGone, acceptedSlotGoneReply, replyIgnoresGoneSlot, reconcileBookingWeekday, bookingEpisodeHistory,
   clientConfirmedSlot, dayOnlyPickNeedsTime, bookedTimeSeenInConversation, bookedSlotMismatchesPromise, slotConflictRecoveryMessage,
@@ -147,6 +148,72 @@ async function main() {
     const fri = (() => { let d = addDays(today, 1); while (wdOf(d) !== 5) d = addDays(d, 1); return d; })();
     const c1 = reconcileBookingWeekday(fri, classic, "19:00");
     ck("'Thursday is fine' + [BOOK] sexta 19:00 → corrigido para quinta", c1.corrected && wdOf(c1.date) === 4, JSON.stringify(c1));
+  }
+
+  console.log("\n[A2] DETERMINÍSTICO — casos da auditoria de 21 dias (30/09): dia do mês, data numérica, endereço, mesmo dia da semana");
+  {
+    // Timestamps reais (ET): "today"/dia da semana resolvem a partir do dia da mensagem.
+    const At = (m: ChatMessage, at: string): ChatMessage => ({ ...m, at });
+    const ariadna = [At(A("Tuesday the 29th works great, I have 9am or 11am, which one is better for you?"), "2026-09-18T20:41:00-04:00"), At(U("11 am would work best"), "2026-09-18T20:41:30-04:00")];
+    const a1 = acceptedOfferSlot(ariadna);
+    ck("'Tuesday the 29th ... 9am or 11am' + '11 am' → dia 29 (antes: a terça seguinte, 22)", a1?.date === "2026-09-29" && a1?.time === "11:00", JSON.stringify(a1));
+    const amanda = [At(A("I have 9am on Wednesday September 30 open, which gets you done before the other company arrives at 10. Want to lock that in? Just send me the full property address with the zip code and the best phone number."), "2026-09-23T14:19:00-04:00"), At(U("Yes thank you! 1296 Waterway Cove Dr Wellington FL 33414 9548170095"), "2026-09-23T14:33:00-04:00")];
+    const a2 = acceptedOfferSlot(amanda);
+    ck("'9am on Wednesday September 30' + 'Yes' → 30/09 (a data vem DEPOIS da hora; antes: a quarta do dia)", a2?.date === "2026-09-30" && a2?.time === "09:00", JSON.stringify(a2));
+    const patri = [At(A("Este fin de semana está lleno, el próximo sábado 26 tengo a las 9am o 11am, cual te queda mejor?"), "2026-09-19T16:17:00-04:00"), At(U("El Próximo sábado a las 11am"), "2026-09-19T16:22:00-04:00"), At(U("Sabado 26 a las 11am"), "2026-09-19T16:22:30-04:00")];
+    const a3 = acceptedOfferSlot(patri);
+    ck("'sábado 26' dito num SÁBADO → 26/09 (antes: o próprio dia 19)", a3?.date === "2026-09-26" && a3?.time === "11:00", JSON.stringify(a3));
+    const street = [At(A("Wednesday at 5pm works, does that time suit you?"), "2026-09-21T16:26:00-04:00"), At(U("Yes. 5pm is good 12955 sw 16th ct #310 Pembroke pines 33027. Use the entrance at Pines Blvd."), "2026-09-21T16:27:00-04:00")];
+    const a4 = acceptedOfferSlot(street);
+    ck("'16th ct' no endereço NÃO é dia 16: → quarta 23/09 17:00", a4?.date === "2026-09-23" && a4?.time === "17:00", JSON.stringify(a4));
+    const numeric = [At(A("I have 9am on 9/30 open, want to lock that in?"), "2026-09-23T14:19:00-04:00"), At(U("yes please"), "2026-09-23T14:20:00-04:00")];
+    const a5 = acceptedOfferSlot(numeric);
+    ck("data numérica '9/30' → 30/09 09:00", a5?.date === "2026-09-30" && a5?.time === "09:00", JSON.stringify(a5));
+    const sameWd = [At(A("Saturday I have 9am or 11am, which works?"), "2026-09-19T10:00:00-04:00"), At(U("11am"), "2026-09-19T10:01:00-04:00")];
+    ck("'Saturday' dito num sábado sem 'next' → ambíguo, null", acceptedOfferSlot(sameWd) === null, JSON.stringify(acceptedOfferSlot(sameWd)));
+    const nextWd = [At(A("Next Saturday I have 9am or 11am, which works?"), "2026-09-19T10:00:00-04:00"), At(U("11am"), "2026-09-19T10:01:00-04:00")];
+    ck("'Next Saturday' dito num sábado → 26/09", acceptedOfferSlot(nextWd)?.date === "2026-09-26", JSON.stringify(acceptedOfferSlot(nextWd)));
+    const tomorrowWd = [At(A("Tomorrow works! I have Thursday at 3pm or 8pm, which one is better for you?"), "2026-09-23T12:58:00-04:00"), At(U("8pm"), "2026-09-23T13:00:00-04:00")];
+    ck("'Tomorrow ... Thursday at 3pm or 8pm' dito na quarta 23 → quinta 24", acceptedOfferSlot(tomorrowWd)?.date === "2026-09-24", JSON.stringify(acceptedOfferSlot(tomorrowWd)));
+    // "Tomorrow works!" is an acknowledgement; the weekday the client actually read wins.
+    const clash = [At(A("Tomorrow works! I have Friday at 3pm or 8pm"), "2026-09-23T12:58:00-04:00"), At(U("8pm"), "2026-09-23T13:00:00-04:00")];
+    ck("'Tomorrow works! I have Friday...' dito na quarta → a sexta que o cliente leu (25/09)", acceptedOfferSlot(clash)?.date === "2026-09-25", JSON.stringify(acceptedOfferSlot(clash)));
+    // A guarda nunca move um [BOOK] que está no dia que a própria oferta deu àquela hora.
+    const d3 = addDays(today, 3);
+    const WD3 = DAY_NAMES[wdOf(d3)];
+    const fut = [A(`${WD3} at 5pm works, does that time suit you?`), U("Yes. 5pm is good 12955 sw 16th ct #310 Pembroke pines 33027.")];
+    const keep = reconcileBookingWeekday(d3, fut, "17:00");
+    ck(`[BOOK] no dia da oferta (${WD3} ${d3}) fica`, !keep.corrected && keep.date === d3, JSON.stringify(keep));
+    const moved = reconcileBookingWeekday(addDays(d3, 7), fut, "17:00");
+    ck(`[BOOK] uma semana depois (${addDays(d3, 7)}, mesma hora) volta para ${d3}`, moved.corrected && moved.date === d3, JSON.stringify(moved));
+    const clientSaid = [A("I have 9am or 11am on those days, which works?"), U(`${WD3} ${d3.slice(5).replace("-", "/").replace(/^0/, "").replace("/0", "/")} at 9am please`)];
+    const cs = reconcileBookingWeekday(d3, clientSaid, "09:00");
+    ck("cliente escreveu a data numérica do [BOOK] → nunca movido", !cs.corrected && cs.date === d3, JSON.stringify(cs));
+  }
+
+  console.log("\n[A3] DETERMINÍSTICO — a rede de resposta curta preserva 'filled up'; scrubber antigo sem confirmação falsa");
+  {
+    // Sem hora na frase da desculpa: só a checagem nova segura o "filled up" (com hora, a de horários já segurava).
+    const orig = "I'm sorry, that time filled up while we were talking. Today I still have 5pm, or tomorrow at 11am or 1pm. Which works better for you?";
+    const dropped = "Today I still have 5pm, or tomorrow at 11am or 1pm, which works better for you?";
+    const kept = "Sorry, that time filled up. Today I still have 5pm or tomorrow at 11am or 1pm, which works?";
+    const v1 = tightenedIsSafe(orig, dropped, { asksForDetails: isAskingForBookingInfo });
+    ck("rewrite que perde 'filled up' é rejeitado", !v1.ok && /slot-gone/.test((v1 as { reason?: string }).reason ?? ""), JSON.stringify(v1));
+    const v2 = tightenedIsSafe(orig, kept, { asksForDetails: isAskingForBookingInfo });
+    ck("rewrite que mantém 'filled up' passa", v2.ok, JSON.stringify(v2));
+    for (const [name, file] of [["IG", "src/app/api/webhook/route.ts"], ["FB", "src/app/api/fb-webhook/route.ts"], ["WA", "src/app/api/wa-webhook/route.ts"]] as const) {
+      const s = readFileSync(join(process.cwd(), file), "utf-8");
+      ck(`${name}: stripSlotConflictLanguage nunca mais troca a resposta por 'You're welcome, see you then!'`, !/cleaned = "You're welcome, see you then!"/.test(s) && !/\|\| "You're welcome, see you then!"/.test(s));
+      ck(`${name}: stripSlotConflictLanguage devolve a resposta intacta quando ela oferece um horário`, /function stripSlotConflictLanguage[\s\S]{0,700}return original; \/\/ a real alternative is on the table/.test(s));
+      ck(`${name}: stripSlotConflictLanguage não apaga mais 'no longer available' / 'taken'`, !/function stripSlotConflictLanguage[\s\S]{0,900}no\\s\+longer\\s\+available/.test(s));
+    }
+    const ai = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
+    ck("reminder 24 carrega a exceção obrigatória (assumir o horário aceito que encheu)", /24\. NEVER SAY A SLOT WAS TAKEN, WITH ONE EXCEPTION:[^\n]*THE EXCEPTION, and it is mandatory[^\n]*A time is only "confirmed" while it is still listed/.test(ai));
+    ck("reminder 24 não diz mais 'forbidden in EVERY situation'", !/forbidden in EVERY situation/.test(ai));
+    const sp = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
+    ck("prompt base, Step 3: o horário escolhido tem que estar na linha do dia", /Step 3:[^\n]*still listed on its day's line in the REAL-TIME SCHEDULE[^\n]*do not hold it and do not ask for the address/.test(sp));
+    const dr = readFileSync(join(process.cwd(), "src/lib/dreaming.ts"), "utf-8");
+    ck("Dreaming, trava 15: nunca aprender 'move straight to confirmation'", /15\. A TIME IS ONLY CONFIRMED WHILE IT IS STILL ON THE SCHEDULE[^\n]*NEVER write "move straight to confirmation"/.test(dr));
   }
 
   console.log("\n[A] DETERMINÍSTICO — acceptedSlotGone (nota + enlatada) e backstop");
@@ -266,7 +333,14 @@ async function main() {
       }
       const m = /\[BOOK:(\{[\s\S]*?\})\]/.exec(t);
       console.log(`   address #${i} →`, t.replace(/\s+/g, " ").slice(0, 200));
-      if (!m) { ck(`address #${i}: emitiu [BOOK]`, false, t); continue; }
+      // Desde a 2ª rodada (reminder 24 + Step 3), com o 6pm fora da linha o modelo
+      // pode preferir NÃO gravar e assumir na hora: também está certo, desde que
+      // assuma, ofereça o 5pm real e não "segure" o 6pm. A guarda do [BOOK] em si
+      // tem cobertura determinística acima.
+      if (!m) {
+        ck(`address #${i}: sem [BOOK] → assume que o 6pm encheu e oferece o 5pm (nunca 'holding')`, /filled|no longer|not open|isn't open|isn't on|not on (?:today's|the|my)|gone|taken|only \d{1,2}(?::\d{2})?\s*[ap]m/i.test(t) && /\b5pm\b/.test(t) && !/holding|locked|all set/i.test(t), t);
+        continue;
+      }
       const b = JSON.parse(m[1]);
       const ep = bookingEpisodeHistory(msgs.map((x) => ({ role: x.role, content: x.content })));
       const rec = reconcileBookingWeekday(b.date, ep, b.time);

@@ -35,22 +35,22 @@ export const maxDuration = 300;
 const RESPONSE_DELAY_MS = 10000;
 
 // ─── Safety net: strip slot-conflict sentences and hard-fallback ──────────
+// 30/09/2026: this used to strip every sentence with "slot/appointment/hora +
+// taken/unavailable/no longer available" and, when the pattern survived, replace
+// the WHOLE reply with "You're welcome, see you then!" — a false confirmation,
+// the worst message a client whose time just fell through can get. Since 01/08
+// the owner's rule REQUIRES owning a slot that filled up after the client
+// accepted it (schedule rules, reminder 24, acceptedSlotGone), so that sentence
+// stays. What still goes is the dead end "can you pick another time?" when the
+// reply offers no concrete time. Never empties the reply, never invents one.
 function stripSlotConflictLanguage(text: string): string {
-  let cleaned = text
-    .replace(/[^.!?\n]*\b(?:slot|time\s*slot|appointment|visit|horário|hora)\b[^.!?\n]*\b(?:taken|unavailable|booked|not\s+available|no\s+longer\s+available|just\s+got\s+taken|already\s+(?:taken|booked)|foi\s+ocupad|ocupad)\b[^.!?\n]*[.!?]/gi, "")
-    .replace(/[^.!?\n]*\b(?:can|could|would)\b[^.!?\n]*\b(?:pick|choose|select|suggest|prefer)\b[^.!?\n]*\b(?:another|different|other)\b[^.!?\n]*\b(?:time|day|slot|date|hora|dia)\b[^.!?\n]*[.!?]/gi, "")
+  const original = text ?? "";
+  if (/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(original)) return original; // a real alternative is on the table
+  const cleaned = original
+    .replace(/[^.!?\n]*\b(?:can|could|would)\b[^.!?\n]*\b(?:pick|choose|select|suggest)\b[^.!?\n]*\b(?:another|different|other)\b[^.!?\n]*\b(?:time|day|slot|date|hora|dia)\b[^.!?\n]*[.!?]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-
-  if (
-    /\b(?:slot|appointment|horário|hora)\b[^.!?\n]{0,60}\b(?:taken|unavailable|booked|not\s+available|no\s+longer)\b/i.test(cleaned) ||
-    /\b(?:taken|unavailable|booked)\b[^.!?\n]{0,60}\b(?:slot|appointment|horário)\b/i.test(cleaned) ||
-    /\bcan you (?:pick|choose|suggest|select) (?:another|a different)\b/i.test(cleaned)
-  ) {
-    cleaned = "You're welcome, see you then!";
-  }
-
-  return cleaned || "You're welcome, see you then!";
+  return cleaned || original;
 }
 
 // ─── [BOOK:...] processor ─────────────────────────────────────────────────
