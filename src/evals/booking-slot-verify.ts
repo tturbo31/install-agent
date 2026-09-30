@@ -18,7 +18,7 @@
  */
 import { readFileSync } from "fs";
 import { join } from "path";
-import { clientConfirmedSlot, needSlotConfirmationMessage, isSameDaySlotTooSoon, SAME_DAY_MIN_NOTICE_MIN } from "../lib/scheduler";
+import { clientConfirmedSlot, needSlotConfirmationMessage, isSameDaySlotTooSoon, SAME_DAY_MIN_NOTICE_MIN, hourPickedInPhrase, dayOnlyPickNeedsTime, hoursNamed, bookedTimeSeenInConversation, normalizeClockSpacing } from "../lib/scheduler";
 
 let pass = 0, fail = 0; const fails: string[] = [];
 function ck(name: string, cond: boolean, detail = "") {
@@ -140,6 +140,50 @@ function main() {
     A("I have Tuesday at 9am or 1pm, which works better for you?"), U("Let’s do 9"),
   ]) === true);
 
+  // ── 2b. Annabelle Ruiz (WhatsApp, 2026-09-30): an offered hour wrapped in words ─
+  // Offer "today at 6pm or 8pm" → "I prefer 8" → address → the [BOOK] for 8pm
+  // was blocked ("I just need to confirm the day and time"), her name+phone got
+  // the same line behind "As I mentioned above:", and only "U said today at
+  // 8:00p" + a bare "8" unlocked it.
+  console.log("\n[2b] Annabelle (WA 30/09): 'I prefer 8' and friends are picks");
+  const annabelleOffer = A("That 33029 is covered! The pricing in that ad varies by floor type, and the exact number is penciled in at the free in-person measure. I can come out today at 6pm or 8pm, which works better?");
+  const annabelle = [
+    U("I need a quote"), A("Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?"),
+    U("I have dogs which one should I get"), A("Vinyl is the way to go, scratch resistant and 100% waterproof at $5 per sqft with the floor and installation included. One area or the whole house?"),
+    A("For 1,000 sqft I need to come measure in person to give you the best price, it's a free visit and I bring all the samples. What's the zip code of the property?"),
+    U("I saw this add on FB is this the cost"), U("33029"), annabelleOffer,
+    U("I prefer 8"), A("Perfect. Can I get the full property address?"), U("17930 Sw 3 rd street\nPembroke Pines 33029"),
+  ];
+  ck("ANNABELLE: 'I prefer 8' after 'today at 6pm or 8pm' → confirmed (was blocked twice)", clientConfirmedSlot(annabelle) === true, "returned false");
+  ck("ANNABELLE: 8pm was seen in the conversation (time-invention guard passes)", bookedTimeSeenInConversation(annabelle, "20:00") === true);
+  ck("ANNABELLE: no day-only block (no day word in her burst)", dayOnlyPickNeedsTime(annabelle) === false);
+  const offered68 = new Set([6, 8]);
+  for (const msg of ["I prefer 8", "8 works", "8 is better for me", "make it 8", "8 pls", "8 please", "Prefiero las 8", "las 8 está bien", "8 me sirve", "prefiro 8", "8 fica melhor", "either, 6 is fine", "8 👍", "the 8 one", "I'd say 8", "8 then"]) {
+    ck(`hourPickedInPhrase: "${msg}" → pick`, hourPickedInPhrase(msg, offered68) === true, "returned false");
+    ck(`clientConfirmedSlot: "${msg}" after 6pm/8pm → confirmed`, clientConfirmedSlot([annabelleOffer, U(msg)]) === true, "returned false");
+  }
+  for (const msg of ["I have 2 dogs", "we have 2 rooms", "about 8 boxes", "Unit 6", "17930 SW 3rd St Unit 6", "Annabelle Ruiz 786-262-0225", "$8 per sqft?", "8 people live here", "in 2 weeks", "2 bedrooms and 1 bath", "9", "the 6th", "12345 SW 8 St"]) {
+    ck(`hourPickedInPhrase: "${msg}" with 2pm/6pm/8pm offered → NOT a pick`, hourPickedInPhrase(msg, new Set([2, 6, 8, 1])) === false, "returned true");
+  }
+  ck("phrase pick only counts OFFERED hours ('I prefer 9' when 6pm/8pm offered → NOT)", clientConfirmedSlot([annabelleOffer, U("I prefer 9")]) === false, "returned true");
+  ck("'8:00p' is a clock time (normalizeClockSpacing → 8:00pm)", normalizeClockSpacing("U said today at 8:00p") === "U said today at 8:00pm" && hoursNamed("U said today at 8:00p").has(8));
+  ck("'8p' / '8 p.m.' / '5 a.m.' normalize too", normalizeClockSpacing("8p") === "8pm" && normalizeClockSpacing("8 p.m.") === "8pm" && normalizeClockSpacing("5 a.m.") === "5am");
+  ck("'2a' (Spanish street ordinal) is NOT expanded, '8pm' untouched", normalizeClockSpacing("Calle 2a #10") === "Calle 2a #10" && normalizeClockSpacing("8pm") === "8pm" && normalizeClockSpacing("2 :00 pm") === "2:00 pm");
+  ck("'U said today at 8:00p' after '6pm or 8pm' → no day-only block (the hour is named)", dayOnlyPickNeedsTime([annabelleOffer, U("It’s a gated community look for my last name on the Box RUIZ"), U("U said today at 8:00p")]) === false);
+  ck("'Tomorrow, I prefer 8' after 'tomorrow at 6pm or 8pm' → no day-only block", dayOnlyPickNeedsTime([A("I have tomorrow at 6pm or 8pm, which works better?"), U("Tomorrow, I prefer 8")]) === false);
+  ck("'Tomorrow' alone after 'tomorrow at 6pm or 8pm' → still blocked (Claudio rule)", dayOnlyPickNeedsTime([A("I have tomorrow at 6pm or 8pm, which works better?"), U("Tomorrow")]) === true);
+  // The fallback when NO pick exists restates OUR open offer instead of the generic line,
+  // and the ack rotates so a second send never gets the "As I mentioned above:" recap prefix.
+  const noPick = [annabelleOffer, U("17930 Sw 3 rd street Pembroke Pines 33029")];
+  const ask1 = needSlotConfirmationMessage("en", noPick);
+  ck("no pick + open offer → restates the offer sentence with the times", /Got it, thanks\. I can come out today at 6pm or 8pm, which works better\?$/.test(ask1), ask1);
+  const ask2 = needSlotConfirmationMessage("en", [...noPick, A(ask1), U("Annabelle Ruiz 786-262-0225")]);
+  ck("second time → different ack, same offer (no duplicate → no recap prefix)", ask2 !== ask1 && /^Thanks! I can come out today at 6pm or 8pm, which works better\?$/.test(ask2), ask2);
+  ck("restated offer never stacks acks", !/Got it, thanks\. Got it|Thanks! Got it/.test(ask2), ask2);
+  ck("offer sentence without '?' gets a 'which one' tail", /Which one works better for you\?$/.test(needSlotConfirmationMessage("en", [A("I have Monday at 9am or 11am."), U("123 NW 5th St 33125")])));
+  ck("ES restatement", /^Perfecto, anotado\. Tengo hoy a las 6pm o 8pm, cuál te queda mejor\?$/.test(needSlotConfirmationMessage("es", [A("Tengo hoy a las 6pm o 8pm, cuál te queda mejor?"), U("Calle 8 #123, 33125")])), needSlotConfirmationMessage("es", [A("Tengo hoy a las 6pm o 8pm, cuál te queda mejor?"), U("Calle 8 #123, 33125")]));
+  ck("no open offer in the episode → short generic ask (no 'Perfect!')", needSlotConfirmationMessage("en", [A("Our promo is $5 per sqft."), U("123 Main St 33125")]) === "Which day and time works best for you?" && !/Perfect/.test(needSlotConfirmationMessage("es")) && needSlotConfirmationMessage("en").length < 60);
+
   // ── 3. NEGATIVE / SAFETY: never confirm off contact info alone ───────────────
   console.log("\n[3] Address/phone/vague replies are never a slot pick");
   ck("plain 'yes' to a TWO-slot offer → NOT confirmed (which one?)", clientConfirmedSlot([
@@ -177,7 +221,8 @@ function main() {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
     ck(`${name}: imports clientConfirmedSlot + needSlotConfirmationMessage`, /clientConfirmedSlot/.test(src) && /needSlotConfirmationMessage/.test(src), rel);
     // 27/09/2026: a guarda lê o EPISÓDIO corrente (slotHistory = bookingEpisodeHistory(history)), caso Brian Ander.
-    ck(`${name}: blocks the booking when slot not confirmed`, /!clientConfirmedSlot\(slotHistory\)\)\s*\{[\s\S]{0,160}needSlotConfirmationMessage\(lang\)/.test(src), rel);
+    // 30/09/2026: a enlatada recebe o episódio para repetir a oferta em aberto (Annabelle).
+    ck(`${name}: blocks the booking when slot not confirmed (and restates the open offer)`, /!clientConfirmedSlot\(slotHistory\)\)\s*\{[\s\S]{0,160}needSlotConfirmationMessage\(lang, slotHistory\)/.test(src), rel);
     ck(`${name}: guard sits before createBooking`, src.indexOf("clientConfirmedSlot(slotHistory)") < src.indexOf("createBooking("), rel);
     ck(`${name}: slot guards read the current booking episode only`, /const slotHistory = isReschedule \? history : bookingEpisodeHistory\(history\);/.test(src), rel);
   }

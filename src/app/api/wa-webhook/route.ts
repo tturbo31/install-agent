@@ -149,7 +149,7 @@ async function processBookingCommand(
     const slotHistory = isReschedule ? history : bookingEpisodeHistory(history);
     if (bookingData.date && bookingData.time && !clientConfirmedSlot(slotHistory)) {
       console.warn(`[WA] booking blocked — client never picked a specific slot; asking to choose`);
-      return { response: needSlotConfirmationMessage(lang), booked: false };
+      return { response: needSlotConfirmationMessage(lang, slotHistory), booked: false };
     }
 
     // TIME-INVENTION guard: the client picked a DAY but the booked HOUR never

@@ -187,33 +187,23 @@ function pickSellerForSlot(
   return candidates[0] ?? null;
 }
 
-// ─── Owner rule 2026-09-17: one seller's day fills before the next seller's ──
-// "Lotar a agenda do Alexandre primeiro, depois o Diego, depois o Chris. Tem
-// que ser nessa ordem." (owner, 2026-09-17, twice). ORDER CHANGED 2026-09-29
-// (owner, morning): Diego first, then Alexandre, then Chris. SAME DAY, evening
-// (owner): "dar prioridade para o Diego; Alex e Chris iguais" — Diego's day
-// fills first, Alexandre and Chris form ONE tier behind him (their hours open
-// together, no order between them) — see applySellerPriorityOrder below; the
-// mechanism here is unchanged and reads the order from `priority`. The
-// schedule the model
-// reads used to be a union of every seller's open hours, so with Alexandre's
-// 9am taken the union still showed 9am (Chris's) and the next client got
-// Chris's 9am while Alexandre had 1pm, 3pm and 5pm open. The OFFER follows the
-// priority order STRICTLY, hour grids aside: a seller's hours are only OFFERED
-// once every seller with a lower priority number has no open hour left that
-// day (booked, past today's notice, off or inactive). The first version of
-// this rule (morning of 2026-09-17) only held an hour back when the seller in
-// front worked that SAME hour, so with Alexandre full the bot offered "11am or
-// 2pm" and "2pm or 3pm" — Chris's hours next to Diego's, the exact thing the
-// owner did not want. Held-back hours stay OPEN (createBooking books any free
-// seller): the schedule shows them in a parenthesis as "open only if the
-// client asks for one of these", so a client who wants 9am still gets it.
-// One exception keeps SOONEST DAY FIRST intact: when the seller in front has a
-// SINGLE hour left, the offer is topped up to two options on the SAME day with
-// the next seller's earliest hour (Alexandre 5pm + Diego 2pm), instead of the
-// model reaching into the next day for the second option while today still
-// has hours. Sellers with the same priority form one tier and never hold each
-// other back.
+// ─── NO SELLER HIERARCHY: the DAY fills, whoever is free takes the hour ──────
+// Owner rule 2026-09-30 ("retire a hierarquia; sempre dê privilégio para lotar
+// o dia da agenda: se hoje é dia 30, ela tem que agendar todos os horários do
+// dia 30"). History: from 2026-09-17 to 2026-09-30 the offer followed a seller
+// order (Alexandre → Diego → Chris, then Diego → Alexandre → Chris, then Diego
+// first with Alexandre = Chris): one seller's day had to fill before the next
+// seller's hours were offered, the held-back hours sat in a parenthesis "open
+// only if the client asks". Measured cost: 01–14/09 without it 35% of the
+// offers carried a morning hour and 46% of those confirmed; 22–27/09 with it
+// 8% and 0%. Real case that ended it (Annabelle Ruiz, WA 30/09/2026, 9:12am):
+// with 1pm, 5pm and 7pm open on the other sellers the bot offered "today at
+// 6pm or 8pm" because Diego came first. Now the schedule line of a day is the
+// UNION of every active seller's open hours (openHoursForDay), earliest first,
+// and SOONEST DAY FIRST does the rest: today's hours before tomorrow's. The
+// seller `priority` only breaks a tie in pickSellerForSlot when two sellers
+// are free at the same hour — the client never sees it and it never holds an
+// hour back.
 
 // ─── ZIP CODE FIRST (fluxo restaurado em 29/09/2026) ────────────────────────
 // Até 16/09 a proposta da visita terminava com a pergunta do ZIP e os dois
@@ -253,89 +243,28 @@ export function zipFirstNote(history?: HistoryMsg[]): string | null {
   );
 }
 
-// Chave de 29/09/2026 (revisão da conversão). Foi DESLIGADA à tarde ("pode
-// tirar as hierarquias, deixa do jeito que mais irá converter") e RELIGADA à
-// noite pelo dono ("faça ela dar prioridade para o Diego; Alex e Chris
-// iguais"): o dia do Diego lota primeiro, os horários do Alexandre e do Chris
-// (uma camada só) ficam no parêntese "open only if the client asks" até o
-// Diego não ter mais horário no dia. Medido 01–14/09 (sem a regra): 35% das
-// ofertas traziam um horário de manhã e 46% delas confirmaram; 22–27/09 (com a
-// regra de 3 camadas): 8% e 0%. SELLER_FILL_STRICT=off desliga (oferta com
-// TODOS os horários livres do dia, prioridade só como desempate de quem
-// atende a mesma hora em pickSellerForSlot).
-export function sellerFillStrict(): boolean {
-  return process.env.SELLER_FILL_STRICT !== "off";
-}
-
-export function splitDaySlotsByPriority(
+// Every open hour of one day across the whole team, earliest first (owner
+// rule 2026-09-30: no seller hierarchy, the day fills). `notBefore` drops
+// today's hours inside the same-day notice. This is the ONLY source of the
+// hours the model sees on a schedule line and of the canned offers.
+export function openHoursForDay(
   sellers: Seller[],
   dateStr: string,
   weekday: number,
   bookings: BookingRow[],
   daysOff: DaysOffSet,
   notBefore?: string
-): { preferred: string[]; onRequest: string[] } {
-  const sorted = [...sellers].filter((s) => s.active).sort((a, b) => a.priority - b.priority);
+): string[] {
   const minSlot = notBefore ? hhmm(notBefore) : null;
-  const strict = sellerFillStrict();
-  // Tiers in priority order; only sellers with at least one open hour count.
-  const tiers: Array<{ priority: number; hours: Set<string> }> = [];
-  for (const s of sorted) {
-    const open = slotsForWeekday(s, weekday).filter(
-      (slot) => (!minSlot || slot >= minSlot) && sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)
-    );
-    if (open.length === 0) continue;
-    const last = tiers[tiers.length - 1];
-    if (last && last.priority === s.priority) for (const h of open) last.hours.add(h);
-    else tiers.push({ priority: s.priority, hours: new Set(open) });
-  }
-  if (!strict) {
-    const all = new Set<string>();
-    for (const t of tiers) for (const h of t.hours) all.add(h);
-    return { preferred: [...all].sort(), onRequest: [] };
-  }
-  const preferred = new Set<string>();
-  const onRequest = new Set<string>();
-  for (const tier of tiers) {
-    const hours = [...tier.hours].sort();
-    if (preferred.size === 0) {
-      for (const h of hours) preferred.add(h);
-      continue;
+  const open = new Set<string>();
+  for (const s of sellers) {
+    if (!s.active) continue;
+    for (const slot of slotsForWeekday(s, weekday)) {
+      if (minSlot && slot < minSlot) continue;
+      if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) open.add(slot);
     }
-    if (preferred.size === 1) {
-      const extra = hours.find((h) => !preferred.has(h));
-      if (extra) preferred.add(extra);
-    }
-    for (const h of hours) if (!preferred.has(h)) onRequest.add(h);
   }
-  return { preferred: [...preferred].sort(), onRequest: [...onRequest].sort() };
-}
-
-// ─── Owner rule 2026-09-29 (evening): Diego first, Alexandre and Chris equal ──
-// "Faça ela dar prioridade para o Diego; o Alex e o Chris igual" (owner,
-// 2026-09-29, replacing the morning's Diego → Alexandre → Chris). Effective
-// priorities: Diego 1, Alexandre 2, Chris 2 (one tier: their hours open
-// together once Diego's day is full; at the same hour pickSellerForSlot keeps
-// the stable order Alexandre before Chris, which the client never sees).
-// The order lives in sellers.priority of the Ozzi Plataforma, but the bot's
-// platform user (ia@ozzifloors.com) has no UPDATE right on `sellers` (RLS: the
-// update returns zero rows and no error), so the mapping is applied here after
-// every read of the table. It only fires while the table still holds the
-// 17/09 snapshot (Alexandre 1, Diego 2 and, when present, Chris 3): the moment
-// the owner changes any of those in the platform, the platform wins and this
-// is a no-op — at that point this block can be deleted. Any other seller keeps
-// its own priority. Rows are never mutated.
-const SELLER_ID_ALEXANDRE = "8aa8842e-c903-42b3-aa11-28252024713f";
-const SELLER_ID_DIEGO = "c6fcb045-b914-4bd1-8d2d-bb7f49e90ff4";
-const SELLER_ID_CHRIS = "35f950e6-c1dd-4742-b77f-5071dbc3508b";
-export function applySellerPriorityOrder<T extends { id: string; priority: number }>(sellers: T[]): T[] {
-  const alexandre = sellers.find((s) => s.id === SELLER_ID_ALEXANDRE);
-  const diego = sellers.find((s) => s.id === SELLER_ID_DIEGO);
-  const chris = sellers.find((s) => s.id === SELLER_ID_CHRIS);
-  if (!alexandre || !diego || alexandre.priority !== 1 || diego.priority !== 2 || (chris && chris.priority !== 3)) return sellers;
-  return sellers
-    .map((s) => (s.id === SELLER_ID_DIEGO ? { ...s, priority: 1 } : s.id === SELLER_ID_ALEXANDRE || s.id === SELLER_ID_CHRIS ? { ...s, priority: 2 } : s))
-    .sort((a, b) => a.priority - b.priority);
+  return [...open].sort();
 }
 
 type SchedulerDb = Awaited<ReturnType<typeof getAuthenticatedClient>>;
@@ -546,7 +475,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
       return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
     }
 
-    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
+    const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
 
     if (sellers.length === 0) {
@@ -767,7 +696,7 @@ export async function rescheduleClientBooking(
       console.error("[reschedule] get_booked_slots failed — refusing to move blind:", bookedErr.message);
       return { success: false, error: `schedule_unreadable: ${bookedErr.message}` };
     }
-    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
+    const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
     const seller = pickSellerForSlot(sellers, bookings, newDate, newTime, daysOff);
     if (!seller) return { success: false, error: `No availability for ${newDate} at ${newTime}.` };
@@ -1159,7 +1088,15 @@ function ordinalSuffix(n: number): string {
 // mentioned" and the client had to pick the time a second time). Collapse the
 // spaces before matching.
 export function normalizeClockSpacing(text: string): string {
-  return (text || "").replace(/\b(\d{1,2})\s*:\s*(\d{2})\b/g, "$1:$2");
+  return (text || "")
+    .replace(/\b(\d{1,2})\s*:\s*(\d{2})\b/g, "$1:$2")
+    // "8 p.m." / "5 a.m." → "8pm" / "5am", and the US shorthand "8:00p" / "8p"
+    // → "8:00pm" / "8pm" (Annabelle Ruiz, WA 30/09/2026: "U said today at
+    // 8:00p" carried no recognized clock time, so the day-only guard re-asked
+    // the hour she had just repeated). Only "p" is expanded when glued to the
+    // digit: "2a" is a street ordinal in Spanish addresses ("Calle 2a").
+    .replace(/\b(\d{1,2})(:\d{2})?\s*([ap])\.\s?m\.?(?![a-z])/gi, "$1$2$3m")
+    .replace(/\b(\d{1,2})(:\d{2})?p\b(?!\.?m)/gi, "$1$2pm");
 }
 // "let's move it to 9" / "change it to 5" / "push it to 3": a bare hour named
 // as the target of a move IS a clock hour (KYE, IG 2026-09-13: "wait let's
@@ -1190,6 +1127,31 @@ const SLOT_AFFIRMATIVE = /\b(?:s[ií]|yes|yeah|yep|ok(?:ay)?|perfect(?:o)?|perfe
 // "September 2nd" / "2 de septiembre" — a month-name date is a day reference
 // too (SLOT_DAY_REF only knows weekdays and today/tomorrow words).
 const SLOT_MONTH_DATE = new RegExp(`\\b(?:${MONTH_WORDS})\\s+\\d{1,2}\\b|\\b\\d{1,2}\\s+de\\s+(?:${MONTH_WORDS})\\b`, "i");
+
+// ─── An offered hour wrapped in words IS the pick (Annabelle Ruiz, WA 30/09) ─
+// Offer "today at 6pm or 8pm" → "I prefer 8" → address → the [BOOK] for 8pm was
+// blocked ("I just need to confirm the day and time"), her name and phone got
+// the same line again behind "As I mentioned above:", and only "U said today
+// at 8:00p" + a bare "8" unlocked it. BARE_HOUR_PICK only knew a number that
+// was the WHOLE reply or came after "at"; "I prefer 8", "8 works", "8 is
+// better", "make it 8", "8 pls", "prefiero las 8", "las 8 está bien" all read
+// as "no pick". Rule: a number 1–12 that matches an hour we OFFERED, inside a
+// short message that is not an address, a phone or a quantity (no unit or
+// noun right after the number), is the client picking that hour.
+const HOUR_PICK_UNIT_AFTER = /^\s*(?:am|pm|a\.?m\b|p\.?m\b|:|\d|sq|square|ft|feet|foot|rooms?|bed(?:room)?s?|bath(?:room)?s?|people|persons?|days?|weeks?|hours?|hrs?|minutes?|mins?|months?|years?|yrs?|%|k\b|st\b|nd\b|rd\b|th\b|x\b|dogs?|cats?|kids?|floors?|areas?|units?|boxes|cajas|cuartos?|habitaciones|rec[aá]maras|pisos?|personas|d[ií]as|semanas|meses|horas|a[ñn]os|quartos?|c[oô]modos|pies|metros|m2|sqm)\b/i;
+const HOUR_PICK_NOT_A_PICK = /\$|#|\bsq\b|\bsqft\b|\bsquare\b|\bunit\b|\bapt\b|\bapartment\b|\bsuite\b|\bste\b|\bbldg\b|\bbuilding\b|\blot\b|\bzip\b|\bbox\b|\bcalle\b|\bavenida\b/i;
+export function hourPickedInPhrase(text: string, offeredHours: Set<number>): boolean {
+  const t = normalizeClockSpacing((text || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]).trim();
+  if (!t || t.length > 90 || offeredHours.size === 0) return false;
+  if (STREET_ADDRESS.test(t) || HOUR_PICK_NOT_A_PICK.test(t) || /\d[\d\s().-]{8,}\d/.test(t)) return false;
+  for (const m of t.matchAll(/(?<![\d$#:\/-])\b(\d{1,2})\b/g)) {
+    const h = parseInt(m[1], 10);
+    if (h < 1 || h > 12 || !offeredHours.has(h % 12)) continue;
+    if (HOUR_PICK_UNIT_AFTER.test(t.slice((m.index ?? 0) + m[0].length))) continue;
+    return true;
+  }
+  return false;
+}
 
 // Every distinct clock HOUR (mod 12) a message names: "6pm", "6:00 pm", bare
 // "9:00" (colon keeps street numbers out), "a las 11" / "às 11", "9 o'clock".
@@ -1257,7 +1219,11 @@ export function dayOnlyPickNeedsTime(history: Array<{ role: string; content: str
     const parts = t.split(new RegExp("(?=" + DAY_WORD_RE.source + ")", "i"));
     const mine = parts.filter((p) => p.trim().startsWith(pickedDay));
     const scope = mine.length ? mine.join(" ") : t;
-    return [...scope.matchAll(CLOCK_TIME_TOKEN)].length >= 2;
+    const offered = [...scope.matchAll(CLOCK_TIME_TOKEN)];
+    if (offered.length < 2) return false;
+    // "Tomorrow, I prefer 8" names the hour in words (Annabelle, WA 30/09).
+    const hours = new Set(offered.map((x) => parseInt(x[1], 10) % 12));
+    return !burst.some((b) => hourPickedInPhrase(b, hours));
   }
   return false;
 }
@@ -1307,6 +1273,8 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
       const h = parseInt(barePick[1] ?? barePick[2], 10);
       if (h >= 1 && h <= 12 && offeredHours.has(h % 12)) return true;
     }
+    // "I prefer 8" / "8 works" / "prefiero las 8" (Annabelle, WA 30/09/2026).
+    if (hourPickedInPhrase(t, offeredHours)) return true;
   }
 
   // 2. Exactly ONE slot on the table + a plain affirmative right after that
@@ -1352,12 +1320,51 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
 }
 
 // Sent when we have address/phone but the client never picked a specific
-// day/time: ask them to choose instead of inventing one.
-export function needSlotConfirmationMessage(lang: Lang): string {
-  if (lang === "pt") return "Perfeito! Só falta confirmar o dia e o horário, qual fica melhor para você para a visita?";
-  return lang === "es"
-    ? "Perfecto! Solo me falta confirmar el día y la hora, cuál te queda mejor para la visita?"
-    : "Perfect! I just need to confirm the day and time, which works best for you for the visit?";
+// day/time: ask them to choose instead of inventing one. When an offer is
+// still open in the episode, repeat THAT offer (our own sentence with the
+// times) behind a short ack instead of the generic "day and time" line
+// (Annabelle Ruiz, WA 30/09/2026: the generic line went out twice in a row,
+// the second time behind "As I mentioned above:", to a client who had already
+// answered "I prefer 8" — the pick itself is fixed in hourPickedInPhrase, this
+// keeps the fallback human). The ack rotates so a repeat never reads as the
+// same message (no duplicate-guard recap prefix). Short, no "Perfect!".
+const SLOT_ASK_ACKS: Record<Lang, string[]> = {
+  en: ["Got it, thanks.", "Thanks!", "Noted."],
+  es: ["Perfecto, anotado.", "Gracias!", "Anotado."],
+  pt: ["Perfeito, anotado.", "Obrigado!", "Anotado."],
+};
+const WHICH_ONE_TAIL: Record<Lang, string> = {
+  en: "Which one works better for you?",
+  es: "Cuál te queda mejor?",
+  pt: "Qual fica melhor para você?",
+};
+export function restateLastSlotOffer(history: Array<{ role: string; content: string }>, lang: Lang): string | null {
+  const h = history ?? [];
+  const acks = SLOT_ASK_ACKS[lang] ?? SLOT_ASK_ACKS.en;
+  const allAcks = [...SLOT_ASK_ACKS.en, ...SLOT_ASK_ACKS.es, ...SLOT_ASK_ACKS.pt];
+  let seen = 0;
+  for (let i = h.length - 1; i >= 0 && seen < 4; i--) {
+    if (h[i].role !== "assistant") continue;
+    seen++;
+    const prose = (h[i].content || "").split(/\n\n?\[SYSTEM:/)[0].replace(/\[[A-Z_]+(?::[\s\S]*?)?\]/g, " ");
+    const offer = prose
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map((s) => s.trim())
+      .filter((s) => /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(s));
+    if (!offer.length) continue;
+    let sentence = offer.join(" ");
+    for (const a of allAcks) if (sentence.startsWith(a + " ")) sentence = sentence.slice(a.length + 1);
+    if (!/\?\s*$/.test(sentence)) sentence = sentence.replace(/[.!]\s*$/, "") + ". " + (WHICH_ONE_TAIL[lang] ?? WHICH_ONE_TAIL.en);
+    const already = h.filter((m) => m.role === "assistant" && acks.some((a) => (m.content || "").startsWith(a))).length;
+    return `${acks[Math.min(already, acks.length - 1)]} ${sentence}`;
+  }
+  return null;
+}
+export function needSlotConfirmationMessage(lang: Lang, history?: Array<{ role: string; content: string }>): string {
+  const restated = history ? restateLastSlotOffer(history, lang) : null;
+  if (restated) return restated;
+  if (lang === "pt") return "Qual dia e horário fica melhor para você?";
+  return lang === "es" ? "Qué día y hora te queda mejor?" : "Which day and time works best for you?";
 }
 
 // ─── Time-invention guard: never book an HOUR nobody ever mentioned ─────────
@@ -1413,10 +1420,11 @@ export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promis
     if (times.length > 0) {
       const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
       const list = times.length === 1 ? times[0] : `${times.slice(0, -1).join(", ")}${sep}${times[times.length - 1]}`;
-      if (lang === "pt") return `Perfeito! Para esse dia tenho disponível ${list}, qual horário fica melhor para você?`;
+      // Short and human (owner, 30/09/2026): no "Perfect!", no "available".
+      if (lang === "pt") return `Para esse dia tenho ${list}, qual fica melhor para você?`;
       return lang === "es"
-        ? `Perfecto! Para ese día tengo disponible ${list}, a qué hora te queda mejor?`
-        : `Perfect! For that day I have ${list} available, which time works best for you?`;
+        ? `Para ese día tengo ${list}, cuál te queda mejor?`
+        : `For that day I have ${list}, which one works better for you?`;
     }
   } catch (err) {
     console.error("needTimeChoiceMessage error:", err);
@@ -1589,7 +1597,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     // cair no catch e dizer que não conseguiu ler a agenda.
     if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
+    const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
 
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
@@ -1611,12 +1619,9 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
       const notBefore = isToday
         ? String(Math.floor(nowMinutesPlus30 / 60)).padStart(2, "0") + ":" + String(nowMinutesPlus30 % 60).padStart(2, "0")
         : undefined;
-      // Owner rule 2026-09-17: one seller's day fills before the next seller's
-      // hours are offered (splitDaySlotsByPriority). The held-back hours stay
-      // bookable and go into a parenthesis for a client who asks for one.
-      const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff, notBefore);
-      const slots = preferred;
-      const onRequestNote = onRequest.length > 0 ? " (open only if the client asks for one of these: " + onRequest.map(fmt12).join(", ") + ")" : "";
+      // Owner rule 2026-09-30: no seller hierarchy. The line carries EVERY open
+      // hour of the day across the team, earliest first, so the day fills.
+      const slots = openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore);
       if (slots.length > 0) {
         hasAnySlot = true;
         const formatted = slots.map((s) => {
@@ -1625,7 +1630,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
           const h12 = h % 12 || 12;
           return `${h12}${min === 0 ? "" : `:${min}`}${period}`;
         });
-        lines.push(`• ${displayDate}: ${formatted.join(", ")}${onRequestNote}`);
+        lines.push(`• ${displayDate}: ${formatted.join(", ")}`);
       } else {
         lines.push(`• ${displayDate}: fully booked`);
       }
@@ -1638,8 +1643,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     lines.push(
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
-        "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. If that line has only one open time, offer it plus the first open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case' (a short line usually means the rest of that day sits in the parenthesis, not that the day is nearly full). Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
-        (sellerFillStrict() ? "\n- ONE TEAM MEMBER'S DAY FILLS BEFORE THE NEXT ONE'S (owner's rule 2026-09-17): the times listed BEFORE a parenthesis are the ONLY ones you offer. Times inside a parenthesis marked 'open only if the client asks for one of these' are NEVER offered, listed, hinted at or counted by you: they belong to the team members next in line (the second, then the third), and each one's day only opens once the one before them is full. If the client, on their own, asks for one of those parenthesis times, it IS open: accept it and book it normally, never say it is not available." : "") +
+        "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. Every time on a line is open with someone on the team, there is no order between team members: the day fills, whoever is free takes it. If that line has only one open time, offer it plus the first open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case'. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
@@ -1696,7 +1700,7 @@ export async function getNextOpenSlots(
   // oferecer horário fantasma.
   if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-  const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
+  const sellers = (sellersData ?? []) as Seller[];
   const bookings = (bookedData ?? []) as BookingRow[];
   const nowET = easternNowHM();
   const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
@@ -1708,10 +1712,8 @@ export async function getNextOpenSlots(
     const notBefore = isToday
       ? String(Math.floor(nowMinutesPlus30 / 60)).padStart(2, "0") + ":" + String(nowMinutesPlus30 % 60).padStart(2, "0")
       : undefined;
-    // Owner rule 2026-09-17: only the hours that are OFFERED (one seller's day
-    // before the next seller's), the same hours the model's schedule lists.
-    const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff, notBefore);
-    const times = preferred.length > 0 ? preferred : onRequest;
+    // The same hours the model's schedule lists: every open hour of the day.
+    const times = openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore);
     if (times.length > 0) out.push({ dateStr, weekday, times });
   }
   return out;
@@ -2421,19 +2423,10 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     // (needSlotConfirmationMessage / "mais cedo geral" / handoff).
     if (bookedErr) throw new Error(`get_booked_slots: ${bookedErr.message}`);
 
-    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
+    const sellers = (sellersData ?? []) as Seller[];
     const bookings = (bookedData ?? []) as BookingRow[];
-    const date = new Date(dateStr + "T12:00:00");
-    const weekday = date.getDay();
-
-    const slotSet = new Set<string>();
-    sellers.forEach((s) => {
-      slotsForWeekday(s, weekday).forEach((slot) => {
-        if (sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff)) slotSet.add(slot);
-      });
-    });
-
-    return Array.from(slotSet).sort();
+    const weekday = new Date(dateStr + "T12:00:00").getDay();
+    return openHoursForDay(sellers, dateStr, weekday, bookings, daysOff);
   } catch (err) {
     // NUNCA inventar horários no erro: a lista fixa 9/11/1/3/5/7 oferecia
     // horário fantasma em dia lotado (e domingo nem tem essa grade). Vazio
@@ -2443,35 +2436,13 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
   }
 }
 
-// The hours that are OFFERED for one day (owner rule 2026-09-17: one seller's
-// day fills before the next seller's hours are offered), i.e. the same hours
-// the model sees before the parenthesis on that day's schedule line. Every
-// open hour is still bookable (createBooking books any free seller); this is
-// only what the canned offers (needTimeChoiceMessage, the same-day
-// alternatives of slotConflictRecoveryMessage) propose. Empty on error, like
-// getAvailableSlots.
+// The hours the canned offers (needTimeChoiceMessage, the same-day
+// alternatives of slotConflictRecoveryMessage) propose for one day. Since the
+// owner rule of 2026-09-30 (no seller hierarchy) these are simply every open
+// hour of the day, the same list the model's schedule line shows. Kept as its
+// own name so the callers read as "what we offer". Empty on error.
 export async function getPreferredSlots(dateStr: string): Promise<string[]> {
-  try {
-    const db = await getAuthenticatedClient();
-    const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
-      db
-        .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
-        .eq("active", true)
-        .order("priority", { ascending: true }),
-      db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
-      getDaysOff(db, dateStr, dateStr),
-    ]);
-    if (bookedErr) throw new Error("get_booked_slots: " + bookedErr.message);
-    const sellers = applySellerPriorityOrder((sellersData ?? []) as Seller[]);
-    const bookings = (bookedData ?? []) as BookingRow[];
-    const weekday = new Date(dateStr + "T12:00:00").getDay();
-    const { preferred, onRequest } = splitDaySlotsByPriority(sellers, dateStr, weekday, bookings, daysOff);
-    return preferred.length > 0 ? preferred : onRequest;
-  } catch (err) {
-    console.error("getPreferredSlots failed — returning none:", err);
-    return [];
-  }
+  return getAvailableSlots(dateStr);
 }
 
 // ─── Post-booking ADDRESS CORRECTION ───────────────────────────────────────

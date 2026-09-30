@@ -52,21 +52,20 @@ async function run() {
   ck("ZIP já pedido e não respondido → nota 'não pergunte de novo'", /you already asked for the zip code once/.test(availAsked));
   ck("sem PRIORITY DAY / fill rate / preferred seller", !/PRIORITY DAY|fill rate|preferred seller|% booked|offer first/i.test(avail));
   ck("regra SOONEST DAY FIRST continua (dia mais próximo + primeiros horários)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST two open times/.test(avail));
-  ck("hierarquia de vendedores fora da oferta (dono 29/09): nenhum horário em parêntese, nenhum bullet de 'one team member'", process.env.SELLER_FILL_STRICT !== "off" || (!/open only if the client asks/.test(avail) && !/ONE TEAM MEMBER'S DAY FILLS/.test(avail)));
+  ck("hierarquia de vendedores fora da oferta (dono 30/09): nenhum horário em parêntese, nenhum bullet de 'one team member'", !/open only if the client asks/.test(avail) && !/ONE TEAM MEMBER'S DAY FILLS/.test(avail));
 
   // Primeiro dia com vaga (linha da agenda) e seus horários.
   const dayLines = avail.split("\n").filter((l) => l.startsWith("• ") && !/fully booked/.test(l));
   const firstLine = dayLines[0] ?? "";
   const firstDate = (/\[(\d{4}-\d{2}-\d{2})\]/.exec(firstLine) ?? [])[1];
-  // Regra do dono 17/09: a linha pode terminar com "(open only if the client asks for one of these: …)",
-  // horários do vendedor seguinte que NÃO são ofertados; só os da frente contam.
-  const firstTimes = firstLine.split("]: ")[1]?.replace(/\s*\(open only if[^)]*\)\s*$/, "").split(", ").map((s) => s.trim()) ?? [];
+  // Regra do dono 30/09: a linha traz TODOS os horários livres do dia (união dos vendedores), sem parêntese.
+  const firstTimes = firstLine.split("]: ")[1]?.split(", ").map((s) => s.trim()) ?? [];
   console.log(`   primeiro dia com vaga: ${firstLine}`);
   ck("primeiro dia com vaga identificado", !!firstDate && firstTimes.length >= 2, firstLine);
 
   console.log("\n━━ B. enlatadas: horários em ordem do relógio ━━");
   if (firstDate) {
-    const slots = await getPreferredSlots(firstDate); // horários OFERTÁVEIS (regra 17/09: um vendedor por vez)
+    const slots = await getPreferredSlots(firstDate); // todos os horários livres do dia (dono 30/09: sem hierarquia)
     const isToday = firstDate === easternTodayStr();
     const ntc = await needTimeChoiceMessage("en", firstDate);
     console.log("   needTimeChoiceMessage →", ntc);
