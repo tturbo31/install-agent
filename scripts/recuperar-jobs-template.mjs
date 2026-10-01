@@ -38,6 +38,18 @@ const envApp = lerEnv("C:/Users/vicam/Downloads/Ozzi floors/instagram-dm-agent/.
 const envPl = lerEnv("C:/Users/vicam/Downloads/Funil Ozzi/ozzi-plataforma/.env.local");
 const app = createClient(envApp.NEXT_PUBLIC_SUPABASE_URL, envApp.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const pl = createClient(envPl.NEXT_PUBLIC_SUPABASE_URL, envPl.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+// TOKEN VIVO DA META (30/09/2026): o token mora na tabela config da plataforma
+// (chave meta_access_token, JSON {token}); o da env morreu na troca de senha de
+// 23/09 e este script rodava com 0 templates — "sem prova" para todo mundo.
+const tokenMeta = await (async () => {
+  const { data } = await pl.from("config").select("valor").eq("chave", "meta_access_token").maybeSingle();
+  try { const t = JSON.parse(data?.valor ?? "{}").token; if (t) return t; } catch {}
+  return envPl.META_ACCESS_TOKEN;
+})();
+{
+  const r = await fetch(`https://graph.facebook.com/v24.0/me?fields=id&access_token=${tokenMeta}`);
+  if (!r.ok) throw new Error("token da Meta inválido: " + (await r.text()).slice(0, 160));
+}
 
 const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 const cauda = (s) => {
@@ -53,7 +65,7 @@ const stripSys = (c) => String(c ?? "").split(/\n\n?\[SYSTEM:/)[0];
 const acct = envPl.META_AD_ACCOUNT_ID.startsWith("act_") ? envPl.META_AD_ACCOUNT_ID : "act_" + envPl.META_AD_ACCOUNT_ID;
 const adsMeta = [];
 {
-  let url = `https://graph.facebook.com/v24.0/${acct}/ads?fields=id,name,effective_status,creative{object_story_spec}&limit=100&access_token=${envPl.META_ACCESS_TOKEN}`;
+  let url = `https://graph.facebook.com/v24.0/${acct}/ads?fields=id,name,effective_status,creative{object_story_spec}&limit=100&access_token=${tokenMeta}`;
   while (url) {
     const r = await fetch(url);
     const j = await r.json();
