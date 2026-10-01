@@ -124,11 +124,23 @@ function decidir(candidatos, diaConversa) {
 }
 
 // ── 3) alvos: leads sem identidade de anúncio, com evidência ──
-const { data: todosLeads } = await pl
-  .from("leads")
-  .select("id, nome, canal, ig_id, telefone, ad_id, ad_name, ad_title, ad_evidencia, criado_em")
-  .order("criado_em", { ascending: true })
-  .limit(20000);
+// 30/09/2026: `.limit(20000)` devolvia só 1000 linhas (teto do PostgREST) e,
+// em ordem crescente, o script só enxergava os 1000 leads MAIS ANTIGOS — os de
+// setembro nunca eram avaliados. Agora pagina a tabela inteira.
+// `--desde=AAAA-MM-DD` restringe os ALVOS (não a base de "já tem criativo").
+const DESDE = (process.argv.find((a) => a.startsWith("--desde=")) ?? "").slice(8) || null;
+const todosLeads = [];
+for (let de = 0; ; de += 1000) {
+  const { data, error } = await pl
+    .from("leads")
+    .select("id, nome, canal, ig_id, telefone, ad_id, ad_name, ad_title, ad_evidencia, criado_em")
+    .order("criado_em", { ascending: true })
+    .range(de, de + 999);
+  if (error) throw new Error("leads: " + error.message);
+  todosLeads.push(...(data ?? []));
+  if (!data || data.length < 1000) break;
+}
+console.log(`leads lidos: ${todosLeads.length}${DESDE ? ` · alvos desde ${DESDE}` : ""}`);
 const dez = (t) => (t ?? "").replace(/\D/g, "").slice(-10);
 // pessoa já tem criativo por outro lead? então não mexe (fusão já resolve)
 const comAdPorTel = new Set(), comAdPorIg = new Set();
@@ -142,6 +154,7 @@ for (const l of todosLeads ?? []) {
 const alvos = (todosLeads ?? []).filter((l) =>
   !l.ad_id && !l.ad_name && !l.ad_title &&
   l.ad_evidencia && l.ig_id &&
+  (!DESDE || String(l.criado_em) >= DESDE) &&
   (l.canal === "facebook" || l.canal === "instagram") &&
   !(dez(l.telefone).length === 10 && comAdPorTel.has(dez(l.telefone))) &&
   !comAdPorIg.has(l.ig_id)
