@@ -5,7 +5,8 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
-import { isCommentChatNotice, commentChatAwaitingPrivateReply } from "@/lib/post-comment-policy";
+import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
+import { resolveCommentChatCommentId, registerCommentChat, pendingCommentChat } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -650,6 +651,27 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
 
     let rawText = (msg?.text as string) ?? "";
 
+    // ── Chat que o Facebook criou a partir de um COMENTÁRIO (Joshua Gray,
+    //    03/10/2026): "Facebook created this chat because X commented on your
+    //    post... See comment(...&comment_id=...)" (ou "X replied to a post. See
+    //    post(...)"). O aviso não é fala do cliente: entra no histórico como o
+    //    marcador de comentário no anúncio e a IA responde o comentário como
+    //    responde qualquer cliente. No chat criado pelo comentário a Meta só
+    //    aceita a 1ª mensagem como resposta privada a ele — o vínculo PSID →
+    //    comentário fica gravado aqui e o sendFacebookMessage o usa. ──
+    if (isCommentChatNotice(rawText)) {
+      if (isCommentChatCreatedNotice(rawText)) {
+        const commentId = await resolveCommentChatCommentId(rawText).catch(() => null);
+        if (commentId) {
+          await registerCommentChat(psid, commentId);
+          console.log(`[FB] comment chat ${psid} linked to comment ${commentId} — the first reply goes as a private reply`);
+        } else {
+          console.warn(`[FB] comment chat ${psid}: comment id not found in the notice — nothing can be sent in this chat`);
+        }
+      }
+      rawText = COMMENT_CHAT_MARKER;
+    }
+
     if (rawText && !rawText.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F0FF}\u{1F100}-\u{1F2FF}\u{1F900}-\u{1FAFF}\u{231A}-\u{231B}\u{23E9}-\u{23F3}\u{25AA}-\u{25FE}\u{2614}-\u{2615}]/gu, "").trim()) {
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
       return;
@@ -803,30 +825,6 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       return;
     }
 
-    // ── "Chat" criado pelo Facebook a partir de um COMENTÁRIO (Joshua Gray,
-    //    03/10/2026): a rede de mensagem perdida lê essa thread e reposta as
-    //    bolhas ("Facebook created this chat because X commented on your
-    //    post...", "X replied to a post. See post(...)"). O aviso não é fala
-    //    do cliente, e numa thread que só existe pelo comentário o envio normal
-    //    não entra — a Meta recusa com (#551), 3 tentativas do outbox em vão.
-    //    Quem responde é a resposta privada ao comentário (post-comments.ts). ──
-    if (isCommentChatNotice(rawText)) {
-      console.log("[FB] comment-chat notice — no reply (the comment itself gets a private reply)");
-      return;
-    }
-    {
-      const { data: threadRows } = await supabaseAdmin
-        .from("instagram_messages")
-        .select("role, content")
-        .eq("conversation_id", conv.id)
-        .order("created_at", { ascending: false })
-        .limit(30);
-      if (commentChatAwaitingPrivateReply(threadRows ?? [])) {
-        console.log("[FB] thread created by a comment, nothing of ours in it yet — the private reply answers it");
-        return;
-      }
-    }
-
     // Debounce
     await new Promise((r) => setTimeout(r, RESPONSE_DELAY_MS));
     const { data: latestMsg } = await supabaseAdmin
@@ -854,6 +852,21 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     if (conv.mode === "human") {
       console.log("[FB] Conversation paused during debounce — staying silent");
       return;
+    }
+
+    // Chat criado por comentário sem nada nosso entregue e sem o vínculo com o
+    // comentário: qualquer envio volta (#551) — não gasta IA nem enche o outbox.
+    {
+      const { data: threadRows } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (commentChatAwaitingFirstReply(threadRows ?? []) && !(await pendingCommentChat(psid))) {
+        console.warn("[FB] comment chat without a linked comment — nothing can be sent here, staying silent");
+        return;
+      }
     }
 
     // Returning client who booked outside the bot (in person, manually): treat

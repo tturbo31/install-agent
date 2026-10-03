@@ -7,7 +7,6 @@ import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
 import { withRequestedTimesNote } from "@/lib/requested-slots";
-import { parseCommentClass, critiqueReplyIsSafe, type CommentClass } from "@/lib/post-comment-policy";
 
 // ─── Anthropic client (Claude) ─────────────────────────────────────────────
 let _anthropic: Anthropic | null = null;
@@ -460,69 +459,6 @@ export async function classifyAdCreativeType(imageUrl: string): Promise<AdFloori
     return null;
   } catch (err) {
     console.warn("classifyAdCreativeType failed:", err);
-    return null;
-  }
-}
-
-// ─── Comentário público em post/anúncio do Facebook (03/10/2026, Joshua Gray) ─
-// Quem comenta não mandou mensagem: a resposta privada é UMA só e vai para o
-// Messenger da pessoa (post-comments.ts). Antes de gastar essa mensagem, o
-// Haiku separa quem vale a resposta. Lança em erro de API: quem chama devolve o
-// comentário para a próxima varredura em vez de decidir "skip" às cegas.
-const COMMENT_CLASSIFIER_SYSTEM = `You sort public comments left on the Facebook ads and posts of Ozzi Floors, a flooring installation company in South Florida (luxury vinyl plank, tile, hardwood). The ads show luxury vinyl installed over existing tile with no demolition and advertise prices per 1000 sq ft. The company sends ONE private Messenger reply to a commenter, only when it is worth it.
-
-Answer with exactly one word:
-LEAD = the person might want our service, or asks what a potential customer would ask: price or cost, what material or floor it is, where we are or which areas we serve, how it works, how long it takes, warranty, whether we do a type of floor or a related job (stairs, steps, baseboards, a kitchen, a whole house), asks to be contacted, says they need or want new floors, says they have a job for us, asks for a quote or info. Short product questions count ("What material is that?", "Price?", "Info", "How much"), and so do genuine questions about how the floor would perform in their home (water, spills, mopping, pets, scratches, going over their tile, soft spots).
-CRITIQUE = an opinion or criticism that points out a supposed mistake in the installation, technique, prep or materials shown (underlayment, moisture barrier, glue, grout lines, skim coat, leveling, nails, transitions, cuts, noise, "this will fail", "should have used..."), including rhetorical questions that point out that mistake ("Where's the vapor barrier?"), said in a way a person can reasonably answer, even if blunt.
-SKIP = everything else: insults, profanity or name calling aimed at us, mockery or sarcasm with no real point, jokes and memes, praise or compliments with no question, only emojis, only tagging friends, replies talking to another commenter, job seekers or workers looking for work, people offering their own services or other trades, spam, politics, anything off topic.
-If a comment mixes criticism with profanity or insults aimed at us, answer SKIP. If it shows any interest in hiring us, answer LEAD.`;
-
-export async function classifyPostComment(comment: string, postText?: string | null): Promise<CommentClass> {
-  const anthropic = getAnthropic();
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 8,
-    temperature: 0,
-    system: COMMENT_CLASSIFIER_SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content: `${postText ? `Post text: "${postText.replace(/\s+/g, " ").slice(0, 300)}"\n` : ""}Comment: "${comment.replace(/\s+/g, " ").slice(0, 600)}"\nOne word:`,
-      },
-    ],
-  });
-  const block = response.content[0];
-  return parseCommentClass(block?.type === "text" ? block.text : "") ?? "skip";
-}
-
-// Resposta privada a uma CRÍTICA (o caso Joshua): agradecer sem discutir e sem
-// afirmar como instalamos (o modelo não sabe o preparo daquela obra e uma
-// afirmação errada vira briga). null = falhou ou saiu fora da linha; quem chama
-// usa critiqueFallbackReply.
-export async function composeCommentCritiqueReply(comment: string, firstName: string | null, lang: "en" | "es" | "pt"): Promise<string | null> {
-  try {
-    const langName = lang === "es" ? "Spanish" : lang === "pt" ? "Brazilian Portuguese" : "English";
-    const anthropic = getAnthropic();
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 160,
-      temperature: 0.4,
-      system:
-        `You write ONE short private Messenger reply from Ozzi Floors, a flooring installation company in South Florida, to a person who left a public comment on our Facebook ad criticizing or questioning the installation shown. ` +
-        `Write it in ${langName}, in 1 or 2 short sentences, under 200 characters, sounding like a real person from the company. ` +
-        `Thank them for taking the time to share their view. You may name their point in a few words (for example "the skim coat over the grout lines"), without agreeing that the work was wrong and without arguing. ` +
-        `Do NOT explain, defend or describe how we install, prep or which materials we use, make no technical claim at all, promise nothing, no prices, no numbers, no questions, no links, no emojis, and never use a dash of any kind. ` +
-        `You may close with a light open door, like "if you ever need floors done, we'd be glad to help". ` +
-        (firstName ? `Start with "${lang === "es" ? "Hola" : lang === "pt" ? "Oi" : "Hi"} ${firstName},". ` : "Do not use any name. ") +
-        (lang === "es" ? "Never use inverted question or exclamation marks at the start of a sentence. " : "") +
-        `Output only the message.`,
-      messages: [{ role: "user", content: `Their comment: "${comment.replace(/\s+/g, " ").slice(0, 600)}"` }],
-    });
-    const block = response.content[0];
-    const text = (block?.type === "text" ? block.text : "").trim().replace(/^["“]|["”]$/g, "").trim();
-    return critiqueReplyIsSafe(text) ? text : null;
-  } catch (err) {
-    console.warn("composeCommentCritiqueReply failed:", err);
     return null;
   }
 }
@@ -2174,9 +2110,7 @@ const ANY_SQFT = /\d[\d,.]*\s*(?:sq\.?\s*(?:ft|feet|foot)|sf\b|sqft|square\s*(?:
 // System-ish bubbles that ride along as "user" content (floor-plan / image
 // analysis, ad tags) must never feed the detector.
 const NON_CLIENT_BUBBLE = /^\s*\[(?:Floor plan analysis|Image analysis|Image|Audio|Sticker|Attachment)\b/i;
-// "Client replied to our post" = comentário em post orgânico (post-comments.ts,
-// 03/10/2026); o de anúncio já cai em "Client replied to our ad".
-const NON_CLIENT_TAGS = /\[(?:Client replied to our (?:ad|post)|AD REPLY|Client shared a post)[^\]]*\]/gi;
+const NON_CLIENT_TAGS = /\[(?:Client replied to our ad|AD REPLY|Client shared a post)[^\]]*\]/gi;
 
 function clientTextForRepair(text: string): string {
   const t = normalizeSmartPunct((text || "").split(/\n\n?\[SYSTEM:/)[0])

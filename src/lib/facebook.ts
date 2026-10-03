@@ -2,6 +2,7 @@ import { reportSendFailure } from "@/lib/delivery";
 import { getAdsToken } from "@/lib/ads-token";
 import { stripInternalMarkers } from "@/lib/outbound-text";
 import { getFacebookPageToken } from "@/lib/fb-token";
+import { pendingCommentChat, clearCommentChat } from "@/lib/post-comments";
 
 const FB_API = "https://graph.facebook.com/v24.0";
 
@@ -20,6 +21,21 @@ export type FbSendResult = { ok: boolean; error?: string };
 export async function sendFacebookMessage(psid: string, text: string): Promise<FbSendResult> {
   text = stripInternalMarkers(text);
   if (!text) return { ok: false, error: "empty text after marker strip" };
+  // Chat que o Facebook criou a partir de um COMENTÁRIO (Joshua Gray, 03/10/2026):
+  // a 1ª mensagem da página só entra como resposta privada ao comentário — o
+  // envio normal volta (#551). O webhook gravou o vínculo PSID → comentário ao
+  // receber o aviso do chat; usado (ou recusado de vez), ele some.
+  const pending = await pendingCommentChat(psid).catch(() => null);
+  if (pending) {
+    const pr = await sendFacebookPrivateReply(pending.commentId, text);
+    if (pr.ok || !pr.retryable) await clearCommentChat(pending.key);
+    if (pr.ok) {
+      if (pr.recipientId && pr.recipientId !== psid) console.warn(`[COMMENT-CHAT] private reply went to ${pr.recipientId}, chat is ${psid}`);
+      console.log(`[COMMENT-CHAT] first reply in comment chat ${psid} sent as private reply to comment ${pending.commentId}`);
+      return { ok: true };
+    }
+    console.warn(`[COMMENT-CHAT] private reply to ${pending.commentId} failed (${pr.error}) — trying the normal send`);
+  }
   let lastErr = "not attempted";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -52,12 +68,11 @@ export async function sendFacebookMessage(psid: string, text: string): Promise<F
 
 export type FbPrivateReplyResult = { ok: boolean; recipientId?: string; messageId?: string; error?: string; code?: number; retryable?: boolean };
 
-// RESPOSTA PRIVADA a um comentário público (post-comments.ts, 03/10/2026): a
-// Meta entrega no Messenger de quem comentou e devolve o PSID (recipient_id),
-// que é a chave da conversa fb_<PSID>. UMA por comentário, até 7 dias — um
-// segundo envio ao mesmo comment_id falha. Sem reportSendFailure: comentarista
-// que bloqueia mensagem de página é caso individual, não canal caído (o
-// chamador registra o resultado e avisa o dono quando era um lead).
+// RESPOSTA PRIVADA a um comentário (03/10/2026): a única mensagem que a Meta
+// aceita como a 1ª da página no chat que ela criou a partir de um comentário.
+// Entra no Messenger de quem comentou e devolve o PSID (recipient_id). UMA por
+// comentário, até 7 dias. Sem reportSendFailure aqui: se falhar, o
+// sendFacebookMessage tenta o envio normal, que tem o alerta de sempre.
 export async function sendFacebookPrivateReply(commentId: string, text: string): Promise<FbPrivateReplyResult> {
   text = stripInternalMarkers(text);
   if (!text) return { ok: false, error: "empty text after marker strip" };
