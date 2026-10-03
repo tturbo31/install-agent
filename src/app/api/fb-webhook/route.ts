@@ -8,7 +8,7 @@ import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies,
 import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
 import { resolveCommentChatCommentId, registerCommentChat, pendingCommentChat } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -971,7 +971,7 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       gateBurst = unansweredUserBurst((burstMsgs ?? []).reverse());
       if (gateBurst && isRescheduleRequest(gateBurst)) engageReschedule = true;
     }
-    if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
+    if (isBooked && !engageReschedule) {
       const { data: lastAsst } = await supabaseAdmin
         .from("instagram_messages")
         .select("content")
@@ -983,7 +983,9 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       // isOpenSlotOffer, not containsSchedulingOffer: since 2026-08-25 the booking
       // confirmation restates the day and time, and reading it as an offer put
       // every post-booking message into RESCHEDULE MODE (Prince Cambow, 26/08).
-      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
+      // A pure thank-you still closes; "6 works, thank you" TAKES the offered
+      // slot and must not fall into the silent booked path (lovehyppos, 03/10).
+      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content) && (!isPureClosing(rawText) || acceptsOpenSlotOffer(lastAsst.content, gateBurst || rawText))) engageReschedule = true;
     }
 
     // ── Pedido CONDICIONAL "se abrir um horário mais cedo, me avisa" (caso

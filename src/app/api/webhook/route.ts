@@ -28,6 +28,7 @@ import {
   containsBookingInfo,
   isAskingForBookingInfo,
   isPureClosingBurst,
+  acceptsOpenSlotOffer,
   isAckClosingBurst,
   detectAdFlooringType,
   adFlooringTypeNote,
@@ -1117,7 +1118,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       gateBurst = unansweredUserBurst((burstMsgs ?? []).reverse());
       if (gateBurst && isRescheduleRequest(gateBurst)) engageReschedule = true;
     }
-    if (isBooked && !engageReschedule && !isPureClosing(rawText)) {
+    if (isBooked && !engageReschedule) {
       const { data: lastAsst } = await supabaseAdmin
         .from("instagram_messages")
         .select("content")
@@ -1129,7 +1130,9 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // isOpenSlotOffer, not containsSchedulingOffer: since 2026-08-25 the booking
       // confirmation restates the day and time, and reading it as an offer put
       // every post-booking message into RESCHEDULE MODE (Prince Cambow, FB 26/08).
-      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content)) engageReschedule = true;
+      // A pure thank-you still closes; "6 works, thank you" TAKES the offered
+      // slot and must not fall into the silent booked path (lovehyppos, 03/10).
+      if (lastAsst?.content && isOpenSlotOffer(lastAsst.content) && (!isPureClosing(rawText) || acceptsOpenSlotOffer(lastAsst.content, gateBurst || rawText))) engageReschedule = true;
     }
 
     // ── Pedido CONDICIONAL "se abrir um horário mais cedo, me avisa" (caso

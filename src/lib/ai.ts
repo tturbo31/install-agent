@@ -2,7 +2,7 @@ import { zipsInText } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
@@ -3933,6 +3933,43 @@ export function isPureClosing(text: string): boolean {
   return CLOSING_PATTERNS.some((p) => p.test(t));
 }
 
+// ─── A slot pick wrapped in a thank-you is the ANSWER, not a goodbye ────────
+// lovehyppos (IG 2026-10-03): we offered "Tuesday at 5pm or 6pm works, which
+// one do you prefer?" and she answered "6 works perfect, thank you". A bare "6"
+// has no am/pm, "works"/"perfect" are no substance token, "thank you" matched
+// CLOSING_PATTERNS — isPureClosingBurst discarded the model's reply (the ask
+// for the address) and the hot lead waited 8 minutes until the owner typed it
+// by hand. clientConfirmedSlot already read the same text as a 6pm pick; the
+// silence guards did not. Rule: when OUR message put clock times on the table
+// (with a question or an "I have / I can do" offer), the client's reply that
+// names one of those hours, or accepts ("works", "sounds good", "yes", "the
+// first one", "me funciona"), answers the offer. A deferral ("I'll let you
+// know", "let me check") is still a closing unless an offered hour is named;
+// "ok" only accepts when the offer had a single time. A decline of the whole
+// offer stays a closing — the 30-day scan (03/10) found "Actually neither, my
+// husband and I work. But we'll get back to you thank you", "Dies t work for
+// me anymore- Thank you" and "looking for a job where I can apply to work
+// there | Thanks": the verb "work" is never an acceptance, only "works" is.
+const SLOT_DECLINE = /\b(?:neither|none\s+of\s+(?:them|those|these|the)|any\s*more|no\s+longer|ninguno|ninguna|nenhum|nenhuma)(?![a-zà-ÿ])|\b(?:doesn'?t|does\s+not|dies\s*t|don'?t|do\s+not|won'?t|will\s+not|can'?t|cannot|isn'?t)\s+(?:\w+\s+)?work|\bno\s+(?:me\s+)?(?:funciona|sirve|queda\s+bien|puedo)\b/i;
+const SLOT_ACCEPTANCE = /(?:^|[^a-zà-ÿ])(?:works|that\s+(?:one|time|day)|sounds?\s+(?:good|great|perfect|fine)|let'?s\s+(?:do\s+it|go)|yes|yeah|yep|yup|sure|perfect[oa]?|perfeito|great|deal|book\s+it|lock\s+it(?:\s+in)?|(?:the\s+)?(?:first|second|earlier|later)\s+one|the\s+(?:first|second|earlier|later|1st|2nd)|1st|2nd|s[ií]|claro|dale|de\s+acuerdo|me\s+(?:funciona|sirve|queda\s+bien)|funciona|pode\s+ser|combinado|fechado|est[aá]\s+bien)(?![a-zà-ÿ])/i;
+const SLOT_DEFERRAL = /\b(?:(?:i|we)'?ll?\s+(?:let\s+(?:you|u)\s+know|think|check|see|get\s+back|call|text|reach|confirm)|(?:i|we)\s+will\s+(?:let|think|check|get\s+back|call|reach|confirm)|get\s+back\s+to\s+(?:you|u)|let\s+me\s+(?:think|check|see|ask|talk|confirm)|think\s+about\s+it|not\s+(?:sure|now|yet)|maybe|(?<!the\s)later(?!\s+one)|te\s+aviso|lo\s+pienso|d[eé]jame\s+(?:ver|pensar|confirmar)|vou\s+ver|te\s+falo)(?![a-zà-ÿ])/i;
+const OFFER_CLOCK_HOUR = /\b(\d{1,2})(?::\d{2})?\s*(am|pm)\b/gi;
+export function acceptsOpenSlotOffer(offerText: string, clientText: string): boolean {
+  const offer = normalizeSmartPunct(offerText || "").split(/\n\n?\[SYSTEM:/)[0];
+  const reply = normalizeSmartPunct(clientText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!reply || isBookingRestatement(offer)) return false;
+  if (!offer.includes("?") && !SLOT_OFFER.test(offer)) return false;
+  const times = [...offer.matchAll(OFFER_CLOCK_HOUR)];
+  if (times.length === 0) return false;
+  const hours = new Set(times.map((m) => parseInt(m[1], 10) % 12));
+  if (SLOT_DECLINE.test(reply)) return false;
+  if (reply.split(/\n+/).some((line) => pickedHourInPhrase(line, hours) !== null)) return true;
+  if (SLOT_DEFERRAL.test(reply)) return false;
+  if (SLOT_ACCEPTANCE.test(reply)) return true;
+  const distinct = new Set(times.map((m) => `${parseInt(m[1], 10)}${m[2].toLowerCase()}`)).size;
+  return distinct === 1 && /(?:^|[^a-zà-ÿ])ok(?:ay|ey)?(?![a-zà-ÿ])/i.test(reply);
+}
+
 // Burst-aware pure-closing check — judges the WHOLE un-answered burst, not just
 // the last bubble. THE SILENCE BUG: the 10s debounce collapses a client's rapid
 // bubbles so only the LAST one's handler replies. When a client asks a real
@@ -3957,6 +3994,15 @@ export function isPureClosingBurst(history: Array<{ role: string; content: strin
   // (name required since 2026-07-27).
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
   if (lastAssistant && isAskingForBookingInfo(lastAssistant.content)) return false;
+  // OUR last message offered clock times and the burst takes one ("6 works
+  // perfect, thank you") → the answer to the offer, never a goodbye.
+  if (lastAssistant) {
+    const burst: string[] = [];
+    for (let i = history.length - 1; i >= 0 && history[i].role !== "assistant"; i--) {
+      if (history[i].role === "user") burst.unshift(strip(history[i].content));
+    }
+    if (acceptsOpenSlotOffer(lastAssistant.content, burst.join("\n"))) return false;
+  }
   // Walk back across the un-answered burst (the user bubbles since the last
   // assistant reply). If any earlier one is a real, still-unanswered message,
   // the model's answer to it must be sent — never silenced by the trailing thanks.
