@@ -6,6 +6,7 @@ import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, 
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { sweepPostComments, handleFeedWebhookComments } from "@/lib/post-comments";
+import { isCommentChatNotice, commentChatAwaitingPrivateReply } from "@/lib/post-comment-policy";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -801,6 +802,30 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
         })().catch((e) => console.error("[FB] paused-backlog alert error:", e))
       );
       return;
+    }
+
+    // ── "Chat" criado pelo Facebook a partir de um COMENTÁRIO (Joshua Gray,
+    //    03/10/2026): a rede de mensagem perdida lê essa thread e reposta as
+    //    bolhas ("Facebook created this chat because X commented on your
+    //    post...", "X replied to a post. See post(...)"). O aviso não é fala
+    //    do cliente, e numa thread que só existe pelo comentário o envio normal
+    //    não entra — a Meta recusa com (#551), 3 tentativas do outbox em vão.
+    //    Quem responde é a resposta privada ao comentário (post-comments.ts). ──
+    if (isCommentChatNotice(rawText)) {
+      console.log("[FB] comment-chat notice — no reply (the comment itself gets a private reply)");
+      return;
+    }
+    {
+      const { data: threadRows } = await supabaseAdmin
+        .from("instagram_messages")
+        .select("role, content")
+        .eq("conversation_id", conv.id)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (commentChatAwaitingPrivateReply(threadRows ?? [])) {
+        console.log("[FB] thread created by a comment, nothing of ours in it yet — the private reply answers it");
+        return;
+      }
     }
 
     // Debounce

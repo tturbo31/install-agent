@@ -34,6 +34,10 @@ export const COMMENT_MAX_CLASSIFIED_PER_SWEEP = 15;
 // Posts cujo updated_time (sobe a cada comentário novo) está nessa janela têm
 // os comentários lidos.
 export const COMMENT_POST_LOOKBACK_MS = COMMENT_MAX_AGE_MS;
+// Comentário de quem JÁ tem conversa chega também como bolha na thread dela
+// (webhook em segundos; caso David, 01/10). Esperar 5 min dá tempo de a bolha
+// ser gravada e de a guarda de thread (commentThreadBlockReason) enxergá-la.
+export const COMMENT_MIN_AGE_MS = 5 * 60_000;
 
 export const AD_COMMENT_MARKER = "[Client replied to our ad with a public comment]";
 export const POST_COMMENT_MARKER = "[Client replied to our post with a public comment]";
@@ -75,6 +79,7 @@ export function commentEligibility(c: PostComment, pageId: string, nowMs: number
   const t = Date.parse(c.createdTime);
   if (!Number.isFinite(t)) return { ok: false, reason: "no-time" };
   if (nowMs - t > COMMENT_MAX_AGE_MS) return { ok: false, reason: "too-old" };
+  if (nowMs - t < COMMENT_MIN_AGE_MS) return { ok: false, reason: "too-new" };
   if (!commentHasWords(c.message)) return { ok: false, reason: "no-words" };
   return { ok: true };
 }
@@ -187,6 +192,86 @@ export function commentLeadNote(c: PostComment, nowMs: number): string {
     (post ? ` The ${where} they commented on says: "${post}".` : "") +
     `]`
   );
+}
+
+// ─── O "chat" do comentário dentro do Messenger ─────────────────────────────
+// A thread que o Facebook cria a partir de um comentário aparece na lista de
+// conversas da página; a rede de mensagem perdida (recoverLostInbounds) a lê e
+// reposta as bolhas ao webhook. Mas ali NADA sai por envio normal: a Meta
+// recusa com (#551) "This person isn't available right now" (Joshua Gray,
+// 03/10 06:50, 3 tentativas do outbox). Só a resposta privada ao comentário
+// entra. Bolhas reais vistas:
+//   "Facebook created this chat because Joshua Gray commented on your post.
+//    Joshua Gray won't see this until you start a conversation. ... See comment(https://facebook.com/...)"
+//   "David Ch replied to a post. See post(https://www.facebook.com/story.php?...)"
+export function isCommentChatNotice(text: string): boolean {
+  const t = (text ?? "").trim();
+  return (
+    /^Facebook created this chat because\b/i.test(t) ||
+    (/^[^\n]{1,80}?\b(?:replied to|commented on)\s+(?:a|an|your)\s+(?:post|ad|reel|video|photo|comment)\b/i.test(t) &&
+      /\bSee\s+(?:post|comment)\s*\(\s*https?:\/\/(?:www\.|m\.)?facebook\.com\//i.test(t))
+  );
+}
+
+// Thread que só existe por causa de um comentário e ainda não recebeu nada
+// nosso: o envio normal não entra, então o webhook não responde (a varredura
+// manda a resposta privada, que vira a 1ª mensagem do bot nesta thread).
+export function commentChatAwaitingPrivateReply(rows: Array<{ role: string; content: string }>): boolean {
+  const createdByComment = rows.some((r) => r.role === "user" && /^\s*Facebook created this chat because\b/i.test(r.content ?? ""));
+  if (!createdByComment) return false;
+  return !rows.some((r) => r.role === "assistant" && !/\[SYSTEM: ?SEND_FAILED\]/.test(r.content ?? ""));
+}
+
+// Mesma frase com e sem a máscara da Meta: na leitura de comentários a Meta
+// troca o telefone por "************"; na thread a bolha vem com os dígitos
+// ("...apartment David 305-761-1633."). Compara só as letras.
+function commentLetters(text: string): string {
+  return (text ?? "")
+    .split(/\n\[Client replied to our (?:ad|post) with a public comment\]/)[0]
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z]/g, "");
+}
+export function commentTextMatches(threadText: string, commentText: string): boolean {
+  const a = commentLetters(threadText);
+  const b = commentLetters(commentText);
+  if (b.length < 8 || a.length < 8) return false;
+  if (a === b) return true;
+  // Quase igual (um corte no fim): só quando a parte comum é ≥ 90% da maior.
+  // "Where are you?" (outra bolha da mesma pessoa) NÃO é "Where are you? I
+  // have a job for you." (o comentário).
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 15 && long.startsWith(short) && short.length / long.length >= 0.9;
+}
+
+// Prefixo para achar a bolha do comentário na thread (ilike): começo do texto,
+// antes de qualquer trecho mascarado.
+export function commentLookupPrefix(commentText: string): string | null {
+  const head = (commentText ?? "").replace(/\s+/g, " ").trim().split(/\*{3,}/)[0].trim().slice(0, 24).trim();
+  return head.replace(/[^\p{L}]/gu, "").length >= 8 ? head : null;
+}
+
+// A pessoa que comentou JÁ tem conversa com a gente e o comentário já está nela:
+// a resposta privada cairia no meio dessa conversa. Caso David (03/10): cliente
+// em modo humano, o dono escreveu "I'll call you within the next hour" e o bot
+// mandou "which type of flooring?" por cima. Não responde quando:
+//   human      → o dono está conduzindo
+//   booked     → visita marcada (o fluxo de quem já agendou é outro)
+//   owner      → mensagem do dono ([Treino]) nos últimos 14 dias
+//   answered   → já houve resposta nossa (bot ou dono) depois do comentário
+export function commentThreadBlockReason(
+  conv: { mode?: string | null; booking_confirmed?: boolean | null },
+  rows: Array<{ role: string; content: string; created_at: string }>,
+  commentAtMs: number,
+  nowMs: number
+): "human" | "booked" | "owner" | "answered" | null {
+  if (conv.mode === "human") return "human";
+  if (conv.booking_confirmed) return "booked";
+  const assistant = rows.filter((r) => r.role === "assistant" && !/\[SYSTEM: ?SEND_FAILED\]/.test(r.content ?? ""));
+  if (assistant.some((r) => /^\s*\[Treino\]/.test(r.content) && nowMs - Date.parse(r.created_at) <= 14 * 24 * 3600_000)) return "owner";
+  if (assistant.some((r) => Date.parse(r.created_at) >= commentAtMs - 60_000)) return "answered";
+  return null;
 }
 
 // Resposta à crítica quando o modelo falha ou escreve algo fora da linha.

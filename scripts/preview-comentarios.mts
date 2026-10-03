@@ -19,6 +19,6 @@ const resumo: Record<string, number> = {};
 for (const p of r.pending) {
   const k = p.cls ? `${p.cls}${p.wouldReply ? " → RESPONDE" : ""}` : "-";
   resumo[k] = (resumo[k] ?? 0) + 1;
-  console.log(`${p.createdTime.slice(0, 16)} ${p.source.padEnd(4)} ${(p.cls ?? "").padEnd(8)} ${p.wouldReply ? "RESPONDE" : "        "} | ${p.message.replace(/\s+/g, " ").slice(0, 90)}`);
+  console.log(`${p.createdTime.slice(0, 16)} ${p.source.padEnd(4)} ${(p.cls ?? "").padEnd(8)} ${p.wouldReply ? "RESPONDE" : "        "} | ${p.message.replace(/\s+/g, " ").slice(0, 90)}${p.thread ? `  [thread ${p.thread}]` : ""}`);
 }
 console.log(resumo);

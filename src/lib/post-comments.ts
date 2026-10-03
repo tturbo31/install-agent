@@ -61,6 +61,9 @@ import {
   COMMENT_SWEEP_GAP_MS,
   commentEligibility,
   commentLeadNote,
+  commentLookupPrefix,
+  commentTextMatches,
+  commentThreadBlockReason,
   commentStoredText,
   commentsFromWebhookBody,
   critiqueFallbackReply,
@@ -285,6 +288,41 @@ async function postInfo(postId: string): Promise<{ text: string | null; isAd: bo
   return { text: p?.message ?? null, isAd: p?.is_published === false };
 }
 
+// ─── Quem comentou já tem conversa? ─────────────────────────────────────────
+// A Meta oculta o autor do comentário, mas o comentário de quem já tem thread
+// chega nela como bolha (webhook) e o "chat" criado por comentário chega pela
+// rede de mensagem perdida. Acha essa bolha pelo começo do texto, numa janela
+// a partir do comentário, e devolve a conversa + o histórico depois dele.
+export async function findThreadWithComment(c: PostComment) {
+  const prefix = commentLookupPrefix(c.message);
+  if (!prefix) return null;
+  const at = Date.parse(c.createdTime);
+  const like = prefix.replace(/[\\%_]/g, (m) => `\\${m}`);
+  const { data: hits, error } = await supabaseAdmin
+    .from("instagram_messages")
+    .select("conversation_id, content, instagram_msg_id")
+    .eq("role", "user")
+    .ilike("content", `${like}%`)
+    .gte("created_at", new Date(at - 10 * 60_000).toISOString())
+    .limit(20);
+  if (error) throw new Error(`thread lookup failed: ${error.message}`);
+  const hit = (hits ?? []).find((h) => !String(h.instagram_msg_id ?? "").startsWith("fbcmt_") && commentTextMatches(h.content, c.message));
+  if (!hit) return null;
+  const { data: conv } = await supabaseAdmin
+    .from("instagram_conversations")
+    .select("id, igsid, mode, booking_confirmed")
+    .eq("id", hit.conversation_id)
+    .maybeSingle();
+  if (!conv || !String(conv.igsid).startsWith("fb_")) return null;
+  const { data: rows } = await supabaseAdmin
+    .from("instagram_messages")
+    .select("role, content, created_at")
+    .eq("conversation_id", conv.id)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  return { conv, rows: rows ?? [] };
+}
+
 // ─── Composição ─────────────────────────────────────────────────────────────
 type Composed = { text: string; notify: boolean; alert: string | null };
 
@@ -397,6 +435,25 @@ export async function handlePostComment(input: PostComment, via: "sweep" | "webh
     if (via === "webhook" && c.postText == null) {
       const info = await postInfo(c.postId);
       c = { ...c, postText: info.text, source: info.isAd ? "ad" : "post" };
+    }
+    // Quem comentou já conversa com a gente e o comentário está na thread:
+    // dono conduzindo, visita marcada ou já respondido → a resposta privada
+    // cairia por cima (caso David, 03/10). Falha na busca = não responde agora.
+    let thread: Awaited<ReturnType<typeof findThreadWithComment>>;
+    try {
+      thread = await findThreadWithComment(c);
+    } catch (err) {
+      console.warn("[COMMENTS] thread lookup failed, comment released:", String(err).slice(0, 150));
+      await releaseComment(c.id);
+      return "lookup-failed";
+    }
+    if (thread) {
+      const why = commentThreadBlockReason(thread.conv, thread.rows, Date.parse(c.createdTime), now);
+      if (why) {
+        await recordOutcome(c.id, `thread-${why}`);
+        console.log(`[COMMENTS] comment ${c.id} already lives in ${thread.conv.igsid} (${why}) — no private reply`);
+        return `thread-${why}`;
+      }
     }
     let cls: CommentClass;
     try {
@@ -522,7 +579,7 @@ export async function previewPostComments(opts?: { classify?: boolean }): Promis
   reader: "ads" | "page" | null;
   posts: number;
   comments: number;
-  pending: Array<{ id: string; createdTime: string; source: CommentSource; message: string; cls?: CommentClass; wouldReply?: boolean }>;
+  pending: Array<{ id: string; createdTime: string; source: CommentSource; message: string; cls?: CommentClass; wouldReply?: boolean; thread?: string }>;
 }> {
   const pageId = process.env.FACEBOOK_PAGE_ID ?? "";
   const reader = pageId ? await commentReader(pageId) : null;
@@ -535,12 +592,18 @@ export async function previewPostComments(opts?: { classify?: boolean }): Promis
   const pending = eligible.filter((c) => !claimed.has(c.id)).sort((a, b) => b.createdTime.localeCompare(a.createdTime));
   const out = [];
   for (const c of pending) {
-    const row: { id: string; createdTime: string; source: CommentSource; message: string; cls?: CommentClass; wouldReply?: boolean } = {
+    const row: { id: string; createdTime: string; source: CommentSource; message: string; cls?: CommentClass; wouldReply?: boolean; thread?: string } = {
       id: c.id, createdTime: c.createdTime, source: c.source, message: c.message,
     };
     if (opts?.classify) {
       row.cls = await classifyPostComment(c.message, c.postText).catch(() => undefined);
       row.wouldReply = row.cls ? shouldReplyToClass(row.cls, c, now) : undefined;
+      if (row.wouldReply) {
+        const thread = await findThreadWithComment(c).catch(() => null);
+        const why = thread ? commentThreadBlockReason(thread.conv, thread.rows, Date.parse(c.createdTime), now) : null;
+        if (why) { row.wouldReply = false; row.thread = `${thread?.conv.igsid} (${why})`; }
+        else if (thread) row.thread = `${thread.conv.igsid} (responde na thread)`;
+      }
     }
     out.push(row);
   }

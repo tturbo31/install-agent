@@ -20,10 +20,15 @@ import {
   COMMENT_MAX_AGE_MS,
   CRITIQUE_MAX_AGE_MS,
   POST_COMMENT_MARKER,
+  commentChatAwaitingPrivateReply,
   commentEligibility,
   commentFromFeedChange,
   commentHasWords,
   commentLeadNote,
+  commentLookupPrefix,
+  commentTextMatches,
+  commentThreadBlockReason,
+  isCommentChatNotice,
   commentStoredText,
   commentsFromWebhookBody,
   critiqueFallbackReply,
@@ -98,7 +103,7 @@ const feedBody = {
 const parsed = commentsFromWebhookBody(feedBody, PAGE);
 ck("só o comentário novo de terceiro vira PostComment (página, edição e reação fora)", parsed.length === 1 && parsed[0].id === "1014660201316465_1606996650894324", JSON.stringify(parsed));
 ck("campos do evento: post, nome, parent, created_time em segundos → ISO", parsed[0]?.postId === "109621555056803_1810865860067614" && parsed[0]?.fromName === "Joshua Gray" && parsed[0]?.createdTime === new Date(1790995238 * 1000).toISOString() && parsed[0]?.canReplyPrivately === null);
-ck("o comentário do evento é elegível", !!parsed[0] && commentEligibility(parsed[0], PAGE, 1790995238 * 1000 + 60_000).ok);
+ck("o comentário do evento é elegível (passados os 5 min de espera)", !!parsed[0] && commentEligibility(parsed[0], PAGE, 1790995238 * 1000 + 6 * 60_000).ok);
 ck("body de mensagem (entry.messaging) não vira comentário", commentsFromWebhookBody({ object: "page", entry: [{ messaging: [{ sender: { id: "1" }, message: { mid: "m", text: "hi" } }] }] }, PAGE).length === 0);
 ck("objeto instagram não vira comentário", commentsFromWebhookBody({ ...feedBody, object: "instagram" }, PAGE).length === 0);
 ck("change de outro campo → null", commentFromFeedChange({ field: "mention", value: {} }, PAGE) === null);
@@ -151,6 +156,36 @@ for (const [bad, why] of [
 ] as const) ck(`validação recusa: ${why}`, !critiqueReplyIsSafe(bad), bad);
 ck("validação aceita agradecimento que só nomeia o ponto", critiqueReplyIsSafe("Hi Joshua, thanks for the tip about the skim coat over the grout lines, we appreciate you sharing it. If you ever need floors done, we'd be glad to help."));
 
+console.log("\n━━ 6b. Chat do comentário no Messenger + quem já tem conversa ━━");
+const JOSHUA_NOTICE = "Facebook created this chat because Joshua Gray commented on your post. Joshua Gray won't see this until you start a conversation. You have 7 days before this chat disappears. See comment(https://facebook.com/story.php?story_fbid=pfbid028GddrTaCrcf4JewM4nWiM7gquwpCFGyWSjYsz9LRZ4M8Hx2Gg3VHXaaBhdVqVWG&id=1)";
+const DAVID_NOTICE = "David Ch replied to a post. See post(https://www.facebook.com/story.php?story_fbid=pfbid07at17SUCgj9BY31wiQm61zgzqMJHyUbwcsaHCuSgxm34sp8rQMXYKHtpL5Wb7swGl&id=100083174840587)";
+ck("aviso real do Joshua é aviso de chat de comentário", isCommentChatNotice(JOSHUA_NOTICE));
+ck("aviso real do David é aviso de chat de comentário", isCommentChatNotice(DAVID_NOTICE));
+for (const t of ["I replied to your post yesterday, can you see it?", "Just my opinion but I would have at least did a skim coat over the tile", "Facebook said you have a promo", "See post(https://example.com/x)"]) ck(`fala de cliente NÃO é aviso: "${t.slice(0, 40)}"`, !isCommentChatNotice(t));
+ck("thread criada pelo comentário e sem nada nosso → espera a resposta privada", commentChatAwaitingPrivateReply([{ role: "user", content: JOSHUA }, { role: "user", content: JOSHUA_NOTICE }]));
+ck("... a tentativa que falhou (SEND_FAILED) não conta como resposta", commentChatAwaitingPrivateReply([{ role: "assistant", content: "Hi!\n\n[SYSTEM: SEND_FAILED]" }, { role: "user", content: JOSHUA }, { role: "user", content: JOSHUA_NOTICE }]));
+ck("... depois da resposta privada gravada, o fluxo normal volta", !commentChatAwaitingPrivateReply([{ role: "assistant", content: "Thanks for sharing your thoughts." }, { role: "user", content: JOSHUA_NOTICE }]));
+ck("thread normal (sem o aviso de criação) nunca espera", !commentChatAwaitingPrivateReply([{ role: "user", content: DAVID_NOTICE }, { role: "user", content: "hi" }]));
+const DAVID_API = "Can somebody contact me? I would like to do it in my apartment David ************.";
+const DAVID_THREAD = "Can somebody contact me? I would like to do it in my apartment David 305-761-1633.";
+ck("mesma frase com telefone mascarado (API) e com dígitos (thread) casa", commentTextMatches(DAVID_THREAD, DAVID_API));
+ck("bolha gravada por nós (com marcador) casa com o comentário", commentTextMatches(`${JOSHUA}\n${AD_COMMENT_MARKER}`, JOSHUA));
+ck("frases diferentes não casam", !commentTextMatches("Where are you?", "Where are you? I have a job for you.") && !commentTextMatches("Price?", "Price?"));
+ck("prefixo de busca para no trecho mascarado e exige 8 letras", commentLookupPrefix(DAVID_API) === "Can somebody contact me?" && commentLookupPrefix("Price?") === null && commentLookupPrefix("************ call me") === null);
+const at = Date.parse("2026-10-01T12:30:38Z");
+const nowD = Date.parse("2026-10-03T14:00:00Z");
+const davidRows = [
+  { role: "assistant", content: "[Treino] Yes, I’ll call you within the next hour", created_at: "2026-10-01T12:42:08Z" },
+  { role: "user", content: DAVID_THREAD, created_at: "2026-10-01T12:30:54Z" },
+];
+ck("David (modo humano) → não responde", commentThreadBlockReason({ mode: "human" }, davidRows, at, nowD) === "human");
+ck("dono escreveu na thread nos últimos 14 dias → não responde", commentThreadBlockReason({ mode: "agent" }, davidRows, at, nowD) === "owner");
+ck("visita marcada → não responde", commentThreadBlockReason({ mode: "agent", booking_confirmed: true }, [], at, nowD) === "booked");
+ck("bot já respondeu depois do comentário → não responde", commentThreadBlockReason({ mode: "agent" }, [{ role: "assistant", content: "We cover all of South Florida!", created_at: "2026-10-01T12:31:30Z" }], at, nowD) === "answered");
+ck("resposta que falhou (#551) não conta → responde em privado", commentThreadBlockReason({ mode: "agent" }, [{ role: "assistant", content: "Hi!\n\n[SYSTEM: SEND_FAILED]", created_at: "2026-10-01T12:31:30Z" }], at, nowD) === null);
+ck("conversa antiga do bot, de antes do comentário → responde", commentThreadBlockReason({ mode: "agent" }, [{ role: "assistant", content: "Which type?", created_at: "2026-09-20T10:00:00Z" }], at, nowD) === null);
+ck("comentário com menos de 5 min espera a próxima varredura (a bolha da thread chega antes)", r({ createdTime: new Date(NOW - 2 * 60_000).toISOString() }) === "too-new");
+
 console.log("\n━━ 7. Fiação ━━");
 const fb = read("src/app/api/fb-webhook/route.ts");
 const pc = read("src/lib/post-comments.ts");
@@ -175,6 +210,10 @@ ck("lead passa pelos backstops do Messenger (reparo, piso que não fazemos, trai
 ck("lead: [BOOK] sai (sem endereço/telefone num comentário)", /\.replace\(\/\\\[BOOK:\[\\s\\S\]\*\?\\\]\/g, ""\)/.test(pc));
 ck("lead: promessa de contato vira o número do Ozzi + stripForbiddenTags", /stripForbiddenTags\(psl \? text : redirectOwnerPromiseToPhone\(text, lang\)\)/.test(pc));
 ck("lead entra no funil (lead_criado) — crítica não", /if \(saved && cls === "lead"\) \{\s*await funilOnInboundMessage\(/.test(pc));
+ck("FB webhook: aviso de chat de comentário e thread só-do-comentário não recebem envio normal (antes do debounce)", /if \(isCommentChatNotice\(rawText\)\) \{[\s\S]{0,200}?return;\s*\}[\s\S]{0,500}?if \(commentChatAwaitingPrivateReply\(threadRows \?\? \[\]\)\) \{[\s\S]{0,200}?return;\s*\}\s*\}\s*\/\/ Debounce/.test(fb));
+ck("FB webhook: o filtro fica DEPOIS do modo humano (o aviso entra no histórico e o dono é avisado como sempre)", fb.indexOf("isCommentChatNotice(rawText)") > fb.indexOf('if (conv.mode === "human") {'));
+ck("resposta privada: guarda da thread existente ANTES de classificar, busca que falha devolve a trava", /thread = await findThreadWithComment\(c\);\s*\} catch \(err\) \{[\s\S]{0,200}?await releaseComment\(c\.id\);\s*return "lookup-failed";[\s\S]*?commentThreadBlockReason\(thread\.conv, thread\.rows[\s\S]*?classifyPostComment/.test(pc));
+ck("busca da bolha ignora as linhas gravadas pela própria resposta privada", /startsWith\("fbcmt_"\)/.test(pc) && /commentTextMatches\(h\.content, c\.message\)/.test(pc));
 ck("leitura de anúncios pelo page token derivado do token de anúncios", /getAdsToken\(\)/.test(pc) && /me\/accounts\?fields=id,access_token/.test(pc) && /ads_posts\?fields=id,updated_time,message/.test(pc));
 
 async function live() {
