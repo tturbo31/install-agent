@@ -192,9 +192,10 @@ const pc = read("src/lib/post-comments.ts");
 const fbs = read("src/lib/facebook.ts");
 for (const [label, rel] of [["IG", "src/app/api/webhook/route.ts"], ["FB", "src/app/api/fb-webhook/route.ts"], ["WA", "src/app/api/wa-webhook/route.ts"]] as const) {
   const src = read(rel);
-  ck(`${label}: waitUntil(sweepPostComments()) logo depois de recoverLostInbounds`, /waitUntil\(recoverLostInbounds\(\)\);[\s\S]{0,300}?waitUntil\(sweepPostComments\(\)\);/.test(src));
+  // 03/10 (dono): NÃO é para o bot sair respondendo comentário de anúncio — a varredura fica DESLIGADA.
+  ck(`${label}: varredura de comentários NÃO está ligada no webhook`, !/sweepPostComments/.test(src));
 }
-ck("FB POST: entry.changes → handleFeedWebhookComments (antes do handler de mensagem)", /e\.changes\.length > 0\)\) \{\s*waitUntil\(handleFeedWebhookComments\(body\)\);\s*\}\s*waitUntil\(handleFbMessage\(body, \{ replay \}\)\);/.test(fb));
+ck("FB POST: evento feed (comentário) não dispara resposta", !/handleFeedWebhookComments/.test(fb));
 ck("varredura autolimitada pela trava de janela (1 / 3 min)", /shouldAlert\("fbcomments", "sweep", COMMENT_SWEEP_GAP_MS\)/.test(pc) && /COMMENT_SWEEP_GAP_MS = 3 \* 60_000/.test(read("src/lib/post-comment-policy.ts")));
 ck("Facebook pausado: nem varre nem responde (checado de novo antes do envio)", (pc.match(/await facebookPaused\(\)/g) ?? []).length >= 3);
 ck("trava ANTES de classificar; falha do classificador devolve a trava", /if \(!\(await claimComment\(c\.id\)\)\) return "already-claimed";[\s\S]*?classifyPostComment[\s\S]*?catch \(err\) \{[\s\S]{0,200}?await releaseComment\(c\.id\);\s*return "classify-failed";/.test(pc));

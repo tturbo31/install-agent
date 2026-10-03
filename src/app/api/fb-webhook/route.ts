@@ -5,7 +5,6 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
-import { sweepPostComments, handleFeedWebhookComments } from "@/lib/post-comments";
 import { isCommentChatNotice, commentChatAwaitingPrivateReply } from "@/lib/post-comment-policy";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
@@ -1911,12 +1910,6 @@ export async function POST(req: NextRequest) {
   // this header so the handler answers it again (see delivery.recoverLostReplies).
   const replay = isDashboardAuthorized(req.headers.get("x-ozzi-replay"));
   if (replay) console.log("[FB webhook] replay request (lost-reply recovery)");
-  // Comentário em post/anúncio (campo feed, entry[].changes — Joshua Gray,
-  // 03/10/2026): não é mensagem, handleFbMessage sai sem entry.messaging. Vai
-  // para a resposta privada; só chega quando a página assinar o campo feed.
-  if ((body.entry as Array<{ changes?: unknown[] }> | undefined)?.some((e) => Array.isArray(e?.changes) && e.changes.length > 0)) {
-    waitUntil(handleFeedWebhookComments(body));
-  }
   waitUntil(handleFbMessage(body, { replay }));
   // Outbox: webhook traffic doubles as the heartbeat for re-sending replies
   // whose delivery failed (self-throttled to 1 sweep / 10 min).
@@ -1928,9 +1921,6 @@ export async function POST(req: NextRequest) {
   // Meta never posted is read back from the thread and re-posted to the
   // Messenger webhook (self-throttled to 1 sweep / 5 min).
   waitUntil(recoverLostInbounds());
-  // Comentário em anúncio/post do Facebook (Joshua Gray, 03/10/2026): não vira
-  // mensagem; a varredura acha e responde em privado (1 sweep / 3 min).
-  waitUntil(sweepPostComments());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());

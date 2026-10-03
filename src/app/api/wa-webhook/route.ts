@@ -4,7 +4,6 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
-import { sweepPostComments } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
 import { fetchAdCreative } from "@/lib/facebook";
@@ -2299,9 +2298,6 @@ export async function POST(req: NextRequest) {
   // Meta never posted is read back from the thread and re-posted to the
   // Messenger webhook (self-throttled to 1 sweep / 5 min).
   waitUntil(recoverLostInbounds());
-  // Comentário em anúncio/post do Facebook (Joshua Gray, 03/10/2026): não vira
-  // mensagem; a varredura acha e responde em privado (1 sweep / 3 min).
-  waitUntil(sweepPostComments());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());
