@@ -40,7 +40,8 @@ const CHANNEL_LABEL: Record<string, string> = {
   whatsapp: "WhatsApp",
 };
 
-async function shouldAlert(kind: string, key: string, everyMs: number): Promise<boolean> {
+// Exported for the post-comment sweep (post-comments.ts): same window claim.
+export async function shouldAlert(kind: string, key: string, everyMs: number): Promise<boolean> {
   const prefix = `${kind}|${key}|`;
   try {
     const { data } = await supabaseAdmin

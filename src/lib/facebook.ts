@@ -50,6 +50,48 @@ export async function sendFacebookMessage(psid: string, text: string): Promise<F
   return { ok: false, error: lastErr };
 }
 
+export type FbPrivateReplyResult = { ok: boolean; recipientId?: string; messageId?: string; error?: string; code?: number; retryable?: boolean };
+
+// RESPOSTA PRIVADA a um comentário público (post-comments.ts, 03/10/2026): a
+// Meta entrega no Messenger de quem comentou e devolve o PSID (recipient_id),
+// que é a chave da conversa fb_<PSID>. UMA por comentário, até 7 dias — um
+// segundo envio ao mesmo comment_id falha. Sem reportSendFailure: comentarista
+// que bloqueia mensagem de página é caso individual, não canal caído (o
+// chamador registra o resultado e avisa o dono quando era um lead).
+export async function sendFacebookPrivateReply(commentId: string, text: string): Promise<FbPrivateReplyResult> {
+  text = stripInternalMarkers(text);
+  if (!text) return { ok: false, error: "empty text after marker strip" };
+  const pageId = process.env.FACEBOOK_PAGE_ID ?? "";
+  if (!pageId) return { ok: false, error: "FACEBOOK_PAGE_ID missing" };
+  let last: FbPrivateReplyResult = { ok: false, error: "not attempted", retryable: true };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(`${FB_API}/${pageId}/messages?access_token=${await getToken()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient: { comment_id: commentId }, message: { text } }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        recipient_id?: string;
+        message_id?: string;
+        error?: { message?: string; code?: number };
+      };
+      if (!body.error && res.ok) return { ok: true, recipientId: body.recipient_id, messageId: body.message_id };
+      const code = body.error?.code;
+      // 1/2/4/17/341 = instabilidade ou limite da Meta: vale tentar de novo.
+      const retryable = code === undefined ? res.status >= 500 : [1, 2, 4, 17, 341].includes(code);
+      last = { ok: false, code, retryable, error: `${code ?? res.status}: ${body.error?.message ?? "unknown"}` };
+      console.error(`🚨 sendFacebookPrivateReply FAILED (attempt ${attempt}/2) comment=${commentId} ${last.error}`);
+      if (!retryable) break;
+    } catch (err) {
+      last = { ok: false, retryable: true, error: String(err).slice(0, 200) };
+      console.error(`🚨 sendFacebookPrivateReply EXCEPTION (attempt ${attempt}/2):`, err);
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1200));
+  }
+  return last;
+}
+
 // Get Facebook user profile (name + profile pic)
 export async function fetchFacebookProfile(psid: string): Promise<{ name?: string; profile_pic?: string }> {
   try {

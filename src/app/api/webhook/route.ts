@@ -69,6 +69,7 @@ import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
+import { sweepPostComments } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
 
@@ -2240,6 +2241,9 @@ export async function POST(req: NextRequest) {
   // Meta never posted is read back from the thread and re-posted to the
   // Messenger webhook (self-throttled to 1 sweep / 5 min).
   waitUntil(recoverLostInbounds());
+  // Comentário em anúncio/post do Facebook (Joshua Gray, 03/10/2026): não vira
+  // mensagem; a varredura acha e responde em privado (1 sweep / 3 min).
+  waitUntil(sweepPostComments());
   // Z-API queue watchdog (Olimpia 2026-08-25): the only external proof that
   // WhatsApp replies actually leave Z-API. Self-throttled to 1 probe / 5 min.
   waitUntil(watchWaQueue());
