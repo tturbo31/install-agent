@@ -164,12 +164,13 @@ check(8, "Large tile (600 sqft): no price, propose visit", r, {
   notContains: [/\$[\d,]+(?:\.\d{2})?(?!\s*per\s*sq)/i, /total.*\$[\d,]+/i],
 });
 
-// T09 — Tile removal: $1.50/sqft only when asked
+// T09 — Tile removal: $2/sqft only when asked (owner, 2026-10-03; was $1.50)
 r = await ask([
   { role: "user", content: "How much do you charge to remove existing tile before installing new ones?" },
 ]);
-check(9, "Tile removal price: $1.50", r, {
-  contains: [/1\.50|1,50/],
+check(9, "Tile removal price: $2", r, {
+  contains: [/\$\s?2(?:\.00)?(?![\d,]|\.\d)/],
+  notContains: [/1\.50|1,50/],
 });
 
 // ── GROUP 3: LARGE LEAD — 500+ SQFT (historically broken) ─────────────────

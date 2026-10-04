@@ -42,7 +42,7 @@ async function main() {
   console.log("\n[1] Prompts carry the rule");
   const sp = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
   ck("system prompt (2d) color → website", /\(2d\) ANY QUESTION ABOUT THE COLOR OF THE FLOOR/.test(sp));
-  ck("AD FLOOR QUESTIONS points color to (2d)", /its COLOR \(or its name[^\n]{0,120}follow \(2d\)/.test(sp));
+  ck("AD FLOOR QUESTIONS points color to (2d)", /its COLOR, follow \(2d\)/.test(sp));
   const qr = readFileSync(join(process.cwd(), "src/lib/quote-reply.ts"), "utf-8");
   ck("quote brain rule 18 (colors → website)", /18\. COLORS ALWAYS GET OUR WEBSITE/.test(qr));
   ck("quote brain rule 11 no longer sends colors to Ozzi", /product details other than colors/.test(qr));

@@ -101,6 +101,8 @@ async function main() {
   ck("ES fixed", /\$4 por sqft/.test(es) && /\$7\.50/.test(es) && !FIVE.test(es) && /toda la casa\?$/.test(es), es);
   const mixed = fixHerringbonePrice("Our luxury vinyl promo is $5 per sqft, flooring and labor included, and we plan the layout so it runs flush. What's the zip code of the property?", "en", "mixed");
   ck("mixed: herringbone $4 + $7.50 AND planks $5", FOUR.test(mixed) && SEVEN50.test(mixed) && FIVE.test(mixed) && /zip code/.test(mixed), mixed);
+  const hw = fixHerringbonePrice("Yes, we install herringbone hardwood. Hardwood is $3.20 per sqft for the labor only. How many square feet?", "en", "herringbone");
+  ck("$3.20 sentence replaced whole (decimal is not a sentence end)", !/3\.20|^20 per/.test(hw) && FOUR.test(hw) && /How many square feet\?$/.test(hw), hw);
   const tagged = fixHerringbonePrice("Our promo is $5 per sqft. [NOTIFY_OWNER]", "en", "herringbone");
   ck("tags survive the fix", /\[NOTIFY_OWNER\]/.test(tagged) && /\$7\.50/.test(tagged), tagged);
   ck("text without a wrong rate is untouched", fixHerringbonePrice("For that size I come measure in person. What day works?", "en") === "For that size I come measure in person. What day works?");
