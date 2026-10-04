@@ -1822,6 +1822,48 @@ function clientPickOfOffer(text: string, offered: ClockTok[]): { hour12: number;
   return null;
 }
 
+// ─── "Can I let you know Sunday around 10am?" (Giovanny, IG 02/10/2026) ─────
+// The client told us WHEN they would answer ("I just can tell you around 10 am
+// sunday", "can i let you know sunday around 10 am?") and the slot reader took
+// the "10am Sunday" as the time they picked: the 10am the bot had just said was
+// NOT open counted as offered, the client's 10am as accepting it, and the
+// accepted-slot-gone note made the model write "Sorry, that 10am on Sunday
+// filled up since I mentioned it". A deferral names when the client will get
+// back to us, never a visit time: it is not a pick (acceptedOfferSlot) and the
+// model gets its own note (ai.ts). Deaccented text; a message that also accepts
+// a time ("Sunday 10am works, I'll let you know if anything changes") is not one.
+// "Confirm" / "te confirmo" stay out on purpose: "Te confirmo el domingo a las
+// 10" and "can I confirm Sunday at 10?" usually ACCEPT that time. "Let me know"
+// stays out too: that is the client asking US.
+const DEFER_VERB = String.raw`(?:(?:can|could|may)\s+i|i\s+(?:just\s+|only\s+)?(?:can|could|will|would)|i'?ll|i'?d|will)\s+(?:\w+\s+){0,2}?(?:let\s+you\s+know|tell\s+you|get\s+back\s+to\s+you|text\s+you|message\s+you|msg\s+you|call\s+you|answer\s+you|reply|respond|write\s+you|reach\s+out)|(?:i'?ll|i\s+will|i'?d|will)\s+(?:\w+\s+)?know`;
+const DEFER_VERB_ES = String.raw`(?:te|le)\s+(?:aviso|digo|escribo|llamo|respondo|contesto|dejo\s+saber|puedo\s+(?:avisar|decir|escribir|responder))|(?:puedo|podria)\s+(?:avisarte|decirte|escribirte|responderte|avisarle|decirle)`;
+const DEFER_VERB_PT = String.raw`te\s+(?:aviso|falo|digo|respondo|retorno|mando\s+mensagem)|(?:posso|consigo)\s+(?:te\s+)?(?:avisar|falar|dizer|responder|retornar)|(?:aviso|retorno)\s+(?:voce|vc)`;
+const DEFER_WHEN = String.raw`(?:today|tonight|tomorrow|later|morning|afternoon|evening|weekend|week|sun|mon|tue|wed|thu|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday|around|by|at|before|after|\d{1,2}(?::\d{2})?\s*(?:am|pm)|hoy|manana|domingo|lunes|martes|miercoles|jueves|viernes|sabado|tarde|noche|luego|despues|amanha|hoje|segunda|terca|quarta|quinta|sexta|depois|mais\s+tarde|las?\s+\d|as\s+\d|como\s+a|tipo|por\s+volta)`;
+const DEFERRED_REPLY = new RegExp(String.raw`(?:${DEFER_VERB}|${DEFER_VERB_ES}|${DEFER_VERB_PT})(?![a-z])[^.!?\n]{0,30}?(?<![a-z])${DEFER_WHEN}(?![a-z])`, "i");
+const ACCEPTS_A_TIME = /(?<![a-z])(?:works?\s+(?:for\s+me|great|fine|perfect)|(?:that|it|this)\s+works|(?:will|would|should)\s+work|\d{1,2}\s*(?:am|pm)?\s+(?:works|is\s+(?:ok|okay|good|fine|perfect|great))|perfect|sounds\s+good|book\s+(?:it|me)|let'?s\s+do|i'?ll\s+take|that'?s\s+fine|is\s+fine|me\s+sirve|me\s+funciona|perfecto|dale|pode\s+ser|fechado|combinado|esta\s+bien)(?![a-z])/i;
+export function isDeferredReply(text: string): boolean {
+  const t = deaccentLowerText(stripSystemNote(text || ""));
+  return DEFERRED_REPLY.test(t) && !ACCEPTS_A_TIME.test(t);
+}
+// The hours a bot message really puts on the table: a time it says is NOT
+// open ("10am on Sunday isn't open, but I have 1pm or 3pm") is not offered.
+const DENIED_CLAUSE = /\b(?:isn'?t|is\s+not|not|no\s+longer|wasn'?t)\s+(?:open|available|free)\b|\bfilled\s+up\b|\b(?:is|was|got|already)\s+(?:taken|booked|full)\b|\bdon'?t\s+have\b|\bdo\s+not\s+have\b|\bno\s+tengo\b|\bno\s+esta\s+(?:disponible|libre|abierto)\b|\bya\s+no\b|\bse\s+lleno\b|\bocupad[oa]s?\b|\bnao\s+(?:tenho|esta|tem)\b|\bencheu\b|\blotad[oa]\b/;
+function offeredClockTokens(offerText: string): ClockTok[] {
+  const toks = clockTokensOf(offerText);
+  if (toks.length === 0) return toks;
+  const denied = new Set<number>();
+  let start = 0;
+  for (const m of offerText.matchAll(/[.!?;\n]|,\s*(?:but|pero|mas)?\s*|\s+(?:but|pero|mas)\s+/gi)) {
+    const end = (m.index ?? 0) + m[0].length;
+    const clause = offerText.slice(start, end);
+    if (DENIED_CLAUSE.test(deaccentLowerText(clause))) toks.forEach((c, k) => { if (c.index >= start && c.index < end) denied.add(k); });
+    start = end;
+  }
+  const last = offerText.slice(start);
+  if (DENIED_CLAUSE.test(deaccentLowerText(last))) toks.forEach((c, k) => { if (c.index >= start) denied.add(k); });
+  return toks.filter((_, k) => !denied.has(k));
+}
+
 export function acceptedOfferSlot(history: HistMsg[], todayStr: string = easternTodayStr()): AcceptedOfferSlot | null {
   const msgs = history ?? [];
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1831,8 +1873,10 @@ export function acceptedOfferSlot(history: HistMsg[], todayStr: string = eastern
     while (j >= 0 && !(msgs[j].role === "assistant" && clockTokensOf(stripSystemNote(msgs[j].content)).length > 0)) j--;
     if (j < 0) return null;
     const offerText = stripSystemNote(msgs[j].content);
-    const offered = clockTokensOf(offerText);
+    const offered = offeredClockTokens(offerText);
     const text = stripSystemNote(msgs[i].content);
+    // "Can I let you know Sunday around 10am?": when they will answer, not a pick.
+    if (isDeferredReply(text)) return null;
     const pick = clientPickOfOffer(text, offered);
     if (pick === "counter") return null;
     // The client's own day words, resolved from the day they wrote them.

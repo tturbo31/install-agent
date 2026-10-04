@@ -153,7 +153,7 @@ for (const [nome, arq] of [["IG", "src/app/api/webhook/route.ts"], ["WhatsApp", 
     src.indexOf("const semRepeticao = stripRepeatedSlotApology(") > src.indexOf("const bookingStep = await processBookingCommand("));
   // owner-direct-verify (14/09) fixa esta linha por regex: o redirect da promessa
   // do dono tem que ser o último passo antes do envio. O scrubber novo entra antes.
-  ck(`${nome}: cadeia final do redirect da promessa do dono intacta`, /stripForbiddenTags\(redirectOwnerPromiseToPhone\(afterNotify, lang\)\)/.test(src));
+  ck(`${nome}: cadeia final do redirect da promessa do dono intacta`, /stripForbiddenTags\((?:portStLucieStanding\(history\) \? afterNotify : )?redirectOwnerPromiseToPhone\(afterNotify, lang\)\)/.test(src));
 }
 
 console.log("\n━━ 8. A regra 'ONE EXCEPTION' continua no contexto de agenda ━━");

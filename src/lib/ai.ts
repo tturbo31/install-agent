@@ -2,7 +2,7 @@ import { zipsInText } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
@@ -1028,6 +1028,37 @@ export function fixTileRemovalRate(text: string): string {
       .map((s) => (REMOVAL_WORD.test(s) ? s.replace(OLD_REMOVAL_RATE, "$$2") : s))
       .join("")
   );
+}
+
+// "TE AVISO DOMINGO ÀS 10" (Giovanny, IG 02/10/2026). O cliente disse QUANDO
+// ia responder ("I just can tell you around 10 am sunday", "can i let you know
+// sunday around 10 am?") e o modelo leu as 10am como pedido de horário duas
+// vezes: "10am on Sunday isn't open" e depois "that 10am on Sunday filled up
+// since I mentioned it" (a nota de horário-aceito-que-encheu disparou porque o
+// leitor de ofertas contava o 10am que nós dissemos NÃO estar livre). A detecção
+// é isDeferredReply (scheduler.ts); aqui ficam a nota do modelo e a rede: com a
+// rajada sendo esse "te aviso", uma resposta que fala de horário ocupado/fechado
+// ou traz [BOOK] vira o "claro, me escreve então". DEFERRED_REPLY_NOTE=off desliga.
+// The client's LAST bubble with words decides: "Ok I will let you know later" +
+// "Ok 6 will work" is a pick (accepted-slot-gone-verify), not a deferral.
+function lastClientBubbleText(messages: Array<{ role: string; content: string }>): string {
+  for (let i = (messages ?? []).length - 1; i >= 0 && messages[i].role === "user"; i--) {
+    const t = (messages[i].content || "").split(/\n\n?\[SYSTEM:/)[0].replace(/\[[^\]]*\]/g, " ").trim();
+    if (/[a-z0-9]/i.test(t)) return t;
+  }
+  return "";
+}
+export const DEFERRED_REPLY_NOTE = `[CLIENT WILL ANSWER LATER: in their latest message the client is telling you WHEN they will get back to you ("can I let you know Sunday around 10am?", "I can only tell you around 10am Sunday", "te aviso mañana"). That day and time is when THEY will message you, it is NOT a visit time they are asking for, and they did NOT pick any slot. Answer in ONE short, warm line: of course, no problem, they can message you then (repeat the day or time they gave). Do NOT offer times, do NOT say any time is taken, open or not open, do NOT apologize about a slot, and NO [BOOK]. If the same message also asks something else, answer that too.]`;
+const DEFERRED_ACK: Record<"en" | "es" | "pt", string> = {
+  en: "Of course, no problem, just message me then and we'll set it up.",
+  es: "Claro, sin problema, me escribes a esa hora y lo coordinamos.",
+  pt: "Claro, sem problema, me manda mensagem nesse horário e a gente combina.",
+};
+const SLOT_TALK_ON_DEFERRAL = /\[BOOK:|\bfilled\s+up\b|\b(?:isn'?t|is\s+not|not|no\s+longer)\s+(?:open|available)\b|\b(?:is|was|got|already)\s+(?:taken|booked)\b|\bholding\b|\bse\s+llen[oó]\b|\bno\s+est[aá]\s+(?:disponible|libre)\b|\bya\s+no\s+(?:est[aá]|tengo|hay)\b|\bencheu\b|\bn[aã]o\s+est[aá]\s+(?:mais\s+)?(?:dispon[ií]vel|livre)\b/i;
+/** The client said when they will answer: a reply about a taken/closed slot, or a [BOOK], becomes the plain "of course, message me then". */
+export function fixDeferredReply(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  if (!SLOT_TALK_ON_DEFERRAL.test(text || "")) return text;
+  return DEFERRED_ACK[lang] ?? DEFERRED_ACK.en;
 }
 
 // COR DO PISO = O SITE (dono, 03/10/2026). Ariadna (WA 30/09, já com orçamento
@@ -5100,6 +5131,16 @@ export async function getAIResponse(
     }
   }
 
+  // "Can I let you know Sunday around 10am?" (Giovanny, IG 2026-10-02): the
+  // client is telling us WHEN they will answer, not picking a visit time. The
+  // model read the 10am as a request twice ("10am on Sunday isn't open", then
+  // "that 10am filled up since I mentioned it").
+  const deferredBurst = process.env.DEFERRED_REPLY_NOTE !== "off" && isDeferredReply(lastClientBubbleText(messages));
+  if (deferredBurst) {
+    console.log("[AI] The client says when they will get back to us — injecting the deferred-reply block");
+    dynamicSystem += `\n\n---\n\n${DEFERRED_REPLY_NOTE}`;
+  }
+
   // FIRST MESSAGE WITH CONTENT (Juan Carlos, FB 2026-09-19): the canned
   // type-ask stepped aside because the client wrote something specific, so
   // the model must answer THAT before the type question. Only on a true first
@@ -5304,6 +5345,16 @@ export async function getAIResponse(
       if (fixed !== cleaned) {
         cleaned = fixed;
         console.log("[AI] vinyl recommendation backstop: the reply recommended tile/hardwood over vinyl, replaced with the vinyl recommendation");
+      }
+    }
+
+    // "Can I let you know Sunday around 10am?" (Giovanny 02/10): não é escolha
+    // de horário; nada de "that 10am filled up" nem [BOOK] nessa rajada.
+    if (deferredBurst) {
+      const fixed = fixDeferredReply(cleaned, usersLang());
+      if (fixed !== cleaned) {
+        console.warn(`[AI] deferred-reply backstop: the client said when they will answer, the reply talked about a slot (${cleaned.replace(/\s+/g, " ").slice(0, 120)}) — replaced with the plain ack`);
+        cleaned = fixed;
       }
     }
 
