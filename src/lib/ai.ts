@@ -417,7 +417,7 @@ export function adFlooringTypeNote(type: AdFlooringType): string {
   if (type === "hardwood") {
     return `[AD_FLOORING_TYPE: hardwood]\n[AD TYPE KNOWN — HARDWOOD: This client replied to one of our HARDWOOD ads, so you ALREADY know they want hardwood. Do NOT ask whether they want tile, vinyl, or hardwood. Our hardwood promotion is $3.20 per square foot for INSTALLATION LABOR ONLY; the client buys their own wood material and the promotion includes NOTHING else, no flooring material and no quarter round. NEVER tell them the package includes the flooring or the quarter round, that is the vinyl offer. For 500 sqft or more give NO price by DM and propose the free in-person visit. If the client states a size UNDER 400 sqft, give NO price and NO visit: point them to Ozzi directly at (561) 674-8334 (PROJECTS UNDER 400 SQFT).]`;
   }
-  return `[AD_FLOORING_TYPE: vinyl]\n[AD TYPE KNOWN — VINYL: This client replied to one of our VINYL ads, so you ALREADY know they want vinyl. Do NOT ask whether they want tile, vinyl, or hardwood. Our vinyl promotion is $5 per square foot and that already includes the flooring, the installation labor, and the quarter round. Offer the free quote and ask one area or the whole house, UNLESS the client has ALREADY stated a size of 500 sqft or more anywhere in the conversation (like "Vinyl, 1400 square feet"): in that case NEVER ask one area or whole house and NEVER quote a number, acknowledge the size and go straight to proposing the free in-person visit. If the client states a size UNDER 400 sqft, give NO price and NO visit: point them to Ozzi directly at (561) 674-8334 (PROJECTS UNDER 400 SQFT).]`;
+  return `[AD_FLOORING_TYPE: vinyl]\n[AD TYPE KNOWN — VINYL: This client replied to one of our VINYL ads, so you ALREADY know they want vinyl. Do NOT ask whether they want tile, vinyl, or hardwood. Our vinyl promotion is $5 per square foot and that already includes the flooring, the installation labor, and the quarter round (a HERRINGBONE floor is the exception, it is never the $5 promo: $4 per sqft labor plus $7.50 per sqft for our herringbone material, see HERRINGBONE PATTERN). Offer the free quote and ask one area or the whole house, UNLESS the client has ALREADY stated a size of 500 sqft or more anywhere in the conversation (like "Vinyl, 1400 square feet"): in that case NEVER ask one area or whole house and NEVER quote a number, acknowledge the size and go straight to proposing the free in-person visit. If the client states a size UNDER 400 sqft, give NO price and NO visit: point them to Ozzi directly at (561) 674-8334 (PROJECTS UNDER 400 SQFT).]`;
 }
 
 // Best-effort vision fallback (the "check the ad creative" path): when no ad text
@@ -931,6 +931,141 @@ export function fixVinylRecommendation(text: string, lang: "en" | "es" | "pt" = 
       out.push((answeringVinyl ? canned.yes : canned.reco) + " ");
     }
     return replaced ? out.join("").replace(/[ \t]{2,}/g, " ").trim() : prose;
+  });
+}
+
+// HERRINGBONE (dono, 03/10/2026). Mina (IG) viu no nosso perfil o herringbone
+// de vinil da Maria Gomez, escreveu "I love that herringbone" e o modelo
+// respondeu "$5 per sqft, includes the floor, labor, and quarter round"; Henry
+// (IG, mesmo dia) levou o mesmo $5 para "Herringbone Design in the living room".
+// Regra do dono: herringbone NUNCA é a promo de $5, é $4/sqft só a mão de obra
+// e o material herringbone (o nosso vinil) $7.50/sqft. O prompt ganhou a seção
+// HERRINGBONE PATTERN; esta rede segura o que escapar: com o cliente falando de
+// herringbone (tile/porcelanato em herringbone segue a regra de tile) e a reply
+// cotando a taxa de $5, $2 ou $3.20 por sqft sem dar os $4 + $7.50, a frase do
+// preço vira o preço do herringbone no idioma do cliente e o resto fica igual.
+// HERRINGBONE_BACKSTOP=off desliga.
+const HERRINGBONE_WORD = /(?<![a-zà-ÿ])(?:h[ea]r+[ie]n+g?\s*-?\s*bo+ne?s?|hearing\s*-?\s*bones?|fish\s*-?\s*bones?|espinha\s+de\s+peixe|espina\s+de\s+(?:pez|pescado)|(?:en|em|tipo|patr[oó]n|padr[aã]o|piso)\s+(?:de\s+)?espiga|spina\s+di\s+pesce)(?![a-zà-ÿ])/i;
+const HERRINGBONE_NEGATED = /(?:\bnot?|\bwithout|\bdon'?t\s+want|\binstead\s+of|\bsin|\bsem|\bn[aã]o|\bno\s+quiero|\ben\s+vez\s+de|\bem\s+vez\s+de)\s+(?:\w+\s+){0,2}$/i;
+const HERRINGBONE_TILE = /(?<![a-zà-ÿ])(?:tiles?|porcelain|ceramic|porcelanato|cer[aáâ]mica|azulejos?)(?![a-zà-ÿ])/i;
+// "Herringbone in the living room and wide plank in the kitchen": two floors,
+// two prices. "herringbone vinyl planks" is still one floor.
+const HERRINGBONE_PLUS_PLANKS = /(?<![a-zà-ÿ])(?:(?:wide|regular|straight|standard|normal|long|traditional)\s+planks?|(?:regular|straight|standard|normal)\s+(?:layout|pattern|install\w*|floor\w*)|rest\s+of\s+the\s+(?:house|home|floor|space|rooms?)|tabl(?:ones?|as?)\s+(?:anchas?|anchos?|normales?|largas?|largos?)|resto\s+de\s+la\s+casa|t[aá]buas?\s+(?:normais|largas|retas)|r[eé]guas?\s+(?:normais|largas|retas)|resto\s+da\s+casa)(?![a-zà-ÿ])/i;
+export function clientWantsHerringbone(messages: Array<{ role: string; content: string }>): "herringbone" | "mixed" | null {
+  let kind: "herringbone" | "mixed" | null = null;
+  for (const m of messages ?? []) {
+    if (m.role !== "user") continue;
+    const t = normalizeSmartPunct(m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ");
+    const hit = HERRINGBONE_WORD.exec(t);
+    if (!hit) continue;
+    if (HERRINGBONE_NEGATED.test(t.slice(Math.max(0, hit.index - 30), hit.index))) { kind = null; continue; }
+    if (HERRINGBONE_TILE.test(t)) { kind = null; continue; }
+    kind = kind === "mixed" || HERRINGBONE_PLUS_PLANKS.test(t) ? "mixed" : "herringbone";
+  }
+  if (kind && clientChoseTileOrHardwood(messages) === "tile") return null;
+  return kind;
+}
+// The rates that are wrong for a herringbone floor: the $5 vinyl promo, the $2
+// install-only rate and the $3.20 hardwood rate ("$5 per sqft", "$5/sqft",
+// "$2 a square foot", "$5 por pie", "5 dólares el pie").
+const HERRINGBONE_WRONG_RATE = /\$\s?(?:5|2|3\.20|3\.2)(?:\.00)?(?![\d,]|\.\d)\s*(?:\/\s*|(?:per|a|each|por|el|o|cada)\s+)?(?:sq|square|pie|p[eé](?![a-zà-ÿ])|ft)|(?<![\d.,$])(?:5|2|3\.20)\s*(?:dollars?|d[oó]lares?)\s*(?:(?:per|a|por|el|o)\s+)?(?:sq|square|pie|p[eé](?![a-zà-ÿ]))/i;
+export function replyMispricesHerringbone(text: string): boolean {
+  const prose = normalizeSmartPunct(stripProtectedTags(text));
+  if (!HERRINGBONE_WRONG_RATE.test(prose)) return false;
+  // The model already gave the herringbone price (and maybe the $5 promo for the
+  // regular planks next to it): leave it alone.
+  return !(/\$\s?4(?:\.00)?(?![\d,]|\.\d)/.test(prose) && /\$\s?7\.50?(?!\d)/.test(prose));
+}
+const HERRINGBONE_PRICE: Record<"en" | "es" | "pt", { herringbone: string; mixed: string }> = {
+  en: {
+    herringbone: "Herringbone has its own price, it's $4 per sqft for the installation labor, and our herringbone material is $7.50 per sqft.",
+    mixed: "The herringbone has its own price, $4 per sqft for the installation labor plus $7.50 per sqft for our herringbone material, and the regular planks are our vinyl promo at $5 per sqft with the floor, installation and quarter round included.",
+  },
+  es: {
+    herringbone: "El herringbone tiene su propio precio, son $4 por sqft de mano de obra de instalación, y nuestro material herringbone es $7.50 por sqft.",
+    mixed: "El herringbone tiene su propio precio, $4 por sqft de mano de obra más $7.50 por sqft de nuestro material herringbone, y las tablas normales van con nuestra promo de vinyl a $5 por sqft con el piso, la instalación y el quarter round incluidos.",
+  },
+  pt: {
+    herringbone: "O herringbone tem preço próprio, são $4 por sqft da mão de obra de instalação, e o nosso material herringbone é $7.50 por sqft.",
+    mixed: "O herringbone tem preço próprio, $4 por sqft da mão de obra mais $7.50 por sqft do nosso material herringbone, e as réguas normais ficam na nossa promo de vinil a $5 por sqft com o piso, a instalação e o quarter round incluídos.",
+  },
+};
+/** The first sentence quoting a wrong rate for herringbone becomes the herringbone price; later ones go; everything else stays (a question riding on the price sentence is kept). */
+export function fixHerringbonePrice(text: string, lang: "en" | "es" | "pt" = "en", kind: "herringbone" | "mixed" = "herringbone"): string {
+  const canned = (HERRINGBONE_PRICE[lang] ?? HERRINGBONE_PRICE.en)[kind];
+  return withTagsProtected(text, (prose) => {
+    const parts = normalizeSmartPunct(prose).match(RECO_SENTENCE);
+    if (!parts) return prose;
+    let replaced = false;
+    const out: string[] = [];
+    for (const s of parts) {
+      if (!HERRINGBONE_WRONG_RATE.test(s)) { out.push(s); continue; }
+      // "$5 per sqft with everything included, is it one area or the whole house?"
+      const ask = s.trim().endsWith("?") ? s.match(/,\s*([^,]{8,}\?)\s*$/) : null;
+      const keep = ask && !HERRINGBONE_WRONG_RATE.test(ask[1]) ? " " + ask[1].charAt(0).toUpperCase() + ask[1].slice(1) : "";
+      if (replaced) { if (keep) out.push(keep.trim() + " "); continue; }
+      replaced = true;
+      out.push(canned + keep + " ");
+    }
+    return replaced ? out.join("").replace(/[ \t]{2,}/g, " ").trim() : prose;
+  });
+}
+
+// COR DO PISO = O SITE (dono, 03/10/2026). Ariadna (WA 30/09, já com orçamento
+// de $5,700) pediu para ver as cores do vinil e mandou fotos do nosso Facebook
+// perguntando se eram a mesma cor; o cérebro do follow-up de orçamento tratava
+// cor como "detalhe de produto" e respondeu as duas vezes "ligue pro Ozzi".
+// Regra do dono: pergunta sobre a cor do piso SEMPRE recebe o site
+// https://ozzifloors.company para o cliente conferir lá. isFloorColorQuestion
+// detecta (EN/ES/PT, frase a frase: palavra de cor + "?" ou pedido; rejunte,
+// parede, pintura, rodapé e piso existente ficam de fora) e withSiteForColor
+// garante o link: a frase que mandava a cor pro telefone do Ozzi sai e a frase
+// do site entra antes da pergunta final. COLOR_SITE_BACKSTOP=off desliga.
+const COLOR_WORD = /(?<![a-zà-ÿ])(?:colou?rs?|colores|cor|cores|tones?|tonos?|tonalidad(?:es)?|tonalidades?|shades?)(?![a-zà-ÿ])/i;
+const COLOR_ASK = /(?<![a-zà-ÿ])(?:send|show|see|look\s+at|name\s+of|samples?|pictures?|photos?|catalog(?:ue)?|options?|available|you\s+(?:have|got|carry|offer|sell)|have\s+you\s+got|env[ií]\w*|mand[ae]\w*|muestr\w*|ver|tienen|tienes|hay|opciones|fotos|mostr\w*|op[cç][oõ]es|amostras|t[eê]m|voc[eê]s\s+t[eê]m)(?![a-zà-ÿ])/i;
+const NOT_FLOOR_COLOR = /(?<![a-zà-ÿ])(?:grout|lechada|boquilla|rejunte|paint\w*|pintura|tinta|walls?|pared(?:es)?|paredes?|cabinets?|gabinetes?|arm[aá]rios?|baseboards?|z[oó]calos?|rodap[eé]s?|trim|(?:existing|current|old)\s+(?:floor\w*|tiles?|planks?|wood))(?![a-zà-ÿ])/i;
+export function isFloorColorQuestion(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ");
+  if (!COLOR_WORD.test(t) || NOT_FLOOR_COLOR.test(t)) return false;
+  for (const s of t.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) ?? []) {
+    if (COLOR_WORD.test(s) && (/\?/.test(s) || COLOR_ASK.test(s))) return true;
+  }
+  return false;
+}
+const COLOR_SITE: Record<"en" | "es" | "pt", string> = {
+  en: `You can see all our floor colors on our website, ${SITE_URL}, take a look there.`,
+  es: `Puedes ver todos los colores de nuestros pisos en nuestra página, ${SITE_URL}, échale un vistazo ahí.`,
+  pt: `Você pode ver todas as cores dos nossos pisos no nosso site, ${SITE_URL}, dá uma olhada lá.`,
+};
+// "For samples and color options, the best is to reach Ozzi directly at (561)
+// 674-8334": a color question sent to the phone instead of the website.
+const COLOR_TO_PHONE = /(?=[^.!?\n]*(?:colou?r|cor(?:es)?\b|sample|muestra|amostra|product|producto|produto|match|option|opci[oó]n|op[cç][aã]o))(?=[^.!?\n]*(?:674.?8334|ozzi\s+direct|reach\s+ozzi|call\s+ozzi|text\s+ozzi|contact\w*\s+(?:a\s+)?ozzi|llam\w*\s+a\s+ozzi|ligu?e?\s+(?:pro|para\s+o)\s+ozzi))[^.!?\n]*[.!?]*\s*/gi;
+/** True when the reply is nothing but a color question sent to Ozzi's phone. */
+export function isColorPhoneHandoffOnly(text: string): boolean {
+  const prose = normalizeSmartPunct(stripProtectedTags(text)).trim();
+  return !!prose && !prose.replace(COLOR_TO_PHONE, "").trim();
+}
+/** Makes sure a reply to a floor-color question carries the website. */
+export function withSiteForColor(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  if (/ozzifloors\.company/i.test(text || "")) return text;
+  // A tag-only reply ([REACT_ONLY], a lone [NOTIFY_OWNER]) is a deliberate
+  // silence, never a place to add a sentence.
+  if (!stripProtectedTags(text || "").trim()) return text;
+  const site = COLOR_SITE[lang] ?? COLOR_SITE.en;
+  return withTagsProtected(text, (prose) => {
+    const all = normalizeSmartPunct(prose).replace(COLOR_TO_PHONE, "").replace(/[ \t]{2,}/g, " ").trim();
+    // Trailing tags ([NOTIFY_OWNER]) stay at the very end.
+    const tail = (all.match(/(?:\s*\[#TAG\d+#\])+\s*$/) ?? [""])[0];
+    const kept = all.slice(0, all.length - tail.length).trim();
+    const end = tail.trim() ? " " + tail.trim() : "";
+    if (!kept.replace(/\[#TAG\d+#\]/g, "").trim()) return (kept + " " + site).trim() + end;
+    // Ahead of a closing question, so the reply still ends asking it.
+    const parts = kept.match(/[^.!?\n]+(?:[.!?]+|\n+|$)\s*/g) ?? [kept];
+    const last = parts.length - 1;
+    if (/\?\s*$/.test(parts[last])) {
+      return (parts.slice(0, last).join("").trimEnd() + " " + site + " " + parts[last].trimStart()).trim() + end;
+    }
+    return (kept + " " + site).trim() + end;
   });
 }
 
@@ -4743,9 +4878,9 @@ export async function getAIResponse(
 
   // FINAL REMINDERS — come last to reinforce the most critical rules
   dynamicSystem += `\n\n---\n\nFINAL REMINDERS:\n1. Zero dashes — no -, –, or — anywhere. Replace with commas or periods.\n1b. SPANISH PUNCTUATION: never use the inverted marks ¿ or ¡. In Spanish, punctuate exactly like Portuguese: only the closing ? or ! at the end of the sentence ("Cuál te interesa?", "Perfecto!"), never "¿Cuál te interesa?" or "¡Perfecto!".\n2. Zero emojis — no emoji, no decorative symbol, nothing. Plain text only.\n3. LENGTH RULE: Use 1 sentence when the message is complete with just the answer. Use 2 sentences ONLY when you genuinely need both an answer AND a forward question. Never 3 sentences. NEVER use a standalone opener like "Perfect!", "Great!", "Sounds good!", "Hello!", or "Hi!" as its own sentence — always merge it with a comma: "Perfect, your project comes to about $1,500." not "Perfect! Your project comes to about $1,500."\n4. SQFT RULE: If the client mentions a specific number of 500 sqft or more, NEVER give a price. Always propose the free in-person visit. This overrides everything else.\n5. SCOPE ALREADY ANSWERED RULE: If the client has already mentioned in this conversation which areas, rooms, or project scope (kitchen, bedroom, whole house, one room, etc.), NEVER ask "one area or whole house?" again. That question is asked ONCE at the very start. When the client asks about scheduling, availability, pricing, or anything else AFTER already stating scope, answer their question directly without re-attaching the classification question.\n6. BOOKING DONE RULE: If [BOOKING ALREADY CONFIRMED] appears in the system context, the conversation is over. Do NOT answer any question. For ANY client message, respond with ONE sentence redirecting to Ozzi and add [NOTIFY_OWNER] — example: "I'll connect you with Ozzi for anything else you need![NOTIFY_OWNER]" NEVER generate [BOOK:...]. NEVER answer questions directly. NEVER mention appointment details.\n7. SLOT CONFIRMATION RULE: Ask for the client's address and phone (never the name) ONLY after the client explicitly names a specific day and time (e.g., "Monday at 3pm works"). Vague replies like "Okay", "Sounds good", "Alright", "I'll let you know" mean they are still deciding — respond with ONE sentence only and wait. NEVER use "No problem!" as a standalone sentence — merge it: "No problem, just let me know which day works!" Never push for address/phone when the slot is not confirmed. An address or phone number by itself is NOT a slot selection: if the client sent contact info but never picked one of the offered days/times, do not generate [BOOK:...], ask which of the offered times works instead.\n8. PRE-BOOKING TEXT RULE: The text before [BOOK:...] must be 5 words or fewer. NEVER repeat the date, time, or address in that text. The system sends the confirmation automatically. Write ONLY something like "Perfect, see you then!" or "All set!" before the tag.\n8b. WHATSAPP NO-PHONE RULE: If a [WHATSAPP CHANNEL] note is in context, you ALREADY have the client's phone number. NEVER ask for a phone, a callback number, or the "best number" on WhatsApp. Ask ONLY for the property address with the zip code instead (never the name). The MOMENT you have a confirmed day/time AND the property address with its zip code, generate [BOOK:...] immediately using the WhatsApp number, do not ask for anything else.\n9. WHAT IS INCLUDED — TYPE GATED: The "${WHAT_IS_INCLUDED_RESPONSE}" answer is the VINYL offer (material included). Give it EXACTLY only when you ALREADY KNOW the client wants vinyl and they ask "what is included" / "is labor included" / "does it include installation". If the flooring type is still UNKNOWN, do NOT give it (tile and hardwood include NO material, only labor) — ask which type they want: tile, vinyl, or hardwood. If you know they want TILE or HARDWOOD, say the promotion covers the installation labor only and they provide the material. For any other package question, answer naturally.\n10. Colors: plain text only, no tags or brackets of any kind.\n10b. MATERIAL vs SEE RULE: Two cases. CASE A, the client asks WHAT the product is ("what kind of materials", "what is the material", "what is the material allowance", "what flooring do you use", "what kind of floor", "what are the material/flooring options", "what do you offer", "is it vinyl") then, IF you already know the client wants vinyl, DESCRIBE it directly and send NO link: say it is our luxury vinyl, waterproof and highly resistant, with a 20-year warranty, then mention the free quote and ask one area or whole house. If the flooring type is still UNKNOWN, do NOT describe it as vinyl, instead ask which type they want first: tile, vinyl, or hardwood (or propose the visit if the size is already 500+ sqft). NEVER list color or product names. CASE B, the client asks you to SEND or show photos/pictures/images/catalog, asks which COLORS/styles you have, names a SPECIFIC color/style, or asks for your website or Instagram, then redirect with EXACTLY: "For that, the best is to message our team directly on WhatsApp at (561) 674-8334 and we'll help you find the right floor!" and add [NOTIFY_OWNER]; never send the website/Instagram link unless they specifically ask for it. WHATSAPP EXCEPTION: if a [WHATSAPP CHANNEL] note is in context the client is ALREADY messaging us on WhatsApp, so never tell them to message us on WhatsApp, instead say the team will send the photos of the options right here and add [NOTIFY_OWNER]. CASE B EXCEPTION (propose the visit, do NOT redirect): if the client just wants to SEE the product or floors in person or as soon as possible ("would love to see it", "see the product asap", "can I see it soon", "want to see what you have") WITHOUT asking you to SEND photos and WITHOUT naming a specific color, treat it as a buying signal: say you bring all the samples to the free in-person visit so they can see everything and pick right there, and move to scheduling (ask one area or whole house if size unknown, or propose the visit if already 500+ sqft). If the client asks whether it is really vinyl (some marble-finish floors we advertise are still luxury vinyl), confirm yes, it is luxury vinyl. EXCEPTION 1: real PRODUCT CAPABILITY questions (waterproof, durable, humid/tropical climate, over tile, warranty) are answered directly. EXCEPTION 2: tile questions ("do you have tile that looks like wood") get the Floor & Decor answer.\n11. If the client asks for a phone number, our WhatsApp or a contact ("me envia seu WhatsApp", "pásame tu WhatsApp", "send me your WhatsApp", "what's your number?"): give ONLY (561) 674-8334, it is both our phone and our WhatsApp, in the client's own language and in that same reply, and never answer such a request with only the flooring-type question (the number first, then the next question in the same message). The owner's name is Ozzi. NEVER invent a number. NEVER write any other phone number in a message, not even the CLIENT'S OWN number back to them (wrong: "I'll have Ozzi reach out to you at 3057668885"). The only place a client's number belongs is inside the [BOOK:...] tag. If the client asks for YOUR name or who they are talking to, say they are texting with the OzziFloors team, never call yourself an assistant or a bot and NEVER invent a personal name (no "Alex", no made-up names, ever), then in the SAME message go on with whatever was pending (the times you offered, the question you asked).\n12. LARGE LEAD RULE: For projects 500 sqft or more: NEVER give a total price or dollar estimate by DM. Always push for the free in-person visit. Asking "how much?" or "what's the price per sqft?" does NOT mean the client refuses a visit — it means they want information. Give the visit offer, not a price.\n13. TILE RULE: When the client mentions "tile", "tiles", "porcelain", or "ceramic" — this is a TILE installation job, NOT luxury vinyl. NEVER quote $5/sqft for a tile job. Tile labor only is $4.50/sqft. Tile pricing is ALWAYS exactly sqft x $4.50 with NOTHING added, and only for 400 to 499 sqft (450 sqft tile = $2,025): under 400 sqft is never priced, it goes to the Ozzi direct line (rule 18). Tile demo/removal is $1.50/sqft extra, only if asked. For tile projects 500 sqft or more, NEVER give a total DM price — always propose the free visit.\n14. NO INVENTED SLOTS RULE: If you do NOT see [REAL-TIME SCHEDULE] with actual time slots in this conversation context, you have ZERO schedule information. NEVER say "I have Thursday at 2pm" or any specific day/time. The ONLY correct answer when asked about availability is: "Let me check what I have open. What day works best for you?" — then stop. Do not invent or guess any slot.\n15. DATA ON FILE RULE: before asking for the client's address or phone, scan the WHOLE conversation, including messages from days ago. If the client already typed it, NEVER ask for it again, reuse it in the [BOOK:...] tag and ask only for what is genuinely missing. Re-asking data the client already gave (Cleveland, Josue, Yinnart, Frank, 08/2026) reads as a robot that does not listen and loses the visit.\n15b. NAME IS NEVER ASKED (owner rule 2026-09-16): the client's name is NOT a booking requirement. NEVER ask for it, not with the address and phone, not alone, not as a "last thing" or "what name should I put the visit under". The booking needs only the confirmed slot, the full address with its ZIP and the phone (or the WhatsApp number); with those, write [BOOK:...] at once, using the name only if the client stated it and "name":"" otherwise (the system fills it from the profile and previous visits).\n16. TIME OF DAY RULE: when the client asks for a part of the day or a boundary ("afternoon", "evening", "after 4", "mornings only", "por la tarde", "depois das 5"), offer the EARLIEST open times INSIDE that window on the soonest day that has them. Never answer "afternoon" with 9am or 11am.
-18. UNDER 400 SQFT RULE (OZZI DIRECT, owner rule 2026-09-11): the moment the client states a project size under 400 sqft (any figure below 400, or an obviously tiny area like a closet, a half bath or a hallway), for ANY flooring type, NEVER give a price, a total, a per-sqft rate, a range or an estimate for it, NEVER propose a visit or an estimate, NEVER offer slots, NEVER ask for name/address/phone, NEVER generate [BOOK:...], and NEVER say we don't take it or that it is too small. Say that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives the quote himself, and give the number (561) 674-8334. If they insist on a number here, say you are not able to give a quote for that size through here, it has to come from Ozzi directly, and repeat the number, never give in. For 400 to 499 sqft quote by DM: a clean multiplication with NOTHING added (luxury vinyl sqft x $5, tile sqft x $4.50, hardwood sqft x $3.20, carpet sqft x $2.20, laminate or install-only sqft x $2), ONE final total in one clean sentence, never narrate the math, never mention any tier. For 500 sqft or more NEVER give a DM price, propose the free visit.
+18. UNDER 400 SQFT RULE (OZZI DIRECT, owner rule 2026-09-11): the moment the client states a project size under 400 sqft (any figure below 400, or an obviously tiny area like a closet, a half bath or a hallway), for ANY flooring type, NEVER give a price, a total, a per-sqft rate, a range or an estimate for it, NEVER propose a visit or an estimate, NEVER offer slots, NEVER ask for name/address/phone, NEVER generate [BOOK:...], and NEVER say we don't take it or that it is too small. Say that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives the quote himself, and give the number (561) 674-8334. If they insist on a number here, say you are not able to give a quote for that size through here, it has to come from Ozzi directly, and repeat the number, never give in. For 400 to 499 sqft quote by DM: a clean multiplication with NOTHING added (luxury vinyl sqft x $5, tile sqft x $4.50, hardwood sqft x $3.20, carpet sqft x $2.20, laminate or install-only sqft x $2, herringbone sqft x $4 labor only or sqft x $11.50 with our herringbone material), ONE final total in one clean sentence, never narrate the math, never mention any tier. For 500 sqft or more NEVER give a DM price, propose the free visit.
 23. JOB SEEKER RULE: If the message is from someone seeking a job or offering their own labor/services (installer, painter, laborer, helper, carpenter, "are you hiring", "looking for work", "I'm an installer", "busco trabajo", "soy instalador", "procuro emprego", "sou pintor"), this is NOT a customer. Output EXACTLY [REACT_ONLY] and nothing else, no greeting, no pitch. A real customer asking about our service ("do you have installers?", "I need my floor installed") is NOT a job seeker, answer them normally.
-19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. Keep it short. If the client has already stated a size under 400 sqft, do not explain the rates at all, give the Ozzi direct line instead (rule 18).
+19. HOW IT WORKS RULE: When the client asks how the promotion works or how you charge, state that it is $5 per square foot and that price already includes the floor and the installation, and that installation only (client supplies the material) is $2 per square foot. A herringbone floor has its own price instead ($4 per sqft labor, $7.50 per sqft for our herringbone material). Keep it short. If the client has already stated a size under 400 sqft, do not explain the rates at all, give the Ozzi direct line instead (rule 18).
 21. ANSWER PRODUCT QUESTIONS RULE: When the client asks a real question about the product, ALWAYS answer it directly and helpfully FIRST — never deflect a genuine product question to "browse our website". Key facts you can state: our luxury vinyl is 100% waterproof, has a stone composite (SPC) core, a 20-year warranty, is highly scratch and water resistant, performs great in humid and tropical climates, and can usually be installed right over existing tile. If they ask you to recommend something, give a brief direction based on their style and then invite them to browse for the exact look. If the client is OUTSIDE South Florida (another state, the Caribbean, the West Indies, another country) and is asking about the PRODUCT, still answer their product question helpfully; only mention that our installation service covers South Florida if they specifically ask US to install or visit. NEVER dismiss an out-of-area client with "we can't help you" — answer what they asked.
 20. TILE MATERIAL RULE: We do NOT sell tile material. If the client asks whether you offer, sell, have, or carry tile, or tile/porcelain that looks like wood (wood-look tile), respond with EXACTLY this and nothing more: "We don't sell tile materials. We only do the installation. However, you can find wood-look tiles at stores like Floor & Decor." Do NOT append, add, or tack on a luxury vinyl / LVP suggestion or any upsell after it — give only those sentences and stop. NEVER respond to a TILE question by pitching luxury vinyl wood-look as if it were the same thing. (Wood-look luxury VINYL is only the right answer when the client asks about vinyl or wood-look floors generally, not tile.)
 17. PURE CLOSING RULE: If the client's latest message is ONLY a thank-you, farewell, acknowledgment, or a statement that they will act later ("I'll call you tomorrow", "I'll let you know", "ok thanks", "got it", "sounds good", a heart or a thumbs up) and contains NO new question or request, output EXACTLY [REACT_ONLY] and nothing else. Do NOT repeat the phone number, do NOT add any sentence, do NOT keep selling. The system will simply react to their message. EXCEPTION: if the message mixes a thanks with a real new question (example: "thanks, do you do screens?"), OR with an ANSWER to something you just asked (you asked "tile, vinyl, or hardwood?" and they say "Thank you! Either vinyl or laminate"; you asked the scope and they say "thanks, the whole house"; you offered the quote and they say "yes please"), ignore the thanks and respond to the substance normally — NEVER [REACT_ONLY]. An answer with a hedge attached ("I believe 1500, I need to double check", "around 900 but I'll confirm", "33020, I'll let you know the day") still ANSWERS your question (a size, a zip, a type, a day): continue the flow with that answer, NEVER [REACT_ONLY]. A message that names a DAY or a TIME (like "El martes está bien, gracias" or "Tuesday works, thanks") is ALWAYS the client picking a slot, never a closing: proceed with the booking flow, never [REACT_ONLY]. Also do NOT use [REACT_ONLY] for a vague reply while you are still waiting for the client to pick a time slot, treat that per the SLOT CONFIRMATION RULE. A bare "ok", "okay", "perfect", "great", "cool", "got it", "sounds good", "entendido", "listo", "beleza" sent after a message of yours that did NOT ask a question is a closing too: [REACT_ONLY]. And once you (or the system) told the client that Ozzi will reach out or be in touch, ANY acknowledgment or thanks that follows gets EXACTLY [REACT_ONLY]: never answer "Sounds good, Ozzi will be in touch soon" to an "ok". One handoff line is the END of the conversation, the client's "ok" does not reopen it.
@@ -5060,10 +5195,37 @@ export async function getAIResponse(
       }
     }
 
+    // Herringbone (dono, 03/10/2026): nunca a promo de $5; $4/sqft mão de obra +
+    // $7.50/sqft o nosso material herringbone.
+    if (process.env.HERRINGBONE_BACKSTOP !== "off" && replyMispricesHerringbone(cleaned)) {
+      const kind = clientWantsHerringbone(messages);
+      if (kind) {
+        const fixed = fixHerringbonePrice(cleaned, usersLang(), kind);
+        if (fixed !== cleaned) {
+          cleaned = fixed;
+          console.log(`[AI] herringbone price backstop (${kind}): the reply quoted the $5/$2/$3.20 rate for a herringbone floor, replaced with $4 labor + $7.50 material`);
+        }
+      }
+    }
+
     // Website link (owner, 2026-09-22): any spelling of the old
     // www.ozzifloors.com the model copied from older turns becomes the
     // canonical https://ozzifloors.company before anything else looks at it.
     cleaned = canonicalizeSiteLink(cleaned);
+
+    // Cor do piso (dono, 03/10/2026): pergunta de cor SEMPRE leva o site.
+    if (process.env.COLOR_SITE_BACKSTOP !== "off") {
+      let lastA = -1;
+      for (let i = (messages ?? []).length - 1; i >= 0; i--) if (messages[i].role === "assistant") { lastA = i; break; }
+      const burst = (messages ?? []).slice(lastA + 1).filter((m) => m.role === "user").map((m) => m.content || "").join("\n");
+      if (isFloorColorQuestion(burst)) {
+        const fixed = withSiteForColor(cleaned, usersLang());
+        if (fixed !== cleaned) {
+          cleaned = fixed;
+          console.log("[AI] color site backstop: the client asked about floor colors and the reply had no website link, added it");
+        }
+      }
+    }
 
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {

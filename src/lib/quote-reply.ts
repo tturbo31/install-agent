@@ -7,7 +7,8 @@ import {
   HEARTH_URL_PADRAO,
   type FollowupLang,
 } from "@/lib/quote-followup";
-import { normalizeSmartPunct, promisesOwnerContact } from "@/lib/ai";
+import { normalizeSmartPunct, promisesOwnerContact, isFloorColorQuestion, isColorPhoneHandoffOnly, withSiteForColor } from "@/lib/ai";
+import { detectLang } from "@/lib/scheduler";
 
 // ─── Replies to QUOTE FOLLOW-UP clients (2026-07-17) ────────────────────────
 // Before this module, a client who already had the in-person visit (booked →
@@ -210,13 +211,14 @@ HARD RULES:
 8. If the client says they will pay in full or don't need financing: that is GOOD news but do NOT celebrate the financing angle, do not mention financing again, and do not repeat the quote pitch. One short sentence: acknowledge ("Of course, no financing needed") and tell them to call or text Ozzi directly at (561) 674-8334 to finalize. End with [NOTIFY_OWNER].
 9. If the client says they already paid, already signed, already closed the deal, the work was already done, or that this message doesn't apply to them: apologize briefly for the mix-up in one sentence, thank them, do NOT sell anything, say that if anything is pending they can reach Ozzi directly at (561) 674-8334, and end with [NOTIFY_OWNER]. Never insist the quote is still open, never say "we recently sent your quote" to someone telling you the project already happened.
 10. If the client asks to RESEND the quote, says they never received it, says the link or document is missing or did not come through, or asks what their quote was: when the quote total is on file below, restate it directly in this message ("Your quote total is $X") so they are never left waiting, add that for the full quote document they can call or text Ozzi directly at (561) 674-8334, and end with [NOTIFY_OWNER]. Never reply with only a promise to resend when the total is on file. If the total is NOT on file, use the handoff of rule 11.
-11. If the client asks anything you cannot answer from the context (product details, warranty claims, permits, project changes, new measurements, complaints), or asks to talk to a person: give a short warm handoff to Ozzi's direct number ("For that, the best is to reach Ozzi directly at (561) 674-8334") and end with [NOTIFY_OWNER].
+11. If the client asks anything you cannot answer from the context (product details other than colors, warranty claims, permits, project changes, new measurements, complaints), or asks to talk to a person: give a short warm handoff to Ozzi's direct number ("For that, the best is to reach Ozzi directly at (561) 674-8334") and end with [NOTIFY_OWNER].
 12. If the client says they are not interested, hired someone else, or asks to stop: thank them graciously in one sentence, no selling, and end with [NOTIFY_OWNER].
 13. If the client asks who this is or who is texting: identify naturally as Ozzi Floors, the flooring company that gave them their quote, in the same sentence as the rest of your reply.
 14. Never pressure. Warm, helpful, zero pushiness.
 15. If the client's message is ONLY an acknowledgment or a thank-you ("ok", "okay", "perfect", "got it", "sounds good", "thanks", a thumbs up) with no question and no request, output EXACTLY [REACT_ONLY] and nothing else. Never answer "Sounds good, Ozzi will be in touch" to an "ok": once Ozzi's follow-up was promised, the conversation is over and the client's "ok" does not reopen it.
 16. If the client asks to talk to Ozzi or to a person, or asks to be called: ONE short sentence giving Ozzi's direct number, (561) 674-8334, so they call or text him, nothing else, no question, and end with [NOTIFY_OWNER].
 17. NEVER tell the client that Ozzi, the team or anyone will reach out, call, text, contact, follow up or get back to them, and never say you will pass it along or connect them: nobody calls back from these alerts (owner rule 2026-09-14). Whenever you would say that, give Ozzi's direct number, (561) 674-8334, and tell them to call or text him.
+18. COLORS ALWAYS GET OUR WEBSITE (owner rule 2026-10-03): if the client asks or talks about floor colors (the colors we have, samples or pictures of the colors, the color of a floor they saw on our Facebook or Instagram or in a photo, whether two floors are the same color, a color or tone they are aiming for), send our website https://ozzifloors.company so they can see all our floor colors there, copied exactly. Never send a color question to Ozzi's phone instead, never name colors yourself, and no [NOTIFY_OWNER] for the color part.
 
 The ONLY tags you may output are [NOTIFY_OWNER] (always at the very end, when a rule above asks for it) and [REACT_ONLY] (alone, rule 15).`;
 
@@ -295,6 +297,15 @@ export async function composeQuoteReply(params: {
       if (violation) {
         console.warn(`[QUOTE-REPLY] attempt ${attempt} rejeitado (${violation}): ${text.slice(0, 90)}`);
         continue;
+      }
+      // Cor do piso = o site (dono, 03/10/2026; Ariadna 30/09 ouviu "ligue pro
+      // Ozzi" duas vezes ao pedir as cores). Uma resposta que era SÓ mandar a
+      // cor pro telefone vira o site e deixa de ser repasse.
+      if (isFloorColorQuestion(clientText) && !/ozzifloors\.company/i.test(text)) {
+        const colorOnly = isColorPhoneHandoffOnly(text);
+        const withSite = withSiteForColor(text, detectLang(clientText));
+        console.log(`[QUOTE-REPLY] color question without the website, added it (handoff dropped=${colorOnly})`);
+        return { text: withSite, notifyOwner: colorOnly ? false : notifyOwner, source: attempt === 1 ? "ai" : "ai-retry" };
       }
       console.log(`[QUOTE-REPLY] ok (attempt ${attempt}) notify=${notifyOwner} | ${text.slice(0, 80)}`);
       return { text, notifyOwner, source: attempt === 1 ? "ai" : "ai-retry" };
