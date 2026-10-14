@@ -2,7 +2,7 @@ import { zipsInText } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
@@ -860,18 +860,32 @@ const AGAINST_VINYL_SENTENCE: RegExp[] = [
   new RegExp(String.raw`\b(?:i'?d|i\s+would|we'?d|we\s+would|you\s+should|better\s+to|best\s+to)\s+(?:go|stick|stay)\s+with\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
   new RegExp(String.raw`\b(?:i'?d|i\s+would|we'?d|i|we)\s+(?:definitely\s+|strongly\s+|honestly\s+|really\s+)?(?:recommend|suggest)(?:ing)?\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
   new RegExp(String.raw`\b(?:my\s+recommendation|the\s+(?:better|best|right)\s+(?:option|choice|bet|call|fit|pick))\s+(?:would\s+be|is|here\s+is|here\s+would\s+be)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
-  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:holds?\s+up\s+better|is\s+(?:the\s+)?(?:better|best|right|ideal|smarter|safer|stronger)\s+(?:choice|option|call|bet|fit|way|pick)|would\s+be\s+(?:the\s+)?(?:better|best|ideal|right|smarter|safer)|is\s+(?:more\s+durable|easier\s+to\s+clean|tougher|more\s+resistant)|handles?\s+(?:the\s+)?(?:heavy\s+)?(?:foot\s+)?traffic)`, "i"),
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b(?:(?!\bvin(?:yl|il))[^.!?\n]){0,40}?\b(?:holds?\s+up\s+better|is\s+(?:the\s+)?(?:better|best|right|ideal|smarter|safer|stronger)\s+(?:choice|option|call|bet|fit|way|pick)|would\s+be\s+(?:the\s+)?(?:better|best|ideal|right|smarter|safer)|is\s+(?:more\s+durable|easier\s+to\s+clean|tougher|more\s+resistant)|handles?\s+(?:the\s+)?(?:heavy\s+)?(?:foot\s+)?traffic)`, "i"),
   /\bvinyl\b[^.!?\n]{0,30}?\b(?:can|could|would|might|does|will)\s+work,?\s+but\b/i,
   /\bvinyl\b[^.!?\n]{0,30}?\b(?:is|isn'?t|is\s+not|won'?t|wouldn'?t|might\s+not|may\s+not|not)\s+(?:be\s+)?(?:the\s+)?(?:ideal|best|great|good|recommended|right|durable\s+enough|suited|suitable|my\s+(?:first\s+)?(?:pick|choice|recommendation)|hold\s+up)/i,
   /\bstick\s+with\s+(?:that|my|the|this)\s+recommendation\b/i,
   new RegExp(String.raw`\b(?:te\s+|le\s+)?(?:recomiendo|recomendar[ií]a|sugiero|ir[ií]a\s+con|me\s+ir[ií]a\s+con|me\s+quedar[ií]a\s+con)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
   /\bvinyl\b[^.!?\n]{0,30}?\b(?:no\s+es|no\s+ser[ií]a|no\s+aguanta|no\s+resiste|puede\s+funcionar,?\s+pero|funciona,?\s+pero)\b/i,
-  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:aguanta|resiste|dura)\s+(?:m[aá]s|mejor)\b`, "i"),
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b(?:(?!\bvin(?:yl|il))[^.!?\n]){0,40}?\b(?:aguanta|resiste|dura)\s+(?:m[aá]s|mejor)\b`, "i"),
   new RegExp(String.raw`\b(?:eu\s+)?(?:recomendo|recomendaria|sugiro|iria\s+de|iria\s+com|ficaria\s+com)\s+(?:\w+\s+){0,2}?${TILE_OR_WOOD_SRC}\b`, "i"),
   /\bvinil\b[^.!?\n]{0,30}?\b(?:n[aã]o\s+[eé]|n[aã]o\s+seria|n[aã]o\s+aguenta|n[aã]o\s+resiste|pode\s+funcionar,?\s+mas|funciona,?\s+mas)\b/i,
-  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b[^.!?\n]{0,40}?\b(?:aguenta|resiste|dura)\s+(?:mais|melhor)\b`, "i"),
+  new RegExp(String.raw`\b${TILE_OR_WOOD_SRC}\b(?:(?!\bvin(?:yl|il))[^.!?\n]){0,40}?\b(?:aguenta|resiste|dura)\s+(?:mais|melhor)\b`, "i"),
 ];
 const RECO_SENTENCE = /[^.!?\n]+(?:[.!?]+|\n+|$)\s*/g;
+// "vinyl with a wood look", "look de madera", "imita madera", "tono madera",
+// "wood-look planks": the wood or the tile is a LOOK, not a recommendation.
+// These phrases are blanked before a sentence is judged (Lusniel, WhatsApp
+// 2026-10-14: "nuestro vinyl de lujo con look de madera, aguanta mejor que el
+// laminado" read as "wood holds up better" and was replaced by the canned
+// recommendation, in the wrong language on top of it). The durability claims
+// above also stop at the word vinyl: "compared to tile, vinyl holds up better"
+// is a claim FOR vinyl.
+const LOOK_WORDS_SRC = String.raw`(?:look|looks|looking|style|styled|finish|effect|pattern|appearance|design|inspired|imita\w*|imitaci[oó]n|apariencia|aspecto|estilo|acabado|efecto|tono|color|colou?r|textura|texture|tipo|s[ií]mil|parece|parecid[oa]|semelhante|apar[eê]ncia|padr[aã]o|efeito|visual)`;
+const LOOK_OF_TYPE = new RegExp(String.raw`\b${LOOK_WORDS_SRC}\s+(?:de\s+|a\s+|en\s+|em\s+|like\s+|of\s+|da\s+|do\s+|the\s+)?(?:la\s+|el\s+|a\s+|o\s+|una\s+|uma\s+)?${TILE_OR_WOOD_SRC}(?:\s+(?:real|natural|aut[eê]ntic[ao]|nobre|clara|oscura|escura|light|dark))?\b|\b${TILE_OR_WOOD_SRC}[\s-]*${LOOK_WORDS_SRC}\b|\b(?:que|that|which)\s+(?:parece|imita|looks?\s+like|resembles)\s+(?:la\s+|el\s+|a\s+|o\s+)?${TILE_OR_WOOD_SRC}\b`, "gi");
+function againstVinylSentence(s: string): boolean {
+  const judged = s.replace(LOOK_OF_TYPE, " ");
+  return AGAINST_VINYL_SENTENCE.some((re) => re.test(judged));
+}
 // Same, but a period between digits ("$1.50", "$3.20") never ends a sentence,
 // so a price stays whole inside its sentence.
 const PRICE_SAFE_SENTENCE = /(?:[^.!?\n]|\.(?=\d))+(?:[.!?]+|\n+|$)\s*/g;
@@ -881,7 +895,7 @@ function stripProtectedTags(text: string): string {
 /** A reply that recommends tile/porcelain/hardwood over vinyl, or talks vinyl down. */
 export function replyRecommendsAgainstVinyl(text: string): boolean {
   const prose = normalizeSmartPunct(stripProtectedTags(text));
-  for (const s of prose.match(RECO_SENTENCE) ?? []) if (AGAINST_VINYL_SENTENCE.some((re) => re.test(s))) return true;
+  for (const s of prose.match(RECO_SENTENCE) ?? []) if (againstVinylSentence(s)) return true;
   return false;
 }
 // O cliente escolheu tile/hardwood por conta própria? Só conta uma mensagem que
@@ -925,7 +939,7 @@ export function fixVinylRecommendation(text: string, lang: "en" | "es" | "pt" = 
     let replaced = false;
     const out: string[] = [];
     for (const s of parts) {
-      if (!AGAINST_VINYL_SENTENCE.some((re) => re.test(s))) { out.push(s); continue; }
+      if (!againstVinylSentence(s)) { out.push(s); continue; }
       if (replaced) continue;
       replaced = true;
       // Answering "is vinyl good for X?" ("Vinyl can work but…") reads better as
@@ -1995,6 +2009,75 @@ export function enforceLanguageSwitch(history: Array<{ role: string; content: st
   const wrong = sw.target === "en" ? replyLooksSpanishOrPortuguese(t) : replyLooksEnglish(t) || ALREADY_IN_ENGLISH.test(t);
   if (!wrong) return t;
   return languageSwitchFallback(history, sw);
+}
+
+// ─── The conversation's language (Lusniel, WhatsApp 2026-10-14) ──────────────
+// usersLang() used to feed detectLang the client's bubbles AS THE MODEL SEES
+// THEM, i.e. with the [SYSTEM: …] note the webhooks append to the last one: the
+// date line, the schedule guidance, the ad note, the WhatsApp channel note,
+// thousands of English words. detectLang scores one point per keyword, so
+// "Hola hablan español" (3 points) lost to the note (price, quote, address,
+// want, tomorrow, available), usersLang() said "en" and the vinyl backstop
+// pasted its ENGLISH sentence into a Spanish reply: "I'd go with our luxury
+// vinyl, it's 100% waterproof, scratch resistant and holds up great to heavy
+// traffic. Que tan grande es el area que quieres cambiar?". Owner rule: a
+// conversation has ONE language, the client's, from the first message to the
+// last, never alternating. So:
+//  1. an explicit language request / "no English" wins (languageSwitchRequest);
+//  2. otherwise the client's OWN words decide, system notes and placeholder
+//     bubbles stripped (clientTextOnly);
+//  3. a client with no signal at all (short bubbles, no accents, none of the
+//     keywords: "Quw material de loza es ese") keeps the language WE have been
+//     writing in, read from our own earlier replies;
+//  4. nothing anywhere = English (the ad greeting is in English).
+export function conversationLang(messages: Array<{ role: string; content: string }>, switchTarget?: "en" | "es" | "pt" | null): "en" | "es" | "pt" {
+  if (switchTarget) return switchTarget;
+  const h = messages ?? [];
+  const client = h.filter((m) => m.role === "user").map((m) => clientTextOnly(m.content || "")).filter((t) => t.trim()).join(" ");
+  const c = langScores(client);
+  if (c.es || c.en || c.pt) return detectLang(client);
+  const ours = h.filter((m) => m.role === "assistant").map((m) => (m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(/\[[^\]]*\]/g, " ")).filter((t) => t.trim()).join(" ");
+  const o = langScores(ours);
+  if (o.es || o.en || o.pt) return detectLang(ours);
+  return "en";
+}
+
+// ─── One language per reply (owner, 2026-10-14) ──────────────────────────────
+// A reply that is part English and part Spanish/Portuguese is wrong whatever
+// produced it (a backstop pasting a canned sentence in the wrong language, or
+// the model itself). Sentence by sentence: a sentence is clearly ENGLISH when
+// it has no accented letter and three or more English function words with at
+// most one Spanish/Portuguese one; clearly SPANISH/PORTUGUESE when it has an
+// accented letter or three or more Spanish/Portuguese function words with at
+// most one English one. Product names (vinyl, tile, hardwood, quarter round),
+// prices, links, phone numbers and [TAGS] count for nothing. Spanish next to
+// Portuguese is not flagged: detectLang itself tells them apart only by a few
+// accents. Mixed = both kinds present in the same reply.
+const SENTENCE_EN_WORDS = /\b(?:the|we|you|your|which|what|our|and|for|with|are|is|that|this|can|will|have|does|it|from|would|here|there|thanks|works|great|how|many|need|get|just|know|let|holds|up|if|or|not|my|be|at|to|of|in|on|was|were|any|all|when|where|about|still)\b/gi;
+const SENTENCE_ES_PT_WORDS = /\b(?:el|la|los|las|con|para|que|qué|cuál|cual|del|una|uno|un|es|son|está|esta|este|ese|esa|eso|esto|tu|tus|su|sus|nuestro|nuestra|nosso|nossa|você|voce|com|pra|qual|piso|pisos|visita|gratis|grátis|casa|precio|preço|hola|olá|claro|gusto|prazer|tenemos|temos|mañana|amanhã|hoy|hoje|español|portugués|cuántos|cuantos|quantos|cuanto|cuánto|quanto|pies|cuadrados|quadrados|también|também|sobre|sin|sem|más|mais|muy|muito|bien|bem|aquí|aqui|dia|día|semana|lunes|martes|miércoles|jueves|viernes|sábado|domingo|segunda|terça|quarta|quinta|sexta|sim|sí|não|nao|pero|mas|porque|cuando|quando|donde|onde|como|cómo|tiene|tienes|tem|quiere|quieres|quer|puedo|puede|pueden|posso|pode|podem|hacer|fazer|poner|colocar|instalar|instalación|instalação|incluye|inclui|incluido|incluso|mano|obra|mão|te|le|lo|se|ya|já|solo|só|todo|toda|tudo|algo|nada|ahora|agora|después|depois|antes|entonces|então|si|usted|ustedes|tienen|hay|tengo|tenho|quiero|quero|necesito|preciso|dime|diga|cambiar|trocar|directo|direto|resistente|garantía|garantia|años|anos)\b/gi;
+function sentenceLang(s: string): "en" | "es-pt" | null {
+  const accents = /[ñãõçáéíóúêàôü¿¡]/i.test(s);
+  const en = (s.match(SENTENCE_EN_WORDS) ?? []).length;
+  const esPt = (s.match(SENTENCE_ES_PT_WORDS) ?? []).length;
+  if (!accents && en >= 3 && esPt <= 1) return "en";
+  if ((accents || esPt >= 3) && en <= 1) return "es-pt";
+  return null;
+}
+const MIX_NOISE = /https?:\/\/\S+|\b[\w-]+\.(?:com|company|net|org|co)\b\S*|\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}|\$\s?[\d,.]+|@[\w.]+/gi;
+/** The language kinds found sentence by sentence: "en", "es-pt", both (mixed) or none (nothing clear enough to say). */
+export function replyLanguageKinds(text: string): Set<"en" | "es-pt"> {
+  const prose = normalizeSmartPunct(stripProtectedTags(text || "")).replace(MIX_NOISE, " ");
+  const kinds = new Set<"en" | "es-pt">();
+  for (const s of prose.match(RECO_SENTENCE) ?? []) {
+    if ((s.match(/[a-zà-ÿ']+/gi) ?? []).length < 4) continue;
+    const k = sentenceLang(s);
+    if (k) kinds.add(k);
+  }
+  return kinds;
+}
+/** True when one sentence of the reply is clearly English and another clearly Spanish/Portuguese. */
+export function replyMixesLanguages(text: string): boolean {
+  return replyLanguageKinds(text).size > 1;
 }
 
 // The Meta ad quick-reply FAQ buttons arrive as known first messages. Answer the
@@ -4950,7 +5033,7 @@ export async function getAIResponse(
   // the reply is verified to be in that language before it ships.
   const langSwitch = languageSwitchRequest(messages);
   if (langSwitch) console.log("[AI] language switch requested: " + langSwitch.target + " (" + langSwitch.reason + ")");
-  const usersLang = (): "en" | "es" | "pt" => langSwitch?.target ?? detectLang(messages.filter((m) => m.role === "user").map((m) => m.content).join(" "));
+  const usersLang = (): "en" | "es" | "pt" => conversationLang(messages, langSwitch?.target);
 
   // PORT ST. LUCIE (owner rule 2026-09-26): the turn the client says they are
   // there gets the deterministic handoff + the owner alert (both WhatsApps); a
@@ -5329,7 +5412,7 @@ export async function getAIResponse(
     {
       const lastUser = [...(messages ?? [])].reverse().find((m) => m.role === "user");
       if (lastUser && isShowroomQuestion(lastUser.content || "")) {
-        const fixed = fixShowroomDenial(cleaned, detectLang(lastUser.content || ""));
+        const fixed = fixShowroomDenial(cleaned, usersLang());
         if (fixed !== cleaned) {
           cleaned = fixed;
           console.log("[AI] showroom backstop: replaced 'no showroom' denial with the mobile showroom answer");
@@ -5556,6 +5639,24 @@ export async function getAIResponse(
       }
     }
 
+    // ONE LANGUAGE PER REPLY (owner, 2026-10-14, Lusniel on WhatsApp): a reply
+    // that is part English and part Spanish/Portuguese, whatever produced it,
+    // is rewritten once in the client's language; when the rewrite cannot be
+    // verified the original ships and the log says so.
+    if (process.env.LANG_MIX_REWRITE !== "off" && replyMixesLanguages(cleaned)) {
+      const target = usersLang();
+      console.warn("[AI] mixed-language reply (client writes " + target + "): " + cleaned.replace(/\s+/g, " ").slice(0, 200));
+      const redo = await rewriteInOneLanguage(anthropic, stableSystem, dynamicSystem, messages, cleaned, target);
+      if (redo) {
+        cleaned = redo.text;
+        tightenIn += redo.inputTokens;
+        tightenOut += redo.outputTokens;
+        console.log("[AI] mixed-language reply rewritten in " + target);
+      } else {
+        console.warn("[AI] mixed-language reply could not be rewritten safely, shipping the original");
+      }
+    }
+
     // LANGUAGE SWITCH backstop (Leticia, FB 2026-09-17): the client said they
     // do not speak English (or asked for a language) and the reply is still in
     // the wrong language, or comments "Already in English": ship the
@@ -5757,6 +5858,92 @@ async function tightenLongReply(
     return null;
   } catch (e) {
     console.error("[AI] short-reply rewrite failed, keeping the original:", e);
+    return null;
+  }
+}
+
+// ─── One language per reply: the rewrite-once net (owner, 2026-10-14) ────────
+// Same shape as tightenLongReply: the draft goes back to the model with one
+// instruction, and the rewrite only ships when it is in ONE language, the
+// client's, and tightenedIsSafe says every fact survived (prices with what
+// they cover, times, days, phone, link, tags, the zip / details request, the
+// forward question). A translation may run a little longer than the draft
+// (sameLengthOk). Any failure keeps the original, and the log says so.
+// LANG_MIX_REWRITE=off is the kill switch.
+const LANG_NAME: Record<"en" | "es" | "pt", string> = { en: "ENGLISH", es: "SPANISH", pt: "PORTUGUESE" };
+// The floor and product words of a draft must all survive its rewrite: on the
+// live check (2026-10-14) one rewrite of "Yo iría con nuestro vinyl de lujo, es
+// 100% impermeable…" came back as "Es 100% resistente al agua…", the
+// recommendation itself gone, and tightenedIsSafe has no notion of products.
+const PRODUCT_WORDS: Array<[RegExp, string]> = [
+  [/\bvin(?:yl|il|[ií]lico)\b/i, "vinyl"], [/\b(?:tiles?|porcelain|porcelanato|cer[aá]mica)\b/i, "tile"], [/\b(?:hardwood|madera|madeira)\b/i, "wood"],
+  [/\b(?:laminate|laminado)\b/i, "laminate"], [/\b(?:carpet|carpete|alfombra)\b/i, "carpet"], [/\b(?:stairs?|escaleras?|escadas?)\b/i, "stairs"],
+  [/\bherringbone\b/i, "herringbone"], [/\bquarter\s+round\b/i, "quarter round"], [/\bshowroom\b/i, "showroom"], [/\b(?:samples?|muestras?|amostras?)\b/i, "samples"],
+];
+function productWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const [re, key] of PRODUCT_WORDS) if (re.test(text || "")) out.add(key);
+  return out;
+}
+export async function rewriteInOneLanguage(
+  anthropic: Anthropic,
+  stableSystem: string,
+  dynamicSystem: string,
+  messages: ChatMessage[],
+  draft: string,
+  target: "en" | "es" | "pt"
+): Promise<AIResponse | null> {
+  const name = LANG_NAME[target];
+  const instruction =
+    "[SYSTEM: Your draft above mixes languages: part of it is in English and part in Spanish or Portuguese. This client writes in " + name + ", and the whole conversation must stay in " + name + ". " +
+    "Rewrite the draft as the message you will actually send, entirely in " + name + ": translate the sentences that are in the other language, keep the ones already in " + name + " as they are. " +
+    "KEEP exactly: every sentence and every fact, the recommendation if there is one, every dollar amount together with what it covers, every day and clock time, any phone number, any link, any [TAG], the request for the address with the zip code if the draft asks for it, and the question that moves the conversation forward. Product names (tile, vinyl, hardwood, quarter round) stay as they are and every one of them must still be in the rewrite. " +
+    "Do not add anything, do not drop anything, same length or shorter, no dashes, no emojis, no inverted Spanish marks. Output ONLY the rewritten message, with nothing before or after it.]";
+  const convo: Array<{ role: "user" | "assistant"; content: string | Array<{ type: "text"; text: string; cache_control: { type: "ephemeral"; ttl: "1h" } }> }> = [
+    ...messages.map((m, i) =>
+      i === messages.length - 1
+        ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
+        : { role: m.role, content: m.content }
+    ),
+    { role: "assistant" as const, content: draft },
+    { role: "user" as const, content: instruction },
+  ];
+  try {
+    const res = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 400,
+      system: [
+        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
+      ],
+      messages: convo,
+    });
+    const inputTokens = res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);
+    const outputTokens = res.usage.output_tokens;
+    const b = res.content[0];
+    if (b?.type !== "text" || res.stop_reason === "max_tokens") {
+      console.log("[AI] one-language rewrite came back empty or truncated, keeping the original");
+      return null;
+    }
+    const rewrite = stripReasoningLeak(mergeLeadingGreeting(stripWrappingQuotes(removeEmojis(removeDashes(b.text))))).trim();
+    const kinds = replyLanguageKinds(rewrite);
+    if (kinds.size > 1 || kinds.has(target === "en" ? "es-pt" : "en")) {
+      console.log("[AI] one-language rewrite is still mixed or in the wrong language, keeping the original");
+      return null;
+    }
+    const verdict = tightenedIsSafe(draft, rewrite, { asksForDetails: isAskingForBookingInfo, freeAlreadySaid: freeAlreadySaid(messages), clientAskedPrice: clientAskedPrice(messages), sameLengthOk: true });
+    if (!verdict.ok) {
+      console.log("[AI] one-language rewrite rejected (" + verdict.reason + "), keeping the original");
+      return null;
+    }
+    const lost = [...productWords(draft)].filter((w) => !productWords(rewrite).has(w));
+    if (lost.length) {
+      console.log("[AI] one-language rewrite dropped " + lost.join(", ") + ", keeping the original");
+      return null;
+    }
+    return { text: rewrite, inputTokens, outputTokens };
+  } catch (e) {
+    console.error("[AI] one-language rewrite failed, keeping the original:", e);
     return null;
   }
 }

@@ -2482,9 +2482,11 @@ export function earlierSlotAckMessage(lang: Lang, dateStr: string, timeStr: stri
 // The chars ã õ ç â ê à ô exist in Portuguese but not Spanish, so each is a
 // heavyweight PT signal; ñ ¿ ¡ are the Spanish mirror image.
 export type Lang = "es" | "en" | "pt";
-export function detectLang(text: string): Lang {
+export type LangScores = { es: number; en: number; pt: number };
+/** The evidence detectLang decides on: accented letters and keywords per language. All zero = the text carries no language signal at all (conversationLang in ai.ts then keeps the language we have been writing in). */
+export function langScores(text: string): LangScores {
   const t = (text || "").toLowerCase();
-  if (!t.trim()) return "en";
+  if (!t.trim()) return { es: 0, en: 0, pt: 0 };
   let es = (t.match(/[ñ¿¡]/g) || []).length * 2 + (t.match(/[áéíóú]/g) || []).length;
   let en = 0;
   let pt = (t.match(/[ãõçâêàô]/g) || []).length * 2;
@@ -2495,6 +2497,10 @@ export function detectLang(text: string): Lang {
   for (const w of esWords) if (new RegExp(`\\b${w}\\b`).test(t)) es++;
   for (const w of enWords) if (new RegExp(`\\b${w}\\b`).test(t)) en++;
   for (const w of ptWords) if (new RegExp(`(?:^|\\W)${w}(?=$|\\W)`).test(t)) pt++;
+  return { es, en, pt };
+}
+export function detectLang(text: string): Lang {
+  const { es, en, pt } = langScores(text);
   if (pt > es && pt > en) return "pt";
   return es > en ? "es" : "en";
 }

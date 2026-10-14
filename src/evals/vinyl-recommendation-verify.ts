@@ -22,7 +22,8 @@
  *   caracteres visíveis, sem frase corporativa, sem traço, sem emoji).
  * Run: npx tsx src/evals/vinyl-recommendation-verify.ts   |   LIVE=1 npx tsx src/evals/vinyl-recommendation-verify.ts
  */
-import { replyRecommendsAgainstVinyl, clientChoseTileOrHardwood, fixVinylRecommendation, getAIResponse, type ChatMessage } from "../lib/ai";
+import { replyRecommendsAgainstVinyl, clientChoseTileOrHardwood, fixVinylRecommendation, conversationLang, replyMixesLanguages, getAIResponse, type ChatMessage } from "../lib/ai";
+import { AD_REPLY_NOTE } from "../lib/system-prompt";
 import { visibleLength, sentenceCount } from "../lib/reply-length";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -74,6 +75,14 @@ for (const r of [
   "Perfect, see you then! [BOOK:{\"name\":\"\",\"phone\":\"6892863042\",\"address\":\"1910 E Sunrise Blvd, Fort Lauderdale 33304\",\"date\":\"2026-09-25\",\"time\":\"3pm\"}]",
   "Yo iría con nuestro vinyl de lujo, es 100% impermeable y aguanta muy bien el tráfico pesado. Cuántos pies cuadrados son?",
   "Eu iria com o nosso vinil de luxo, é 100% à prova d'água e aguenta muito bem tráfego pesado. Quantos sqft tem?",
+  // Lusniel (WhatsApp 14/10/2026): a madeira é um LOOK do vinil, não uma recomendação.
+  "Ese piso del video es nuestro vinyl de lujo con look de madera, es 100% resistente al agua y aguanta mejor que el laminado. Que tan grande es el area que quieres cambiar?",
+  "Ese es nuestro vinyl de lujo que imita madera, dura más que el laminado y es 100% resistente al agua. Cuántos pies cuadrados tienes?",
+  "Es nuestro vinyl de lujo tipo madera, resiste más que el laminado y va directo sobre tus losas. Cuántos pies cuadrados son?",
+  "That's our wood-look luxury vinyl, it holds up better than laminate and is 100% waterproof. How many square feet is the space?",
+  "It's our luxury vinyl with a hardwood look, it handles heavy traffic and is easier to clean than laminate. One area or the whole house?",
+  "Compared to tile, our vinyl holds up better to drops and is warmer underfoot. How many square feet?",
+  "É o nosso vinil de luxo com aparência de madeira, aguenta mais que o laminado e é 100% à prova d'água. Quantos sqft tem?",
 ]) ck(`não pega: «${r.slice(0, 60)}»`, !replyRecommendsAgainstVinyl(r), r);
 
 console.log("\n━━ 2. clientChoseTileOrHardwood ━━");
@@ -111,6 +120,20 @@ const fEs = fixVinylRecommendation("Para un restaurante te recomiendo porcelanat
 ck("ES: vinyl de lujo + pergunta mantida + sem ¿", /vinyl de lujo/.test(fEs) && !/porcelanato/.test(fEs) && /Cuántos pies cuadrados son\?$/.test(fEs) && !/[¿¡]/.test(fEs), fEs);
 const fPt = fixVinylRecommendation("Para restaurante eu recomendo porcelanato, aguenta mais o tráfego. Quantos sqft tem o espaço?", "pt");
 ck("PT: vinil de luxo + pergunta mantida", /vinil de luxo/.test(fPt) && !/porcelanato/.test(fPt) && /Quantos sqft tem o espaço\?$/.test(fPt), fPt);
+// Lusniel (WhatsApp 14/10/2026): a conversa é em espanhol, a última bolha chega
+// com a nota [SYSTEM: …] em inglês (nota do anúncio, canal WhatsApp, agenda) e
+// a frase enlatada saiu em INGLÊS no meio da resposta em espanhol. O idioma da
+// frase vem de conversationLang (só o texto do cliente), nunca da nota.
+const LUSNIEL: ChatMessage[] = [
+  U("Hola hablan español"),
+  A("Claro, con gusto te atiendo en español. Trabajamos con piso vinílico de lujo, tile y hardwood, y tenemos una promoción en cada uno, cuál te interesa?"),
+  U("En el video de arriba veo poniendo laminado pero nunca habias visto ese color y tan grande y me gusto bastante pero quiciera saber que tan resistente es\n\n[SYSTEM: TODAY: Wednesday, October 14, 2026 [2026-10-14]. TOMORROW: Thursday, October 15 [2026-10-15]. Current time: 16:16 Eastern.\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n• Thursday, October 15, 2026 [2026-10-15]: 1pm, 2pm, 3pm\n- NEVER offer a day without stating its available times.\n\n[WHATSAPP CHANNEL: You are chatting on WhatsApp, so you ALREADY have the client's phone number (17865233118). To confirm a visit, ask ONLY for the full property address with the zip code.]\n\n" + AD_REPLY_NOTE + "]"),
+];
+ck("Lusniel: conversationLang com a nota [SYSTEM:] em inglês = es", conversationLang(LUSNIEL) === "es", conversationLang(LUSNIEL));
+const fLus = fixVinylRecommendation("Para un restaurante te recomiendo porcelanato, aguanta más. Que tan grande es el area que quieres cambiar?", conversationLang(LUSNIEL));
+ck("Lusniel: a frase enlatada sai em espanhol, nunca em inglês", /^Yo iría con nuestro vinyl de lujo/.test(fLus) && !/I'd go with/.test(fLus) && /Que tan grande es el area que quieres cambiar\?$/.test(fLus), fLus);
+ck("Lusniel: resposta final não mistura idiomas", !replyMixesLanguages(fLus), fLus);
+ck("Lusniel: a resposta que foi enviada (inglês + espanhol) é detectada como misturada", replyMixesLanguages("I'd go with our luxury vinyl, it's 100% waterproof, scratch resistant and holds up great to heavy traffic. Que tan grande es el area que quieres cambiar?"));
 const good = "I'd go with our luxury vinyl, it's 100% waterproof and holds up great to heavy traffic. How many square feet is the space?";
 ck("reply certa fica igual", fixVinylRecommendation(good, "en") === good);
 const tagged = REAL_1 + " [NOTIFY_OWNER]";

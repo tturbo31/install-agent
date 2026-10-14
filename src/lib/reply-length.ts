@@ -172,7 +172,7 @@ export type TightenVerdict = { ok: true } | { ok: false; reason: string };
 export function tightenedIsSafe(
   original: string,
   rewrite: string,
-  opts: { asksForDetails?: (text: string) => boolean; freeAlreadySaid?: boolean; clientAskedPrice?: boolean } = {}
+  opts: { asksForDetails?: (text: string) => boolean; freeAlreadySaid?: boolean; clientAskedPrice?: boolean; sameLengthOk?: boolean } = {}
 ): TightenVerdict {
   const asksForDetails = opts.asksForDetails ?? (() => false);
   const o = original || "";
@@ -188,7 +188,12 @@ export function tightenedIsSafe(
   const oSent = sentenceCount(o);
   const rSent = sentenceCount(r);
   const fewerSentences = oSent > REPLY_MAX_SENTENCES && rSent <= REPLY_MAX_SENTENCES && rLen <= oLen * 1.1;
-  if (rLen > oLen * MIN_SHRINK && !fewerSentences) return { ok: false, reason: `not shorter enough (${oLen} -> ${rLen} chars, ${oSent} -> ${rSent} sentences)` };
+  if (opts.sameLengthOk) {
+    // A rewrite into one language (ai.ts rewriteInOneLanguage) may grow a
+    // little, Spanish and Portuguese run longer than English; one that balloons
+    // is not the same message any more.
+    if (rLen > oLen * 1.35) return { ok: false, reason: `rewrite grew too much (${oLen} -> ${rLen} chars)` };
+  } else if (rLen > oLen * MIN_SHRINK && !fewerSentences) return { ok: false, reason: `not shorter enough (${oLen} -> ${rLen} chars, ${oSent} -> ${rSent} sentences)` };
   if (META.test(deaccent(r))) return { ok: false, reason: "rewrite talks about the rewrite" };
   if (/\[BOOK:|\[CANCEL_BOOKING\]|\[REACT_ONLY\]/i.test(r)) return { ok: false, reason: "rewrite introduced a booking / silence tag" };
   if (/[\u2012\u2013\u2014\u2015]| - /.test(r)) return { ok: false, reason: "dash in the rewrite" };
