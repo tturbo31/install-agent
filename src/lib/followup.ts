@@ -89,6 +89,15 @@ export function isAdFaqButton(text: string): boolean {
   return FAQ_BUTTON.test((text || "").split(/\n\n?\[SYSTEM:/)[0]);
 }
 
+// Placeholders the webhooks store for an event with NO client words (ad card,
+// forwarded ad post, ad re-tap) are not engagement either: Stephen Bell (IG,
+// 03/10/2026) got a nudge 8h after two forwarded reels and zero typed words.
+const AD_PLACEHOLDER = /^\[Client (?:replied to|shared a post\/reel from) our ad[^\]]*\]$/i;
+export function isNonClientPlaceholder(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  return t.length === 0 || isAdFaqButton(t) || AD_PLACEHOLDER.test(t);
+}
+
 // Client told us their plan — respect it, never nudge. EN/ES/PT.
 const CLIENT_DEFERRAL = /\b(?:no,?\s+thanks?|not interested|stop|unsubscribe|wrong (?:person|number)|by accident|accidentally|didn'?t mean|just browsing|no longer|already (?:hired|found|done|booked)|i'?ll?\s+(?:reach|call|text|message|contact|get back|let (?:you|u) know|think about|keep you in mind|be in touch)|will (?:reach|call|contact|get back|let you know)|when (?:i'?m|we'?re|i am|it'?s) ready|out of town|on vacation|next (?:week|month|year)|talk to my|ask my (?:husband|wife|partner)|check with my|keep in touch|keep you posted|no me interesa|equivocad\w*|sin querer|te aviso|les? avis(?:o|amos)|luego (?:te|les?)|cuando (?:regrese|vuelva|est[ée]|lo consulte|consulte)|consultar(?:lo)? con|lo pienso|d[ée]jame pensarlo|depois (?:eu )?(?:aviso|falo|chamo|entro em contato)|te aviso|aviso voc[eê]s?|sem interesse|cliquei sem querer|vou (?:pensar|ver|falar com))\b/i;
 
@@ -122,10 +131,9 @@ export function isSchedulingAsk(text: string): boolean {
 // Conversa em que TUDO que o cliente mandou foi botão de FAQ do anúncio (ou
 // vazio) e o bot já respondeu: o "fantasma do botão" (17/09/2026).
 export function isFaqGhost(messages: FollowupMsg[]): boolean {
-  const strip = (c: string) => (c || "").split(/\n\n?\[SYSTEM:/)[0].trim();
   const users = messages.filter((m) => m.role === "user");
   if (users.length === 0 || !messages.some((m) => m.role === "assistant")) return false;
-  return users.every((m) => strip(m.content).length === 0 || isAdFaqButton(m.content));
+  return users.every((m) => isNonClientPlaceholder(m.content));
 }
 
 // O bot já disse um valor em dólar nesta conversa ("$5 per sqft", "$4,500").
@@ -255,7 +263,7 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     // AFTER our first reply (the ghost path above is the only exception).
     const firstBotIdx = messages.findIndex((m) => m.role === "assistant");
     const engaged = messages.some(
-      (m, i) => i > firstBotIdx && m.role === "user" && strip(m.content).trim().length > 0 && !isAdFaqButton(m.content)
+      (m, i) => i > firstBotIdx && m.role === "user" && !isNonClientPlaceholder(m.content)
     );
     if (!engaged) return no("never-genuinely-engaged");
   }

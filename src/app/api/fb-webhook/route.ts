@@ -8,6 +8,8 @@ import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies,
 import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
 import { resolveCommentChatCommentId, registerCommentChat, pendingCommentChat } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
+import { classifyFeedShare, isFlooringShareNote } from "@/lib/shared-media-policy";
+import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
@@ -692,6 +694,26 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (audioUrl && !rawText) rawText = "[voice message]";
     if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
+
+    // ── Reel/post/link forwarded from someone else's feed, with no words (14/10/2026) ──
+    // Same rule as Instagram (shared-media-policy.ts). On Messenger a forwarded
+    // meme often arrives WITH the thread's original ad referral re-attached, so
+    // the referral alone does not make it an ad reply: the shared media decides
+    // (caption signature or the platform's media→ad map). Unrelated = dropped
+    // before it is stored; our ad post = ad reply as before; third-party
+    // flooring content = note for the model.
+    const feedShare = await classifyFeedShare(
+      msg,
+      { hasText: !!(msg?.text as string | undefined)?.trim(), hasPostback: false, hasReferral: isAdReferral },
+      consultarMidiasNaPlataforma
+    );
+    if (feedShare.kind === "unrelated") {
+      console.log(`[FB] ${feedShare.share.type} from someone else's feed, no words (${psid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
+      return;
+    }
+    if (feedShare.kind === "flooring") rawText = feedShare.note;
+    else if (feedShare.kind === "ours") console.log(`[FB] our ad ${feedShare.share.type} forwarded with no words (${feedShare.via}) — ad reply`);
     if (!rawText) {
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
       return;
@@ -1241,7 +1263,7 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // If the client typed real text (e.g. an ad reply with the pre-filled question),
     // always answer it even when an attached photo could not be analyzed.
     const clientHasText = !!(msg?.text as string)?.trim();
-    const hasRealContent = clientHasText || mediaProcessed;
+    const hasRealContent = clientHasText || mediaProcessed || isFlooringShareNote(rawText);
 
     if (!hasRealContent) {
       const fallback = imageUrl

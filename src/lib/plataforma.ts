@@ -104,9 +104,18 @@ export type AnuncioDaMidia = { ad_id: string; ad_name: string };
 export async function resolverMidiasNaPlataforma(
   midias: string[]
 ): Promise<Record<string, AnuncioDaMidia>> {
+  return (await consultarMidiasNaPlataforma(midias)).resolvidas;
+}
+
+// Mesma consulta, dizendo também se a plataforma RESPONDEU (ok) ou se não deu
+// para perguntar (sem token, sem id válido, HTTP ≠ 200, timeout). O reel alheio
+// sem texto (shared-media-policy.ts, 14/10/2026) precisa da diferença: "não é
+// anúncio nosso" só vale quando a plataforma de fato respondeu.
+export type ConsultaMidias = { ok: boolean; resolvidas: Record<string, AnuncioDaMidia> };
+export async function consultarMidiasNaPlataforma(midias: string[]): Promise<ConsultaMidias> {
   const token = process.env.PLATAFORMA_WEBHOOK_TOKEN;
   const ids = [...new Set(midias.filter((m) => /^\d{8,}$/.test(m)))].slice(0, 10);
-  if (!token || ids.length === 0) return {};
+  if (!token || ids.length === 0) return { ok: false, resolvidas: {} };
   const base = (process.env.PLATAFORMA_URL || "https://ozzi-plataforma.vercel.app").replace(/\/$/, "");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 4_000);
@@ -119,13 +128,13 @@ export async function resolverMidiasNaPlataforma(
     });
     if (!res.ok) {
       console.warn(`[FUNIL] mídia->anúncio HTTP ${res.status}`);
-      return {};
+      return { ok: false, resolvidas: {} };
     }
     const json = (await res.json()) as { resolvidas?: Record<string, AnuncioDaMidia> };
-    return json.resolvidas ?? {};
+    return { ok: true, resolvidas: json.resolvidas ?? {} };
   } catch (err) {
     console.warn(`[FUNIL] mídia->anúncio falhou: ${String(err).slice(0, 120)}`);
-    return {};
+    return { ok: false, resolvidas: {} };
   } finally {
     clearTimeout(timer);
   }

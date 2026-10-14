@@ -7,6 +7,8 @@ import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
+import { classifyFeedShare, isFlooringShareNote } from "@/lib/shared-media-policy";
+import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import {
   getAIResponse,
   analyzeImageFromBase64,
@@ -766,6 +768,30 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // carried no readable text — store it and engage instead of going silent.
     if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
 
+    // ── Reel/post forwarded from someone else's feed, with no words (14/10/2026) ──
+    // Meta delivers a forwarded reel/post as an ig_reel/ig_post attachment with
+    // NO text and NO referral: exactly the shape the line above turns into the ad
+    // placeholder, so every forwarded meme/prayer/political clip got the "tile,
+    // vinyl, or hardwood?" nudge (365 reels + 125 posts in one week; 106 threads
+    // in 30 days with zero client words; Stephen Bell: 17 reels, 13 replies).
+    // Owner's rule: do not answer those people. OUR ad post forwarded with no
+    // words is still an ad reply (caption signature or the platform's media→ad
+    // map); third-party flooring content reaches the model as a note; anything
+    // else is dropped BEFORE it is stored: no message row, no funnel lead, no
+    // reply, and the next bubble (if the person ever types) is handled normally.
+    const feedShare = await classifyFeedShare(
+      messaging.message,
+      { hasText: !!messaging.message?.text?.trim(), hasPostback: !!postbackIG, hasReferral: isAdReferral },
+      consultarMidiasNaPlataforma
+    );
+    if (feedShare.kind === "unrelated") {
+      console.log(`[IG] ${feedShare.share.type} from someone else's feed, no words (${senderIgsid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
+      if (refComClique) waitUntil(persistirAnuncioDaConversa(conversation.id, refComClique));
+      return;
+    }
+    if (feedShare.kind === "flooring") rawText = feedShare.note;
+    else if (feedShare.kind === "ours") console.log(`[IG] our ad ${feedShare.share.type} forwarded with no words (${feedShare.via}) — ad reply`);
+
     console.log(`[IG] msg from ${senderIgsid} | text:${!!messaging.message?.text} | attachments:[${attachments.map((a) => a.type).join(",")}] | adReferral:${isAdReferral}`);
 
     if (!rawText) return;
@@ -1364,7 +1390,9 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (shareAttachment) {
       const shareTitle = shareAttachment.payload?.title ?? null;
       const isFloorPlan = shareTitle ? /planta|floor.?plan|blueprint|casa|apartamento|projeto/i.test(shareTitle) : false;
-      const shareNote = isFloorPlan
+      const shareNote = isFlooringShareNote(rawText)
+        ? rawText // third-party flooring post (shared-media-policy.ts): not our ad
+        : isFloorPlan
         ? `[Client shared a floor plan${shareTitle ? `: "${shareTitle}"` : ""}]`
         : `[Client shared a post/reel from our ad${shareTitle ? `: "${shareTitle}"` : ""}]`;
       // CRITICAL: when the client replies to an ad, the reel arrives as a share
