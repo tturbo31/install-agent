@@ -510,6 +510,8 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       } else {
         const r = await sendInstagramMessage(conv.igsid, text);
         if (!r.ok) { result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: r.error }); continue; }
+        // Instagram link block (508): the client got the link-free version.
+        if (r.sentText) text = r.sentText;
       }
       // Record it exactly like the webhooks do, so the panel shows it and the
       // FOLLOWUP_MARKER dedup can never let a second nudge through. O sufixo

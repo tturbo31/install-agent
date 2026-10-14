@@ -1089,7 +1089,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
               await supabaseAdmin.from("instagram_messages").insert({
                 conversation_id: conversation.id,
                 role: "assistant",
-                content: handoff,
+                content: handoffSent.sentText ?? handoff,
               });
             }
           }
@@ -1182,7 +1182,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
         if (!(lastBotForCond?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForCond.content }], ack))) {
           const ackSent = await sendInstagramMessage(senderIgsid, ack);
           if (ackSent.ok) {
-            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ack });
+            await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ackSent.sentText ?? ack });
           }
         }
         waitUntil(appendUpcomingBookingNote(senderIgsid, `Cliente pediu aviso se abrir horário mais cedo: "${condText.replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
@@ -1236,7 +1236,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
             await supabaseAdmin.from("instagram_messages").insert({
               conversation_id: conversation.id,
               role: "assistant",
-              content: reply,
+              content: addrSent.sentText ?? reply,
             });
           }
         }
@@ -1282,7 +1282,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
           await supabaseAdmin.from("instagram_messages").insert({
             conversation_id: conversation.id,
             role: "assistant",
-            content: details,
+            content: detailsSent.sentText ?? details,
           });
         }
       }
@@ -1323,7 +1323,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       if (!(lastBotForAck?.content && isConsecutiveDuplicate([{ role: "assistant", content: lastBotForAck.content }], ack))) {
         const ackSent = await sendInstagramMessage(senderIgsid, ack);
         if (ackSent.ok) {
-          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ack });
+          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conversation.id, role: "assistant", content: ackSent.sentText ?? ack });
         }
       }
       waitUntil(appendUpcomingBookingNote(senderIgsid, `Cliente pediu aviso antes da visita: "${(gateBurst || rawText).replace(/\s+/g, " ").slice(0, 100)}"`).catch(() => false));
@@ -1498,7 +1498,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conversation.id,
         role: "assistant",
-        content: noContentSent.ok ? finalResponse : finalResponse + SEND_FAILED_DB_SUFFIX,
+        content: noContentSent.ok ? (noContentSent.sentText ?? finalResponse) : finalResponse + SEND_FAILED_DB_SUFFIX,
       });
       return;
     }
@@ -1770,7 +1770,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       await supabaseAdmin.from("instagram_messages").insert({
         conversation_id: conversation.id,
         role: "assistant",
-        content: nudgeSent.ok ? retapNudge : retapNudge + SEND_FAILED_DB_SUFFIX,
+        content: nudgeSent.ok ? (nudgeSent.sentText ?? retapNudge) : retapNudge + SEND_FAILED_DB_SUFFIX,
       });
       return;
     }
@@ -1830,7 +1830,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
             await supabaseAdmin.from("instagram_messages").insert({
               conversation_id: conversation.id,
               role: "assistant",
-              content: fallback,
+              content: outageSent.sentText ?? fallback,
             });
           }
         } catch (sendErr) {
@@ -2142,7 +2142,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // (dashboard showed "answered", client saw nothing, and the history-based
     // guards then suppressed the re-send). The owner was already alerted by
     // reportSendFailure inside the send; the next inbound regenerates fresh.
-    let mainSent: { ok: boolean; error?: string };
+    let mainSent: { ok: boolean; error?: string; sentText?: string };
     try {
       mainSent = await sendInstagramMessage(senderIgsid, outboundResponse);
     } catch (sendErr) {
@@ -2165,17 +2165,19 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     }
 
     if (clientSentAudio && process.env.OPENAI_API_KEY) {
-      generateSpeech(outboundResponse)
+      generateSpeech(mainSent.sentText ?? outboundResponse)
         .then(async (buf) => {
           if (buf) await sendInstagramAudio(senderIgsid, buf);
         })
         .catch((e) => console.error("TTS error:", e));
     }
 
+    // Under the Instagram link block the delivered text is the link-free one
+    // (sentText): store what the client saw, or the echo reads as the owner.
     await supabaseAdmin.from("instagram_messages").insert({
       conversation_id: conversation.id,
       role: "assistant",
-      content: outboundResponse,
+      content: mainSent.sentText ?? outboundResponse,
     });
 
     // ── Empty-promise backstop ────────────────────────────────────────────

@@ -150,6 +150,98 @@ async function isPerRecipientFailure(
   return false;
 }
 
+// ─── Instagram link-sharing restriction (Graph 508) ─────────────────────────
+// 2026-10-14: Instagram started refusing every DM that carried a link
+// ({code: 508, message: "Invalid message id"}) while link-free replies kept
+// delivering and the token was valid — see ig-link-policy.ts. The siren read
+// it as a channel outage and told the owner to mint a new token; he did,
+// nothing changed. The marker "iglinkblock|<ISO>" records the last refusal:
+// while it is younger than IG_LINK_BLOCK_TTL_MS the send neutralizes links
+// up front (no failed call, no noise); after that the next link is tried for
+// real — a delivered link clears the marker, another 508 renews it.
+const IG_LINK_BLOCK_PREFIX = "iglinkblock|";
+const IG_LINK_BLOCK_TTL_MS = 24 * 60 * 60 * 1000;
+const IG_LINK_BLOCK_ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
+const IG_LINK_BLOCK_CACHE_MS = 60 * 1000;
+let igLinkBlockCache: { at: number; since: number | null } | null = null;
+
+async function igLinkBlockRows(): Promise<string[]> {
+  const { data } = await supabaseAdmin.from("platform_settings").select("platform").like("platform", `${IG_LINK_BLOCK_PREFIX}%`);
+  return (data ?? []).map((r) => String(r.platform));
+}
+
+async function igLinkBlockSince(): Promise<number | null> {
+  if (igLinkBlockCache && Date.now() - igLinkBlockCache.at < IG_LINK_BLOCK_CACHE_MS) return igLinkBlockCache.since;
+  let since: number | null = null;
+  try {
+    since =
+      (await igLinkBlockRows())
+        .map((r) => Date.parse(r.slice(IG_LINK_BLOCK_PREFIX.length)))
+        .filter(Number.isFinite)
+        .sort((a, b) => b - a)[0] ?? null;
+  } catch (err) {
+    console.error("[DELIVERY] ig link-block read failed:", err);
+  }
+  igLinkBlockCache = { at: Date.now(), since };
+  return since;
+}
+
+// True while Instagram is known to refuse links from our account.
+export async function igLinkBlockActive(): Promise<boolean> {
+  const since = await igLinkBlockSince();
+  return since !== null && Date.now() - since < IG_LINK_BLOCK_TTL_MS;
+}
+
+export async function markIgLinkBlock(): Promise<void> {
+  try {
+    const old = await igLinkBlockRows();
+    await supabaseAdmin.from("platform_settings").insert({ platform: `${IG_LINK_BLOCK_PREFIX}${new Date().toISOString()}`, paused: false });
+    for (const r of old) await supabaseAdmin.from("platform_settings").delete().eq("platform", r);
+  } catch (err) {
+    console.error("[DELIVERY] ig link-block mark failed:", err);
+  }
+  igLinkBlockCache = { at: Date.now(), since: Date.now() };
+}
+
+// Called when a reply WITH a link was delivered: the restriction is over.
+export async function clearIgLinkBlock(): Promise<void> {
+  if ((await igLinkBlockSince()) === null) return;
+  try {
+    for (const r of await igLinkBlockRows()) await supabaseAdmin.from("platform_settings").delete().eq("platform", r);
+    console.log("[DELIVERY] Instagram delivered a link again — link block cleared");
+  } catch (err) {
+    console.error("[DELIVERY] ig link-block clear failed:", err);
+  }
+  igLinkBlockCache = { at: Date.now(), since: null };
+}
+
+// Owner note for the link block: calm (the channel is fine), once a day, and
+// with the two things only he can do. Never the siren — its "mint a new
+// token" advice sent him down the wrong path on 2026-10-14.
+export async function reportIgLinkBlock(clientId: string, errorMsg: string): Promise<void> {
+  try {
+    await recordSendFailure("instagram", clientId, errorMsg);
+    if (!(await shouldAlert("sendfail", "instagram-linkblock", IG_LINK_BLOCK_ALERT_EVERY_MS))) return;
+    const msg = [
+      `⚠️ OzziFloors - Instagram bloqueou o envio de LINKS nas DMs`,
+      ``,
+      `O Instagram esta recusando mensagens com link (erro 508 "Invalid message id"). Respostas SEM link continuam chegando normalmente. NAO e problema de token: trocar o token nao resolve.`,
+      ``,
+      `O que o bot faz sozinho: reenvia a mesma resposta sem o link. O site vira "nosso site (o link esta na bio)" e link de financiamento/contrato vira "me escreve no (561) 674-8334 que eu te mando por la".`,
+      ``,
+      `O que so voce pode fazer:`,
+      `1. Coloque https://ozzifloors.company como site na bio do @ozzi.floors (hoje a bio aponta para o ozzifloors.com antigo, que nao e mais nosso). O bot esta mandando os clientes para o link da bio.`,
+      `2. No app do Instagram: Configuracoes > Status da conta > Recursos que voce nao pode usar. Se aparecer restricao de links, siga o que o Instagram pedir (costuma liberar em 1 a 3 dias).`,
+      ``,
+      `Cliente que recebeu a versao sem link: ${clientId}`,
+      `O bot testa o link de verdade de novo a cada 24h e volta ao normal sozinho quando o Instagram liberar.`,
+    ].join("\n");
+    await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+  } catch (err) {
+    console.error("[DELIVERY] link-block alert failed:", err);
+  }
+}
+
 // A send to a client failed after retries. Log loudly + alert the owner on
 // WhatsApp (the channel that still works) at most once per hour per channel.
 // Channel-wide failures (token, permissions, rate limit) get the loud siren;
@@ -186,7 +278,9 @@ export async function reportSendFailure(
         `Exemplo de cliente afetado: ${clientId}`,
         ``,
         channel === "instagram"
-          ? `Se o erro fala em token/sessao expirada (codigo 190): gere um token novo no Meta e envie para /api/ig-diag?secret=...&settoken=... (nao precisa de deploy).`
+          ? /^508:/.test(errorMsg)
+            ? `Erro 508 = o Instagram esta bloqueando LINKS nas DMs desta conta. NAO e token (trocar o token nao resolve). Confira no app: Configuracoes > Status da conta > Recursos que voce nao pode usar.`
+            : `Se o erro fala em token/sessao expirada (codigo 190): gere um token novo no Meta e envie para /api/ig-diag?secret=...&settoken=... (nao precisa de deploy).`
           : channel === "facebook"
             ? `Se o erro fala em token/sessao expirada (codigo 190): gere um token novo da PAGINA no Meta e envie para /api/ig-diag?secret=...&setfbtoken=... (nao precisa de deploy). Trocar a senha do Facebook derruba os dois tokens de uma vez — Instagram e Messenger.`
             : `Verifique a conexao do canal no painel (Z-API: assinatura em dia e celular conectado).`,
@@ -345,13 +439,14 @@ export async function retryFailedSends(): Promise<void> {
         console.log(`[DELIVERY] retry ${conv.igsid}: already claimed, skipping (no double send)`);
         continue;
       }
-      let r: { ok: boolean; error?: string };
+      let r: { ok: boolean; error?: string; sentText?: string };
       if (conv.igsid.startsWith("wa_")) r = await sendWhatsAppMessage(conv.igsid.slice(3), text);
       else if (conv.igsid.startsWith("fb_")) r = await sendFacebookMessage(conv.igsid.slice(3), text);
       else r = await sendInstagramMessage(conv.igsid, text);
       if (r.ok) {
-        // Marker off → the panel shows a normal delivered reply.
-        await supabaseAdmin.from("instagram_messages").update({ content: text }).eq("id", m.id);
+        // Marker off → the panel shows a normal delivered reply. Under the IG
+        // link block the delivered text is the link-free one: store THAT.
+        await supabaseAdmin.from("instagram_messages").update({ content: r.sentText ?? text }).eq("id", m.id);
         console.log(`[DELIVERY] retry ${conv.igsid}: DELIVERED`);
         continue;
       }

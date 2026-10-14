@@ -31,6 +31,9 @@ export async function POST(
   // Route to the correct platform based on igsid prefix. A failed send returns
   // 500 and stores NOTHING — the panel must never show a reply the client
   // didn't receive (that lie hid the 2026-07-22 IG token outage for 19h).
+  // Instagram may deliver a link-free version of the text (link block, Graph
+  // 508 — ig-link-policy.ts): the DB keeps what the client actually saw.
+  let storedText = body.text;
   if (igsid.startsWith("wa_")) {
     const waId = igsid.slice(3);
     const waResult = await sendWhatsAppMessage(waId, body.text);
@@ -48,6 +51,7 @@ export async function POST(
     if (!igResult.ok) {
       return NextResponse.json({ error: `Instagram send failed: ${igResult.error ?? "unknown"}` }, { status: 500 });
     }
+    if (igResult.sentText) storedText = igResult.sentText;
   }
 
   // Store in DB
@@ -59,7 +63,7 @@ export async function POST(
       // bate com esta linha e a própria resposta dele vira "[Treino]".
       conversation_id: id,
       role: "assistant",
-      content: stripInvertedPunctuation(body.text),
+      content: stripInvertedPunctuation(storedText),
     })
     .select()
     .single();

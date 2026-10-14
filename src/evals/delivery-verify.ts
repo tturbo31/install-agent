@@ -31,7 +31,7 @@ function main() {
   const ig = read("src/lib/instagram.ts");
   ck("IG send returns a structured result", /IgSendResult/.test(ig) && /ok: true, via: "instagram"/.test(ig), "IgSendResult shape");
   ck("IG send inspects body.error", /body\.error/.test(ig));
-  ck("IG send retries once", /attempt <= 2/.test(ig));
+  ck("IG send retries once", /attempt <= maxAttempts/.test(ig) && /let maxAttempts = 2/.test(ig));
   ck("IG send alerts the owner on definitive failure", /reportSendFailure\("instagram"/.test(ig));
   ck("IG send falls back to the Messenger bridge", /messenger-bridge/.test(ig) && /graph\.facebook\.com\/v24\.0\/me\/messages/.test(ig));
   ck("IG send reads the token from the DB resolver (not raw env)", /getInstagramToken\(\)/.test(ig) && !/process\.env\.INSTAGRAM_ACCESS_TOKEN/.test(ig));
@@ -61,7 +61,7 @@ function main() {
   const igSrc = read("src/app/api/webhook/route.ts");
   // Rev. 5d 2026-08-10: a failed nudge send used to vanish without a trace — now
   // it is queued with SEND_FAILED so the outbox retries (or gives up on 551s).
-  ck("IG: re-tap nudge queued with SEND_FAILED on failure", /content: nudgeSent\.ok \? retapNudge : retapNudge \+ SEND_FAILED_DB_SUFFIX/.test(igSrc));
+  ck("IG: re-tap nudge queued with SEND_FAILED on failure", /content: nudgeSent\.ok \? \(nudgeSent\.sentText \?\? retapNudge\) : retapNudge \+ SEND_FAILED_DB_SUFFIX/.test(igSrc));
   ck("IG: visit details stored only when delivered", /const detailsSent = await sendInstagramMessage\(senderIgsid, details\);\s*if \(detailsSent\.ok\)/.test(igSrc));
   const fbSrc = read("src/app/api/fb-webhook/route.ts");
   ck("FB: re-tap nudge queued with SEND_FAILED on failure", /content: nudgeSent\.ok \? retapNudge : retapNudge \+ SEND_FAILED_DB_SUFFIX/.test(fbSrc));
@@ -118,7 +118,8 @@ function main() {
   ck("SEND_FAILED_DB_SUFFIX exported", /export const SEND_FAILED_DB_SUFFIX = "\\n\\n\[SYSTEM: SEND_FAILED\]"/.test(obt));
   ck("retry sweep exists with 10-min throttle + 48h window", /retryFailedSends/.test(del) && /RETRY_SWEEP_GAP_MS = 10 \* 60 \* 1000/.test(del) && /RETRY_WINDOW_H = 48/.test(del));
   ck("retry drops the queued reply when client wrote again / owner took over", /newerUser\?\.length \|\| conv\.mode === "human"/.test(del));
-  ck("retry clears the marker only after a confirmed delivery", /if \(r\.ok\) \{[\s\S]*?update\(\{ content: text \}\)/.test(del));
+  // 2026-10-14: under the Instagram link block the delivered text is the link-free one (r.sentText).
+  ck("retry clears the marker only after a confirmed delivery", /if \(r\.ok\) \{[\s\S]*?update\(\{ content: r\.sentText \?\? text \}\)/.test(del));
   ck("per-recipient errors get calm alert, not the channel siren", /PER_RECIPIENT_CODES/.test(del) && /inalcancavel/.test(del));
   for (const [label, rel] of [
     ["Instagram", "src/app/api/webhook/route.ts"],

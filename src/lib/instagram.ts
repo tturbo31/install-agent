@@ -1,8 +1,9 @@
 import { InstagramProfile } from "@/lib/types";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getInstagramToken } from "@/lib/ig-token";
-import { reportSendFailure } from "@/lib/delivery";
+import { reportSendFailure, igLinkBlockActive, markIgLinkBlock, clearIgLinkBlock, reportIgLinkBlock } from "@/lib/delivery";
 import { stripInternalMarkers } from "@/lib/outbound-text";
+import { containsLink, neutralizeLinks, isIgLinkBlockError } from "@/lib/ig-link-policy";
 
 export async function fetchInstagramProfile(igsid: string): Promise<InstagramProfile> {
   const url = new URL(`https://graph.instagram.com/v24.0/${igsid}`);
@@ -29,6 +30,11 @@ export type IgSendResult = {
   ok: boolean;
   via: "instagram" | "messenger-bridge" | "none";
   error?: string;
+  // Set when the DELIVERED text differs from the one passed in (links
+  // neutralized under the Instagram link block, see ig-link-policy.ts). The
+  // producer must store this, never the original: stored ≠ sent turns the
+  // IG echo into "[Treino]" + mode=human and the lead goes mute.
+  sentText?: string;
 };
 
 // Send a DM. VERIFIED + VISIBLE (2026-07-22): the old version returned the raw
@@ -47,10 +53,24 @@ export async function sendInstagramMessage(
 ): Promise<IgSendResult> {
   text = stripInternalMarkers(text);
   if (!text) return { ok: false, via: "none", error: "empty text after marker strip" };
-  const payload = JSON.stringify({ recipient: { id: recipientIgsid }, message: { text } });
+  // Link block (Graph 508 "Invalid message id", 2026-10-14 — see
+  // ig-link-policy.ts): while Instagram is known to refuse links from this
+  // account the link-free version goes out first; once the marker ages out
+  // the real link is tried again, and a delivered link clears the marker.
+  const hasLink = containsLink(text);
+  let outText = text;
+  let linkFree = false;
+  if (hasLink && (await igLinkBlockActive())) {
+    outText = neutralizeLinks(text);
+    linkFree = true;
+    console.warn("[IG] link block active — sending the link-free version to " + recipientIgsid);
+  }
+  const buildPayload = (t: string) => JSON.stringify({ recipient: { id: recipientIgsid }, message: { text: t } });
+  let payload = buildPayload(outText);
   let lastErr = "not attempted";
+  let maxAttempts = 2;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const url = new URL("https://graph.instagram.com/v24.0/me/messages");
       url.searchParams.set("access_token", await getInstagramToken());
@@ -63,17 +83,35 @@ export async function sendInstagramMessage(
         message_id?: string;
         error?: { message?: string; code?: number };
       };
-      if (!body.error && (body.message_id || res.ok)) return { ok: true, via: "instagram" };
+      if (!body.error && (body.message_id || res.ok)) {
+        // A real link just went through: whatever restriction was recorded is over.
+        if (hasLink && !linkFree) await clearIgLinkBlock();
+        return linkFree ? { ok: true, via: "instagram", sentText: outText } : { ok: true, via: "instagram" };
+      }
       lastErr = `${body.error?.code ?? res.status}: ${body.error?.message ?? "unknown"}`;
-      console.error(`🚨 sendInstagramMessage FAILED (attempt ${attempt}/2) igsid=${recipientIgsid} ${lastErr}`);
+      console.error(`🚨 sendInstagramMessage FAILED (attempt ${attempt}/${maxAttempts}) igsid=${recipientIgsid} ${lastErr}`);
+      // 508 "Invalid message id" = Instagram refused the LINK, not the message
+      // (2026-10-14: 215 link-free replies delivered that day, the one with
+      // the site link did not, token valid). The same text would fail the same
+      // way: resend it without the link and give that version its own tries.
+      if (isIgLinkBlockError(body.error?.code) && containsLink(outText)) {
+        console.warn("[IG] Instagram blocked the link (508) — resending without it to " + recipientIgsid);
+        await markIgLinkBlock();
+        await reportIgLinkBlock(recipientIgsid, lastErr);
+        outText = neutralizeLinks(outText);
+        linkFree = true;
+        payload = buildPayload(outText);
+        maxAttempts = attempt + 2;
+        continue;
+      }
       // Auth errors (expired/invalid token, code 190) won't heal on retry —
       // go straight to the bridge.
       if (body.error?.code === 190) break;
     } catch (err) {
       lastErr = String(err).slice(0, 200);
-      console.error(`🚨 sendInstagramMessage EXCEPTION (attempt ${attempt}/2):`, err);
+      console.error(`🚨 sendInstagramMessage EXCEPTION (attempt ${attempt}/${maxAttempts}):`, err);
     }
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 1200));
+    if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, 1200));
   }
 
   // ── Messenger Platform bridge ──
