@@ -159,8 +159,14 @@ async function isPerRecipientFailure(
 // while it is younger than IG_LINK_BLOCK_TTL_MS the send neutralizes links
 // up front (no failed call, no noise); after that the next link is tried for
 // real — a delivered link clears the marker, another 508 renews it.
+// 2026-10-15: TTL cut from 24h to 2h. Instagram lifted the block the same day
+// (the owner sent the link from the app at 17:26 UTC and it went through) but
+// the 24h marker kept every reply on the "link in our bio" fallback for 17
+// more hours — and the bio still pointed at the dead ozzifloors.com. At the
+// 1-2 link replies a day this account sends, one failed probe every 2h costs
+// nothing; a day of wrong fallbacks costs leads.
 const IG_LINK_BLOCK_PREFIX = "iglinkblock|";
-const IG_LINK_BLOCK_TTL_MS = 24 * 60 * 60 * 1000;
+const IG_LINK_BLOCK_TTL_MS = 2 * 60 * 60 * 1000;
 const IG_LINK_BLOCK_ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
 const IG_LINK_BLOCK_CACHE_MS = 60 * 1000;
 let igLinkBlockCache: { at: number; since: number | null } | null = null;
@@ -234,7 +240,7 @@ export async function reportIgLinkBlock(clientId: string, errorMsg: string): Pro
       `2. No app do Instagram: Configuracoes > Status da conta > Recursos que voce nao pode usar. Se aparecer restricao de links, siga o que o Instagram pedir (costuma liberar em 1 a 3 dias).`,
       ``,
       `Cliente que recebeu a versao sem link: ${clientId}`,
-      `O bot testa o link de verdade de novo a cada 24h e volta ao normal sozinho quando o Instagram liberar.`,
+      `O bot testa o link de verdade de novo a cada 2h e volta ao normal sozinho quando o Instagram liberar.`,
     ].join("\n");
     await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
   } catch (err) {

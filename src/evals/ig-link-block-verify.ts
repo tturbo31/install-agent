@@ -86,7 +86,8 @@ function main() {
 
   console.log("\n[2b] delivery.ts: marker + note");
   const del = read("src/lib/delivery.ts");
-  ck("marker row iglinkblock|<ISO>, 24h TTL, cached", /IG_LINK_BLOCK_PREFIX = "iglinkblock\|"/.test(del) && /IG_LINK_BLOCK_TTL_MS = 24 \* 60 \* 60 \* 1000/.test(del) && /IG_LINK_BLOCK_CACHE_MS/.test(del));
+  ck("marker row iglinkblock|<ISO>, 2h TTL (24h kept links off for 17h after the block lifted, 2026-10-15), cached", /IG_LINK_BLOCK_PREFIX = "iglinkblock\|"/.test(del) && /IG_LINK_BLOCK_TTL_MS = 2 \* 60 \* 60 \* 1000/.test(del) && /IG_LINK_BLOCK_CACHE_MS/.test(del));
+  ck("owner note says the real link is retried every 2h", /a cada 2h e volta ao normal sozinho/.test(del));
   ck("igLinkBlockActive / markIgLinkBlock / clearIgLinkBlock exported", /export async function igLinkBlockActive/.test(del) && /export async function markIgLinkBlock/.test(del) && /export async function clearIgLinkBlock/.test(del));
   ck("clear is a no-op without a marker (no DB write per link send)", /if \(\(await igLinkBlockSince\(\)\) === null\) return;/.test(del));
   ck("owner note once a day, calm, names the two owner actions", /shouldAlert\("sendfail", "instagram-linkblock", IG_LINK_BLOCK_ALERT_EVERY_MS\)/.test(del) && /bloqueou o envio de LINKS/.test(del) && /Status da conta/.test(del) && /bio do @ozzi\.floors/.test(del) && /trocar o token nao resolve/.test(del));
