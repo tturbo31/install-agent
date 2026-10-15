@@ -8,7 +8,7 @@ import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies,
 import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
 import { resolveCommentChatCommentId, registerCommentChat, pendingCommentChat } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { classifyFeedShare, isFlooringShareNote, isShareCaption } from "@/lib/shared-media-policy";
+import { classifyFeedShare, isFlooringShareNote, isShareCaption, wordlessShareOf, textCarriesClientIntent, SHARE_CAPTION_RECHECK_MS } from "@/lib/shared-media-policy";
 import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
 import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
@@ -703,6 +703,9 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // (caption signature or the platform's media→ad map). Unrelated = dropped
     // before it is stored; our ad post = ad reply as before; third-party
     // flooring content = note for the model.
+    // Mark "wordless share seen" BEFORE classifying (platform lookup up to 4s;
+    // the caption bubble lands 1-2s after the share) — see the IG webhook.
+    if (wordlessShareOf(msg, false)) await markShareDropped(shareDropKey("fb", psid));
     const feedShare = await classifyFeedShare(
       msg,
       { hasText: !!(msg?.text as string | undefined)?.trim(), hasPostback: false, hasReferral: isAdReferral },
@@ -711,9 +714,6 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     if (feedShare.kind === "unrelated") {
       console.log(`[FB] ${feedShare.share.type} from someone else's feed, no words (${psid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
-      // Remember the drop: the caption of this share usually lands as the next
-      // bubble, 1-2s later, and must not get the opener either (15/10/2026).
-      await markShareDropped(shareDropKey("fb", psid));
       return;
     }
     const fbTypedText = ((msg?.text as string | undefined) ?? "").trim();
@@ -726,10 +726,16 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     // a lead. A comment-chat notice, an ad click or any attachment never
     // comes here (rawText must be the client's own text).
     if (feedShare.kind === "none" && attachments.length === 0 && !isAdReferral && rawText === (msg?.text as string | undefined)) {
-      const droppedAt = await shareDroppedAt(shareDropKey("fb", psid));
+      const dropKey = shareDropKey("fb", psid);
+      let droppedAt = await shareDroppedAt(dropKey);
+      // No marker yet but no intent either: one more look before deciding.
+      if (droppedAt === null && !textCarriesClientIntent(rawText)) {
+        await new Promise((r) => setTimeout(r, SHARE_CAPTION_RECHECK_MS));
+        droppedAt = await shareDroppedAt(dropKey);
+      }
       if (isShareCaption(rawText, droppedAt, Date.now())) {
         console.log(`[FB] caption after a dropped share (${psid}): "${rawText.slice(0, 80)}" — not a lead, staying silent`);
-        await markShareDropped(shareDropKey("fb", psid));
+        await markShareDropped(dropKey);
         return;
       }
     }

@@ -18,6 +18,7 @@ import {
   linkShareOf,
   textCarriesClientIntent,
   isShareCaption,
+  wordlessShareOf,
   OUR_AD_CAPTION_RE,
   FLOORING_CAPTION_RE,
   SHARE_CAPTION_WINDOW_MS,
@@ -248,14 +249,21 @@ async function section7() {
   const v12 = await classifyFeedShare(T("lol", { attachments: IG_POST_OURS.attachments }), ctxText, platformSaysNo);
   ck("our ad post + 'lol' → ours (ad reply as before)", v12.kind === "ours");
   ck("regression: wordless foreign reel still unrelated", (await classifyFeedShare(IG_REEL_FOREIGN, { hasText: false, hasPostback: false, hasReferral: false }, platformSaysNo)).kind === "unrelated");
+  ck("wordlessShareOf: reel without text → the reel", wordlessShareOf(IG_REEL_FOREIGN, false)?.type === "ig_reel");
+  ck("wordlessShareOf: reel + 'lol' → the reel (no intent)", wordlessShareOf(T("lol", { attachments: IG_REEL_FOREIGN.attachments }), false)?.type === "ig_reel");
+  ck("wordlessShareOf: reel + a question → null (the words decide)", wordlessShareOf(T("how much?", { attachments: IG_REEL_FOREIGN.attachments }), false) === null);
+  ck("wordlessShareOf: bare link → link share", wordlessShareOf(T("https://youtube.com/watch?v=1"), false)?.type === "link");
+  ck("wordlessShareOf: plain words / icebreaker tap / ad card → null", wordlessShareOf(T("Okay"), false) === null && wordlessShareOf(IG_REEL_FOREIGN, true) === null && wordlessShareOf(IG_TEMPLATE_AD_CARD, false) === null);
 }
 
 function section8() {
   console.log("\n[8] webhook wiring — both channels mark the drop and judge the caption bubble");
   for (const [ch, file] of [["ig", "src/app/api/webhook/route.ts"], ["fb", "src/app/api/fb-webhook/route.ts"]] as const) {
     const src = readFileSync(file, "utf-8");
-    ck(`${ch}: unrelated share marks the drop before returning`, new RegExp(`kind === "unrelated"[\\s\\S]{0,900}?markShareDropped\\(shareDropKey\\("${ch}"[\\s\\S]{0,200}?return;`).test(src));
-    ck(`${ch}: text bubble asks the marker and returns on a caption`, src.includes(`shareDroppedAt(shareDropKey("${ch}"`) && /isShareCaption\(rawText, droppedAt, Date\.now\(\)\)/.test(src));
+    const iMark = src.indexOf(`markShareDropped(shareDropKey("${ch}"`), iClassify = src.indexOf("await classifyFeedShare(");
+    ck(`${ch}: a wordless share marks the drop BEFORE classifyFeedShare (lookup up to 4s; the caption lands 1-2s after the reel)`, iMark > 0 && iClassify > 0 && iMark < iClassify && /wordlessShareOf\(/.test(src.slice(Math.max(0, iMark - 200), iMark)));
+    ck(`${ch}: caption path re-checks the marker once when none is found and the words carry no intent`, /droppedAt === null && !textCarriesClientIntent\(rawText\)[\s\S]{0,200}?SHARE_CAPTION_RECHECK_MS/.test(src));
+    ck(`${ch}: text bubble asks the marker and returns on a caption`, src.includes(`const dropKey = shareDropKey("${ch}"`) && src.includes("shareDroppedAt(dropKey)") && /isShareCaption\(rawText, droppedAt, Date\.now\(\)\)/.test(src));
     ck(`${ch}: caption check requires no attachment and no ad referral`, /attachments\.length === 0 && [^\n]*!isAdReferral && rawText === /.test(src));
     ck(`${ch}: flooring note keeps the client's typed words`, /kind === "flooring"\) rawText = [^\n]*feedShare\.note\}` : feedShare\.note/.test(src));
   }

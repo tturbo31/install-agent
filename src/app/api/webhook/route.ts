@@ -7,7 +7,7 @@ import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
-import { classifyFeedShare, isFlooringShareNote, isShareCaption } from "@/lib/shared-media-policy";
+import { classifyFeedShare, isFlooringShareNote, isShareCaption, wordlessShareOf, textCarriesClientIntent, SHARE_CAPTION_RECHECK_MS } from "@/lib/shared-media-policy";
 import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
 import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import {
@@ -780,6 +780,12 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // map); third-party flooring content reaches the model as a note; anything
     // else is dropped BEFORE it is stored: no message row, no funnel lead, no
     // reply, and the next bubble (if the person ever types) is handled normally.
+    // The caption of a forwarded reel lands as the NEXT bubble 1-2s later while
+    // the platform lookup inside classifyFeedShare can take up to 4s: mark
+    // "wordless share seen" BEFORE classifying, so the caption's handler
+    // already finds the marker (15/10/2026 prod E2E: written after the lookup,
+    // the caption got the opener).
+    if (wordlessShareOf(messaging.message, !!postbackIG)) await markShareDropped(shareDropKey("ig", senderIgsid));
     const feedShare = await classifyFeedShare(
       messaging.message,
       { hasText: !!messaging.message?.text?.trim(), hasPostback: !!postbackIG, hasReferral: isAdReferral },
@@ -788,9 +794,6 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (feedShare.kind === "unrelated") {
       console.log(`[IG] ${feedShare.share.type} from someone else's feed, no words (${senderIgsid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conversation.id, refComClique));
-      // Remember the drop: the caption of this share usually lands as the next
-      // bubble, 1-2s later, and must not get the opener either (15/10/2026).
-      await markShareDropped(shareDropKey("ig", senderIgsid));
       return;
     }
     if (feedShare.kind === "flooring") rawText = messaging.message?.text?.trim() ? `${messaging.message.text.trim()}\n${feedShare.note}` : feedShare.note;
@@ -803,10 +806,17 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // answer) are the reel's caption, not a lead. Anything with intent flows
     // on as before; a real ad click or any attachment never comes here.
     if (feedShare.kind === "none" && attachments.length === 0 && !postbackIG && !isAdReferral && rawText === messaging.message?.text) {
-      const droppedAt = await shareDroppedAt(shareDropKey("ig", senderIgsid));
+      const dropKey = shareDropKey("ig", senderIgsid);
+      let droppedAt = await shareDroppedAt(dropKey);
+      // No marker yet but no intent either: the reel's own handler may still be
+      // creating the conversation — one more look before deciding.
+      if (droppedAt === null && !textCarriesClientIntent(rawText)) {
+        await new Promise((r) => setTimeout(r, SHARE_CAPTION_RECHECK_MS));
+        droppedAt = await shareDroppedAt(dropKey);
+      }
       if (isShareCaption(rawText, droppedAt, Date.now())) {
         console.log(`[IG] caption after a dropped share (${senderIgsid}): "${rawText.slice(0, 80)}" — not a lead, staying silent`);
-        await markShareDropped(shareDropKey("ig", senderIgsid));
+        await markShareDropped(dropKey);
         return;
       }
     }

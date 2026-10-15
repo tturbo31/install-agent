@@ -100,10 +100,7 @@ export async function classifyFeedShare(
   ctx: { hasText: boolean; hasPostback: boolean; hasReferral: boolean },
   consultar: (ids: string[]) => Promise<{ ok: boolean; resolvidas: Record<string, unknown> }>
 ): Promise<FeedShareVerdict> {
-  const text = String((message as { text?: unknown } | null | undefined)?.text ?? "").trim();
-  const typed = ctx.hasText && !!text && !isBareLink(text) && textCarriesClientIntent(text);
-  if (ctx.hasPostback || typed) return { kind: "none" };
-  const share = feedShareOf(message) ?? linkShareOf(text);
+  const share = wordlessShareOf(message, ctx.hasPostback);
   if (!share) return { kind: "none" };
   // A pasted link is never an ad click, whatever referral the thread carries.
   const base = { hasText: false, hasPostback: false, hasReferral: share.type === "link" ? false : ctx.hasReferral };
@@ -209,3 +206,22 @@ export function isShareCaption(text: string, droppedAtMs: number | null, nowMs: 
   if (nowMs - droppedAtMs > SHARE_CAPTION_WINDOW_MS || nowMs < droppedAtMs - 60_000) return false;
   return !textCarriesClientIntent(text);
 }
+
+// The share this message carries when its words do not speak for the client:
+// a forwarded reel/post, or a pasted link, with no text or with text that has
+// no client intent. null when the client typed something that counts, tapped
+// an icebreaker, or sent no share at all. The webhooks call this BEFORE
+// classifyFeedShare to write the drop marker early: the platform lookup can
+// take up to 4s and the caption bubble lands 1-2s after the reel (prod E2E of
+// 15/10/2026: marker written after the lookup = the caption got the opener).
+export function wordlessShareOf(message: unknown, hasPostback: boolean): FeedShare | null {
+  if (hasPostback) return null;
+  const text = String((message as { text?: unknown } | null | undefined)?.text ?? "").trim();
+  if (text && !isBareLink(text) && textCarriesClientIntent(text)) return null;
+  return feedShareOf(message) ?? linkShareOf(text);
+}
+
+// When the caption's handler finds no marker and the words carry no intent,
+// it looks once more after this pause: the reel's handler may still be
+// creating the conversation (first contact fetches the profile from Graph).
+export const SHARE_CAPTION_RECHECK_MS = 2500;
