@@ -7,7 +7,8 @@ import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
-import { classifyFeedShare, isFlooringShareNote } from "@/lib/shared-media-policy";
+import { classifyFeedShare, isFlooringShareNote, isShareCaption } from "@/lib/shared-media-policy";
+import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
 import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import {
   getAIResponse,
@@ -787,10 +788,28 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (feedShare.kind === "unrelated") {
       console.log(`[IG] ${feedShare.share.type} from someone else's feed, no words (${senderIgsid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conversation.id, refComClique));
+      // Remember the drop: the caption of this share usually lands as the next
+      // bubble, 1-2s later, and must not get the opener either (15/10/2026).
+      await markShareDropped(shareDropKey("ig", senderIgsid));
       return;
     }
-    if (feedShare.kind === "flooring") rawText = feedShare.note;
+    if (feedShare.kind === "flooring") rawText = messaging.message?.text?.trim() ? `${messaging.message.text.trim()}\n${feedShare.note}` : feedShare.note;
     else if (feedShare.kind === "ours") console.log(`[IG] our ad ${feedShare.share.type} forwarded with no words (${feedShare.via}) — ad reply`);
+
+    // ── Caption bubble of a share we just dropped (15/10/2026) ──────────────
+    // "LIKE SHARE N COMMENT", "😂😂he's funny", "N", "CNN": words typed within
+    // SHARE_CAPTION_WINDOW_MS of a dropped reel that carry no client intent (no
+    // question, no flooring/price/visit word, no greeting, no number, no
+    // answer) are the reel's caption, not a lead. Anything with intent flows
+    // on as before; a real ad click or any attachment never comes here.
+    if (feedShare.kind === "none" && attachments.length === 0 && !postbackIG && !isAdReferral && rawText === messaging.message?.text) {
+      const droppedAt = await shareDroppedAt(shareDropKey("ig", senderIgsid));
+      if (isShareCaption(rawText, droppedAt, Date.now())) {
+        console.log(`[IG] caption after a dropped share (${senderIgsid}): "${rawText.slice(0, 80)}" — not a lead, staying silent`);
+        await markShareDropped(shareDropKey("ig", senderIgsid));
+        return;
+      }
+    }
 
     console.log(`[IG] msg from ${senderIgsid} | text:${!!messaging.message?.text} | attachments:[${attachments.map((a) => a.type).join(",")}] | adReferral:${isAdReferral}`);
 

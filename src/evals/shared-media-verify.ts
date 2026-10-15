@@ -14,9 +14,16 @@ import {
   classifyFeedShare,
   flooringShareNote,
   isFlooringShareNote,
+  isBareLink,
+  linkShareOf,
+  textCarriesClientIntent,
+  isShareCaption,
   OUR_AD_CAPTION_RE,
+  FLOORING_CAPTION_RE,
+  SHARE_CAPTION_WINDOW_MS,
   type FeedShare,
 } from "@/lib/shared-media-policy";
+import { readFileSync } from "fs";
 import { decideFollowup, isFaqGhost, isNonClientPlaceholder, type FollowupMsg } from "@/lib/followup";
 
 let pass = 0, fail = 0;
@@ -159,11 +166,110 @@ function section4() {
   ck("regression: FAQ-button ghost on WhatsApp still gets the 48h ghost nudge", g.eligible && g.kind === "faq_ghost", JSON.stringify(g));
 }
 
+// ── 15/10/2026: a pasted link as the whole message, and the caption bubble ──
+// Jesus Lizasuain (IG 1517409400191916): 28 reel/story/YouTube links pasted as
+// text → 28 "can't open that link…" replies; 53 bare-link texts in 7 days on
+// IG+Messenger → 53 replies, 0 visits. The reel's caption arrives as a second
+// bubble 1-2s after the reel ("LIKE SHARE N COMMENT", "😂😂he's funny", "N").
+function section5() {
+  console.log("\n[5] bare links are feed shares (15/10/2026)");
+  const LINKS = [
+    "https://www.instagram.com/reel/Dd4VdGjM5aq/?cplk=ZGVscTJvaTd4bTUy",
+    "https://www.instagram.com/stories/gothicvesp/4004398766740147031?utm_source=ig_story_item_share&srtk=eGR5ZjlmeDFuOGs=",
+    "https://www.instagram.com/p/DeF94vTIdx4/?vrfl=aXFucmVvaGo0M3pt",
+    "https://youtube.com/watch?v=1TsVjvEkc4s&si=Y2kSNwio5kXH6O6x",
+    "https://youtube.com/playlist?list=OLAK5uy_lS7KwVnHqDsCQKZT2JqY8RgLxaFl",
+    "https://www.tiktok.com/@x/video/7551234?is_from_webapp=1",
+    "  https://lite.tt.site/abc 🔥🔥 ",
+    "https://www.instagram.com/reel/DeSJA3zMeYE/?dlrf=x https://youtube.com/watch?v=kHLHSlExFis",
+    "www.instagram.com/reel/DeSJA3zMeYE/",
+  ];
+  for (const l of LINKS) ck(`bare link: ${l.trim().slice(0, 48)}`, isBareLink(l));
+  ck("link + words is NOT a bare link", !isBareLink("Hi Ozzi Floors! I’m Jessica, a local paid media specialist https://x.com") && !isBareLink("check this https://youtube.com/watch?v=1 how much for this floor?"));
+  ck("plain words / empty / zip are not bare links", !isBareLink("vinyl") && !isBareLink("") && !isBareLink("www") && !isBareLink("33033"));
+  const ls = linkShareOf(LINKS[0])!;
+  ck("linkShareOf: type link, URL kept, words from the URL, no media id", !!ls && ls.type === "link" && ls.url === LINKS[0] && /instagram com reel/.test(ls.title) && ls.mediaIds.length === 0, JSON.stringify(ls));
+  const hd = linkShareOf("https://www.homedepot.com/p/Lifeproof-Sterling-Oak-Luxury-Vinyl-Plank-Flooring/1234")!;
+  ck("a product link spells its flooring words out for the caption regex", !!hd && FLOORING_CAPTION_RE.test(hd.title), hd?.title ?? "");
+  const fbRedirect = linkShareOf("https://l.facebook.com/l.php?u=https%3A%2F%2Fyoutube.com%2Flive%2FsjxNu&h=AT0")!;
+  ck("Facebook redirect: the target URL's words are read", !!fbRedirect && /youtube com live/.test(fbRedirect.title), fbRedirect?.title ?? "");
+  ck("our own site pasted back → title carries 'Ozzi' (ad-reply path)", OUR_AD_CAPTION_RE.test(linkShareOf("https://ozzifloors.company")!.title));
+  ck("linkShareOf(words) → null", linkShareOf("") === null && linkShareOf("how much?") === null);
+}
+
+function section6() {
+  console.log("\n[6] client intent — what makes a caption a message");
+  const SILENT = [
+    "Yall been waiting itz finally out‼️💜 LIKE SHARE N COMMENT🫡💯 show 💜", "New reel‼️ like share n comment💜🫡", "😂😂he’s funny", "LEARN & SHARE", "Comment ,like thank you", "N", "CNN",
+    "BELIEVE IT or NOT --- Inseparable MOM!", "Some people tried to WARN AGAINST TAKING IT. from the Top of the Mountain, To no Avail!!",
+    "Go like and comment on this video or you’re gonna get 10 years on bad luck", "This is what you get for voting for Trump I don’t feel sorry for you", "Great person!!", "lol", "😂😂😂", "Amen 🙏", "Listen Trump support to what is being said",
+  ];
+  for (const t of SILENT) ck(`no intent: "${t.slice(0, 50)}"`, !textCarriesClientIntent(t));
+  const INTENT = [
+    "how much?", "Hey", "Hola", "I want this for my kitchen", "do you install this", "33033", "914-770-5300", "vinyl", "Call me", "Thursday at 5pm works", "Ok", "yes", "Okay",
+    "What is included in the materials package?", "me interesa el piso", "quanto custa", "Is this you guys?", "$2,350 for 1000 sqft?", "tomorrow 9am", "at 3", "Hi, we need a quote", "Me liga", "info",
+  ];
+  for (const t of INTENT) ck(`intent: "${t}"`, textCarriesClientIntent(t));
+  ck("SYSTEM suffix is ignored when judging intent", !textCarriesClientIntent("lol\n\n[SYSTEM: ask which floor?]"));
+  const now = Date.parse("2026-10-15T16:11:59Z");
+  ck("caption 2s after a dropped share, no intent → caption (silence)", isShareCaption("LIKE SHARE N COMMENT", now - 2000, now));
+  ck("words with intent 2s after a dropped share → NOT a caption", !isShareCaption("how much for vinyl?", now - 2000, now) && !isShareCaption("Hey", now - 2000, now));
+  ck("no intent but the share was dropped long ago → NOT a caption", !isShareCaption("lol", now - SHARE_CAPTION_WINDOW_MS - 1000, now));
+  ck("no marker → NOT a caption", !isShareCaption("lol", null, now) && !isShareCaption("lol", NaN, now));
+}
+
+async function section7() {
+  console.log("\n[7] classifyFeedShare with links and same-bubble captions");
+  const platformSaysNo = async (ids: string[]) => ({ ok: true, resolvidas: Object.fromEntries(ids.map((i) => [i, null])) });
+  const T = (text: string, extra: Record<string, unknown> = {}) => ({ mid: "t", text, ...extra });
+  const ctxText = { hasText: true, hasPostback: false, hasReferral: false };
+  const v1 = await classifyFeedShare(T("https://www.instagram.com/reel/Dd4VdGjM5aq/?cplk=ZGVscTJvaTd4bTUy"), ctxText, platformSaysNo);
+  ck("bare Instagram reel link as text → unrelated (silence)", v1.kind === "unrelated" && v1.share.type === "link", JSON.stringify(v1));
+  const v2 = await classifyFeedShare(T("https://youtube.com/watch?v=1TsVjvEkc4s&si=Y2kSNwio5kXH6O6x"), { ...ctxText, hasReferral: true }, platformSaysNo);
+  ck("YouTube link + the thread's stale ad referral → still unrelated (a link is never an ad click)", v2.kind === "unrelated");
+  const v3 = await classifyFeedShare(T("https://ozzifloors.company"), ctxText, platformSaysNo);
+  ck("our site pasted back → ours (ad-reply path)", v3.kind === "ours" && v3.via === "caption");
+  const v4 = await classifyFeedShare(T("https://www.homedepot.com/p/Lifeproof-Sterling-Oak-Luxury-Vinyl-Plank-Flooring/1234"), ctxText, platformSaysNo);
+  ck("product link with flooring words → flooring note", v4.kind === "flooring" && isFlooringShareNote(v4.note));
+  const v5 = await classifyFeedShare(T("https://www.instagram.com/reel/DeSJA3zMeYE/?dlrf=x", { attachments: IG_REEL_FOREIGN.attachments }), ctxText, platformSaysNo);
+  ck("ig_reel + its own URL in the same bubble → unrelated", v5.kind === "unrelated" && v5.share.type === "ig_reel");
+  const v6 = await classifyFeedShare(T("lol", { attachments: IG_REEL_FOREIGN.attachments }), ctxText, platformSaysNo);
+  ck("ig_reel + 'lol' in the same bubble → unrelated", v6.kind === "unrelated");
+  const v7 = await classifyFeedShare(T("how much for this?", { attachments: IG_REEL_FOREIGN.attachments }), ctxText, platformSaysNo);
+  ck("ig_reel + a question → none (the words decide)", v7.kind === "none");
+  const v8 = await classifyFeedShare(T("I want this", { attachments: IG_REEL_FLOORING_3P.attachments }), ctxText, platformSaysNo);
+  ck("flooring reel + 'I want this' → none (words with intent decide)", v8.kind === "none");
+  const v9 = await classifyFeedShare(T("lol", { attachments: IG_REEL_FLOORING_3P.attachments }), ctxText, platformSaysNo);
+  ck("flooring reel + 'lol' → flooring note", v9.kind === "flooring");
+  const v10 = await classifyFeedShare(T("Okay"), ctxText, platformSaysNo);
+  ck("plain words without a share → none (the caption marker decides in the webhook)", v10.kind === "none");
+  const v11 = await classifyFeedShare(T("LIKE SHARE N COMMENT"), ctxText, platformSaysNo);
+  ck("caption-like words without a share → none here (webhook + marker handle it)", v11.kind === "none");
+  const v12 = await classifyFeedShare(T("lol", { attachments: IG_POST_OURS.attachments }), ctxText, platformSaysNo);
+  ck("our ad post + 'lol' → ours (ad reply as before)", v12.kind === "ours");
+  ck("regression: wordless foreign reel still unrelated", (await classifyFeedShare(IG_REEL_FOREIGN, { hasText: false, hasPostback: false, hasReferral: false }, platformSaysNo)).kind === "unrelated");
+}
+
+function section8() {
+  console.log("\n[8] webhook wiring — both channels mark the drop and judge the caption bubble");
+  for (const [ch, file] of [["ig", "src/app/api/webhook/route.ts"], ["fb", "src/app/api/fb-webhook/route.ts"]] as const) {
+    const src = readFileSync(file, "utf-8");
+    ck(`${ch}: unrelated share marks the drop before returning`, new RegExp(`kind === "unrelated"[\\s\\S]{0,900}?markShareDropped\\(shareDropKey\\("${ch}"[\\s\\S]{0,200}?return;`).test(src));
+    ck(`${ch}: text bubble asks the marker and returns on a caption`, src.includes(`shareDroppedAt(shareDropKey("${ch}"`) && /isShareCaption\(rawText, droppedAt, Date\.now\(\)\)/.test(src));
+    ck(`${ch}: caption check requires no attachment and no ad referral`, /attachments\.length === 0 && [^\n]*!isAdReferral && rawText === /.test(src));
+    ck(`${ch}: flooring note keeps the client's typed words`, /kind === "flooring"\) rawText = [^\n]*feedShare\.note\}` : feedShare\.note/.test(src));
+  }
+}
+
 async function main() {
   section1();
   section2();
   await section3();
   section4();
+  section5();
+  section6();
+  await section7();
+  section8();
   console.log(`\n${pass} passed, ${fail} failed${fail ? ": " + fails.join(" | ") : ""}`);
   process.exit(fail ? 1 : 0);
 }

@@ -8,7 +8,8 @@ import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies,
 import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
 import { resolveCommentChatCommentId, registerCommentChat, pendingCommentChat } from "@/lib/post-comments";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { classifyFeedShare, isFlooringShareNote } from "@/lib/shared-media-policy";
+import { classifyFeedShare, isFlooringShareNote, isShareCaption } from "@/lib/shared-media-policy";
+import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
 import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, type AdFlooringType } from "@/lib/ai";
 import { verifyMetaSignature } from "@/lib/verify-meta";
@@ -710,10 +711,28 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     if (feedShare.kind === "unrelated") {
       console.log(`[FB] ${feedShare.share.type} from someone else's feed, no words (${psid}): "${feedShare.share.title.slice(0, 80)}" — not a lead, staying silent`);
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
+      // Remember the drop: the caption of this share usually lands as the next
+      // bubble, 1-2s later, and must not get the opener either (15/10/2026).
+      await markShareDropped(shareDropKey("fb", psid));
       return;
     }
-    if (feedShare.kind === "flooring") rawText = feedShare.note;
+    const fbTypedText = ((msg?.text as string | undefined) ?? "").trim();
+    if (feedShare.kind === "flooring") rawText = fbTypedText ? `${fbTypedText}\n${feedShare.note}` : feedShare.note;
     else if (feedShare.kind === "ours") console.log(`[FB] our ad ${feedShare.share.type} forwarded with no words (${feedShare.via}) — ad reply`);
+
+    // ── Caption bubble of a share we just dropped (15/10/2026) ──────────────
+    // Same rule as Instagram: words typed within SHARE_CAPTION_WINDOW_MS of a
+    // dropped reel/post/link that carry no client intent are its caption, not
+    // a lead. A comment-chat notice, an ad click or any attachment never
+    // comes here (rawText must be the client's own text).
+    if (feedShare.kind === "none" && attachments.length === 0 && !isAdReferral && rawText === (msg?.text as string | undefined)) {
+      const droppedAt = await shareDroppedAt(shareDropKey("fb", psid));
+      if (isShareCaption(rawText, droppedAt, Date.now())) {
+        console.log(`[FB] caption after a dropped share (${psid}): "${rawText.slice(0, 80)}" — not a lead, staying silent`);
+        await markShareDropped(shareDropKey("fb", psid));
+        return;
+      }
+    }
     if (!rawText) {
       if (refComClique) waitUntil(persistirAnuncioDaConversa(conv.id, refComClique));
       return;
