@@ -342,7 +342,7 @@ async function repeatInterceptChecks() {
     const today = new Date().toISOString().slice(0, 10);
     let d1 = add(today, 2); while ([0, 6].includes(new Date(d1 + "T12:00:00Z").getUTCDay())) d1 = add(d1, 1);
     const d2 = add(d1, 1);
-    return `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${show(d1)}\n${show(d2)}\n\nIMPORTANT — read carefully before offering any time:\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'.\n- SOONEST DAY FIRST: take your two options from the FIRST line above that has open times and take that line's EARLIEST two open times.]`;
+    return `\n\n[SYSTEM: ${getEasternDateContext()}\n\nREAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):\n${show(d1)}\n${show(d2)}\n\nIMPORTANT — read carefully before offering any time:\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'.\n- SOONEST DAY FIRST: take your two options from the FIRST line above that has open times, its earliest and its latest open time.]`;
   };
   const burstWithSchedule = await getAIResponse(
     [

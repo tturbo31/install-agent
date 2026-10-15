@@ -7,19 +7,22 @@
 // offered "today at 6pm or 8pm" while 1pm, 5pm and 7pm were open on the other
 // sellers. Now a day's schedule line is the UNION of every active seller's
 // open hours (openHoursForDay), earliest first; SOONEST DAY FIRST fills today
-// before tomorrow; `priority` only breaks a tie in pickSellerForSlot.
+// before tomorrow. Owner rule 2026-10-15 ("retire a prioridade dos instaladores
+// ... retire a prioridade de horários"): `priority` is not read at all (a tie
+// goes to the least-loaded seller, pickSellerForSlot) and the two times offered
+// for a day are its earliest and its latest (offerPair), never its first two.
 //  1. DETERMINISTIC (no API, no DB): openHoursForDay with the real grids.
 //  2. STATIC: the hierarchy is gone from scheduler.ts / ai.ts / ig-diag, every
 //     sellers read is bare, the canned offers use every open hour.
 //  3. LIVE DB (read-only): the real schedule text has no parenthesis and each
 //     line equals getAvailableSlots(date).
 //  4. LIVE MODEL: with today's line "1pm, 5pm, 6pm, 7pm, 8pm" (Annabelle's real
-//     day without the hierarchy) the offer is 1pm + 5pm.
+//     day without the hierarchy) the offer is 1pm + 8pm (earliest + latest).
 // Set DET_ONLY=1 to skip 3 and 4.
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, type ChatMessage } from "../lib/ai";
-import { openHoursForDay, getRealAvailabilityContext, getAvailableSlots, getPreferredSlots, getEasternDateContext, slotsForWeekday, type Seller, type BookingRow } from "../lib/scheduler";
+import { openHoursForDay, getRealAvailabilityContext, getAvailableSlots, getPreferredSlots, getEasternDateContext, slotsForWeekday, pickSellerForSlot, offerPair, type Seller, type BookingRow } from "../lib/scheduler";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -75,6 +78,24 @@ async function main() {
   ck("input order is irrelevant (unsorted sellers, same result)", openHoursForDay([A, D, C], WED, 3, [], noOff).join(",") === openHoursForDay([C, D, A], WED, 3, [], noOff).join(","));
   ck("slotsForWeekday still the only grid source (Diego Sunday override)", slotsForWeekday(D, 0).join(",") === "09:00,11:00,13:00,15:00,17:00,19:00" && slotsForWeekday(D, 3).join(",") === "14:00,16:00,18:00,20:00");
 
+  console.log("\n[1b] DETERMINISTIC — pickSellerForSlot: no installer order, the hour goes to the least-loaded (owner rule 2026-10-15)");
+  // Wednesday 9am is open for Alexandre (priority 1) and Chris (priority 3): priority used to hand it to Alexandre every time.
+  ck("tie, nobody booked: lowest id wins (A < C), never priority", pickSellerForSlot(SELLERS, [], WED, "09:00", noOff)?.id === "A");
+  ck("Alexandre has 2 visits that day, Chris none → Chris takes 9am", pickSellerForSlot(SELLERS, [bk("A", WED, "11:00"), bk("A", WED, "13:00")], WED, "09:00", noOff)?.id === "C");
+  ck("same load that day → fewer visits in the whole window wins", pickSellerForSlot(SELLERS, [bk("A", WED, "11:00"), bk("C", WED, "11:00"), bk("A", "2026-10-01", "09:00")], WED, "09:00", noOff)?.id === "C");
+  ck("priority 1 with the fuller day loses even to priority 3", pickSellerForSlot([{ ...A, priority: 1 }, { ...C, priority: 3 }], [bk("A", WED, "11:00")], WED, "09:00", noOff)?.id === "C");
+  ck("only one seller free at the hour → that one (Diego's 2pm)", pickSellerForSlot(SELLERS, [], WED, "14:00", noOff)?.id === "D");
+  ck("hour taken for everyone free at it → null", pickSellerForSlot(SELLERS, [bk("A", WED, "09:00"), bk("C", WED, "09:00")], WED, "09:00", noOff) === null);
+  ck("priority field is optional and ignored", pickSellerForSlot([{ ...A, priority: undefined }, C], [bk("A", WED, "11:00")], WED, "09:00", noOff)?.id === "C");
+
+  console.log("\n[1c] DETERMINISTIC — offerPair: the day's earliest and latest, never its first two");
+  ck("ANNABELLE's line 1pm,5pm,6pm,7pm,8pm → 1pm + 8pm", offerPair(["13:00", "17:00", "18:00", "19:00", "20:00"]).join(",") === "13:00,20:00");
+  ck("full weekday → 9am + 8pm", offerPair(ALL_WEEKDAY.split(",")).join(",") === "09:00,20:00");
+  ck("two open hours → both", offerPair(["11:00", "15:00"]).join(",") === "11:00,15:00");
+  ck("one open hour → that one", offerPair(["15:00"]).join(",") === "15:00");
+  ck("empty → empty", offerPair([]).length === 0);
+  ck("input untouched", (() => { const t = ["09:00", "11:00", "13:00"]; offerPair(t); return t.join(",") === "09:00,11:00,13:00"; })());
+
   console.log("\n[2] STATIC — the hierarchy is gone");
   const sc = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf-8").replace(/\r\n/g, "\n");
   const ai = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8").replace(/\r\n/g, "\n");
@@ -86,9 +107,14 @@ async function main() {
   ck("getNextOpenSlots uses openHoursForDay", /const times = openHoursForDay\(sellers, dateStr, weekday, bookings, daysOff, notBefore\);\s*if \(times\.length > 0\) out\.push/.test(sc));
   ck("getAvailableSlots uses openHoursForDay; getPreferredSlots = getAvailableSlots", /return openHoursForDay\(sellers, dateStr, weekday, bookings, daysOff\);/.test(sc) && /export async function getPreferredSlots\(dateStr: string\): Promise<string\[\]> \{\s*return getAvailableSlots\(dateStr\);\s*\}/.test(sc));
   ck("canned offers still read getPreferredSlots", /let slots = await getPreferredSlots\(dateStr\);/.test(sc) && /await getPreferredSlots\(requestedDate\)\)\.filter/.test(sc));
-  ck("createBooking still books ANY free seller (priority only as tie-break)", /const seller = pickSellerForSlot\(sellers, bookings, req\.bookingDate, req\.bookingTime, daysOff\);/.test(sc) && /\.sort\(\(a, b\) => a\.priority - b\.priority\);\s*return candidates\[0\] \?\? null;/.test(sc));
-  ck("SOONEST DAY FIRST bullet: 'no order between team members', no parenthesis hint", /SOONEST DAY FIRST \(owner's rule/.test(sc) && /EARLIEST two open times/.test(sc) && /there is no order between team members: the day fills, whoever is free takes it/.test(sc) && !/sits in the parenthesis/.test(sc));
-  ck("ai.ts rule 33: no parenthesis sentence, 'the DAY fills' instead", !/inside a parenthesis as 'open only if the client asks for one of these'/.test(ai) && /no order between team members \(owner rule 2026-09-30\): the DAY fills, earliest hours first/.test(ai));
+  ck("createBooking still books ANY free seller; the tie goes to the least-loaded, priority is never read or ordered by", /const seller = pickSellerForSlot\(sellers, bookings, req\.bookingDate, req\.bookingTime, daysOff\);/.test(sc) && /load\(a, true\) - load\(b, true\) \|\| load\(a, false\) - load\(b, false\)/.test(sc) && !/a\.priority - b\.priority/.test(sc) && !/\.order\("priority"/.test(sc) && !/id,name,priority,/.test(sc));
+  ck("offerPair exported and used by the canned offers (next-day apology, recovery, slot-gone note)", /export function offerPair\(times: string\[\]\): string\[\]/.test(sc) && /joinTimes\(lang, offerPair\(nextDay\.times\)\)/.test(sc) && /offerPair\(first\.times\)\.map\(fmt12\)/.test(sc) && /offerPair\(next!\.times\)\.join\(" or "\)/.test(sc) && !/times\.slice\(0, 2\)/.test(sc));
+  ck("ZIP-first note no longer says 'the earliest two'", !/the earliest two of the soonest day/.test(sc) && /naming its earliest and its latest open time/.test(sc));
+  ck("SOONEST DAY FIRST bullet: 'no order between team members', no parenthesis hint", /SOONEST DAY FIRST \(owner's rule/.test(sc) && /EARLIEST and its LATEST open time/.test(sc) && !/EARLIEST two open times/.test(sc) && /no preferred hour and no order between team members \(owner rule 2026-10-15\)/.test(sc) && !/sits in the parenthesis/.test(sc));
+  ck("ai.ts rule 33: no parenthesis sentence, 'the DAY fills' instead", !/inside a parenthesis as 'open only if the client asks for one of these'/.test(ai) && /no order between team members and no preferred hour \(owner rules 2026-09-30 and 2026-10-15\): the DAY fills, today before tomorrow/.test(ai) && !/earliest hours first/.test(ai) && /EARLIEST and LATEST open times/.test(ai) && !/its first two listed, 9am before 11am before 1pm/.test(ai));
+  ck("ai.ts rule 16 (time of day): two times inside the client's window, earliest + latest when more", /offer two open times INSIDE that window on the soonest day that has them \(when the window holds more than two, its earliest and its latest\)/.test(ai));
+  ck("dreaming.ts trava 17: no preferred hour, no installer order", /17\. NO PREFERRED HOUR AND NO INSTALLER ORDER \(owner rule 2026-10-15\)/.test(readFileSync(join(process.cwd(), "src/lib/dreaming.ts"), "utf-8")));
+  ck("ig-diag reports the tie-break and the hour offer", /sellerTieBreak: "least-loaded", hourOffer: "earliest\+latest"/.test(diag));
   ck("no seller is named in the schedule bullet or rule 33", !/Alexandre|Diego|Chris/.test((/SOONEST DAY FIRST \(owner's rule[^\n]*/.exec(sc) ?? [""])[0]) && !/Alexandre|Diego|Chris/.test((/33\. EXACTLY TWO SLOTS RULE[^\n]*/.exec(ai) ?? [""])[0]));
   ck("ig-diag no longer reports SELLER_FILL_STRICT", !/SELLER_FILL_STRICT/.test(diag) && /sellerHierarchy: false/.test(diag));
   ck("env SELLER_FILL_STRICT is read nowhere in src", !/SELLER_FILL_STRICT/.test(sc + ai + diag));
@@ -114,7 +140,7 @@ async function main() {
   }
   ck("at least one future day compared", checked >= 1, String(checked));
 
-  console.log("\n[4] LIVE MODEL — Annabelle's day without the hierarchy: today '1pm, 5pm, 6pm, 7pm, 8pm' → offer 1pm + 5pm");
+  console.log("\n[4] LIVE MODEL — Annabelle's day without the hierarchy: today '1pm, 5pm, 6pm, 7pm, 8pm' → offer 1pm + 8pm (earliest + latest, owner rule 2026-10-15)");
   const et = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
   const dayAt = (i: number) => { const d = new Date(et); d.setDate(d.getDate() + i); return d; };
   const lineHead = (d: Date) => `• ${d.toLocaleDateString("en-US", { weekday: "long" })}, ${d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })} [${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}]`;
@@ -142,7 +168,7 @@ async function main() {
     const r = await getAIResponse([...base, { role: "user", content: `33029${sys}` }], null, null, null, false);
     const t = r.text; const c = clockTimes(t);
     console.log(`   offer #${i} →`, t.replace(/\s+/g, " ").slice(0, 240));
-    ck(`offer #${i}: ${wd}'s first two hours (1pm, 5pm), never 6pm/8pm first`, c[0] === "1pm" && c[1] === "5pm", `${c.join(",")} | ${t}`);
+    ck(`offer #${i}: ${wd}'s earliest + latest (1pm, 8pm), never its first two`, c[0] === "1pm" && c[1] === "8pm", `${c.join(",")} | ${t}`);
     ck(`offer #${i}: no leak (team member / parenthesis / owner / fills)`, !/parenthes|team member|only if the client asks|fills before|owner|hierarch/i.test(t), t);
     ck(`offer #${i}: short (under 230 characters)`, t.replace(/\[[A-Z_]+(?::[\s\S]*?)?\]/g, "").trim().length <= 230, String(t.length));
   }

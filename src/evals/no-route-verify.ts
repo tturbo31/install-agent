@@ -51,7 +51,7 @@ async function run() {
   const availAsked = await getRealAvailabilityContext({ history: [{ role: "user", content: "vinyl 1200 sqft" }, { role: "assistant", content: "For that size I need to measure in person, it's free. What's the zip code of the property?" }, { role: "user", content: "is it waterproof?" }] });
   ck("ZIP já pedido e não respondido → nota 'não pergunte de novo'", /you already asked for the zip code once/.test(availAsked));
   ck("sem PRIORITY DAY / fill rate / preferred seller", !/PRIORITY DAY|fill rate|preferred seller|% booked|offer first/i.test(avail));
-  ck("regra SOONEST DAY FIRST continua (dia mais próximo + primeiros horários)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST two open times/.test(avail));
+  ck("regra SOONEST DAY FIRST continua (dia mais próximo + mais cedo e mais tarde do dia, 15/10)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST and its LATEST open time/.test(avail));
   ck("hierarquia de vendedores fora da oferta (dono 30/09): nenhum horário em parêntese, nenhum bullet de 'one team member'", !/open only if the client asks/.test(avail) && !/ONE TEAM MEMBER'S DAY FILLS/.test(avail));
 
   // Primeiro dia com vaga (linha da agenda) e seus horários.
@@ -79,7 +79,8 @@ async function run() {
 
   console.log("\n━━ C. modelo real com a agenda real ━━");
   const sys = (a: string = avail) => `\n\n[SYSTEM: ${[getEasternDateContext(), a].join("\n\n")}]`;
-  const first2 = firstTimes.slice(0, 2).map((t) => t.replace(/:\d{2}/, ""));
+  // 15/10: a oferta do dia é o mais cedo e o mais tarde (offerPair), não os dois primeiros.
+  const first2 = [firstTimes[0], firstTimes[firstTimes.length - 1]].map((t) => t.replace(/:\d{2}/, ""));
   const listedSet = new Set(firstTimes.map((t) => t.replace(/:\d{2}/, "")));
 
   // C0: lead grande, primeiro contato, sem localização → a proposta PEDE o ZIP e não lista horários (fluxo restaurado 29/09).
@@ -105,7 +106,7 @@ async function run() {
   ck("C1: não re-pede o ZIP", !ZIP_ASK.test(t1), t1);
   ck("C1: oferece horários (clock times)", c1.length >= 1, t1);
   ck("C1: exatamente DOIS horários distintos", new Set(c1).size === 2, `${c1.join(",")} | ${t1}`);
-  ck(`C1: os dois são os PRIMEIROS do dia mais próximo com vaga (${first2.join(", ")})`, c1.length === 2 && c1.every((t) => first2.includes(t)), `${c1.join(",")} | ${t1}`);
+  ck(`C1: os dois são o MAIS CEDO e o MAIS TARDE do dia mais próximo com vaga (${first2.join(", ")})`, c1.length === 2 && c1.every((t) => first2.includes(t)), `${c1.join(",")} | ${t1}`);
   ck("C1: nenhum vazamento (rota/prioridade/regra do dono)", !LEAK.test(t1), t1);
 
   // C2: cliente escolhe o primeiro horário → pede endereço + telefone, sem re-pedir o ZIP (já dado), sem nome, sem [BOOK] ainda.

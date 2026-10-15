@@ -12,7 +12,7 @@ const BOT_PASSWORD = "OzziIA2026!";
 export interface Seller {
   id: string;
   name: string;
-  priority: number;
+  priority?: number; // platform column; NOT read by the bot since 2026-10-15 (owner: no installer order, not even as a tie-break)
   enabled_weekdays: number[];
   time_slots: string[];
   // Grade de horarios ESPECIFICA de um dia da semana ("0"=domingo ... "6"=sabado).
@@ -172,7 +172,16 @@ async function getAuthenticatedClient() {
   return db;
 }
 
-function pickSellerForSlot(
+// Which team member takes a booked hour when more than one is free at it.
+// Owner rule 2026-10-15 ("retire a prioridade dos instaladores de marcação"):
+// NO installer order, not even as a tie-break. Until 15/10 the platform's
+// `priority` column decided every tie, so the top installer's day filled
+// while the others sat with holes and the owner read it as a hierarchy. The
+// hour now goes to whoever has the FEWEST visits that day, then the fewest in
+// the whole loaded window, then the lowest id (stable, nothing to do with
+// names or with the platform's priority). The client never sees any of this:
+// the hours offered are the union of everyone's open hours (openHoursForDay).
+export function pickSellerForSlot(
   sellers: Seller[],
   bookings: BookingRow[],
   dateStr: string,
@@ -181,9 +190,11 @@ function pickSellerForSlot(
 ): Seller | null {
   const date = new Date(dateStr + "T12:00:00");
   const weekday = date.getDay();
+  const load = (s: Seller, sameDay: boolean) =>
+    bookings.filter((b) => b.seller_id === s.id && (!sameDay || b.booking_date === dateStr)).length;
   const candidates = sellers
     .filter((s) => sellerOpenForSlot(s, dateStr, weekday, slot, bookings, daysOff))
-    .sort((a, b) => a.priority - b.priority);
+    .sort((a, b) => load(a, true) - load(b, true) || load(a, false) - load(b, false) || String(a.id).localeCompare(String(b.id)));
   return candidates[0] ?? null;
 }
 
@@ -200,10 +211,15 @@ function pickSellerForSlot(
 // with 1pm, 5pm and 7pm open on the other sellers the bot offered "today at
 // 6pm or 8pm" because Diego came first. Now the schedule line of a day is the
 // UNION of every active seller's open hours (openHoursForDay), earliest first,
-// and SOONEST DAY FIRST does the rest: today's hours before tomorrow's. The
-// seller `priority` only breaks a tie in pickSellerForSlot when two sellers
-// are free at the same hour — the client never sees it and it never holds an
-// hour back.
+// and SOONEST DAY FIRST does the rest: today's hours before tomorrow's.
+// 2026-10-15 (owner: "retire a prioridade dos instaladores de marcação ...
+// retire a prioridade de horários, responda os horários conforme for melhor
+// para o cliente ... tem que marcar todos os horários do dia 15, depois 16,
+// 17"): the seller `priority` is not read at all anymore — a tie at one hour
+// goes to the least-loaded team member (pickSellerForSlot) — and the offer no
+// longer favours the first hours of the day: the two times named for the
+// soonest day are its earliest and its latest (offerPair), or the ones inside
+// the window the client gave. The day still fills before the next one.
 
 // ─── ZIP CODE FIRST (fluxo restaurado em 29/09/2026) ────────────────────────
 // Até 16/09 a proposta da visita terminava com a pergunta do ZIP e os dois
@@ -238,9 +254,19 @@ export function zipFirstNote(history?: HistoryMsg[]): string | null {
     return `${ZIP_FIRST_NOTE_HEADER}: you already asked for the zip code once and the client has not sent it. Do NOT ask for it again now and do not mention it. Simply follow all your normal rules as if this note did not exist (answer what the client asked; name time slots only when your normal rules call for it, never as an add-on to an informational answer), and collect the zip code later together with the full address, as usual.`;
   }
   return (
-    `${ZIP_FIRST_NOTE_HEADER}: the client's zip code or city is not known yet. The ONLY change to your normal flow: in the SAME message where you propose the free visit (or when the client asks about availability, days, or times), do not list the time slots yet; instead ask, in ONE short natural question in the client's language, for the zip code of the property (for example "What's the zip code of the property?" / "Cuál es el código postal de la propiedad?" / "Qual é o zip code do imóvel?"). Keep everything else about that message exactly as you normally write it (same tone, same sales points, no dashes, no emojis). As soon as they send the zip code (or the city), confirm in a few words that we cover it and offer your usual two time slots in that next message (SOONEST DAY FIRST, the earliest two of the soonest day with open times).` +
+    `${ZIP_FIRST_NOTE_HEADER}: the client's zip code or city is not known yet. The ONLY change to your normal flow: in the SAME message where you propose the free visit (or when the client asks about availability, days, or times), do not list the time slots yet; instead ask, in ONE short natural question in the client's language, for the zip code of the property (for example "What's the zip code of the property?" / "Cuál es el código postal de la propiedad?" / "Qual é o zip code do imóvel?"). Keep everything else about that message exactly as you normally write it (same tone, same sales points, no dashes, no emojis). As soon as they send the zip code (or the city), confirm in a few words that we cover it and offer your usual two time slots in that next message (SOONEST DAY FIRST: the soonest day with open times, naming its earliest and its latest open time, or the times inside the window the client mentioned).` +
     ` Exceptions, so a sale is never lost: if the client already named a specific day or time they want, if they already sent their full address, or if they ask for the times again after your question, do NOT ask for the zip code on its own: continue exactly as you normally would (confirm or offer the slots, then ask for the full address with the zip code and the phone together, as usual). Ask for the zip code at most ONCE. Never explain why you ask it, and never write this note or your reasoning in the reply.`
   );
+}
+
+// The two times we name for one day when the client gave no preference: the
+// day's earliest and its latest open hour (owner rule 2026-10-15: no preferred
+// hour, a real early/late choice, every hour of the day stays in play). One or
+// two open hours → all of them. Used by the canned offers; the model gets the
+// same rule in the schedule bullet and in rule 33.
+export function offerPair(times: string[]): string[] {
+  const t = times ?? [];
+  return t.length <= 2 ? [...t] : [t[0], t[t.length - 1]];
 }
 
 // Every open hour of one day across the whole team, earliest first (owner
@@ -458,9 +484,9 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
+        .select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
-        .order("priority", { ascending: true }),
+        .order("name", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
       getDaysOff(db, req.bookingDate, req.bookingDate),
     ]);
@@ -685,7 +711,7 @@ export async function rescheduleClientBooking(
     future.setMonth(future.getMonth() + 6);
     const futureStr = future.toISOString().slice(0, 10);
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
-      db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
+      db.from("sellers").select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("name", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
       getDaysOff(db, newDate, newDate),
     ]);
@@ -1994,7 +2020,7 @@ export function acceptedSlotGoneReply(
           : `${cap(dp)} I still have ${list}, ${many ? "which works better for you?" : "does that work for you?"}`;
   } else if (nextDay && nextDay.times.length > 0) {
     const nd = dayPhrase(lang, nextDay.date, todayStr);
-    const list = joinTimes(lang, nextDay.times.slice(0, 2));
+    const list = joinTimes(lang, offerPair(nextDay.times));
     const many = nextDay.times.length >= 2;
     tail =
       lang === "es"
@@ -2037,7 +2063,7 @@ export function acceptedSlotGone(history: HistMsg[], availability: string, lang:
   const where = line ? `${line.display} [${line.date}]` : slot.date;
   const offerPart = sameDayTimes.length
     ? `the real open times on that same day: ${sameDayTimes.join(", ")}`
-    : `the earliest open times of the next day that has any: ${next!.display} [${next!.date}] at ${next!.times.slice(0, 2).join(" or ")}`;
+    : `two open times of the next day that has any (its earliest and its latest): ${next!.display} [${next!.date}] at ${offerPair(next!.times).join(" or ")}`;
   const note =
     `[ACCEPTED TIME NO LONGER OPEN: the client is accepting the ${slot.label} you offered for ${where}, and that time is NOT open anymore` +
     (slot.date < todayStr ? " (that day has already passed)" : " (it is not on that day's line above)") +
@@ -2104,9 +2130,9 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
+        .select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
-        .order("priority", { ascending: true }),
+        .order("name", { ascending: true }),
       db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
       getDaysOff(db, fromStr, toStr),
     ]);
@@ -2162,7 +2188,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     lines.push(
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
-        "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day, and take that line's EARLIEST two open times (its first two listed: 9am before 11am before 1pm), so the day fills from the first hour with no holes. Every time on a line is open with someone on the team, there is no order between team members: the day fills, whoever is free takes it. If that line has only one open time, offer it plus the first open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case'. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
+        "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day. Which two: if the client has said anything about when they are free (mornings, after work, after 5, weekends), the two listed times that fit that; otherwise that line's EARLIEST and its LATEST open time (for example 'today at 11am or 7pm'), so the client gets a real choice between early and late and no hour of the day is held back. There is no preferred hour and no order between team members (owner rule 2026-10-15): every time on a line is open, whoever is free takes it, and if the client asks for any other time listed on that line, it is theirs, confirm it. If that line has only one open time, offer it plus one open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case'. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
         "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
@@ -2209,7 +2235,7 @@ export async function getNextOpenSlots(
   const toStr = windowDays[windowDays.length - 1];
 
   const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
-    db.from("sellers").select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("priority", { ascending: true }),
+    db.from("sellers").select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("name", { ascending: true }),
     db.rpc("get_booked_slots", { _from: fromStr, _to: toStr }),
     getDaysOff(db, fromStr, toStr),
   ]);
@@ -2317,7 +2343,7 @@ export async function slotConflictRecoveryMessage(
       const open = await getNextOpenSlots(21);
       if (open.length === 0) return null;
       const first = open[0];
-      const times = first.times.slice(0, 2).map(fmt12);
+      const times = offerPair(first.times).map(fmt12);
       if (accepted && acc) {
         msg = acceptedSlotGoneReply(lang, acc, [], { date: first.dateStr, times }, todayStr);
       } else if (lang === "pt") {
@@ -2950,9 +2976,9 @@ export async function getAvailableSlots(dateStr: string): Promise<string[]> {
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
         .from("sellers")
-        .select("id,name,priority,enabled_weekdays,time_slots,weekday_time_slots,active")
+        .select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active")
         .eq("active", true)
-        .order("priority", { ascending: true }),
+        .order("name", { ascending: true }),
       db.rpc("get_booked_slots", { _from: dateStr, _to: dateStr }),
       getDaysOff(db, dateStr, dateStr),
     ]);

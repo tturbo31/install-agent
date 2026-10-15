@@ -128,8 +128,8 @@ console.log("\n━━ 6. Prompt sem contradição com DIA MAIS PRÓXIMO + PRIMEI
   ck("exemplo do STEP 2B não oferece dois dias sem horário", !/I have \[day\] and \[day\] open/.test(sp));
   const sc = src("src/lib/scheduler.ts");
   ck("exemplo da agenda não mostra mais 3 horários em 2 dias", !/Wednesday at 3pm, or Thursday at 9am or 11am/.test(sc));
-  ck("regra SOONEST DAY FIRST continua na agenda", /SOONEST DAY FIRST/.test(sc) && /EARLIEST two open times/.test(sc));
-  ck("regra 33 do prompt pede os primeiros horários do dia mais próximo", /EARLIEST open times \(its first two listed, 9am before 11am before 1pm\)/.test(src("src/lib/ai.ts")));
+  ck("regra SOONEST DAY FIRST continua na agenda (15/10: mais cedo + mais tarde do dia, sem 'primeiros dois')", /SOONEST DAY FIRST/.test(sc) && /EARLIEST and its LATEST open time/.test(sc));
+  ck("regra 33 do prompt pede o mais cedo e o mais tarde do dia mais próximo (15/10)", /EARLIEST and LATEST open times/.test(src("src/lib/ai.ts")));
 }
 
 console.log("\n━━ 7. Dia por extenso com acento (PT/ES) é reconhecido ━━");
