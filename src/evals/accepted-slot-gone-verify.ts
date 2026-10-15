@@ -227,8 +227,8 @@ async function main() {
     ck("6pm ainda na linha → null (nada muda)", acceptedSlotGone(REAL, availOpen, "en") === null);
     const availFull = schedule([[today, "fully booked"], [tomorrow, "11am, 1pm, 3pm"]]);
     const full = acceptedSlotGone(REAL, availFull, "en");
-    ck("hoje lotado → enlatada oferece os 2 primeiros de amanhã", full?.reply === "I'm sorry, that 6pm today filled up while we were talking. The closest I have now is tomorrow at 11am or 1pm, which works better for you?", full?.reply);
-    ck("hoje lotado → nota manda para o próximo dia com horários", !!full && /next day that has any: .*\[(\d{4}-\d{2}-\d{2})\] at 11am or 1pm/.test(full.note), full?.note);
+    ck("hoje lotado → enlatada oferece o mais cedo + o mais tarde de amanhã (regra 15/10)", full?.reply === "I'm sorry, that 6pm today filled up while we were talking. The closest I have now is tomorrow at 11am or 3pm, which works better for you?", full?.reply);
+    ck("hoje lotado → nota manda para o próximo dia com horários", !!full && /next day that has any[^:]*: .*\[(\d{4}-\d{2}-\d{2})\] at 11am or 3pm/.test(full.note), full?.note);
     ck("escolha fora da rajada final (último é o endereço) → null", acceptedSlotGone(REAL_BOOK_TURN, availGone, "en") === null);
     ck("dia fora da janela (linha ausente) → null", acceptedSlotGone(REAL, schedule([[tomorrow, "11am"]]), "en") === null);
     ck("sem horário nenhum para oferecer → null (fica com o modelo/handoff)", acceptedSlotGone(REAL, schedule([[today, "fully booked"], [tomorrow, "fully booked"]]), "en") === null);

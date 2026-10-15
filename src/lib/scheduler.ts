@@ -479,7 +479,7 @@ export async function createBooking(req: BookingRequest): Promise<BookingResult>
 
     const future = new Date();
     future.setMonth(future.getMonth() + 6);
-    const futureStr = future.toISOString().slice(0, 10);
+    const futureStr = bookedRangeEnd(future.toISOString().slice(0, 10), req.bookingDate);
 
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db
@@ -709,7 +709,7 @@ export async function rescheduleClientBooking(
     // 2. Pick a seller for the new slot.
     const future = new Date();
     future.setMonth(future.getMonth() + 6);
-    const futureStr = future.toISOString().slice(0, 10);
+    const futureStr = bookedRangeEnd(future.toISOString().slice(0, 10), newDate);
     const [{ data: sellersData }, { data: bookedData, error: bookedErr }, daysOff] = await Promise.all([
       db.from("sellers").select("id,name,enabled_weekdays,time_slots,weekday_time_slots,active").eq("active", true).order("name", { ascending: true }),
       db.rpc("get_booked_slots", { _from: today, _to: futureStr }),
@@ -824,6 +824,14 @@ function ymd(dateStr: string): { weekday: number; month: number; day: number; ye
   return { weekday: d.getUTCDay(), month: d.getUTCMonth(), day: d.getUTCDate(), year: d.getUTCFullYear() };
 }
 
+// End of the booked-slot read for a booking: six months out, or the visit's
+// own day when that is later (owner rule 15/10/2026: any future date is
+// bookable, next year included). A date past the six months fell outside the
+// range, every installer looked free on it and a double booking was possible.
+export function bookedRangeEnd(sixMonthsStr: string, bookingDate: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(bookingDate || "") && bookingDate > sixMonthsStr ? bookingDate : sixMonthsStr;
+}
+
 // Add N days to a YYYY-MM-DD string, returning a YYYY-MM-DD string.
 function addDaysStr(dateStr: string, n: number): string {
   const d = new Date(dateStr + "T12:00:00Z");
@@ -877,9 +885,17 @@ export function weekdaysNamed(text: string): number[] {
 // Friday by the stale offer (caught by the 2026-07-16 victim scan).
 const RELATIVE_TERMS = /\b(today|tonight|tomorrow|day after tomorrow|this\s+(?:morning|afternoon|evening|week|weekend)|next\s+(?:week|weekend|month)|asap|as soon as possible|earliest|soonest|right now|hoy|ma[ñn]ana|esta\s+(?:tarde|noche|semana)|pr[oó]xima\s+semana|hoje|amanh[ãa])\b/i;
 const DATE_NUMBER = /\b\d{1,2}(?:st|nd|rd|th)\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\s+\d{1,2}\b/i;
+// "10/26", "11/3", "10/26/2026": a numeric date counters a weekday offer just
+// like "the 17th" does. fb_37685589211085730 (Messenger, 15/10/2026) wrote
+// "I'll be in town 10/26-11/3 only" and this guard saw no date in it, so the
+// stale "Friday the 16th" offer stayed the anchor and the [BOOK] the model had
+// written correctly for Monday October 26 was moved to Friday October 23.
+// "1/4 round", "1/2 inch", "3/4 of the house" are fractions, never dates.
+const FRACTION_UNIT_AFTER = String.raw`(?!\s*(?:round|inch(?:es)?|in\b|"|''|bath(?:room)?s?|of\b|mile|miles|cup|cups|acre|acres|lbs?\b|gal(?:lon)?s?\b|pulgadas?|polegadas?))`;
+const NUMERIC_DATE_TERM = new RegExp(String.raw`(?<![\d\/:])(?:1[0-2]|0?[1-9])\/(?:3[01]|[12]\d|0?[1-9])(?:\/(?:20)?\d{2})?(?![\d\/])` + FRACTION_UNIT_AFTER, "i");
 function hasRelativeOrDateTerm(text: string): boolean {
   const clean = (text || "").split(/\n\n?\[SYSTEM:/)[0];
-  return RELATIVE_TERMS.test(clean) || DATE_NUMBER.test(clean);
+  return RELATIVE_TERMS.test(clean) || DATE_NUMBER.test(clean) || NUMERIC_DATE_TERM.test(clean);
 }
 
 export type BookingReconciliation = {
@@ -919,7 +935,16 @@ export function reconcileBookingWeekday(
     // A [BOOK] on the very day the answered offer put that hour on is right by
     // construction: never moved, whatever else the client's text seems to say.
     const offerSaysBookedDate = !!acc && offerSegmentDate(stripSystemNote(ep[acc.offerIdx].content), acc.hour12, messageDateStr(ep[acc.offerIdx], todayStr)) === bookingDate;
-    if (acc && acc.hour12 === parseInt(bookedHM[1], 10) % 12 && acc.date >= todayStr && !clientNamedBookedDate && !offerSaysBookedDate) {
+    const bookedHourAccepted = !!acc && acc.hour12 === parseInt(bookedHM[1], 10) % 12 && acc.date >= todayStr;
+    // "Settles it" and "never moved" mean the guard ENDS here. Until 15/10/2026
+    // these two cases only skipped the accepted-slot rule and fell through to
+    // the weekday words below, where the "Friday" of an older offer could still
+    // drag the date (fb_37685589211085730: the model wrote Monday October 26,
+    // the day of the offer the client answered, and the visit left as October 23).
+    if (bookedHourAccepted && (clientNamedBookedDate || offerSaysBookedDate)) {
+      return { date: bookingDate, corrected: false, intendedWeekday: bookedWeekday };
+    }
+    if (acc && bookedHourAccepted) {
       const intendedWeekday = ymd(acc.date).weekday;
       if (acc.date === bookingDate) return { date: bookingDate, corrected: false, intendedWeekday };
       return {
@@ -940,10 +965,29 @@ export function reconcileBookingWeekday(
   // Thursday the client typed ten messages ago.
   let offerIdx = -1;
   let offerDays: number[] = [];
+  let offerDate: string | null = null;
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role !== "assistant") continue;
     const days = weekdaysNamed(msgs[i].content);
     if (days.length >= 1) { offerIdx = i; offerDays = days; break; }
+    // A NEWER offer that names its day by the DATE ("I can come measure on
+    // October 26th at 9am or 11am") supersedes an older weekday offer ("Friday
+    // the 16th at 9am or 1pm"). fb_37685589211085730 (15/10/2026): the client
+    // took the 9am of October 26 and the stale "Friday" moved the visit to
+    // October 23. That date is the anchor when the message settles on ONE
+    // date (see the date rule below); when its day words disagree there is an
+    // anchor with no day, and the model's date stands.
+    const flat = deaccentLowerText(stripSystemNote(msgs[i].content));
+    const refs = STREET_ADDRESS.test(flat) ? dayRefsOf(flat).filter((r) => r.kind !== "dom") : dayRefsOf(flat);
+    // "tomorrow at 9am" alone is no anchor: the webhook history carries no
+    // timestamps, so a relative word resolves from today whatever day it was
+    // written. Only a concrete day (month + day, "10/26", "the 26th") counts.
+    if (!refs.some((r) => r.kind === "date" || r.kind === "dom")) continue;
+    const named = singleDateNamed(flat, messageDateStr(msgs[i], easternTodayStr()));
+    if (named === "none") continue;
+    offerIdx = i;
+    offerDate = named;
+    break;
   }
 
   // Look at the CLIENT's messages in the current round (at/after the offer):
@@ -969,6 +1013,22 @@ export function reconcileBookingWeekday(
   let intended: number | null = null;
   if (clientWeekday !== null) {
     intended = clientWeekday;
+  } else if (offerDate && !clientRelative) {
+    // The offer the client answered named its day by the DATE. Same day of the
+    // month as the [BOOK] → the model's date stands (the history carries no
+    // timestamps, so "the 20th" resolves from today and the month is the
+    // model's to know). A different day → the visit goes on the offer's own
+    // date, never on a weekday guess; a date already past is left alone.
+    if (ymd(offerDate).day === ymd(bookingDate).day || offerDate < easternTodayStr()) {
+      return { date: bookingDate, corrected: false, intendedWeekday: ymd(offerDate).weekday };
+    }
+    return {
+      date: offerDate,
+      corrected: true,
+      from: bookingDate,
+      intendedWeekday: ymd(offerDate).weekday,
+      reason: `the offer the client answered named ${offerDate} (${DAY_NAMES[ymd(offerDate).weekday]}) but [BOOK] date ${bookingDate} is the ${ymd(bookingDate).day}; snapped to ${offerDate}`,
+    };
   } else if (offerIdx >= 0 && offerDays.length === 1 && !clientRelative) {
     // An offer that puts TWO days on the table ("Today I only have 6pm or 8pm,
     // but Sunday I have 9am or 1pm") does not make its weekday the client's
@@ -1209,14 +1269,25 @@ export function hourPickedInPhrase(text: string, offeredHours: Set<number>): boo
 }
 // Same rule, returning the hour (mod 12) the client picked, or null.
 export function pickedHourInPhrase(text: string, offeredHours: Set<number>): number | null {
-  const t = normalizeClockSpacing((text || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]).trim();
-  if (!t || t.length > 90 || offeredHours.size === 0) return null;
-  if (STREET_ADDRESS.test(t) || HOUR_PICK_NOT_A_PICK.test(t) || /\d[\d\s().-]{8,}\d/.test(t)) return null;
-  for (const m of t.matchAll(/(?<![\d$#:\/-])\b(\d{1,2})\b/g)) {
-    const h = parseInt(m[1], 10);
-    if (h < 1 || h > 12 || !offeredHours.has(h % 12)) continue;
-    if (HOUR_PICK_UNIT_AFTER.test(t.slice((m.index ?? 0) + m[0].length))) continue;
-    return h % 12;
+  const whole = normalizeClockSpacing((text || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]).trim();
+  if (!whole || offeredHours.size === 0) return null;
+  // One bubble, several things (fb_37685589211085730, Messenger 15/10/2026):
+  // "9 would be great" + the street address + "call me before you exit your
+  // car" + the phone. Judged as a whole, the address and the phone made the
+  // bubble "not a pick", the 9am the client chose was lost, and the [BOOK]
+  // fell to the weekday guard, which moved the visit to an older offer's
+  // Friday. Each line / sentence is judged on its own: the pick is short and
+  // clean even when the rest of the bubble is not.
+  const segments = whole.split(/\n+|(?<=[.!?;])\s+/).map((s) => s.trim()).filter(Boolean);
+  for (const t of segments) {
+    if (t.length > 90) continue;
+    if (STREET_ADDRESS.test(t) || HOUR_PICK_NOT_A_PICK.test(t) || /\d[\d\s().-]{8,}\d/.test(t)) continue;
+    for (const m of t.matchAll(/(?<![\d$#:\/-])\b(\d{1,2})\b/g)) {
+      const h = parseInt(m[1], 10);
+      if (h < 1 || h > 12 || !offeredHours.has(h % 12)) continue;
+      if (HOUR_PICK_UNIT_AFTER.test(t.slice((m.index ?? 0) + m[0].length))) continue;
+      return h % 12;
+    }
   }
   return null;
 }
@@ -1674,7 +1745,8 @@ const DAY_REF_WEEKDAY: Record<string, number> = {
 };
 const DAY_REF_MONTH_DATE = new RegExp(`(?<![a-z])(${MONTH_WORDS})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?![a-z0-9:])|(?<![a-z0-9])(\\d{1,2})\\s+de\\s+(${MONTH_WORDS})(?![a-z])`, "gi");
 // "9/30", "09/30/2026" (US order). Never a clock ("9:30") and never inside a longer number.
-const DAY_REF_NUMERIC_DATE = /(?<![\d/:])(\d{1,2})\/(\d{1,2})(?:\/(?:20)?\d{2})?(?![\d/])/g;
+// "1/4 round", "1/2 inch": a fraction with its unit is not a date (fb_37685589211085730 wrote "don't like the 1/4 round").
+const DAY_REF_NUMERIC_DATE = new RegExp(String.raw`(?<![\d/:])(\d{1,2})\/(\d{1,2})(?:\/(?:20)?\d{2})?(?![\d/])` + FRACTION_UNIT_AFTER, "g");
 // "the 29th", "el 26", "dia 26", "26th": a number is a day of the month ONLY with
 // that lead-in or an ordinal suffix, and never when a clock unit follows.
 // "12955 sw 16th ct" / "NW 7th St" / "3rd floor" are street ordinals, never a day
@@ -1917,7 +1989,16 @@ export function acceptedOfferSlot(history: HistMsg[], todayStr: string = eastern
     else {
       date = offerSegmentDate(offerText, pick.hour12, messageDateStr(msgs[j], todayStr));
       // An echo without a day ("Perfect, 6pm it is") → the earlier offer that named this hour with its day.
+      // A client message in between that names a day ("can we do the 27th instead?") is what the echo
+      // answers: that day is the slot's day; day words that do not settle on one date decide nothing.
       for (let k = j - 1; k >= Math.max(0, j - 6) && !date; k--) {
+        if (msgs[k].role === "user") {
+          const said = singleDateNamed(deaccentLowerText(stripSystemNote(msgs[k].content)), messageDateStr(msgs[k], todayStr));
+          if (said === "none") continue;
+          if (said === null) return null;
+          date = said;
+          break;
+        }
         if (msgs[k].role !== "assistant") continue;
         const txt = stripSystemNote(msgs[k].content);
         if (!clockTokensOf(txt).some((c) => c.hour12 === pick.hour12)) continue;
@@ -2115,6 +2196,110 @@ export async function hasExistingBooking(igsid: string): Promise<boolean> {
   }
 }
 
+// ─── Dates the client asked for beyond the 21-day window (owner rule 15/10/2026) ─
+// "I'll be in town 10/26-11/3 only", "I'm back December 15th", "first week of
+// January", "end of November", "in 3 weeks", "next month": the visit is booked
+// for the day the client wants, however far ahead, as long as that day has an
+// open hour. The schedule text keeps its 21-day window and ADDS one week from
+// each date (or the part of the month) the client named, so the model offers
+// and writes the [BOOK] from a real line instead of sending the client away
+// ("just reach out when you're ready in January", fb_37685589211085730,
+// 22/08/2026: she came back two months later and had to ask again).
+// Pure: user messages only, each resolved from the day it was written; the
+// part of a window inside the 21 days is dropped (already listed); the
+// newest mentions win; at most three windows; never beyond 400 days.
+const REQ_WINDOW_DAYS = 7;
+const REQ_MAX_WINDOWS = 3;
+const REQ_MAX_AHEAD_DAYS = 400;
+const REQ_MONTH_FULL = "january|february|march|april|may|june|july|august|september|october|november|december|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|janeiro|fevereiro|marco|maio|junho|julho|setembro|outubro|novembro|dezembro";
+// "december 15" / "15 de diciembre" / "15th of december" are dates (handled by dayRefsOf), not a bare month.
+const REQ_MONTH_ONLY = new RegExp(String.raw`(?<![a-z])(?<!\d{1,2}(?:st|nd|rd|th)?\s+(?:de|of)\s+)(${REQ_MONTH_FULL})(?![a-z])(?!\s*(?:the\s+)?\d)`, "g");
+const REQ_MONTH_CONTEXT = /(?:in|of|for|until|till|by|early|late|mid|end of|beginning of|first week of|hasta|en|de|em|ate)\s+$/;
+const REQ_MONTH_PART = /(?:(first|1st|early|beginning|start|principios|inicio|comeco|primera|primeira)|(second|2nd|segunda)|(mid|middle|mediados|meados|third|3rd|tercera|terceira)|(end|late|last|finales|fin|final|fim|ultima))\s+(?:week\s+|semana\s+|days?\s+|dias\s+)?(?:of\s+|in\s+|de\s+|do\s+|en\s+)?$/;
+const REQ_UNITS_AHEAD = /(?<![a-z])(?:in|en|em|dentro de|daqui a)\s+(\d{1,2}|two|three|four|five|six|dos|tres|cuatro|cinco|seis|duas|quatro)\s+(weeks?|semanas?|months?|meses|mes)(?![a-z])/g;
+const REQ_NEXT_MONTH = /(?<![a-z])(?:next month|el (?:proximo|siguiente) mes|el mes que viene|mes que vem|(?:no )?proximo mes)(?![a-z])/;
+const REQ_NUM_WORDS: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, duas: 2, quatro: 4 };
+// "we moved in on 9/30" tells a story; "I'm back 9/30" makes a plan. A date with
+// a past cue and no future cue is not a day to list.
+const REQ_PAST_CUE = /(?<![a-z])(?:moved|bought|installed|did|was|were|had|ago|born|happened|finished|mudamos|mude|compre|compramos|hicimos|hice|fue|era|pasado|hace|mudei|comprei|fizemos|foi|passado|atras)(?![a-z])/;
+const REQ_FUTURE_CUE = /(?<![a-z])(?:back|return|returning|in town|available|free|ready|schedule|book|visit|come|coming|next|after|until|till|from|starting|works?|good|fine|better|best|prefer|vuelvo|regreso|regresamos|volvemos|disponible|libre|listo|lista|agendar|visita|venir|vengan|despues|hasta|desde|a partir|mejor|volto|voltamos|disponivel|pronto|pronta|depois|ate|melhor)(?![a-z])/;
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+}
+function firstOfMonthPlus(dateStr: string, n: number): string {
+  const { year, month } = ymd(dateStr);
+  const total = month + n;
+  return `${year + Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, "0")}-01`;
+}
+export function clientRequestedWindows(
+  history: Array<{ role: string; content: string; at?: string; created_at?: string }> | undefined,
+  todayStr: string,
+  horizonEnd: string
+): Array<{ from: string; to: string }> {
+  const maxDate = addDaysStr(todayStr, REQ_MAX_AHEAD_DAYS);
+  const found: Array<{ from: string; to: string }> = [];
+  const add = (from: string, to: string) => {
+    if (from < todayStr) from = todayStr;
+    if (to > maxDate) to = maxDate;
+    if (from <= horizonEnd) from = addDaysStr(horizonEnd, 1); // the 21-day list already shows up to horizonEnd
+    if (from > to) return; // past, too far, or entirely inside the 21-day list
+    found.push({ from, to });
+  };
+  const mk = (year: number, month: number, day: number) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const flat = deaccentLowerText(stripSystemNote(m.content));
+    if (!flat.trim()) continue;
+    const base = messageDateStr(m, todayStr);
+    // a) a day: "10/26", "December 15th", "15 de diciembre", "the 30th" (a bare day of the month only outside a street address)
+    const refs = STREET_ADDRESS.test(flat) ? dayRefsOf(flat).filter((r) => r.kind !== "dom") : dayRefsOf(flat);
+    const story = REQ_PAST_CUE.test(flat) && !REQ_FUTURE_CUE.test(flat);
+    for (const ref of refs) {
+      if (ref.kind !== "date" && ref.kind !== "dom") continue;
+      if (story) continue;
+      const d = resolveDayRef(ref, base);
+      if (d) add(d, addDaysStr(d, REQ_WINDOW_DAYS - 1));
+    }
+    // b) a month without a day: "in January", "first week of January", "end of November", "mediados de enero"
+    for (const mm of flat.matchAll(REQ_MONTH_ONLY)) {
+      const month = monthIndexOf(mm[1]);
+      if (month === null) continue;
+      const before = flat.slice(0, mm.index ?? 0);
+      // "may" is a verb and "marco" a name unless a date word leads in
+      if ((mm[1] === "may" || mm[1] === "marco") && !REQ_MONTH_CONTEXT.test(before)) continue;
+      const b = ymd(base);
+      const year = month >= b.month ? b.year : b.year + 1;
+      const part = REQ_MONTH_PART.exec(before.slice(-28));
+      const last = lastDayOfMonth(year, month);
+      let from = 1, to = REQ_WINDOW_DAYS;
+      if (part?.[2]) { from = 8; to = 14; }
+      else if (part?.[3]) { from = 14; to = 20; }
+      else if (part?.[4]) { from = last - REQ_WINDOW_DAYS + 1; to = last; }
+      add(mk(year, month, from), mk(year, month, Math.min(to, last)));
+    }
+    // c) "in 3 weeks", "en dos meses", "next month"
+    for (const w of flat.matchAll(REQ_UNITS_AHEAD)) {
+      const n = REQ_NUM_WORDS[w[1]] ?? parseInt(w[1], 10);
+      if (!n || n > 24) continue;
+      const start = /^(?:week|semana)/.test(w[2]) ? addDaysStr(base, n * 7) : firstOfMonthPlus(base, n);
+      add(start, addDaysStr(start, REQ_WINDOW_DAYS - 1));
+    }
+    if (REQ_NEXT_MONTH.test(flat)) {
+      const start = firstOfMonthPlus(base, 1);
+      add(start, addDaysStr(start, REQ_WINDOW_DAYS - 1));
+    }
+  }
+  // newest mentions first, overlapping windows merged, capped
+  const out: Array<{ from: string; to: string }> = [];
+  for (const w of found.reverse()) {
+    const hit = out.find((o) => w.from <= o.to && o.from <= w.to);
+    if (hit) { hit.from = hit.from < w.from ? hit.from : w.from; hit.to = hit.to > w.to ? hit.to : w.to; continue; }
+    if (out.length >= REQ_MAX_WINDOWS) break;
+    out.push({ ...w });
+  }
+  return out.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+
 export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }> }): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
@@ -2185,11 +2370,37 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
       lines.push("No availability in the next 21 days.");
     }
 
+    // The week around each later date the client asked for (owner rule
+    // 15/10/2026): same line format, so every reader of the schedule text
+    // (acceptedSlotGone, the model's [BOOK] rule) treats it as bookable.
+    const requested = clientRequestedWindows(opts?.history, todayStr, toStr);
+    const requestedRanges = await Promise.all(
+      requested.map(async (w) => {
+        const [{ data: bk, error: bkErr }, off] = await Promise.all([
+          db.rpc("get_booked_slots", { _from: w.from, _to: w.to }),
+          getDaysOff(db, w.from, w.to),
+        ]);
+        if (bkErr) throw new Error(`get_booked_slots: ${bkErr.message}`);
+        return { ...w, bookings: (bk ?? []) as BookingRow[], daysOff: off };
+      })
+    );
+    if (requestedRanges.length > 0) {
+      lines.push("\nDATES THE CLIENT ASKED FOR (beyond the 21 days above; same format, same rules, every open time listed here is bookable):");
+      for (const r of requestedRanges) {
+        for (let d = r.from; d <= r.to; d = addDaysStr(d, 1)) {
+          const { weekday, month, day, year } = ymd(d);
+          const displayDate = `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${d}]`;
+          const slots = openHoursForDay(sellers, d, weekday, r.bookings, r.daysOff, undefined);
+          lines.push(slots.length > 0 ? `• ${displayDate}: ${slots.map(fmt12).join(", ")}` : `• ${displayDate}: fully booked`);
+        }
+      }
+    }
+
     lines.push(
       "\nIMPORTANT — read carefully before offering any time:" +
         "\n- ONLY offer times listed above. Never mention a time shown as 'fully booked'." +
         "\n- SOONEST DAY FIRST (owner's rule, the team must not be left with empty hours): when you propose the visit, take your two options from the FIRST line above that has open times, today if today still has times listed, otherwise the next day. Which two: if the client has said anything about when they are free (mornings, after work, after 5, weekends), the two listed times that fit that; otherwise that line's EARLIEST and its LATEST open time (for example 'today at 11am or 7pm'), so the client gets a real choice between early and late and no hour of the day is held back. There is no preferred hour and no order between team members (owner rule 2026-10-15): every time on a line is open, whoever is free takes it, and if the client asks for any other time listed on that line, it is theirs, confirm it. If that line has only one open time, offer it plus one open time of the next line that has any. A line with two or more listed times is a COMPLETE offer on its own: two of its times and nothing else, never a third time and never a second day added 'in case'. Move to a later day ONLY when the client says they cannot do that day, asks for another day, or their stated availability has no match on it, and even then use the SOONEST matching line (for 'next week' that is the first listed day of next week, not a later one). Never skip a day that has open times because a later day has more of them." +
-        "\n- This list covers the next 21 days, so you CAN book next week and the week after. NEVER tell the client you cannot see, access, or open a future week's calendar — any date listed above is bookable." +
+        "\n- This list covers the next 21 days, so you CAN book next week and the week after. ANY FUTURE DATE IS BOOKABLE, next month and next year included (owner rule 2026-10-15): the visit goes on the day and hour the client wants whenever that day's line shows the hour open. When the client names a later day, a week or a month ('I'll be in town 10/26-11/3', 'I'm back December 15th', 'first week of January'), the days around it are listed under DATES THE CLIENT ASKED FOR: offer from those lines exactly as from the ones above (the soonest listed day of that range first, its earliest and its latest time). If the day the client wants is not listed anywhere, ask them for the exact date in ONE short question and offer from its line once it is listed. NEVER tell the client you cannot see, access, or open a future calendar, NEVER send them away to 'reach out when you're back' or 'when you're ready', and NEVER invent a date: any date listed here is bookable." +
         "\n- When you name a weekday to the client (e.g. 'Friday' / 'viernes'), you MUST use the exact date in [brackets] shown on that SAME line, and ONLY the times listed on that same line." +
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
         "\n- A SUMMARY OF availability is not a list of times and is equally FORBIDDEN. Never write 'Sunday with several options', 'Tuesday has plenty of availability', 'Wednesday has full availability from 9am to 7pm', 'both with plenty of times to choose from', or anything similar: a range or a count lets the client answer '10am' or '2pm' — hours that are not on the line and do not exist — and you then have to walk it back. Spell out the actual open times, comma-separated, for every day you name, however many there are." +
