@@ -89,6 +89,10 @@ const INTERNAL_VOCAB = new RegExp(
   "i"
 );
 
+// "wait," at the start of a clause, after an ellipsis or on its own: the model
+// stopping itself. Not the verb ("please wait,", "to wait,", "the wait,").
+const WAIT_MARKER = /(?:^|[\s…])(?<!\b(?:please|to|the|a|no|can|cannot|can'?t|could|just|and|or|we|you|i|i'?ll|we'?ll|you'?ll|they'?ll|will|won'?t|don'?t|longer|this|that|they|still|gladly|happily|rather|not|never|always|te|me|le|se|nos|la|de|sin|sem|tiene|tem|hay|h[aá]|em|na|sua|tu)\s)(?:wait|espera|pera[ií]?)\s*[,:]/i;
+
 // The model giving itself orders or grading its own draft.
 const SELF_TALK = new RegExp(
   [
@@ -105,6 +109,17 @@ const SELF_TALK = new RegExp(
     /\bmatching\s+their\b/.source,
     /\bi(?:'ll|\s+will)\s+give\s+a\s+(?:brief|short|quick)\b/.source,
     /\bd[eé]jame\s+(?:releer|repensar)\b|\bdeixa\s+eu\s+(?:reler|repensar)\b/.source,
+    // "wait," / "wait:" opening a clause, "Wait I/you already…", "let me give
+    // you the real options": the model catching itself (Benjamin, Messenger
+    // 2026-10-15: "I can do Friday at 3pm or 7pm... wait, Friday's latest is
+    // 5pm. Let me give you the real options: Friday October 16 at 3pm or 5pm,
+    // which works better?"; and "Wait, you already gave it: 8121 NW 197 St",
+    // "Wait, you're on WhatsApp so I already have your number", both shipped).
+    // The verb never carries the comma ("wait until the layout is finalized",
+    // "no need to wait"), and "the exact number on the spot" is client talk.
+    WAIT_MARKER.source,
+    /^\W*wait\s+(?:i|we|you|that|this|it|no|there)\b/.source,
+    /\blet\s+me\s+give\s+(?:you\s+)?(?:the\s+)?(?:right|correct|real|actual|proper|accurate|clean|good)\s+(?:ones?|options?|times?|slots?|hours?|numbers?|answer|dates?|days?|info)\b/.source,
   ].join("|"),
   "i"
 );
@@ -113,7 +128,15 @@ const SELF_TALK = new RegExp(
 // draft it just abandoned (a wrong link, a data re-ask it then takes back, six
 // times instead of two), so the reply as a whole is not trustworthy: the caller
 // regenerates instead of shipping the patchwork.
-const SELF_CORRECTION = /(?:^|[\s,.!?])(?:wait|hmm+|actually),?\s+(?:let\s+me|i\s|we\s|that|no\b)|\blet\s+me\s+(?:redo|re-?read|re-?check|recalculate|reconsider|start\s+over|try\s+(?:this|that)\s+again|fix\s+that|give\s+(?:you\s+)?(?:the\s+)?(?:right|correct|two\s+clean))\b|\bscratch\s+that\b|\bespera,?\s+d[eé]jame\b|\bd[eé]jame\s+(?:recalcular|rehacer|corregir)\b/i;
+const SELF_CORRECTION = new RegExp(
+  [
+    /(?:^|[\s,.!?])(?:wait|hmm+|actually),?\s+(?:let\s+me|i\s|we\s|that|no\b)/.source,
+    WAIT_MARKER.source,
+    /\blet\s+me\s+(?:redo|re-?read|re-?check|recalculate|reconsider|start\s+over|try\s+(?:this|that)\s+again|fix\s+that|correct\s+that|give\s+(?:you\s+)?(?:the\s+)?(?:right|correct|real|actual|proper|accurate|two\s+clean|clean))\b/.source,
+    /\bscratch\s+that\b|\bespera,?\s+d[eé]jame\b|\bd[eé]jame\s+(?:recalcular|rehacer|corregir)\b/.source,
+  ].join("|"),
+  "i"
+);
 
 // "…those same hours, actually, let me give you two clean options: Tuesday at
 // 9am or 11am, which works?" (868bf420, IG 2026-08-19): the marker and what
@@ -227,6 +250,15 @@ export function salvageFromLeak(prose: string, isLeak: (sentence: string) => str
   const ok = (s: string) => substance(s) >= 20 || hasTag(s);
   const kept = abandonedHead ? tail : head + tail;
   if (ok(kept)) return done(keepTags(kept), "heavy", true);
+  // Nothing after the monologue, but the correction sentence itself carries
+  // the real reply ("I can do Friday at 3pm or 7pm... wait, Friday only goes
+  // until 5pm, so Friday at 3pm or 5pm, which works better?"): what follows
+  // the "wait," is the reply, what precedes it is the offer the model took
+  // back, and that head must not ship (its 7pm was never open).
+  if (abandonedHead) {
+    const inner = correctionTail(parts[last]);
+    if (inner && (inner.includes("?") || clockTimes(inner).length >= 2) && ok(inner) && !strict(inner)) return done(keepTags(inner), "heavy", true);
+  }
   // Nothing after the monologue: the reply came first and the second-guessing
   // trailed it ("All set![BOOK] Wait, let me re-check the date…").
   if (abandonedHead && ok(head)) return done(keepTags(head), "heavy", true);
@@ -234,26 +266,62 @@ export function salvageFromLeak(prose: string, isLeak: (sentence: string) => str
   return done("", "unsalvageable", true);
 }
 
+// The clause after a "wait," / "espera," marker, capitalised; null when the
+// sentence has no marker or nothing follows it.
+function correctionTail(sentence: string): string | null {
+  const m = /(?:^|[\s…])(?:wait|espera|pera[ií]?)\s*[,:]\s*/i.exec(sentence);
+  if (!m) return null;
+  const rest = sentence.slice(m.index + m[0].length).trim();
+  return rest ? rest.charAt(0).toUpperCase() + rest.slice(1) : null;
+}
+
 // Two QUESTIONS in one reply offering the same clock times = a draft and its
 // re-draft ("Which time works better, 11am or 2pm? … Which one works for you,
 // the 11am or the 2pm?", Keky WA 2026-08-29). A signal on its own, for the
 // monologue that uses none of the known words.
+const clockTimes = (sentence: string): string[] =>
+  [...new Set([...sentence.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi)].map((m) => `${m[1]}:${m[2] ?? "00"}${m[3].toLowerCase()}`))].sort();
 const offerKey = (sentence: string): string | null => {
   if (!sentence.includes("?")) return null;
-  const times = [...sentence.matchAll(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/gi)].map((m) => `${m[1]}:${m[2] ?? "00"}${m[3].toLowerCase()}`);
-  return times.length < 2 ? null : [...new Set(times)].sort().join("|");
+  const times = clockTimes(sentence);
+  return times.length < 2 ? null : times.join("|");
+};
+
+// The SAME weekday offered twice in one reply with DIFFERENT pairs of times,
+// question mark or not: the first offer is a draft the model took back ("I can
+// do Friday at 3pm or 7pm... wait, Friday's latest is 5pm. Let me give you the
+// real options: Friday October 16 at 3pm or 5pm, which works better?",
+// Benjamin, Messenger 2026-10-15). A reply offers one pair for a day; two
+// pairs for the same day contradict each other whatever the words between.
+const DAY_WORD = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta)(?![a-zà-ÿ])/i;
+const dayOfferKey = (sentence: string): { day: string; times: string } | null => {
+  const d = DAY_WORD.exec(sentence);
+  if (!d) return null;
+  const times = clockTimes(sentence);
+  if (times.length < 2) return null;
+  return { day: d[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""), times: times.join("|") };
 };
 
 // Index of the sentence that repeats an offer already made in the same reply
-// (the last such one), or -1.
+// (the last such one), or that offers a day already offered with other times,
+// or -1.
 function lastRedraftIndex(parts: string[]): number {
   const seen = new Set<string>();
+  const byDay = new Map<string, string>();
   let at = -1;
   parts.forEach((s, i) => {
-    const key = offerKey(s.replace(/\[[^\]]*\]/g, " "));
-    if (!key) return;
-    if (seen.has(key)) at = i;
-    seen.add(key);
+    const clean = s.replace(/\[[^\]]*\]/g, " ");
+    const key = offerKey(clean);
+    if (key) {
+      if (seen.has(key)) at = i;
+      seen.add(key);
+    }
+    const dayKey = dayOfferKey(clean);
+    if (dayKey) {
+      const before = byDay.get(dayKey.day);
+      if (before && before !== dayKey.times) at = i;
+      byDay.set(dayKey.day, dayKey.times);
+    }
   });
   return at;
 }
