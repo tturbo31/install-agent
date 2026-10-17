@@ -165,6 +165,9 @@ async function isPerRecipientFailure(
 // more hours — and the bio still pointed at the dead ozzifloors.com. At the
 // 1-2 link replies a day this account sends, one failed probe every 2h costs
 // nothing; a day of wrong fallbacks costs leads.
+// 2026-10-17 (owner rule): the AI sends NO link on Instagram at all, so the
+// send no longer consults this marker; it stays as the record of a 508 on the
+// one path that still sends links (the panel, allowLinks).
 const IG_LINK_BLOCK_PREFIX = "iglinkblock|";
 const IG_LINK_BLOCK_TTL_MS = 2 * 60 * 60 * 1000;
 const IG_LINK_BLOCK_ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
@@ -233,14 +236,14 @@ export async function reportIgLinkBlock(clientId: string, errorMsg: string): Pro
       ``,
       `O Instagram esta recusando mensagens com link (erro 508 "Invalid message id"). Respostas SEM link continuam chegando normalmente. NAO e problema de token: trocar o token nao resolve.`,
       ``,
-      `O que o bot faz sozinho: reenvia a mesma resposta sem o link. O site vira "nosso site (o link esta na bio)" e link de financiamento/contrato vira "me escreve no (561) 674-8334 que eu te mando por la".`,
+      `O que o bot faz sozinho: reenvia a mesma resposta sem o link. O site vira "nosso site (o link esta na bio)", financiamento vira "liga ou manda mensagem pro Ozzi no (561) 674-8334" e contrato vira "manda mensagem pro Ozzi no (561) 674-8334 que ele te envia".`,
       ``,
       `O que so voce pode fazer:`,
       `1. Coloque https://ozzifloors.company como site na bio do @ozzi.floors (hoje a bio aponta para o ozzifloors.com antigo, que nao e mais nosso). O bot esta mandando os clientes para o link da bio.`,
       `2. No app do Instagram: Configuracoes > Status da conta > Recursos que voce nao pode usar. Se aparecer restricao de links, siga o que o Instagram pedir (costuma liberar em 1 a 3 dias).`,
       ``,
       `Cliente que recebeu a versao sem link: ${clientId}`,
-      `O bot testa o link de verdade de novo a cada 2h e volta ao normal sozinho quando o Instagram liberar.`,
+      `Desde 17/10 a IA nao manda link nenhum no Instagram por regra sua (so o painel manda); este aviso so aparece quando um link do painel foi recusado.`,
     ].join("\n");
     await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
   } catch (err) {

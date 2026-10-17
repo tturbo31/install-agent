@@ -1,7 +1,7 @@
 import { InstagramProfile } from "@/lib/types";
 import { supabaseAdmin } from "@/lib/supabase";
 import { getInstagramToken } from "@/lib/ig-token";
-import { reportSendFailure, igLinkBlockActive, markIgLinkBlock, clearIgLinkBlock, reportIgLinkBlock } from "@/lib/delivery";
+import { reportSendFailure, markIgLinkBlock, reportIgLinkBlock } from "@/lib/delivery";
 import { stripInternalMarkers } from "@/lib/outbound-text";
 import { containsLink, neutralizeLinks, isIgLinkBlockError } from "@/lib/ig-link-policy";
 
@@ -31,10 +31,17 @@ export type IgSendResult = {
   via: "instagram" | "messenger-bridge" | "none";
   error?: string;
   // Set when the DELIVERED text differs from the one passed in (links
-  // neutralized under the Instagram link block, see ig-link-policy.ts). The
-  // producer must store this, never the original: stored ≠ sent turns the
-  // IG echo into "[Treino]" + mode=human and the lead goes mute.
+  // neutralized: Instagram never carries a link, owner rule 2026-10-17, see
+  // ig-link-policy.ts). The producer must store this, never the original:
+  // stored ≠ sent turns the IG echo into "[Treino]" + mode=human and the lead
+  // goes mute.
   sentText?: string;
+};
+
+export type IgSendOptions = {
+  // The panel (the owner typing by hand) keeps its links; every AI producer
+  // leaves this unset and never sends a link on Instagram.
+  allowLinks?: boolean;
 };
 
 // Send a DM. VERIFIED + VISIBLE (2026-07-22): the old version returned the raw
@@ -49,21 +56,23 @@ export type IgSendResult = {
 //    a real result so they can stop recording undelivered replies as sent.
 export async function sendInstagramMessage(
   recipientIgsid: string,
-  text: string
+  text: string,
+  opts: IgSendOptions = {}
 ): Promise<IgSendResult> {
   text = stripInternalMarkers(text);
   if (!text) return { ok: false, via: "none", error: "empty text after marker strip" };
-  // Link block (Graph 508 "Invalid message id", 2026-10-14 — see
-  // ig-link-policy.ts): while Instagram is known to refuse links from this
-  // account the link-free version goes out first; once the marker ages out
-  // the real link is tried again, and a delivered link clears the marker.
+  // Instagram never carries a link (owner rule 2026-10-17, ig-link-policy.ts):
+  // our site becomes "our website (link in our bio)", a financing link becomes
+  // Ozzi's number, any other link is dropped with the owner line. Only the
+  // panel (allowLinks) sends a real link; a 508 on that path still falls back
+  // to the link-free version below.
   const hasLink = containsLink(text);
   let outText = text;
   let linkFree = false;
-  if (hasLink && (await igLinkBlockActive())) {
+  if (hasLink && !opts.allowLinks) {
     outText = neutralizeLinks(text);
     linkFree = true;
-    console.warn("[IG] link block active — sending the link-free version to " + recipientIgsid);
+    console.log("[IG] no links on Instagram — sending the link-free version to " + recipientIgsid);
   }
   const buildPayload = (t: string) => JSON.stringify({ recipient: { id: recipientIgsid }, message: { text: t } });
   let payload = buildPayload(outText);
@@ -84,8 +93,6 @@ export async function sendInstagramMessage(
         error?: { message?: string; code?: number };
       };
       if (!body.error && (body.message_id || res.ok)) {
-        // A real link just went through: whatever restriction was recorded is over.
-        if (hasLink && !linkFree) await clearIgLinkBlock();
         return linkFree ? { ok: true, via: "instagram", sentText: outText } : { ok: true, via: "instagram" };
       }
       lastErr = `${body.error?.code ?? res.status}: ${body.error?.message ?? "unknown"}`;

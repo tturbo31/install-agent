@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from "@/lib/instagram";
+import { IG_CHANNEL_NOTE, neutralizeLinks, ensureIgFinancingHandoff } from "@/lib/ig-link-policy";
 import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
 import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
@@ -1667,6 +1668,10 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // "taken" and generate "that slot just got taken" on follow-up messages.
       const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
+      // Instagram never carries a link, financing goes to Ozzi's number (owner
+      // rule 2026-10-17): the model writes the reply that way, and the send
+      // neutralizes whatever link still slips through (ig-link-policy.ts).
+      systemParts.push(IG_CHANNEL_NOTE);
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {
         systemParts.push(`[FOLLOWER_COUNT: ${followerCount}]`);
@@ -2135,7 +2140,17 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
     // Port St. Lucie (owner rule 2026-09-26) is the one flow where "Ozzi will
     // reach out" is the intended answer: no redirect to his number there.
-    const finalResponse = stripForbiddenTags(portStLucieStanding(history) ? afterNotify : redirectOwnerPromiseToPhone(afterNotify, lang));
+    // Instagram never carries a link, and financing goes to Ozzi's number
+    // (owner rule 2026-10-17, ig-link-policy.ts). The send would neutralize
+    // the links anyway; doing it here keeps the duplicate check and the stored
+    // row on the delivered text, and the financing backstop reads the final
+    // reply: the client asked about financing and the reply has no Ozzi number
+    // → the financing line goes in ahead of the closing question.
+    const finalResponse = ensureIgFinancingHandoff(
+      neutralizeLinks(stripForbiddenTags(portStLucieStanding(history) ? afterNotify : redirectOwnerPromiseToPhone(afterNotify, lang)), lang),
+      unansweredUserBurst(messagesForAI),
+      lang,
+    );
 
     // Never send an empty message. When the model emits only a tag (a bare
     // [NOTIFY_OWNER], or a [BOOK]/[REACT_ONLY] that strips to nothing), the text

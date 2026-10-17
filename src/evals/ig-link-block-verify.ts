@@ -6,7 +6,8 @@
 //   1. the text policy: links detected, neutralized per language, emails and
 //      numbers untouched, our site → "link in our bio", other links → owner line
 //   2. the send: 508 on a link → resend without it, mark the block, calm note;
-//      block active → link-free first; delivered link → block cleared
+//      since 2026-10-17 (owner rule, see ig-no-links-verify.ts) EVERY AI reply
+//      goes out link-free on Instagram, the marker is only a record
 //   3. every producer stores the DELIVERED text (sentText) — stored ≠ sent
 //      turns the IG echo into "[Treino]" + mode=human
 //   4. the siren no longer tells the owner to swap the token on a 508
@@ -65,11 +66,11 @@ function main() {
 
   console.log("\n[1d] other links → dropped + owner line");
   const fin = neutralizeLinks("You can apply for financing here: https://app.gethearth.com/partners/ozzifloors");
-  ck("EN financing link → owner line", fin === "You can apply for financing. Instagram is blocking links on my end right now, so text me at (561) 674-8334 and I'll send it there.", fin);
+  ck("EN financing link → its sentence goes, Ozzi's number for the financing (owner rule 2026-10-17)", fin === "For financing, just call or text Ozzi at (561) 674-8334.", fin);
   const finEs = neutralizeLinks("Aquí puedes aplicar al financiamiento: https://app.gethearth.com/partners/ozzifloors y me avisas.");
-  ck("ES financing link → owner line", /escríbeme al \(561\) 674-8334/.test(finEs) && !containsLink(finEs), finEs);
+  ck("ES financing link → Ozzi's number", /escríbele a Ozzi al \(561\) 674-8334/.test(finEs) && !containsLink(finEs), finEs);
   const contract = neutralizeLinks("Here is your contract to sign: https://ozzifloors.app/sign/3f43d3d2348e705ec21c77def0843c4d1f93ce77ee729a6b. Let me know once it's done.");
-  ck("EN contract link → owner line, rest of the reply kept", contract === "Here is your contract to sign. Let me know once it's done. Instagram is blocking links on my end right now, so text me at (561) 674-8334 and I'll send it there.", contract);
+  ck("EN contract link → owner line, rest of the reply kept", contract === "Here is your contract to sign. Let me know once it's done. Text Ozzi at (561) 674-8334 and he'll send it to you.", contract);
   const withEmail = neutralizeLinks("Send the plans to ozzifloors@gmail.com and see the colors at https://ozzifloors.company");
   ck("email survives the rewrite", withEmail.includes("ozzifloors@gmail.com") && !containsLink(withEmail), withEmail);
 
@@ -79,15 +80,15 @@ function main() {
   ck("imports the policy", /from "@\/lib\/ig-link-policy"/.test(ig) && /containsLink|neutralizeLinks|isIgLinkBlockError/.test(ig));
   ck("508 on a link → resend without it (same call, extra attempts)", /isIgLinkBlockError\(body\.error\?\.code\) && containsLink\(outText\)/.test(ig) && /outText = neutralizeLinks\(outText\)/.test(ig) && /maxAttempts = attempt \+ 2/.test(ig));
   ck("508 marks the block + calm owner note (never the siren path first)", /await markIgLinkBlock\(\);\s*\n\s*await reportIgLinkBlock\(recipientIgsid, lastErr\);/.test(ig));
-  ck("block active → link-free version goes first", /if \(hasLink && \(await igLinkBlockActive\(\)\)\) \{\s*\n\s*outText = neutralizeLinks\(text\);/.test(ig));
-  ck("delivered real link clears the block", /if \(hasLink && !linkFree\) await clearIgLinkBlock\(\);/.test(ig));
+  ck("every AI link → link-free version goes first (no marker gate since 2026-10-17)", /if \(hasLink && !opts\.allowLinks\) \{\s*\n\s*outText = neutralizeLinks\(text\);/.test(ig) && !/igLinkBlockActive/.test(ig));
+  ck("no 'delivered link clears the block' path left (nothing delivers a link but the panel)", !/clearIgLinkBlock/.test(ig));
   ck("result carries the delivered text when it differs", /sentText\?: string;/.test(ig) && /sentText: outText/.test(ig));
   ck("never 'sentText' on an unchanged send", /linkFree \? \{ ok: true, via: "instagram", sentText: outText \} : \{ ok: true, via: "instagram" \}/.test(ig));
 
   console.log("\n[2b] delivery.ts: marker + note");
   const del = read("src/lib/delivery.ts");
   ck("marker row iglinkblock|<ISO>, 2h TTL (24h kept links off for 17h after the block lifted, 2026-10-15), cached", /IG_LINK_BLOCK_PREFIX = "iglinkblock\|"/.test(del) && /IG_LINK_BLOCK_TTL_MS = 2 \* 60 \* 60 \* 1000/.test(del) && /IG_LINK_BLOCK_CACHE_MS/.test(del));
-  ck("owner note says the real link is retried every 2h", /a cada 2h e volta ao normal sozinho/.test(del));
+  ck("owner note says the AI sends no link on Instagram (owner rule 17/10), only the panel", /a IA nao manda link nenhum no Instagram por regra sua \(so o painel manda\)/.test(del) && !/a cada 2h e volta ao normal sozinho/.test(del));
   ck("igLinkBlockActive / markIgLinkBlock / clearIgLinkBlock exported", /export async function igLinkBlockActive/.test(del) && /export async function markIgLinkBlock/.test(del) && /export async function clearIgLinkBlock/.test(del));
   ck("clear is a no-op without a marker (no DB write per link send)", /if \(\(await igLinkBlockSince\(\)\) === null\) return;/.test(del));
   ck("owner note once a day, calm, names the two owner actions", /shouldAlert\("sendfail", "instagram-linkblock", IG_LINK_BLOCK_ALERT_EVERY_MS\)/.test(del) && /bloqueou o envio de LINKS/.test(del) && /Status da conta/.test(del) && /bio do @ozzi\.floors/.test(del) && /trocar o token nao resolve/.test(del));
@@ -116,7 +117,7 @@ function main() {
   // ── 4. Dreaming never learns the fallback wording ─────────────────────────
   console.log("\n[4] Dreaming");
   const dr = read("src/lib/dreaming.ts");
-  ck("rule 13 names the fallback as temporary, never a pattern", /link in our bio[\s\S]{0,200}never record it as a pattern/.test(dr));
+  ck("rule 13: 'link in our bio' is the Instagram rule, the 2026-10-14 'blocking links' wording stays a non-pattern", /INSTAGRAM IS THE EXCEPTION \(owner rule 2026-10-17\)/.test(dr) && /Instagram is blocking links on my end[\s\S]{0,120}never record it as a pattern/.test(dr));
 
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1); }

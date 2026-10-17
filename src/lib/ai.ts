@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
+import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
 import { withRequestedTimesNote } from "@/lib/requested-slots";
@@ -1111,7 +1112,9 @@ export function isColorPhoneHandoffOnly(text: string): boolean {
 }
 /** Makes sure a reply to a floor-color question carries the website. */
 export function withSiteForColor(text: string, lang: "en" | "es" | "pt" = "en"): string {
-  if (/ozzifloors\.company/i.test(text || "")) return text;
+  // On Instagram the website is "the link in our bio" (owner rule 2026-10-17):
+  // that reply already has the website, no URL sentence gets added to it.
+  if (/ozzifloors\.company/i.test(text || "") || mentionsBioLink(text)) return text;
   // A tag-only reply ([REACT_ONLY], a lone [NOTIFY_OWNER]) is a deliberate
   // silence, never a place to add a sentence.
   if (!stripProtectedTags(text || "").trim()) return text;
@@ -1214,10 +1217,12 @@ export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en"
       const bare = s.replace(/\[#TAG\d+#\]/g, "");
       return !(FLOOR_GUESS.test(bare) || FLOOR_DODGE.test(bare) || (FLOOR_STRAY_CONFIRM.test(bare) && !/\[BOOK:/i.test(text)));
     }).join("");
-    if (kept === parts.join("") && /ozzifloors\.company/i.test(prose)) return prose;
+    // "the link is in our bio" counts as the website (Instagram, owner rule
+    // 2026-10-17): no URL sentence is added next to it.
+    if (kept === parts.join("") && (/ozzifloors\.company/i.test(prose) || mentionsBioLink(prose))) return prose;
     const tags = (prose.match(/\[#TAG\d+#\]/g) ?? []).filter((t) => !kept.includes(t));
     const rest = (kept + (tags.length ? " " + tags.join(" ") : "")).trim();
-    if (/ozzifloors\.company/i.test(rest)) return rest;
+    if (/ozzifloors\.company/i.test(rest) || mentionsBioLink(rest)) return rest;
     if (full) {
       const tail = (rest.match(/\[#TAG\d+#\]/g) ?? []).join(" ");
       return (canned.full + (tail ? " " + tail : "")).trim();
@@ -5064,7 +5069,9 @@ export async function getAIResponse(
     console.log("[AI] Hard-coded intercept skipped — a trailer / mobile home stands; the model declines");
   } else if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
-    return { text: hardcoded, inputTokens: 0, outputTokens: 0 };
+    // Instagram never carries a link (owner rule 2026-10-17): the canned
+    // see_options replies name the website, on Instagram that is "link in our bio".
+    return { text: isInstagramChannel(messages) ? neutralizeInstagramLinks(hardcoded, usersLang()) : hardcoded, inputTokens: 0, outputTokens: 0 };
   }
 
   // REQUESTED TIMES (Julie, WA 2026-09-21): when the client names a time or a
@@ -5671,6 +5678,13 @@ export async function getAIResponse(
 
     // Regra do dono (28/08/2026): nada de ¿ / ¡ em espanhol — só ? e ! no final.
     cleaned = stripInvertedPunctuation(cleaned);
+
+    // Instagram never carries a link (owner rule 2026-10-17, ig-link-policy.ts):
+    // whatever the backstops above added (the color / which-floor website
+    // sentence, [SEND_IMAGES], the under-400 photos line) leaves here as
+    // "our website (link in our bio)" / Ozzi's number. The IG webhook and the
+    // send apply the same function again, idempotently.
+    if (isInstagramChannel(messages)) cleaned = neutralizeInstagramLinks(cleaned, usersLang());
 
     // With prompt caching on, usage.input_tokens counts ONLY the uncached
     // remainder — the true prompt size is the sum of the three fields. Report
