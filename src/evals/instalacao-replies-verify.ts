@@ -89,10 +89,16 @@ async function main() {
 
   // ── 2. UNIT: ack × dúvida ─────────────────────────────────────────────────
   console.log("\n[2] isInstallAck: agradecimento/ack → 👍; dúvida → handoff");
-  for (const t of ["Thank you!", "That sounds better! Ha! See you tomorrow", "👍", "Ok", "Perfect, thanks", "See you then", "Sounds good!", "Gracias!", "Obrigada", "Yes", "Got it, thank you", "🙏"]) {
+  for (const t of ["Thank you!", "That sounds better! Ha! See you tomorrow", "👍", "Ok", "Perfect, thanks", "See you then", "Sounds good!", "Gracias!", "Obrigada", "Yes", "Got it, thank you", "🙏",
+    // Casos reais de 45 dias (verificação de 19/10/2026): acks que viravam handoff
+    "Ok,,,i be there", "Buenos días ahí los esperamos, por mi parte todo bien 👍", "Hi thank you, we will be here..!!!!!!",
+    "Perfect we are ready", "Perfeito obrigado", "Ok thanks", "Perfecto gracias", "Good morning, we'll be waiting for you", "Ok. Thank you", "Perfect, thank you see you tomorrow"]) {
     ck(`ack: ${JSON.stringify(t)}`, isInstallAck(t) === true);
   }
-  for (const t of ["5am???", "What time will you arrive?", "Can we move it to Friday?", "Do I need to move my furniture?", "How long does it take?", "Thanks, but is 5am right?", "5am? That's too early", "I need to cancel", "A qué hora llegan?", "Que horas voces chegam?", "Please call me"]) {
+  for (const t of ["5am???", "What time will you arrive?", "Can we move it to Friday?", "Do I need to move my furniture?", "How long does it take?", "Thanks, but is 5am right?", "5am? That's too early", "I need to cancel", "A qué hora llegan?", "Que horas voces chegam?", "Please call me",
+    // Casos reais de 45 dias: dúvidas/pedidos que têm que ir ao Ozzi
+    "Me mandas al mismo muchacho?", "i need to cancel till next friday", "Is Leon coming again? I'll give him the check", "Gm. I'm paying with a card not cash",
+    "Can you please send the link as promised", "Good morning! Yes I do have questions I will reach to Alex", "Hello", "Hi"]) {
     ck(`dúvida: ${JSON.stringify(t)}`, isInstallAck(t) === false);
   }
 

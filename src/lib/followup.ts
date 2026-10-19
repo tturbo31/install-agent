@@ -23,6 +23,7 @@
 //    tagged send would be a policy violation); WhatsApp via Z-API has no window.
 //  • mode=agent, not booked, platform not paused, ET daytime only, ≤25/run
 import { containsSchedulingOffer } from "@/lib/ai";
+import { findRecentInstallationConfirmation } from "@/lib/instalacao";
 
 export type FollowupMsg = { role: string; content: string; created_at: string };
 export type Channel = "instagram" | "facebook" | "whatsapp";
@@ -214,6 +215,12 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
   const no = (reason: string): FollowupDecision => ({ eligible: false, reason, lang, kind: "engaged", financing });
 
   if (!messages.length) return no("empty");
+  // ETAPA DE INSTALACAO (19/10/2026; Debbie e Joshua 08/10, Tyia 29/09): o
+  // aviso de vespera ("installation starts tomorrow") era a nossa ultima fala,
+  // passava como oferta de horario e 3h depois saia "any questions about the
+  // floors? We also offer financing" para quem ja comprou e recebe a equipe
+  // amanha. Cliente com aviso recente nunca entra na varredura.
+  if (findRecentInstallationConfirmation(messages, new Date(nowMs))) return no("install-stage");
   const win = WINDOW_H[channelOfIgsid(igsid)];
   const priorNudges = messages.filter((m) => m.role === "assistant" && FOLLOWUP_MARKER.test(m.content)).length;
   if (priorNudges >= MAX_NUDGES_PER_CONVERSATION) return no("max-nudges-reached");

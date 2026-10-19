@@ -190,5 +190,25 @@ check("2pm ET is daytime", isEtDaytime(Date.parse("2026-07-09T18:00:00Z")));
 check("2am ET is quiet hours", !isEtDaytime(Date.parse("2026-07-09T06:00:00Z")));
 check("7pm ET (the cron hour) is daytime", isEtDaytime(Date.parse("2026-07-09T23:05:00Z")));
 
+console.log("\n── 14. Install stage: the eve-of-installation notice blocks the sales nudge (19/10/2026) ──");
+// Debbie, WA 08/10/2026: notice at 9am ET, "any questions about the floors? We
+// also offer financing" at 12:30pm ET — to someone whose crew arrives tomorrow.
+const INSTALL_NOTICE =
+  "Hi Debbie! This is Ozzi Floors 😊\n\nJust a quick reminder — your flooring installation starts tomorrow, Friday, October 9. Our installation team will arrive between 10am and 11am with the materials.\n\nIf you have any questions, you can reach out directly to Diego, the sales rep who put together your estimate, at (954) 325-6735.\n\nSee you soon! 🏠";
+const debbie: FollowupMsg[] = [
+  m("assistant", "Hi Debbie, you do not have to pay the full $10,556 upfront, you can finance it for as low as $293 a month.", 800),
+  m("user", "no thankyou im paying cash as you go", 799.9),
+  m("assistant", "Of course, no financing needed. Ozzi will personally reach out to finalize everything. [SYSTEM: QUOTE_HANDOFF]", 799.8),
+  m("user", "hi its debbie im ready to get floors done 631223-5839", 63.5),
+  m("assistant", INSTALL_NOTICE, 3.5),
+];
+check("the notice itself reads as a scheduling ask (the trap)", isSchedulingAsk(INSTALL_NOTICE));
+d = decideFollowup(WA, debbie, NOW);
+check("install notice 3.5h ago → NOT eligible (install-stage)", !d.eligible && d.reason === "install-stage", d.reason);
+d = decideFollowup(WA, [...debbie.slice(0, -1), m("assistant", INSTALL_NOTICE, 24 * 12)], NOW);
+check("notice 12 days old → install stage is over (other rules decide)", d.reason !== "install-stage", d.reason);
+d = decideFollowup(WA, [...target(3.5), m("user", "ok", 3.4), m("assistant", INSTALL_NOTICE, 3.3)], NOW);
+check("engaged lead + notice after it → NOT eligible (install-stage)", !d.eligible && d.reason === "install-stage", d.reason);
+
 console.log(`\n=========== FOLLOWUP-VERIFY: ${passed} passed, ${failed} failed ===========`);
 process.exit(failed > 0 ? 1 : 0);

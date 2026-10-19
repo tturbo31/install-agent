@@ -116,26 +116,45 @@ export function formatInstallDateTime(iso: string): string | null {
 // "I'll pass this along to Ozzi, who will get in touch": quem confirma que está
 // pronto para a instalação de amanhã só precisa do 👍.
 const ACK_WORDS =
-  /^(?:(?:ok(?:ay)?|perfect|perfecto|perfeito|great|awesome|yes|yep|si|sí|sim|sure|alright|listo)[\s,!.]+)?(?:ok(?:ay)?|k|kk|perfect|perfecto|perfeito|great|awesome|cool|sure|yes|yep|yeah|ya|si|sí|sim|claro|dale|vale|listo|got it|noted|sounds? (?:good|great|perfect)|that (?:works|sounds (?:good|great|better))|all good|good|nice|alright|all right|will do|see (?:you|ya)(?: (?:then|tomorrow|soon|there))?|nos vemos(?: mañana)?|até (?:amanhã|lá)|ha+|haha+|lol|(?:we(?:'re| are)?|i(?:'m| am)?|im|estamos|estoy|estou)?\s*(?:all\s+)?(?:ready|set|listos?|prontos?)(?:\s+(?:for\s+)?(?:you|tomorrow|them|it|mañana|amanhã))?|confirmed|confirmado|confirmo|we(?:'ll| will)\s+be\s+(?:here|home|there|ready)|estaremos(?: aquí| en casa)?|aqui estaremos)[\s!.…]*$/i;
+  /^(?:(?:ok(?:ay)?|perfect|perfecto|perfeito|great|awesome|yes|yep|si|sí|sim|sure|alright|listo)[\s,!.]+)?(?:ok(?:ay)?|k|kk|perfect|perfecto|perfeito|great|awesome|cool|sure|yes|yep|yeah|ya|si|sí|sim|claro|dale|vale|listo|got it|noted|sounds? (?:good|great|perfect)|that (?:works|sounds (?:good|great|better))|all good|good|nice|alright|all right|will do|see (?:you|ya)(?: (?:then|tomorrow|soon|there))?|nos vemos(?: mañana)?|até (?:amanhã|lá)|ha+|haha+|lol|(?:we(?:'re| are)?|i(?:'m| am)?|im|estamos|estoy|estou)?\s*(?:all\s+)?(?:ready|set|listos?|prontos?)(?:\s+(?:for\s+)?(?:you|tomorrow|them|it|mañana|amanhã))?|confirmed|confirmado|confirmo|(?:i|we)(?:'ll| will)?\s+be\s+(?:here|home|there|ready|waiting)(?:\s+for\s+(?:you|them))?|estaremos(?: aquí| en casa)?|aqui estaremos|(?:ahí|ahi|aquí|aqui|allí|alli)?\s*(?:los|lo|la|las|te|les)\s+esper(?:amos|o)|(?:por mi parte\s+)?todo (?:bien|ok|listo)|tudo (?:bem|certo|ok))[\s!.…]*$/i;
+// Saudação na frente não muda o que vem depois: "Hi thank you, we will be
+// here" (Teresa, 08/09/2026) e "Buenos días ahí los esperamos, por mi parte
+// todo bien" (Harry, 01/10/2026) viravam handoff em vez do 👍.
+const GREETING_PREFIX =
+  /^(?:hi|hello|hey|good (?:morning|afternoon|evening)|gm|hola|buenos? d[ií]as|buenas(?: tardes| noches)?|bom dia|boa tarde|boa noite|oi|ol[aá])[\s,!.]*/i;
 const QUESTION_MARKERS =
   /\?|\b(?:what|when|where|why|which|who|how|can|could|would|will|is|are|do|does|did|should|qué|que|cuándo|cuando|dónde|donde|cómo|como|por qué|porque|puede|pueden|quando|onde|pode|podem)\b/i;
 
 export function isInstallAck(raw: string): boolean {
-  const t = normalizeSmartPunct(raw ?? "").split(/\n\n?\[SYSTEM:/)[0].trim();
-  if (!t) return false;
+  const t0 = normalizeSmartPunct(raw ?? "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (!t0) return false;
   // Só emoji / símbolos (👍, ❤️, 🙏, "!!")
-  if (!/[a-z0-9À-ɏ]/i.test(t)) return true;
+  if (!/[a-z0-9À-ɏ]/i.test(t0)) return true;
+  // Saudação inicial e emoji/símbolo no fim não contam ("Hi thank you",
+  // "todo bien 👍"); o "?" fica, porque ele decide o que é pergunta.
+  const t = t0.replace(GREETING_PREFIX, "").replace(/[^\p{L}\p{N}?]+$/u, "").trim();
+  if (!t) return false; // só "Hi"/"Hello": a pessoa vai falar algo, melhor o handoff
   // "Perfect we are ready" / "Ok we will be here" (Nathalie, 27/09/2026): o
   // "are"/"will" dos marcadores de pergunta não desfaz um ack inteiro (o ack
   // nunca termina em "?", então uma pergunta de verdade não passa aqui).
   if (t.length <= 60 && ACK_WORDS.test(t)) return true;
+  const isAckChunk = (c: string) => ACK_WORDS.test(c) || isPureClosing(c);
+  // Junta várias frases curtas de ack: "Perfect! See you tomorrow" / "Ok thanks"
+  const chunks = t
+    .split(/[.!,]+\s*|\s{2,}/)
+    .map((c) => c.replace(GREETING_PREFIX, "").replace(/[^\p{L}\p{N}?]+$/u, "").trim())
+    .filter(Boolean);
+  // "Hi thank you, we will be here..!!!!!!" / "Ok,,,i be there" (08/09 e
+  // 18/10/2026): pedaços curtos de ack valem ANTES dos marcadores de pergunta,
+  // desde que nada termine em "?". Aqui só a lista fechada de acks pode conter
+  // "will"/"do"; um fecho genérico com marcador ("Yes I do have questions I
+  // will reach to Alex") continua sendo dúvida.
+  const isAckChunkEarly = (c: string) => ACK_WORDS.test(c) || (!QUESTION_MARKERS.test(c) && isPureClosing(c));
+  if (t.length <= 60 && !/\?/.test(t) && chunks.length > 0 && chunks.every(isAckChunkEarly)) return true;
   if (QUESTION_MARKERS.test(t)) return false;
   if (isPureClosing(t)) return true;
   if (t.length > 60) return false;
-  // Junta várias frases curtas de ack: "Perfect! See you tomorrow" / "Ok thanks"
-  const chunks = t.split(/[.!,]+\s*|\s{2,}/).map((c) => c.trim()).filter(Boolean);
-  if (chunks.length === 0) return false;
-  return chunks.every((c) => ACK_WORDS.test(c) || isPureClosing(c));
+  return chunks.length > 0 && chunks.every(isAckChunk);
 }
 
 // Frase única, sem prometer horário, resposta ou retorno: regra do dono
