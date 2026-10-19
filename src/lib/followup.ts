@@ -211,7 +211,12 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     messages.filter((m) => m.role === "user").map((m) => strip(m.content)),
     lastBot?.content
   );
-  const financing = priceWasStated(messages);
+  // RETIRADO PELO DONO (19/10/2026): no WhatsApp a cutucada nunca mais cita
+  // financiamento. A linha do parceiro (regra de 17/09) fica so para Instagram
+  // e Messenger; o alvo "sumiu depois do preco" (after_price), que existe para
+  // oferecer financiamento, deixa de existir no WhatsApp (ver abaixo).
+  const channel = channelOfIgsid(igsid);
+  const financing = priceWasStated(messages) && channel !== "whatsapp";
   const no = (reason: string): FollowupDecision => ({ eligible: false, reason, lang, kind: "engaged", financing });
 
   if (!messages.length) return no("empty");
@@ -258,6 +263,9 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     if (PRICE_STATED.test(strip(last.content))) kind = "after_price";
     else return no("last-bot-msg-not-a-scheduling-ask");
   }
+  // Dono, 19/10/2026: "retire o follow-up no WhatsApp indicando o
+  // financiamento". O after_price E o follow-up de financiamento.
+  if (kind === "after_price" && channel === "whatsapp") return no("financing-nudge-retired-whatsapp");
 
   // Silêncio mínimo por alvo: fantasma do botão só depois de 2 dias (regra do
   // dono 27/09, o que ele chamou de spam); lead engajado após 3h (ritmo
@@ -390,6 +398,9 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, 
     if (financing && /\b\d+(?:[.,]\d+)?\s?%|\bapproved?\b|\baprovad|\bmonthly payment of|\bpor m[eê]s de|\bmensual de\b|\bcuota de\b/i.test(text)) return null;
     // financiamento pedido e não mencionado: o template garante a linha
     if (financing && !/financ/i.test(text)) return null;
+    // financiamento NAO pedido (WhatsApp desde 19/10/2026, regra do dono) e o
+    // modelo citou mesmo assim: texto fora, template sem financiamento.
+    if (!financing && /financ/i.test(text)) return null;
     return text;
   } catch (err) {
     console.error("[FOLLOWUP] nudge AI failed, using template:", err);

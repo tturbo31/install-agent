@@ -59,20 +59,29 @@ check("texto digitado NÃO é fantasma", !isFaqGhost([m("user", FAQ_TAP, 3), m("
 console.log("\n── 2. Sumiu depois do preço → after_price com financiamento (2 dias) ──");
 const afterPrice = (h: number) => [m("user", "How much for vinyl?", h + 0.5), m("assistant", "Which one are you interested in, tile, vinyl, or hardwood?", h + 0.4), m("user", "Vinyl", h), m("assistant", PRICE_ANSWER, h - 0.05)];
 check("priceWasStated vê o $5", priceWasStated(afterPrice(50)));
+// Dono, 19/10/2026: "retire o follow-up no WhatsApp indicando o financiamento".
+// No WhatsApp o after_price (que existe para oferecer financiamento) não sai
+// mais; Instagram/Messenger seguem a regra de 17/09 dentro da janela de 24h.
+const IG = "1234567890";
 d = decideFollowup(WA, afterPrice(50), NOW);
-check("elegível como after_price", d.eligible && d.kind === "after_price", JSON.stringify(d));
-check("com financiamento", d.financing === true);
-d = decideFollowup(WA, afterPrice(2), NOW);
+check("WhatsApp: after_price RETIRADO (sem follow-up de financiamento)", !d.eligible && d.reason === "financing-nudge-retired-whatsapp", JSON.stringify(d));
+check("WhatsApp: nunca marca financiamento", d.financing === false);
+d = decideFollowup(IG, afterPrice(5), NOW);
+check("Instagram: after_price continua elegível", d.eligible && d.kind === "after_price", JSON.stringify(d));
+check("Instagram: com financiamento", d.financing === true);
+d = decideFollowup(IG, afterPrice(2), NOW);
 check("2h depois do preço: cedo demais", !d.eligible && /too-fresh/.test(d.reason), d.reason);
 d = decideFollowup(WA, [...afterPrice(60), m("user", "I'll think about it and let you know", 55), m("assistant", "No problem, reach out whenever you are ready.", 54.9)], NOW);
 check("cliente que adiou continua protegido", !d.eligible, d.reason);
-d = decideFollowup(WA, [m("user", "Hi", 60), m("assistant", "Which one are you interested in, tile, vinyl, or hardwood?", 59.9), m("user", "get away from me", 55), m("assistant", PRICE_ANSWER, 54.9)], NOW);
+d = decideFollowup(IG, [m("user", "Hi", 10), m("assistant", "Which one are you interested in, tile, vinyl, or hardwood?", 9.9), m("user", "get away from me", 5), m("assistant", PRICE_ANSWER, 4.9)], NOW);
 check("rejeição hostil continua bloqueando", !d.eligible && d.reason === "client-rejected", d.reason);
 
 console.log("\n── 3. Alvo original (oferta de visita) com preço já dito → engaged + financiamento ──");
 d = decideFollowup(WA, [...afterPrice(60), m("user", "whole house", 55), m("assistant", VISIT_OFFER, 54.9)], NOW);
 check("engaged", d.eligible && d.kind === "engaged", JSON.stringify(d));
-check("leva financiamento porque o preço foi dito", d.financing === true);
+check("WhatsApp: SEM financiamento mesmo com preço dito (dono, 19/10/2026)", d.financing === false, JSON.stringify(d));
+d = decideFollowup(IG, [...afterPrice(6), m("user", "whole house", 5.5), m("assistant", VISIT_OFFER, 5.4)], NOW);
+check("Instagram: engaged com preço dito leva financiamento", d.eligible && d.kind === "engaged" && d.financing === true, JSON.stringify(d));
 d = decideFollowup(WA, [m("user", "Hi", 60), m("assistant", "Which one?", 59.9), m("user", "Vinyl whole house", 55), m("assistant", VISIT_OFFER, 54.9)], NOW);
 check("engaged SEM preço dito → sem financiamento", d.eligible && d.kind === "engaged" && d.financing === false, JSON.stringify(d));
 d = decideFollowup(WA, [m("user", "Hi", 60), m("assistant", "Which one?", 59.9), m("user", "Vinyl whole house", 55), m("assistant", "Great choice, vinyl is very popular in South Florida.", 54.9)], NOW);
