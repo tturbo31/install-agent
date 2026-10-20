@@ -1269,7 +1269,7 @@ export function hourPickedInPhrase(text: string, offeredHours: Set<number>): boo
 }
 // Same rule, returning the hour (mod 12) the client picked, or null.
 export function pickedHourInPhrase(text: string, offeredHours: Set<number>): number | null {
-  const whole = normalizeClockSpacing((text || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]).trim();
+  const whole = clientWords(text || "").trim();
   if (!whole || offeredHours.size === 0) return null;
   // One bubble, several things (fb_37685589211085730, Messenger 15/10/2026):
   // "9 would be great" + the street address + "call me before you exit your
@@ -1285,7 +1285,9 @@ export function pickedHourInPhrase(text: string, offeredHours: Set<number>): num
     for (const m of t.matchAll(/(?<![\d$#:\/-])\b(\d{1,2})\b/g)) {
       const h = parseInt(m[1], 10);
       if (h < 1 || h > 12 || !offeredHours.has(h % 12)) continue;
-      if (HOUR_PICK_UNIT_AFTER.test(t.slice((m.index ?? 0) + m[0].length))) continue;
+      const after = t.slice((m.index ?? 0) + m[0].length);
+      if (/^[.,]\d/.test(after)) continue; // "3.00 × 10.00m", "2.5": a measurement, not an hour
+      if (HOUR_PICK_UNIT_AFTER.test(after)) continue;
       return h % 12;
     }
   }
@@ -1339,7 +1341,7 @@ export function dayOnlyPickNeedsTime(history: Array<{ role: string; content: str
   // a rajada final do cliente
   let i = msgs.length - 1;
   const burst: string[] = [];
-  while (i >= 0 && msgs[i].role === "user") { burst.unshift(strip(msgs[i].content)); i--; }
+  while (i >= 0 && msgs[i].role === "user") { burst.unshift(clientWords(msgs[i].content)); i--; }
   if (!burst.length) return false;
   const joined = burst.join("\n");
   if (SLOT_TIME_REF.test(joined) || SLOT_ORDINAL.test(joined) || LETS_DO_HOUR.test(joined) || MOVE_TO_HOUR.test(joined)) return false;
@@ -1398,7 +1400,7 @@ export function clientConfirmedSlot(history: Array<{ role: string; content: stri
   const from = firstOffer >= 0 ? firstOffer + 1 : 0;
   for (let i = from; i < msgs.length; i++) {
     if (msgs[i].role !== "user") continue;
-    const t = strip(msgs[i].content);
+    const t = clientWords(msgs[i].content);
     if (SLOT_TIME_REF.test(t) || SLOT_DAY_REF.test(t) || SLOT_ORDINAL.test(t)) return true;
     const bareHour = t.match(LETS_DO_HOUR);
     if (bareHour && offeredHours.has(parseInt(bareHour[1], 10) % 12)) return true;
@@ -1707,6 +1709,17 @@ type DayRef = { index: number; end: number; kind: "today" | "tomorrow" | "weekda
 
 const deaccentLowerText = (s: string) => (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const stripSystemNote = (c: string) => normalizeClockSpacing((c || "").replace(/[‘’ʼ´]/g, "'").split(/\n\n?\[SYSTEM:/)[0]);
+// Only what the CLIENT typed: the system-generated brackets stored as user
+// text ("[Floor plan analysis: ... 3.00 × 10.00m ...]", "[Client replied to
+// our ad]", "[Image]") are never a slot pick. Antonio (IG, 19/10/2026): the
+// floor-plan analysis of his photo, with "3.00 × 10.00m", was read as "3" =
+// the Friday 3pm offered four days earlier, and the bot apologised that
+// "Friday 3pm filled up while we were talking".
+export function clientWords(c: string): string {
+  return stripSystemNote(c)
+    .replace(CLIENT_GENERATED_BRACKETS, " ")
+    .replace(/\[(?:Client (?:shared|replied)|Floor plan analysis|Image|Photo|Attachment|Sticker|Video)[\s\S]*$/i, " ");
+}
 
 // Eastern calendar date of a message (from its timestamp), else `fallback`.
 function messageDateStr(m: HistMsg | undefined, fallback: string): string {
@@ -1972,7 +1985,8 @@ export function acceptedOfferSlot(history: HistMsg[], todayStr: string = eastern
     if (j < 0) return null;
     const offerText = stripSystemNote(msgs[j].content);
     const offered = offeredClockTokens(offerText);
-    const text = stripSystemNote(msgs[i].content);
+    const text = clientWords(msgs[i].content);
+    if (!text.trim()) continue; // a photo / floor-plan analysis / ad tap: not the client's words
     // "Can I let you know Sunday around 10am?": when they will answer, not a pick.
     if (isDeferredReply(text)) return null;
     const pick = clientPickOfOffer(text, offered);

@@ -6400,6 +6400,7 @@ export function rewriteBookingDataAsk(
   if (!given.size) return text;
   let changed = false;
   let slotAsk = false;
+  let restatedText = "";
   const out = withTagsProtected(text, (prose) => {
     const sentences = prose.split(/(?<=[.!?])\s+|\n+/);
     const rebuilt = sentences.map((s) => {
@@ -6428,6 +6429,7 @@ export function rewriteBookingDataAsk(
           if (restated) {
             changed = true;
             slotAsk = true;
+            restatedText = restated;
             return restated + tagsHere.join("");
           }
         }
@@ -6440,8 +6442,32 @@ export function rewriteBookingDataAsk(
   });
   if (changed && slotAsk) console.log("[AI] details-ask backstop: the ask only repeated data the client already typed and no time is chosen yet, restated the open time offer instead");
   else if (changed) console.log("[AI] details-ask backstop: dropped the items the client already typed (" + [...given].join(",") + ")");
-  return changed ? out : text;
+  if (!changed) return text;
+  if (!slotAsk) return out;
+  // Eida (WA, 19/10/2026): the ask was replaced by the open offer, but the
+  // model's other sentences still "held" a time nobody picked ("Perfecto, te
+  // tengo hoy a las 5pm. Dame un momento para confirmarte. Perfecto, anotado.
+  // Y para la visita, te queda mejor hoy a las 5pm o manana..."). With no time
+  // chosen, every hold / reserve / "give me a moment" claim goes; the
+  // restated offer stays.
+  const kept = withTagsProtected(out, (prose) =>
+    prose
+      .split(/(?<=[.!?])\s+|\n+/)
+      .filter((s) => {
+        const bare = s.replace(/\[#TAG\d+#\]/g, "").trim();
+        return !bare || restatedText.includes(bare) || !PREMATURE_HOLD_CLAIM.test(bare);
+      })
+      .join(" ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim()
+  );
+  if (kept !== out) console.log("[AI] details-ask backstop: dropped the hold / reserve claim next to the restated offer (no time chosen yet)");
+  return kept.trim() ? kept : out;
 }
+// A sentence that says a time is being held / reserved / confirmed while no
+// time was picked (EN / ES / PT). "anotado" alone is the restate's own ack and
+// is NOT in here.
+const PREMATURE_HOLD_CLAIM = /\b(?:te tengo|lo tengo|te aparto|te reservo|reservo|reservando|apartando|te agendo|agendando|holding|hold that|i have you|got you down|pencil(?:ed|ing)?|lock(?:ed|ing)? (?:that |it )?in|dame un momento|d[eé]jame confirmar|d[eé]jame (?:un )?momento|un momento para|give me a (?:moment|sec|second)|one moment|let me confirm|te confirmo|i'll confirm|voy a confirmar|te reservei|vou confirmar|deixa eu confirmar|um momento para)\b/i;
 
 // A última oferta de horário nossa (frases com hora do relógio) nas últimas 4
 // falas, com um "anotado" na frente, no idioma da conversa. null quando não há

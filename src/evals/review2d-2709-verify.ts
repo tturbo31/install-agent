@@ -69,6 +69,24 @@ const r3 = rewriteBookingDataAsk(zipAsk, claudioZip, true, "es");
 check("a frase deixa de pedir o ZIP", !/c[oó]digo postal|zip/i.test(r3), r3);
 check("e vira a escolha do horário ofertado (1pm o 3pm)", /1pm o 3pm/.test(r3) && /\?/.test(r3), r3);
 check("com hora já escolhida a frase fica para o retry forçado (inalterada)", rewriteBookingDataAsk(zipAsk, [...claudioZip, U("la 1pm")], true, "es") === zipAsk);
+// Eida (WA 17865154265, 19/10/2026 13:49): endereço sem horário escolhido → o
+// pedido repetido virou a oferta, mas "Perfecto, te tengo hoy a las 5pm. Dame
+// un momento para confirmarte." ficou na frente (uma reserva que não existia).
+const eida = [
+  U("33018"), U("Hialeah garden"),
+  A("Cubrimos Hialeah Gardens sin problema. Hoy tengo las 5pm o manana martes desde las 9am hasta las 8pm. Te queda mejor hoy a las 5pm o manana?"),
+  U("Puedes hablar ???"),
+  A("Claro, puedes llamar o escribirle a Ozzi directamente al (561) 674-8334. Y para la visita, te queda mejor hoy a las 5pm o manana martes a las 9am o 8pm?"),
+  U("7842 w 34th ln, unit 202. Hialeah Gardens fl"),
+];
+const eidaAsk = "Perfecto, te tengo hoy a las 5pm. Dame un momento para confirmarte. Me confirmas el código postal de esa dirección?";
+const rEida = rewriteBookingDataAsk(eidaAsk, eida, true, "es");
+check("Eida: a oferta em aberto é repetida (5pm / 9am o 8pm)", /5pm/.test(rEida) && /9am o 8pm/.test(rEida) && /\?/.test(rEida), rEida);
+check("Eida: 'te tengo hoy a las 5pm' e 'Dame un momento' saem", !/te tengo|dame un momento/i.test(rEida), rEida);
+check("Eida: o pedido de ZIP já digitado some", !/c[oó]digo postal/i.test(rEida), rEida);
+const rEidaEn = rewriteBookingDataAsk("Perfect, I'm holding that 5pm for you! Give me a moment to confirm. Can I get the zip code for that address?", [A("I have today at 5pm or tomorrow at 9am or 8pm, which works better?"), U("7842 W 34th Ln Unit 202, Hialeah Gardens FL 33018")], true, "en");
+check("Eida EN: 'holding that 5pm' + 'give me a moment' saem, a oferta fica", !/holding|give me a moment/i.test(rEidaEn) && /5pm/.test(rEidaEn) && /\?/.test(rEidaEn), rEidaEn);
+check("controle: frase legítima ao lado da oferta repetida fica", /Hialeah Gardens/.test(rewriteBookingDataAsk("Cubrimos Hialeah Gardens sin problema. Me confirmas el código postal de esa dirección?", eida, true, "es")));
 check("pedido de item que FALTA continua igual (telefone no IG)", /phone/i.test(rewriteBookingDataAsk("Can I get the best phone number to reach you?", [U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161")], false, "en")));
 check("Davide (IG 26/09): endereço+ZIP dados, telefone não → pede só o telefone", /phone/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161 David B")], false, "en")) && !/address/i.test(rewriteBookingDataAsk("Perfect, can I get the full property address with the zip code and the best phone number for the visit?", [A("Monday I have 3pm or 4pm, Tuesday I have 2pm or 3pm, which works best for you?"), U("Tuesday @2pm is perfect"), U("1012 NE 100th Street Biscayne Park, FL 33161 David B")], false, "en")));
 

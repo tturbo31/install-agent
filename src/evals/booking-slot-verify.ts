@@ -73,6 +73,25 @@ function main() {
   ck("bare '9' when only 6pm/8pm were offered is NOT a pick", !clientConfirmedSlot([
     A("I have Wednesday at 6pm or 8pm, which works better?"), U("9"),
   ]), "returned true");
+  // Antonio (IG 1624338835761467, 19/10/2026): the floor-plan analysis of his
+  // photo ("3.00 × 10.00m") was read as "3" = the Friday 3pm offered 4 days
+  // earlier → clientConfirmedSlot=true from a text the client never typed.
+  const FLOOR_PLAN = "[Floor plan analysis: # Floor Plan Analysis\n\n**Rooms identified with dimensions:**\n\n1. **Sala (Living Room)** - 3.00 × 10.00m = 30.00 m²\n2. **Cozinha (Kitchen)** - 2.00 × 10.00m = 20.00 m²\n3. **Banheiro (Bathroom)** - 1.90 × 2.60m = 4.94 m²\n4. **Quarto (Bedroom)** - 3.00 × 3.00m = 9.00 m²\n5. **Garagem (Garage)** - 2.60 × 3.00m = 7.80 m²\n\n**Total: ~72m² (~772sqft) - LARGE PROJECT**\n\nFloor type: floor plan]";
+  const antonio = [
+    U("33433"), A("33433 is covered! I have Friday the 16th at 3pm or 5pm, does either work?"),
+    U("We’re closing next week so i can get back to you on time."), A("No problem on timing, just reach out when you close and we'll get it scheduled!"),
+    U("Great, here is the measurement results"), A("The photo didn't come through on my end, but no worries."),
+    U(FLOOR_PLAN),
+  ];
+  ck("Antonio: floor-plan analysis ('3.00 × 10.00m') after 'Friday 3pm or 5pm' is NOT a pick", !clientConfirmedSlot(antonio), "returned true");
+  ck("Antonio: hourPickedInPhrase(floor plan, {3,5}) = false", !hourPickedInPhrase(FLOOR_PLAN, new Set([3, 5])));
+  ck("'[Client replied to our ad]' after '3pm or 5pm' is NOT a pick", !clientConfirmedSlot([A("I have today at 3pm or 5pm, which works?"), U("[Client replied to our ad]")]), "returned true");
+  ck("'[Image]' after '3pm or 5pm' is NOT a pick", !clientConfirmedSlot([A("I have today at 3pm or 5pm, which works?"), U("[Image]")]), "returned true");
+  ck("a decimal ('3.5 rooms', '2.60m') is a measurement, not the 3pm", !hourPickedInPhrase("it is 3.5 rooms", new Set([3, 5])) && !hourPickedInPhrase("the kitchen is 3.00 by 2.60m", new Set([3, 5])));
+  ck("control: bare '3' after '3pm or 5pm' still picks", clientConfirmedSlot([A("I have today at 3pm or 5pm, which works?"), U("3")]), "returned false");
+  ck("control: '3 works' after '3pm or 5pm' still picks", hourPickedInPhrase("3 works", new Set([3, 5])));
+  ck("control: '3pm' typed next to a floor plan still picks", clientConfirmedSlot([A("I have today at 3pm or 5pm, which works?"), U(FLOOR_PLAN), U("3pm")]), "returned false");
+  ck("control: 'the first one' is not swallowed by the bracket strip", clientConfirmedSlot([A("I have today at 3pm or 5pm, which works?"), U("the first one")]), "returned false");
   // Rowan Hobbs (WA, 2026-08-23): "today at 5pm" offered at 4:25pm and booked at
   // 4:28pm — nobody could get there. Same-day slots need real notice now.
   ck(`same-day notice is at least 2h (${SAME_DAY_MIN_NOTICE_MIN} min)`, SAME_DAY_MIN_NOTICE_MIN >= 120);

@@ -108,6 +108,15 @@ async function main() {
     const colon = acceptedOfferSlot([...REAL.slice(0, -1), U("Let's do 6:00")]);
     ck("'6:00' sem am/pm → pm da oferta (18:00)", !!colon && colon.time === "18:00", JSON.stringify(colon));
     ck("contraproposta 'can you do 4pm?' → null", acceptedOfferSlot([...REAL.slice(0, -1), U("can you do 4pm?")]) === null);
+    // Antonio (IG, 19/10/2026): a análise da planta ("3.00 × 10.00m") depois de
+    // "Friday at 3pm or 5pm" virou "aceitou o 3pm de sexta" → desculpa falsa
+    // "that Friday 3pm filled up while we were talking".
+    const FLOOR_PLAN = "[Floor plan analysis: # Floor Plan Analysis\n\n1. **Sala (Living Room)** - 3.00 × 10.00m = 30.00 m²\n2. **Cozinha (Kitchen)** - 2.00 × 10.00m = 20.00 m²\n4. **Quarto (Bedroom)** - 3.00 × 3.00m = 9.00 m²\n\nFloor type: floor plan]";
+    const antonio = [U("33433"), A(`33433 is covered! I have ${OTHER} at 3pm or 5pm, does either work?`), U("We’re closing next week so i can get back to you on time."), A("No problem on timing, just reach out when you close!"), U("Great, here is the measurement results"), A("The photo didn't come through on my end, but no worries."), U(FLOOR_PLAN)];
+    ck("Antonio: análise da planta ('3.00 × 10.00m') depois de 'Friday 3pm or 5pm' → null", acceptedOfferSlot(antonio) === null, JSON.stringify(acceptedOfferSlot(antonio)));
+    ck("Antonio: '[Client replied to our ad]' depois da oferta → null", acceptedOfferSlot([...antonio.slice(0, -1), U("[Client replied to our ad]")]) === null);
+    const fpThen3 = acceptedOfferSlot([...antonio, U("3pm works")]);
+    ck(`controle: '3pm works' depois da planta → o 3pm de ${OTHER} (${other})`, !!fpThen3 && fpThen3.time === "15:00" && fpThen3.hour12 === 3 && fpThen3.date === other, JSON.stringify(fpThen3));
     ck("troca de dia 'actually tomorrow?' → null (a escolha antiga não vale)", acceptedOfferSlot([...REAL, HOLD, U("actually can we do tomorrow?")]) === null);
     ck("mensagem de dia sem hora ('Thursday is fine') → null (fica com a guarda de weekday)", acceptedOfferSlot([A("I have Thursday at 7pm or Friday at 7pm"), U("Thursday is fine")]) === null);
     const first = acceptedOfferSlot([A("Today I have 6pm or 8pm, which works?"), U("the first one")]);
