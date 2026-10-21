@@ -202,3 +202,21 @@ export function findRecentInstallationConfirmation(
   }
   return null;
 }
+
+// ─── Trava de duplicidade do aviso (21/10/2026) ───────────────────────────────
+// A rotina do Lovable roda UMA vez por dia (13:00 UTC). Uma segunda chamada
+// para o mesmo telefone dentro de INSTALL_DEDUP_HOURS é repetição (retry do
+// integrador, rodada dupla, dois jobs do mesmo cliente no mesmo dia) e NÃO um
+// aviso novo: o cliente não pode receber "starts tomorrow" duas vezes. 20h e
+// não 24h para a rodada de amanhã (24h depois) nunca ser barrada por atraso de
+// relógio. Job remarcado para outra semana passa normalmente.
+export const INSTALL_DEDUP_HOURS = 20;
+
+export function isDuplicateInstallNotice(
+  rows: Array<{ role: string; content: string; created_at?: string | null }>,
+  now: Date = new Date()
+): boolean {
+  const hit = findRecentInstallationConfirmation(rows, now, INSTALL_DEDUP_HOURS / 24);
+  // Linha sem created_at (histórico antigo) não prova nada sobre "hoje".
+  return !!hit && !!hit.created_at;
+}

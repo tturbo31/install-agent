@@ -3,7 +3,16 @@ import { createHash, timingSafeEqual } from "crypto";
 import { sendWhatsAppMessage, notifyOwners } from "@/lib/whatsapp";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sanitizeInstallDate, stripInstallTime, formatInstallDateTime, installTimeAlert, INSTALL_ARRIVAL_WINDOW } from "@/lib/instalacao";
+import {
+  sanitizeInstallDate,
+  stripInstallTime,
+  formatInstallDateTime,
+  installTimeAlert,
+  INSTALL_ARRIVAL_WINDOW,
+  INSTALL_DEDUP_HOURS,
+  isDuplicateInstallNotice,
+} from "@/lib/instalacao";
+import { registrarChamadaInstalacao } from "@/lib/instalacao-log";
 
 // ─── POST /api/confirmar-instalacao — confirmação de instalação via WhatsApp ─
 // Chamado por sistemas externos (ex.: Ozzi Plataforma) quando uma instalação é
@@ -36,6 +45,17 @@ import { sanitizeInstallDate, stripInstallTime, formatInstallDateTime, installTi
 //   equipe chega entre 10am e 11am com os materiais. Qualquer horário no texto
 //   (livre ou ISO) é removido; a guarda de 7h–19h continua só para ALERTAR o
 //   dono quando o job no app está com hora absurda (5am).
+//
+//   TRAVA DE DUPLICIDADE (21/10/2026): o mesmo telefone já avisado há menos de
+//   INSTALL_DEDUP_HOURS (20h) NÃO recebe um segundo "starts tomorrow" — a
+//   resposta é 200 {"ok":true,"enviado":false,"duplicado":true} para o
+//   integrador não marcar erro nem re-tentar. Fail-open: se a consulta ao
+//   histórico falhar, o aviso sai (um aviso a mais é melhor que nenhum).
+//
+//   REGISTRO DE TODA CHAMADA (21/10/2026): 401, 400, duplicada, ok, falha do
+//   Z-API e dry viram uma linha legível no banco (instalacao-log.ts) — a prova
+//   do que o Lovable mandou sobrevive aos ~45 min dos logs da Vercel.
+//   Leitura: scripts/check-avisos-instalacao.mjs.
 //
 // Responses: 200 {"ok":true,...} | 400 campos inválidos | 401 token errado | 502 Z-API.
 export const maxDuration = 60;
@@ -107,6 +127,42 @@ function composeConfirmation(params: {
   return partes.join("\n\n");
 }
 
+// Já mandamos o aviso de véspera para este telefone nas últimas 20h? Devolve
+// quando foi, ou null. NUNCA lança: falha de leitura = "não sei" = deixa enviar.
+async function findDuplicateNotice(phone: string, now: Date): Promise<string | null> {
+  try {
+    const { data: conv } = await supabaseAdmin
+      .from("instagram_conversations")
+      .select("id")
+      .eq("igsid", `wa_${phone}`)
+      .maybeSingle();
+    if (!conv) return null;
+    const since = new Date(now.getTime() - INSTALL_DEDUP_HOURS * 3600_000).toISOString();
+    const { data, error } = await supabaseAdmin
+      .from("instagram_messages")
+      .select("role, content, created_at")
+      .eq("conversation_id", conv.id)
+      .eq("role", "assistant")
+      .gte("created_at", since)
+      .order("created_at", { ascending: true })
+      .limit(50);
+    if (error) {
+      console.error("[INSTALACAO] consulta de duplicidade falhou:", error.message);
+      return null;
+    }
+    const rows = (data ?? []) as Array<{ role: string; content: string; created_at: string | null }>;
+    if (!isDuplicateInstallNotice(rows, now)) return null;
+    // A mais recente que é aviso (isDuplicateInstallNotice já garantiu que existe).
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (/installation (?:is confirmed for|starts tomorrow)/i.test(rows[i].content ?? "")) return rows[i].created_at;
+    }
+    return null;
+  } catch (err) {
+    console.error("[INSTALACAO] consulta de duplicidade exception:", err);
+    return null;
+  }
+}
+
 // Best effort: grava a mensagem no histórico da conversa do cliente (mesmo
 // padrão do /api/enviar). NUNCA lança — uma falha de DB não pode transformar um
 // WhatsApp já entregue em erro que o chamador vai re-tentar (dobraria o envio).
@@ -161,9 +217,16 @@ function erro(status: number, msg: string) {
 }
 
 export async function POST(req: NextRequest) {
+  const agora = new Date();
+
   // ── Auth ───────────────────────────────────────────────────────────────────
   if (!isAuthorized(req.headers.get("authorization"))) {
     console.error("[INSTALACAO] 401: token ausente ou incorreto");
+    // 1 linha por hora: qualquer um consegue provocar 401, o registro não pode virar inundação.
+    await registrarChamadaInstalacao(
+      { st: "401", tel: null, nome: null, data: null, rec: null, vend: null, tv: null, hs: null, iso: false, err: "token ausente ou incorreto" },
+      { bucketMs: 3600_000 }
+    );
     return erro(401, "Unauthorized");
   }
 
@@ -173,30 +236,44 @@ export async function POST(req: NextRequest) {
     body = (await req.json()) as Record<string, unknown>;
   } catch {
     console.error("[INSTALACAO] corpo inválido: não é JSON");
+    await registrarChamadaInstalacao({ st: "400", tel: null, nome: null, data: null, rec: null, vend: null, tv: null, hs: null, iso: false, err: "corpo invalido: nao e JSON" });
     return erro(400, "corpo invalido: envie JSON");
   }
   if (!body || typeof body !== "object") {
     console.error("[INSTALACAO] corpo inválido: não é objeto");
+    await registrarChamadaInstalacao({ st: "400", tel: null, nome: null, data: null, rec: null, vend: null, tv: null, hs: null, iso: false, err: "corpo invalido: nao e objeto" });
     return erro(400, "corpo invalido: envie um objeto JSON");
   }
 
   // ── Validação: sem telefone_cliente ou data_instalacao NADA é enviado ──────
   const telefoneCliente = normalizePhone(body.telefone_cliente);
   const dataInstalacao = asText(body.data_instalacao);
+  const nomeCliente = asText(body.nome_cliente);
+  const nomeVendedor = asText(body.nome_vendedor);
+  const telefoneVendedor = asText(body.telefone_vendedor);
   const faltando: string[] = [];
   if (!telefoneCliente) faltando.push("telefone_cliente");
   if (!dataInstalacao) faltando.push("data_instalacao");
   if (faltando.length) {
+    const motivo = `campos obrigatorios ausentes ou invalidos: ${faltando.join(", ")}`;
     console.error(
-      `[INSTALACAO] envio ABORTADO, campos obrigatorios ausentes/invalidos: ${faltando.join(", ")} ` +
+      `[INSTALACAO] envio ABORTADO, ${motivo} ` +
         `(recebido telefone_cliente=${JSON.stringify(body.telefone_cliente ?? null)} data_instalacao=${JSON.stringify(body.data_instalacao ?? null)})`
     );
-    return erro(400, `campos obrigatorios ausentes ou invalidos: ${faltando.join(", ")}`);
+    await registrarChamadaInstalacao({
+      st: "400",
+      tel: telefoneCliente,
+      nome: nomeCliente,
+      data: null,
+      rec: dataInstalacao ?? asText(String(body.data_instalacao ?? "")),
+      vend: nomeVendedor,
+      tv: telefoneVendedor,
+      hs: null,
+      iso: false,
+      err: `${motivo} (telefone_cliente=${JSON.stringify(body.telefone_cliente ?? null)})`,
+    });
+    return erro(400, motivo);
   }
-
-  const nomeCliente = asText(body.nome_cliente);
-  const nomeVendedor = asText(body.nome_vendedor);
-  const telefoneVendedor = asText(body.telefone_vendedor);
 
   // Data final: ISO com fuso (formatada por nós) ganha do texto livre. A guarda
   // de horário implausível vale para OS DOIS caminhos: o Lovable grava job
@@ -220,11 +297,43 @@ export async function POST(req: NextRequest) {
     telefoneVendedor,
   });
 
+  const base = {
+    tel: telefoneCliente,
+    nome: nomeCliente,
+    data: dataFinal,
+    rec: dataInstalacao,
+    vend: nomeVendedor,
+    tv: telefoneVendedor,
+    hs: guarda.horarioSuspeito,
+    iso: !!viaIso,
+  };
+
+  // ── Duplicidade: mesmo telefone avisado há <20h → não reenvia ──────────────
+  const avisoAnteriorEm = await findDuplicateNotice(telefoneCliente!, agora);
+
   if (body.dry === true) {
+    await registrarChamadaInstalacao({ ...base, st: "dry", err: avisoAnteriorEm ? `duplicado de ${avisoAnteriorEm}` : null });
     return NextResponse.json({
       ok: true,
       dry: true,
       enviado: false,
+      mensagem,
+      data_usada: dataFinal,
+      horario_suspeito: guarda.horarioSuspeito,
+      via_iso: !!viaIso,
+      duplicado: !!avisoAnteriorEm,
+      aviso_anterior_em: avisoAnteriorEm,
+    });
+  }
+
+  if (avisoAnteriorEm) {
+    console.warn(`[INSTALACAO] DUPLICADO phone=${telefoneCliente} aviso anterior em ${avisoAnteriorEm} — nada enviado`);
+    await registrarChamadaInstalacao({ ...base, st: "duplicado", err: `aviso anterior em ${avisoAnteriorEm}` });
+    return NextResponse.json({
+      ok: true,
+      enviado: false,
+      duplicado: true,
+      aviso_anterior_em: avisoAnteriorEm,
       mensagem,
       data_usada: dataFinal,
       horario_suspeito: guarda.horarioSuspeito,
@@ -236,6 +345,7 @@ export async function POST(req: NextRequest) {
   const result = await sendWhatsAppMessage(telefoneCliente!, mensagem);
   if (!result.ok) {
     console.error(`[INSTALACAO] Z-API send failed phone=${telefoneCliente} status=${result.status} erro=${result.error}`);
+    await registrarChamadaInstalacao({ ...base, st: "zapi", err: `Z-API ${result.status}: ${result.error ?? "erro desconhecido"}` });
     // 401/403 do Z-API não podem vazar como status NOSSO — aqui eles significam
     // "seu Bearer está errado", o que mandaria o integrador caçar o token à toa.
     const raw = result.status;
@@ -247,6 +357,7 @@ export async function POST(req: NextRequest) {
   }
 
   const registrado = await recordInHistory(telefoneCliente!, mensagem);
+  await registrarChamadaInstalacao({ ...base, st: "ok", err: registrado ? null : "historico nao gravado" });
 
   // Horário removido → o dono precisa confirmar a hora com o cliente. Best
   // effort: o WhatsApp do cliente já saiu, um alerta que falha não vira erro.
@@ -288,6 +399,6 @@ export async function GET() {
     auth: "header Authorization: Bearer <token>",
     obrigatorios: ["telefone_cliente", "data_instalacao"],
     opcionais: ["data_instalacao_iso", "nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
-    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono",
+    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono; mesmo telefone avisado ha menos de 20h responde 200 com enviado:false e duplicado:true (nada e reenviado)",
   });
 }

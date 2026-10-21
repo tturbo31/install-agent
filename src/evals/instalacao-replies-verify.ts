@@ -19,7 +19,9 @@ import {
   isInstallAck,
   installHandoffMessage,
   findRecentInstallationConfirmation,
+  isDuplicateInstallNotice,
 } from "../lib/instalacao";
+import { encodeInstalacaoLogKey, decodeInstalacaoLogKey, type InstalacaoLogRecord } from "../lib/instalacao-log";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -86,6 +88,37 @@ async function main() {
   ck("minutos aparecem quando não são :00", formatInstallDateTime("2026-08-26T13:30:00.000Z") === "Wednesday, August 26 at 9:30am", String(formatInstallDateTime("2026-08-26T13:30:00.000Z")));
   ck("ISO inválido → null (cai no texto livre)", formatInstallDateTime("amanhã cedo") === null);
   ck("vazio → null", formatInstallDateTime("") === null);
+
+  // ── 1c. UNIT: trava de duplicidade do aviso (21/10/2026) ─────────────────
+  console.log("\n[1c] isDuplicateInstallNotice: 2ª chamada para o mesmo telefone em <20h não reenvia");
+  const agora = new Date("2026-10-21T13:00:10Z");
+  const avisoHa = (h: number, content = CONFIRMATION, role = "assistant") => ({ role, content, created_at: new Date(agora.getTime() - h * 3600_000).toISOString() });
+  ck("aviso há 1h → duplicado", isDuplicateInstallNotice([avisoHa(1)], agora) === true);
+  ck("aviso há 19h → duplicado", isDuplicateInstallNotice([avisoHa(19)], agora) === true);
+  ck("aviso há 24h (rodada de ontem) → NÃO é duplicado", isDuplicateInstallNotice([avisoHa(24)], agora) === false);
+  ck("aviso há 13 dias (job remarcado) → não é duplicado", isDuplicateInstallNotice([avisoHa(13 * 24)], agora) === false);
+  ck("sem aviso no histórico → não é duplicado", isDuplicateInstallNotice([avisoHa(1, "Hi! How can I help you today?")], agora) === false);
+  ck("cliente citando o aviso não conta (role user)", isDuplicateInstallNotice([avisoHa(1, CONFIRMATION, "user")], agora) === false);
+  ck("versão antiga 'is confirmed for' também conta", isDuplicateInstallNotice([avisoHa(2, "Hi! your flooring installation is confirmed for Monday, August 17.")], agora) === true);
+  ck("aviso há 1h seguido de conversa normal continua duplicado", isDuplicateInstallNotice([avisoHa(1), avisoHa(0.5, "For anything about your installation, the best is to reach Ozzi directly at (561) 674-8334.")], agora) === true);
+  ck("linha sem created_at não prova duplicidade", isDuplicateInstallNotice([{ role: "assistant", content: CONFIRMATION }], agora) === false);
+  ck("histórico vazio → não é duplicado", isDuplicateInstallNotice([], agora) === false);
+
+  console.log("\n[1d] registro da chamada: chave ↔ JSON ida e volta, cabe no índice");
+  const rec: InstalacaoLogRecord = { t: agora.toISOString(), st: "400", tel: null, nome: "Sarah McKnight", data: null, rec: "Wednesday, August 26 at 5am", vend: "Alexandre", tv: "(561) 609-9025", hs: null, iso: false, err: "campos obrigatorios ausentes ou invalidos: telefone_cliente (telefone_cliente=null)" };
+  const key = encodeInstalacaoLogKey(rec, agora.getTime(), "ab12");
+  const back = decodeInstalacaoLogKey(key);
+  ck("chave começa com instalacao_log_<epoch13>_<rand>::", /^instalacao_log_\d{13}_ab12::/.test(key), key.slice(0, 40));
+  ck("decodifica igual ao original", JSON.stringify(back?.rec) === JSON.stringify(rec), JSON.stringify(back));
+  ck("epoch volta inteiro", back?.epoch === agora.getTime(), String(back?.epoch));
+  ck("chave curta (<1500)", key.length < 1500, String(key.length));
+  const longo = encodeInstalacaoLogKey({ ...rec, err: "x".repeat(5000), nome: "y".repeat(500), rec: "z".repeat(900) }, agora.getTime(), "ab12");
+  const backLongo = decodeInstalacaoLogKey(longo);
+  ck("campos longos são cortados e a chave fica <1500", longo.length < 1500, String(longo.length));
+  ck("chave cortada ainda decodifica", backLongo?.rec.st === "400" && (backLongo?.rec.nome?.length ?? 0) === 60, JSON.stringify(backLongo?.rec).slice(0, 120));
+  ck("ordem lexicográfica = ordem no tempo", encodeInstalacaoLogKey(rec, agora.getTime() + 1, "aaaa") > key);
+  ck("chave de outro prefixo → null", decodeInstalacaoLogKey("funil_raw_wa_1792587393605_ab12_1of1::abc") === null);
+  ck("chave corrompida → null", decodeInstalacaoLogKey("instalacao_log_1792587393605_ab12::%E0%A4%A") === null);
 
   // ── 2. UNIT: ack × dúvida ─────────────────────────────────────────────────
   console.log("\n[2] isInstallAck: agradecimento/ack → 👍; dúvida → handoff");
