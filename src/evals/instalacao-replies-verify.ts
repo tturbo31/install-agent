@@ -21,7 +21,7 @@ import {
   findRecentInstallationConfirmation,
   isDuplicateInstallNotice,
 } from "../lib/instalacao";
-import { encodeInstalacaoLogKey, decodeInstalacaoLogKey, type InstalacaoLogRecord } from "../lib/instalacao-log";
+import { encodeInstalacaoLogKey, decodeInstalacaoLogKey, instalacaoLogSlot, type InstalacaoLogRecord } from "../lib/instalacao-log";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -119,6 +119,19 @@ async function main() {
   ck("ordem lexicográfica = ordem no tempo", encodeInstalacaoLogKey(rec, agora.getTime() + 1, "aaaa") > key);
   ck("chave de outro prefixo → null", decodeInstalacaoLogKey("funil_raw_wa_1792587393605_ab12_1of1::abc") === null);
   ck("chave corrompida → null", decodeInstalacaoLogKey("instalacao_log_1792587393605_ab12::%E0%A4%A") === null);
+
+  console.log("\n[1e] 401 em janela de 1h: duas chamadas na mesma hora → UMA chave (anti-inundação)");
+  const rec401: InstalacaoLogRecord = { t: "", st: "401", tel: null, nome: null, data: null, rec: null, vend: null, tv: null, hs: null, iso: false, err: "token ausente ou incorreto" };
+  const j1 = instalacaoLogSlot(agora.getTime(), 3600_000);
+  const j2 = instalacaoLogSlot(agora.getTime() + 5 * 60_000 + 731, 3600_000); // 5 min e 731 ms depois, mesma hora
+  const k1 = encodeInstalacaoLogKey({ ...rec401, t: j1.t }, j1.epoch, j1.rand);
+  const k2 = encodeInstalacaoLogKey({ ...rec401, t: j2.t }, j2.epoch, j2.rand);
+  ck("mesma hora → mesma chave", k1 === k2, `${k1.slice(0, 60)} ≠ ${k2.slice(0, 60)}`);
+  ck("epoch é o início da hora (13:00:00Z)", j1.t === "2026-10-21T13:00:00.000Z" && j1.epoch % 3600_000 === 0, j1.t);
+  const j3 = instalacaoLogSlot(agora.getTime() + 3600_000, 3600_000);
+  ck("hora seguinte → chave diferente", encodeInstalacaoLogKey({ ...rec401, t: j3.t }, j3.epoch, j3.rand) !== k1);
+  const n1 = instalacaoLogSlot(agora.getTime()), n2 = instalacaoLogSlot(agora.getTime());
+  ck("sem janela: carimbo exato e rand aleatório (chaves distintas)", n1.t === agora.toISOString() && n1.epoch === agora.getTime() && n1.rand !== n2.rand, `${n1.rand} ${n2.rand}`);
 
   // ── 2. UNIT: ack × dúvida ─────────────────────────────────────────────────
   console.log("\n[2] isInstallAck: agradecimento/ack → 👍; dúvida → handoff");

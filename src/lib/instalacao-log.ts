@@ -96,15 +96,27 @@ export function decodeInstalacaoLogKey(key: string): { epoch: number; rec: Insta
 // Usado no 401, que qualquer um na internet consegue provocar: sem isso um
 // scanner encheria platform_settings. Uma linha por hora basta para provar
 // "o Lovable está chamando com token errado".
+// Onde a chamada cai: epoch/rand/t da chave. Em modo janela TUDO que entra na
+// chave (inclusive o carimbo `t`, que está dentro do JSON) é o início da
+// janela — senão dois 401 a 1s de distância viram duas linhas (aconteceu no
+// E2E de 21/10: o `t` com milissegundos diferenciava as chaves).
+export function instalacaoLogSlot(agoraMs: number, bucketMs?: number): { epoch: number; rand: string; t: string } {
+  if (bucketMs && bucketMs > 0) {
+    const epoch = Math.floor(agoraMs / bucketMs) * bucketMs;
+    return { epoch, rand: "bucket", t: new Date(epoch).toISOString() };
+  }
+  return { epoch: agoraMs, rand: Math.random().toString(36).slice(2, 6), t: new Date(agoraMs).toISOString() };
+}
+
 export async function registrarChamadaInstalacao(
   rec: Omit<InstalacaoLogRecord, "t"> & { t?: string },
   opts?: { bucketMs?: number }
 ): Promise<void> {
   try {
     const agora = Date.now();
-    const bucket = opts?.bucketMs && opts.bucketMs > 0 ? Math.floor(agora / opts.bucketMs) * opts.bucketMs : agora;
-    const rand = opts?.bucketMs ? "b" + rec.st.replace(/[^a-z0-9]/gi, "").toLowerCase() : Math.random().toString(36).slice(2, 6);
-    const key = encodeInstalacaoLogKey({ ...rec, t: rec.t ?? new Date(agora).toISOString() }, bucket, rand);
+    const slot = instalacaoLogSlot(agora, opts?.bucketMs);
+    const t = opts?.bucketMs ? slot.t : (rec.t ?? slot.t);
+    const key = encodeInstalacaoLogKey({ ...rec, t }, slot.epoch, slot.rand);
     const { error } = await supabaseAdmin
       .from("platform_settings")
       .upsert({ platform: key, paused: false }, { ignoreDuplicates: true, onConflict: "platform" });
