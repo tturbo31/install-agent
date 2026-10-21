@@ -1029,6 +1029,119 @@ export function fixHerringbonePrice(text: string, lang: "en" | "es" | "pt" = "en
   });
 }
 
+// TILE SOBRE TILE (Orlando Tito Dominguez, IG 2026-10-20). Num lead de vinil o
+// cliente perguntou "How about that tile over tile you guys do" e o modelo
+// respondeu com o vinil ("Our luxury vinyl goes right over your existing tile,
+// no demo needed. The promo is $5 per sqft..."); o dono entrou na mão. Regra do
+// dono (21/10/2026): SIM, dá para instalar tile sobre o tile existente, desde
+// que ele esteja em boa condição: massa niveladora + primer (aderência) e o
+// tile novo por cima; mas para saber de verdade a gente precisa olhar o espaço
+// pessoalmente (a visita grátis). O prompt carrega a regra (TILE OVER TILE em
+// system-prompt.ts + reminder 41), a nota dinâmica entra quando a rajada do
+// cliente fala disso, o encurtamento automático é pulado nessa resposta (a
+// regra precisa de espaço) e esta rede troca a frase do vinil/$5 ou a negação
+// pela resposta do dono no idioma do cliente, deixando o resto (a pergunta de
+// continuidade) como está. Sem preço na frase enlatada de propósito (regras de
+// tamanho: nada abaixo de 400 sqft, sem total em 500+).
+// TILE_OVER_TILE_NOTE=off desliga a nota, TILE_OVER_TILE_BACKSTOP=off a rede.
+const TOT_TILE_SRC = String.raw`(?:tiles?|porcelain|ceramics?|porcelanato|cer[aáâ]micas?|azulejos?|baldosas?|losas?)`;
+const TOT_LB = String.raw`(?<![a-zà-ÿ])`;
+const TOT_LA = String.raw`(?![a-zà-ÿ])`;
+// Dentro do trecho casado, qualquer um destes = NÃO é tile sobre tile ("vinyl
+// over tile", "cement over tile", "laminate over the tile").
+const TOT_NOT_TILE = /(?<![a-zà-ÿ])(?:vin[iy]l|vinil|vin[ií]lic[oa]|lvp|lvt|spc|laminate|laminad[oa]|cement|cemento|cimento|concrete|concreto|micro\s*cement|microcemento|microcimento|epoxy|ep[oó]xi|resin|resina|carpet|alfombra|carpete|hardwood|madera|madeira|wood|planks?)(?![a-zà-ÿ])/i;
+const TOT_PATTERNS: RegExp[] = [
+  // EN: "tile over tile", "tile on top of the existing tile", "porcelain over my ceramic", "new tile over the old one"
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,25}?(?<![a-z])(?:over|on\s+top\s+of|onto|on|above|directly\s+on(?:to)?)(?![a-z])\s+(?:the\s+|my\s+|our\s+|your\s+|that\s+|this\s+)?(?:existing\s+|old\s+|current\s+|original\s+|same\s+)?` + TOT_TILE_SRC + TOT_LA, "i"),
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,25}?(?<![a-z])(?:over|on\s+top\s+of|onto|above)(?![a-z])\s+(?:the\s+|my\s+|our\s+|your\s+)?(?:existing|old|current|original)\s+(?:floor|one)s?(?![a-z])`, "i"),
+  /(?<![a-z])tiles?[\s-]+(?:over|on)[\s-]+tiles?(?![a-z])/i,
+  // EN: "lay tile without removing the old tile"
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,40}?(?<![a-z])without\s+(?:removing|tearing(?:\s+out|\s+up)?|ripping(?:\s+out|\s+up)?|taking(?:\s+out|\s+up)?|demo(?:ing)?|pulling(?:\s+up|\s+out)?)(?![a-z])`, "i"),
+  // ES: "cerámica sobre cerámica", "tile encima de la cerámica vieja", "porcelanato sobre el piso actual", "sin quitar la cerámica"
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,25}?(?<![a-zà-ÿ])(?:sobre|encima\s+de|arriba\s+de|por\s+encima\s+de)(?![a-zà-ÿ])\s+(?:la\s+|el\s+|las\s+|los\s+|mi\s+|mis\s+|su\s+|sus\s+|tu\s+|tus\s+)?(?:` + TOT_TILE_SRC + String.raw`|piso\s+(?:actual|existente|viej[oa]|antigu[oa]|de\s+ahora|que\s+(?:ya\s+)?teng[oa]))(?![a-zà-ÿ])`, "i"),
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,40}?(?<![a-zà-ÿ])sin\s+(?:quitar|sacar|remover|retirar|levantar|romper|demoler)(?![a-zà-ÿ])`, "i"),
+  // PT: "porcelanato sobre o piso atual", "cerâmica em cima da cerâmica velha", "sem tirar o piso"
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,25}?(?<![a-zà-ÿ])(?:sobre|em\s+cima\s+d[oae]s?|por\s+cima\s+d[oae]s?)(?![a-zà-ÿ])\s*(?:o\s+|a\s+|os\s+|as\s+|meu\s+|minha\s+)?(?:` + TOT_TILE_SRC + String.raw`|piso\s+(?:atual|existente|velh[oa]|antig[oa]|de\s+agora|que\s+(?:j[aá]\s+)?tenho))(?![a-zà-ÿ])`, "i"),
+  new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,40}?(?<![a-zà-ÿ])sem\s+(?:tirar|remover|retirar|arrancar|quebrar|levantar)(?![a-zà-ÿ])`, "i"),
+];
+/** The client asks about installing TILE over the tile they already have (EN/ES/PT); "vinyl over tile" / "cement over tile" are not it. */
+export function isTileOverTileQuestion(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ");
+  if (!/[a-z]/i.test(t)) return false;
+  for (const re of TOT_PATTERNS) {
+    const g = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    for (const m of t.matchAll(g)) if (!TOT_NOT_TILE.test(m[0])) return true;
+  }
+  return false;
+}
+/** The client's current burst: every client bubble after our last reply (text before any [SYSTEM:] note). */
+export function currentClientBurstText(messages: Array<{ role: string; content: string }>): string {
+  let lastA = -1;
+  for (let i = (messages ?? []).length - 1; i >= 0; i--) if (messages[i].role === "assistant") { lastA = i; break; }
+  return (messages ?? []).slice(lastA + 1).filter((m) => m.role === "user").map((m) => (m.content || "").split(/\n\n?\[SYSTEM:/)[0]).join("\n");
+}
+export const TILE_OVER_TILE_NOTE = [
+  "TILE OVER TILE (owner rule 2026-10-21), the client's latest message asks about installing TILE over the tile they already have:",
+  "1. The answer is YES, it is possible, as long as the existing tile is in good condition: we first apply a leveling compound and a bonding primer over the old tile, then install the new tile on top. But to really know, we have to check the floor in person, so it is confirmed at the free visit. Say those three things in one or two short sentences, in the client's language.",
+  "2. This is a TILE job, NOT our vinyl: NEVER answer with \"our luxury vinyl goes right over your existing tile\" and NEVER quote the $5 vinyl promo here, even if the client was looking at vinyl a minute ago. The tile promo is $4.50 per sqft installation labor only (they buy the tile) and the usual size rules apply (no price under 400 sqft, no total at 500+).",
+  "3. NEVER say the old tile has to come out first, NEVER promise it will work without seeing it, and no technical lecture (no thinset brands, no membrane names).",
+  "4. Then continue what was pending (the times you offered, the zip code, the details) in the same message. If the message asks something else too, answer that briefly as well.",
+].join("\n");
+const TOT_ANSWER: Record<"en" | "es" | "pt", string> = {
+  en: "Yes, we can install tile over your existing tile as long as it's in good condition: we apply a leveling compound and a bonding primer first, then set the new tile on top, and I confirm that when I check the floor in person at the free visit.",
+  es: "Sí, podemos instalar tile sobre tu cerámica actual siempre que esté en buen estado: primero aplicamos una masa niveladora y un primer, después va el tile nuevo encima, y eso lo confirmo cuando revise el piso en persona en la visita gratis.",
+  pt: "Sim, dá para instalar o tile por cima do piso atual desde que a cerâmica esteja em boas condições: primeiro aplicamos uma massa niveladora e um primer, depois instalamos o tile novo em cima, e isso eu confirmo quando ver o piso pessoalmente na visita grátis.",
+};
+const TOT_REPLY_OVER = new RegExp(TOT_LB + TOT_TILE_SRC + TOT_LA + String.raw`[^.!?\n]{0,30}?(?<![a-zà-ÿ])(?:over|on\s+top\s+of|onto|sobre|encima|em\s+cima|por\s+cima)(?![a-zà-ÿ])`, "i");
+const TOT_REPLY_CONDITION = /(?<![a-zà-ÿ])(?:(?:good|decent|solid|sound)\s+(?:condition|shape)|in\s+good(?![a-z])|well\s+(?:bonded|adhered|attached|set)|buen\s+estado|buenas?\s+condici|bien\s+(?:pegad|adherid|fij)|bom\s+estado|boas?\s+condi|bem\s+(?:colad|fixad|aderid))/i;
+const TOT_REPLY_PREP = /(?<![a-zà-ÿ])(?:level(?:ing|er|ling)?(?![a-z])|self.?level|primer|primed?(?![a-z])|bonding|adhesion|skim\s+coat|nivelad|imprimaci|aderen|aderê)/i;
+const TOT_REPLY_CHECK = /(?<![a-zà-ÿ])(?:visit|in\s+person|check|confirm|look\s+at|see\s+(?:it|the\s+floor)|assess|inspect|visita|en\s+persona|revis|personalmente|pessoalmente|conferir|verific|olhar)/i;
+/** True when the reply already carries the owner's three points (tile over tile, good condition, leveling/primer, confirmed in person). */
+export function replyAnswersTileOverTile(text: string): boolean {
+  const p = normalizeSmartPunct((text || "").replace(/\[[^\]]*\]/g, " "));
+  return TOT_REPLY_OVER.test(p) && TOT_REPLY_CONDITION.test(p) && TOT_REPLY_PREP.test(p) && TOT_REPLY_CHECK.test(p);
+}
+const TOT_VINYL_SENTENCE = /(?<![a-zà-ÿ])(?:luxury\s+)?(?:lvp|vin(?:yl|il)(?:[ií]lic[oa])?)(?![a-zà-ÿ])[^.!?\n]*?(?<![a-zà-ÿ])(?:over|on\s+top|right\s+on|sobre|encima|em\s+cima|por\s+cima)(?![a-zà-ÿ])|(?<![a-zà-ÿ])(?:with|using|con|com)\s+(?:o\s+|a\s+|el\s+|la\s+)?(?:our\s+|nuestro\s+|nosso\s+)?(?:luxury\s+)?(?:lvp|vin(?:yl|il))(?![a-zà-ÿ])/i;
+const TOT_FIVE = /\$\s?5(?:\.00)?(?![\d,]|\.\d)\s*(?:per|\/|por|a|el|o)?\s*(?:sq|square|pie|p[eé]|sf|ft)/i;
+const TOT_DENIAL = /(?<![a-zà-ÿ])(?:don'?t|do\s+not|can'?t|cannot|won'?t|never|not\s+(?:able|possible|recommended|something\s+we)|unable|no\s+(?:podemos|se\s+puede|hacemos|instalamos|recomendamos|es\s+posible)|n[aã]o\s+(?:d[aá]|fazemos|instalamos|recomendamos|tem\s+como|[eé]\s+poss[ií]vel))(?![a-zà-ÿ])[^.!?\n]{0,40}?(?<![a-zà-ÿ])(?:over|on\s+top|sobre|encima|em\s+cima|por\s+cima)(?![a-zà-ÿ])|(?<![a-z])(?:remove|removing|tear|rip|take|demo|pull)(?![a-z])[^.!?\n]{0,30}(?<![a-z])(?:old|existing|current)\s+(?:tile|floor)s?(?![a-z])[^.!?\n]{0,25}(?<![a-z])(?:first|before)(?![a-z])|(?<![a-z])(?:has|have|needs?|would\s+need|will\s+need)\s+to\s+(?:come\s+(?:out|up)|be\s+(?:removed|torn\s+out|ripped\s+out|taken\s+out|pulled\s+up)|remove)(?![a-z])|(?<![a-zà-ÿ])(?:hay\s+que|tenemos\s+que|habr[ií]a\s+que)\s+(?:quitar|sacar|remover|retirar)(?![a-zà-ÿ])|(?<![a-zà-ÿ])(?:tem\s+que|precisa|ter[ií]amos\s+que)\s+(?:tirar|remover|retirar|arrancar)(?![a-zà-ÿ])/i;
+const TOT_NOT_DENIAL = /(?<![a-z])(?:don'?t|do\s+not|won'?t|no|without)\s+(?:have|having|need|needing)\s+to(?![a-z])|(?<![a-z])no\s+need(?![a-z])|(?<![a-z])without(?![a-z])|(?<![a-zà-ÿ])no\s+(?:hace\s+falta|hay\s+que|es\s+necesario|tenemos\s+que)(?![a-zà-ÿ])|(?<![a-zà-ÿ])sin\s+(?:quitar|sacar|remover|retirar)(?![a-zà-ÿ])|(?<![a-zà-ÿ])n[aã]o\s+(?:precisa|[eé]\s+preciso|tem\s+que)(?![a-zà-ÿ])|(?<![a-zà-ÿ])sem\s+(?:tirar|remover|retirar|precisar)(?![a-zà-ÿ])/i;
+const TOT_BARE_YES = /^\s*(?:yes|yep|yeah|absolutely|of\s+course|sure|definitely|s[ií]|claro|por\s+supuesto|sim|com\s+certeza)(?![a-zà-ÿ])[^?]{0,40}[.!]?\s*$/i;
+/**
+ * The client asked about tile over tile: sentences that pitch vinyl over the
+ * tile, quote the $5 vinyl promo or deny tile over tile are dropped, the
+ * owner's answer takes the place of the first of them (or opens the reply when
+ * the three points are missing), and everything else (the pending question)
+ * stays. A reply that already carries the three points and none of the bad
+ * sentences is returned untouched. Tags ([BOOK:...], [NOTIFY_OWNER]) are kept.
+ */
+export function fixTileOverTileReply(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  const canned = TOT_ANSWER[lang] ?? TOT_ANSWER.en;
+  // Tags with a payload ([NOTIFY_OWNER: ...]) are not masked by
+  // withTagsProtected: their text never decides a sentence's fate, and a tag
+  // riding on a dropped sentence survives.
+  const bare = (s: string) => s.replace(/\[[^\]]*\]/g, " ");
+  return withTagsProtected(text, (prose) => {
+    if (!/[a-z]/i.test(bare(prose))) return prose;
+    const answered = replyAnswersTileOverTile(prose);
+    const parts = normalizeSmartPunct(prose).match(RECO_SENTENCE) ?? [];
+    const isBad = (s: string) => {
+      const b = bare(s);
+      return TOT_VINYL_SENTENCE.test(b) || TOT_FIVE.test(b) || (TOT_DENIAL.test(b) && !TOT_NOT_DENIAL.test(b)) || (!answered && (TOT_REPLY_OVER.test(b) || TOT_BARE_YES.test(b)));
+    };
+    if (answered && !parts.some(isBad)) return prose;
+    const out: string[] = [];
+    let placed = answered;
+    for (const s of parts) {
+      if (!isBad(s)) { out.push(s); continue; }
+      if (!placed) { out.push(canned + " "); placed = true; }
+      const tags = s.match(/\[[^\]]*\]/g);
+      if (tags) out.push(tags.join(" ") + " ");
+    }
+    if (!placed) out.unshift(canned + " ");
+    return out.join("").replace(/[ \t]{2,}/g, " ").trim();
+  });
+}
+
 // REMOÇÃO DE TILE = $2/sqft (dono, 03/10/2026; era $1.50). 14 conversas em 30
 // dias ouviram $1.50 (Jennifer IG 02/10: "tile demo is $1.50 per sqft"), e nas
 // conversas que já têm o $1.50 no histórico o modelo tende a repetir o número
@@ -5136,7 +5249,8 @@ export async function getAIResponse(
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, tell them to reach Ozzi directly at (561) 674-8334 right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
 39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair. Replacing the damaged PART of a floor and MATCHING the rest ("find a match", "same floor", the client has leftover boxes of it) IS a repair even when that floor covers the whole house, and a client who already has the material for the damaged planks is STILL asking for a repair: never "Yes, we do", never a labor price, never the zip code or the square footage, never Ozzi's number for being small.
-40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).`;
+40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).
+41. TILE OVER TILE (owner rule 2026-10-21): a client asking whether we install TILE over their existing tile ("tile over tile", "that tile over tile you guys do", "tile on top of the old tile", "cerámica sobre cerámica") gets YES, as long as the existing tile is in good condition: a leveling compound and a bonding primer go on first, then the new tile on top, and it is confirmed in person at the free visit. It is a TILE job ($4.50/sqft labor only, they buy the tile): NEVER answer it with our vinyl or the $5 promo even if they were looking at vinyl a minute ago, NEVER say the old tile must come out first, and never promise it works without the visit.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
   if (bookingConfirmed) {
@@ -5186,6 +5300,16 @@ export async function getAIResponse(
   if (mobileHomeStanding(messages)) {
     console.log("[AI] Trailer / mobile home stands — injecting the we-do-not-work-in-them block");
     dynamicSystem += "\n\n---\n\n" + MOBILE_HOME_NOTE;
+  }
+
+  // TILE SOBRE TILE (Orlando, IG 2026-10-20): the client's current burst asks
+  // about tile over their existing tile → the owner's answer block (rule
+  // 2026-10-21). The same flag skips the automatic tightening (the three
+  // points need the room) and arms the backstop below.
+  const tileOverTileBurst = process.env.TILE_OVER_TILE_NOTE !== "off" && isTileOverTileQuestion(currentClientBurstText(messages));
+  if (tileOverTileBurst) {
+    console.log("[AI] Tile over tile asked — injecting the owner's tile-over-tile block");
+    dynamicSystem += "\n\n---\n\n" + TILE_OVER_TILE_NOTE;
   }
 
   // PORT ST. LUCIE standing → the owner-sets-up-the-quote block (owner rule
@@ -5387,7 +5511,7 @@ export async function getAIResponse(
     // is the kill switch.
     let tightenIn = 0;
     let tightenOut = 0;
-    if (process.env.REPLY_TIGHTEN !== "off" && needsTightening(cleaned)) {
+    if (process.env.REPLY_TIGHTEN !== "off" && !tileOverTileBurst && needsTightening(cleaned)) {
       const shorter = await tightenLongReply(anthropic, stableSystem, dynamicSystem, messages, cleaned);
       if (shorter) {
         cleaned = shorter.text;
@@ -5424,6 +5548,19 @@ export async function getAIResponse(
           cleaned = fixed;
           console.log("[AI] showroom backstop: replaced 'no showroom' denial with the mobile showroom answer");
         }
+      }
+    }
+
+    // Tile sobre tile (dono, 21/10/2026): a pergunta do cliente é sobre TILE em
+    // cima do tile existente; a frase do vinil/$5 ou a negação vira a resposta
+    // do dono (dá, se o tile estiver bom; niveladora + primer; a visita
+    // confirma) e a pergunta de continuidade fica. Com [BOOK] na resposta a
+    // rede não mexe (o fluxo de agendamento tem as próprias regras).
+    if (process.env.TILE_OVER_TILE_BACKSTOP !== "off" && tileOverTileBurst && !/\[BOOK:/i.test(cleaned)) {
+      const fixed = fixTileOverTileReply(cleaned, usersLang());
+      if (fixed !== cleaned) {
+        cleaned = fixed;
+        console.log("[AI] tile-over-tile backstop: the reply pitched vinyl, quoted $5 or denied tile over tile, replaced with the owner's answer");
       }
     }
 
