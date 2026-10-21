@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
 
   const out: Record<string, unknown> = {};
   // Deploy em produção (29/09/2026): commit e chaves de comportamento, para conferir o que está no ar sem adivinhar.
-  out.deploy = { commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null, ref: process.env.VERCEL_GIT_COMMIT_REF ?? null, sellerHierarchy: false, sellerTieBreak: "least-loaded", hourOffer: "earliest+latest", replyTighten: process.env.REPLY_TIGHTEN !== "off" };
+  out.deploy = { commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null, ref: process.env.VERCEL_GIT_COMMIT_REF ?? null, sellerHierarchy: false, sellerTieBreak: "least-loaded", hourOffer: "earliest+latest", replyTighten: process.env.REPLY_TIGHTEN !== "off", offerLineGuard: process.env.OFFER_LINE_GUARD !== "off", tileLaborBackstop: process.env.TILE_LABOR_BACKSTOP !== "off" };
 
   const checkIgToken = async (token: string | undefined | null) => {
     if (!token) return { present: false };

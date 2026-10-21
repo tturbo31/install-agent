@@ -1900,6 +1900,39 @@ function offerSegmentDate(offerText: string, hour12: number, baseDate: string): 
   }
   return dates.size === 1 ? [...dates][0] : null;
 }
+// Every visit time a bot message puts on the table, each with the date of the
+// day it belongs to (offer-line guard, review of 21/10/2026). A clock token
+// belongs to the day reference right after it when only filler sits between
+// ("2pm or 8pm tomorrow", "9am on Wednesday"), else to the nearest reference
+// before it ("Wednesday at 9am or 7pm, or Thursday at 9am"), else to the first
+// one after it. Tokens in a denied clause ("8pm isn't open") are not offered;
+// a token whose day cannot be resolved to ONE date is skipped.
+export type OfferedSlot = { date: string; time: string; label: string; index: number };
+// No comma: "5pm, el jueves 9am" opens a new day clause, "8pm tomorrow" / "9am on
+// Wednesday" / "a las 8pm el jueves" do not.
+const AFTER_TOKEN_GLUE = /^\s*(?:on|this|next|at|el|la|o|de|do|da|no|na)?\s*$/;
+export function offeredSlotsOf(offerText: string, baseDate: string = easternTodayStr()): OfferedSlot[] {
+  const flat = deaccentLowerText(offerText);
+  const toks = offeredClockTokens(flat);
+  const refs = dayRefsOf(flat);
+  if (toks.length === 0 || refs.length === 0) return [];
+  const out: OfferedSlot[] = [];
+  for (const tok of toks) {
+    const m = /^(\d{1,2})(?::\d{2})?\s*(?:am|pm)/i.exec(flat.slice(tok.index));
+    const end = tok.index + (m ? m[0].length : tok.label.length);
+    const after = refs.findIndex((r) => r.index >= end);
+    let at = -1;
+    if (after >= 0 && AFTER_TOKEN_GLUE.test(flat.slice(end, refs[after].index))) at = after;
+    else {
+      for (let i = 0; i < refs.length; i++) if (refs[i].index < tok.index) at = i;
+      if (at < 0) at = after >= 0 ? after : 0;
+    }
+    const d = resolveRefGroup(refGroupAround(refs, at, flat), baseDate);
+    if (!d) continue;
+    out.push({ date: d, time: `${String(tok.hour24).padStart(2, "0")}:${String(tok.minute).padStart(2, "0")}`, label: tok.label, index: tok.index });
+  }
+  return out;
+}
 // What the client's message does with the offer: picks one of its hours (the
 // hour, plus the exact 24h time when they typed am/pm), counters with a time we
 // did not offer, or neither (address, phone, name, small talk).
@@ -2050,8 +2083,8 @@ function offerNamesTwoDays(offerText: string, baseDate: string): boolean {
 // The schedule text the model reads is the source of truth here (what it shows
 // is what the client can book), parsed line by line: "• Wednesday, September
 // 30, 2026 [2026-09-30]: 5pm" / "...: fully booked".
-type ScheduleLine = { date: string; display: string; times: string[] };
-function scheduleLinesOf(availability: string): ScheduleLine[] {
+export type ScheduleLine = { date: string; display: string; times: string[] };
+export function scheduleLinesOf(availability: string): ScheduleLine[] {
   const out: ScheduleLine[] = [];
   for (const m of (availability || "").matchAll(/^•\s*(.*?)\s*\[(\d{4}-\d{2}-\d{2})\]:\s*(.*)$/gm)) {
     const body = m[3].trim();
@@ -2776,6 +2809,32 @@ export function bookingSuccessMessage(lang: Lang, dateStr?: string, timeStr?: st
   return lang === "es"
     ? `Cita confirmada${when}. Te aviso aproximadamente 40 minutos antes de llegar a tu casa. Mi nombre es Ozzi.`
     : `Appointment confirmed${when}. I will notify you approximately 40 minutes before arriving at your home. My name is Ozzi.`;
+}
+
+// Confirmação ao cliente que AGENDOU SOZINHO pela landing page do Google
+// (03/10/2026, pedido do dono). É a 1ª mensagem da conversa: saúda, agradece o
+// agendamento e repete a MESMA confirmação do chat (bookingSuccessMessage —
+// mesma voz, mesmo "aviso 40 minutos antes", assinado Ozzi), com o endereço que
+// ele digitou. O booking leva o e-mail ia-<igsid>@…, então quando ele
+// responder aqui o snapshot já mostra a visita (remarcar/cancelar funcionam).
+// Sem traço e sem emoji, como todo enlatado.
+export function lpBookingConfirmationMessage(lang: Lang, firstName: string | null, dateStr: string, timeStr: string, address: string | null): string {
+  const nome = (firstName ?? "").trim().split(/\s+/)[0]?.slice(0, 40) ?? "";
+  const base = bookingSuccessMessage(lang, dateStr, timeStr);
+  const end = (address ?? "").trim().slice(0, 200);
+  if (lang === "es") {
+    const ola = nome ? `Hola ${nome}, gracias` : "Hola, gracias";
+    const onde = end ? ` La dirección que nos diste: ${end}.` : "";
+    return `${ola} por agendar tu presupuesto gratis de pisos a domicilio con Ozzi Floors. ${base}${onde} Si necesitas cambiar el día o la hora, solo responde aquí.`;
+  }
+  if (lang === "pt") {
+    const ola = nome ? `Oi ${nome}, obrigado` : "Oi, obrigado";
+    const onde = end ? ` O endereço que você passou: ${end}.` : "";
+    return `${ola} por agendar o seu orçamento grátis de piso em casa com a Ozzi Floors. ${base}${onde} Se precisar mudar o dia ou o horário, é só responder aqui.`;
+  }
+  const ola = nome ? `Hi ${nome}, thank you` : "Hi, thank you";
+  const onde = end ? ` The address you gave us: ${end}.` : "";
+  return `${ola} for booking your free in-home flooring estimate with Ozzi Floors. ${base}${onde} If you need to change the day or time, just reply here.`;
 }
 
 // Enviada quando um cliente com a flag booked VENCIDA afirma que tem uma visita

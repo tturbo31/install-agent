@@ -5,7 +5,8 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
+import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
 import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
@@ -1733,10 +1734,13 @@ async function handleWaMessage(body: Record<string, unknown>) {
     // will work" quatro horas depois da oferta, com o 6pm já ocupado, virou
     // "I'm holding that 6pm for you!". Preenchido no bloco abaixo, usado no backstop.
     let acceptedGone: AcceptedSlotGone | null = null;
+    // The schedule text the model read this turn (offer-line guard below).
+    let scheduleText: string | null = null;
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
       // Only load availability when booking not yet confirmed
       const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
+      scheduleText = availability;
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       const isOwnerHandled = !isBookingConfirmed && history.some((m: { role: string; content: string }) =>
         m.role === "assistant" && m.content?.startsWith("[Treino]") && !isStructuredCorrection(m.content)
@@ -1915,6 +1919,27 @@ async function handleWaMessage(body: Record<string, unknown>) {
         }
       }
       return;
+    }
+
+    // OFFER LINE GUARD (review 21/10/2026, offer-line-guard.ts): the draft named
+    // a visit time that is not on that day's schedule line ("miercoles 9am o 8pm"
+    // with Wednesday ending at 5pm, fb_28919223654397811 20/10) or hid the
+    // soonest open day ("today at 2pm or 8pm tomorrow" with today's line "2pm,
+    // 3pm", Jason Costello IG 21/10). One retry with the day's real line; the
+    // rewrite is kept only when it passes the same check. OFFER_LINE_GUARD=off disables.
+    if (!isBookingConfirmed && scheduleText && process.env.OFFER_LINE_GUARD !== "off") {
+      const offerSlip = offerLineDeviation(rawAiResponse, scheduleText, history);
+      if (offerSlip) {
+        console.warn(`[WA] offer off the schedule line (${offerSlip.kind}): ${offerSlip.detail} — retrying once`);
+        const retryText = await retryForOfferLine(messagesForAI, memoryContext, systemMemory, ownerCorrections, offerSlip.note);
+        const still = retryText ? offerLineDeviation(retryText, scheduleText, history) : null;
+        if (retryText && !still) {
+          console.log("[WA] offer-line retry accepted");
+          rawAiResponse = retryText;
+        } else {
+          console.warn(`[WA] offer-line retry rejected (${still ? `${still.kind}: ${still.detail}` : "no text"}) — keeping the original reply`);
+        }
+      }
     }
 
     // Pure closing / thanks with no new question → react to the message instead

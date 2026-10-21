@@ -57,8 +57,10 @@ import {
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
+  retryForOfferLine,
   type AdFlooringType,
 } from "@/lib/ai";
+import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
@@ -1661,12 +1663,15 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // will work" quatro horas depois da oferta, com o 6pm já ocupado, virou
     // "I'm holding that 6pm for you!". Preenchido no bloco abaixo, usado no backstop.
     let acceptedGone: AcceptedSlotGone | null = null;
+    // The schedule text the model read this turn (offer-line guard below).
+    let scheduleText: string | null = null;
     const lastIdx = messagesForAI.length - 1;
     if (lastIdx >= 0 && messagesForAI[lastIdx].role === "user") {
       // Only fetch availability when no booking is confirmed yet.
       // After booking, showing availability causes the AI to see the booked slot as
       // "taken" and generate "that slot just got taken" on follow-up messages.
       const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
+      scheduleText = availability;
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       // Instagram never carries a link, financing goes to Ozzi's number (owner
       // rule 2026-10-17): the model writes the reply that way, and the send
@@ -1893,6 +1898,27 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
         }
       }
       return;
+    }
+
+    // OFFER LINE GUARD (review 21/10/2026, offer-line-guard.ts): the draft named
+    // a visit time that is not on that day's schedule line ("miercoles 9am o 8pm"
+    // with Wednesday ending at 5pm, fb_28919223654397811 20/10) or hid the
+    // soonest open day ("today at 2pm or 8pm tomorrow" with today's line "2pm,
+    // 3pm", Jason Costello IG 21/10). One retry with the day's real line; the
+    // rewrite is kept only when it passes the same check. OFFER_LINE_GUARD=off disables.
+    if (!isBookingConfirmed && scheduleText && process.env.OFFER_LINE_GUARD !== "off") {
+      const offerSlip = offerLineDeviation(rawAiText, scheduleText, history);
+      if (offerSlip) {
+        console.warn(`[IG] offer off the schedule line (${offerSlip.kind}): ${offerSlip.detail} — retrying once`);
+        const retryText = await retryForOfferLine(messagesForAI, memoryContext, systemMemory, ownerCorrections, offerSlip.note);
+        const still = retryText ? offerLineDeviation(retryText, scheduleText, history) : null;
+        if (retryText && !still) {
+          console.log("[IG] offer-line retry accepted");
+          rawAiText = retryText;
+        } else {
+          console.warn(`[IG] offer-line retry rejected (${still ? `${still.kind}: ${still.detail}` : "no text"}) — keeping the original reply`);
+        }
+      }
     }
 
     // Pure closing / thanks with no new question → stay silent instead of

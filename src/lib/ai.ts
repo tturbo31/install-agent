@@ -1158,6 +1158,28 @@ export function fixTileRemovalRate(text: string): string {
   );
 }
 
+// MÃO DE OBRA DO TILE = $4.50 (revisão 21/10/2026). "Tengo la loza" (o cliente
+// já tem o porcelanato) saiu como "entonces es solo la instalacion a $2 por pie
+// cuadrado" (fb_28919223654397811, 20/10): o $2 é o install-only de laminado ou
+// vinil do cliente, nunca do tile. Quando a rajada do cliente fala de tile /
+// losa / loza / porcelanato (e NÃO de laminado, vinil, carpete ou madeira),
+// toda frase de instalação com "$2 por pé" passa a dizer $4.50; frases de
+// remoção / demolição ficam em $2 (fixTileRemovalRate). TILE_LABOR_BACKSTOP=off desliga.
+const TILE_BURST_WORDS = /(?<![a-zà-ÿ])(?:tiles?|porcelain|ceramics?|porcelanato|cer[aáâ]micas?|azulejos?|baldosas?|lo[sz]as?)(?![a-zà-ÿ])/i;
+const OTHER_FLOOR_WORDS = /(?<![a-zà-ÿ])(?:laminat\w*|laminad\w*|vin(?:yl|il)\w*|lvp|lvt|carpet\w*|alfombra\w*|carpete|hardwood|madera|madeira|wood)(?![a-zà-ÿ])/i;
+const TWO_PER_SQFT = /\$\s?2(?:\.00)?(?![\d,]|\.\d)(?=\s*(?:per|\/|por|a|el|o|cada)?\s*(?:sq|square|pie|p[eé]|sf|ft))/gi;
+export function fixTileLaborRate(text: string, clientBurst: string): string {
+  TWO_PER_SQFT.lastIndex = 0;
+  if (!TWO_PER_SQFT.test(text || "")) return text;
+  const burst = normalizeSmartPunct(clientBurst || "");
+  if (!TILE_BURST_WORDS.test(burst) || OTHER_FLOOR_WORDS.test(burst)) return text;
+  return withTagsProtected(text, (prose) =>
+    (prose.match(PRICE_SAFE_SENTENCE) ?? [prose])
+      .map((s) => (REMOVAL_WORD.test(s) || OTHER_FLOOR_WORDS.test(s) ? s : s.replace(TWO_PER_SQFT, "$$4.50")))
+      .join("")
+  );
+}
+
 // "TE AVISO DOMINGO ÀS 10" (Giovanny, IG 02/10/2026). O cliente disse QUANDO
 // ia responder ("I just can tell you around 10 am sunday", "can i let you know
 // sunday around 10 am?") e o modelo leu as 10am como pedido de horário duas
@@ -5594,6 +5616,17 @@ export async function getAIResponse(
       }
     }
 
+    // Mão de obra do tile = $4.50 (revisão 21/10/2026): "Tengo la loza" nunca
+    // mais sai como "instalación a $2 por pie cuadrado" (o $2 é o install-only
+    // de laminado/vinil do cliente).
+    if (process.env.TILE_LABOR_BACKSTOP !== "off") {
+      const fixed = fixTileLaborRate(cleaned, currentClientBurstText(messages));
+      if (fixed !== cleaned) {
+        cleaned = fixed;
+        console.log("[AI] tile labor backstop: the client has tile and the reply quoted $2 per sqft for the installation, now $4.50");
+      }
+    }
+
     // Herringbone (dono, 03/10/2026): nunca a promo de $5; $4/sqft mão de obra +
     // $7.50/sqft o nosso material herringbone.
     if (process.env.HERRINGBONE_BACKSTOP !== "off" && replyMispricesHerringbone(cleaned)) {
@@ -6647,6 +6680,33 @@ export async function retryForBookTag(
     return null;
   } catch (err) {
     console.error("[AI] forced [BOOK] retry failed:", err);
+    return null;
+  }
+}
+
+// OFFER-LINE RETRY (review 21/10/2026, offer-line-guard.ts): the draft named a
+// visit time that is not on that day's schedule line, or skipped / split the
+// soonest open day. One more call with the day's real line appended to the
+// client's last message; the webhook keeps the rewrite only when it passes the
+// same check. null = no usable text (the original reply goes out as it was).
+export async function retryForOfferLine(
+  messages: ChatMessage[],
+  memoryContext: string | null | undefined,
+  systemMemory: string | null | undefined,
+  ownerCorrections: string | null | undefined,
+  note: string
+): Promise<string | null> {
+  if (!messages.length) return null;
+  const last = messages[messages.length - 1];
+  const retryMessages: ChatMessage[] = [...messages.slice(0, -1), { ...last, content: last.content + "\n\n" + note }];
+  try {
+    const r = await getAIResponse(retryMessages, memoryContext, systemMemory, ownerCorrections, false);
+    const text = (r.text || "").trim();
+    if (!text) { console.warn("[AI] offer-line retry came back empty"); return null; }
+    console.log("[AI] offer-line retry: " + JSON.stringify(text.slice(0, 160)));
+    return r.text;
+  } catch (err) {
+    console.error("[AI] offer-line retry failed:", err);
     return null;
   }
 }
