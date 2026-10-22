@@ -648,8 +648,37 @@ function identidade(conv: ConvFunil, msgs: MsgRow[], extraFone?: string | null):
     // Phone: 5618721042", num chat de número israelense) nunca chegava à
     // plataforma — a visita marcada com esse número ficava sem o anúncio do
     // clique. Vai em `telefone_conversa`, a chave que une as duas identidades.
-    telefone_conversa: canal === "whatsapp" ? telefoneDigitadoNoWhatsApp(conv.igsid, msgs, extraFone) ?? undefined : undefined,
+    // TELEFONE CORRIGIDO NO CHAT (22/10/2026): vale para TODOS os canais e é o
+    // ÚLTIMO número diferente que o cliente digitou — ver telefoneCorrigidoNoChat.
+    telefone_conversa: telefoneCorrigidoNoChat(conv.igsid, msgs, extraFone) ?? undefined,
   };
+}
+
+// TELEFONE CORRIGIDO NO CHAT (22/10/2026). Caso real (Dilshad, Messenger,
+// Ad16): digitou "9648256949" junto com o endereço, o lead da plataforma nasceu
+// com esse número; horas depois corrigiu ("let me give you my # again,
+// 9548256949"). O `telefone` é sempre o PRIMEIRO digitado (fill-if-empty na
+// plataforma — não sobrescreve), então a correção nunca saía daqui; no dia
+// seguinte o escritório marcou no calendário com o número certo, nasceu um
+// segundo lead sem o anúncio e a visita apareceu "o cliente disse: Facebook".
+// Agora o ÚLTIMO número diferente do principal (do chat no WhatsApp, o 1º
+// digitado nos outros canais) vai em `telefone_conversa`: é a chave que une as
+// duas identidades na resolução por pessoa da plataforma. Generaliza
+// telefoneDigitadoNoWhatsApp (que pegava o 1º diferente, só no WhatsApp).
+export function telefoneCorrigidoNoChat(igsid: string, msgs: MsgRow[], extra?: string | null): string | null {
+  const dez = (t: string | null | undefined) => (t ?? "").replace(/\D/g, "").slice(-10);
+  const principal = dez(telefoneDoContato(igsid, msgs, extra));
+  let ultimo: string | null = null;
+  for (const m of msgs) {
+    if (m.role !== "user") continue;
+    const tel = extrairTelefone(m.content);
+    if (tel && dez(tel) !== principal) ultimo = tel;
+  }
+  if (extra) {
+    const tel = extrairTelefone(extra);
+    if (tel && dez(tel) !== principal) ultimo = tel;
+  }
+  return ultimo;
 }
 
 // Primeiro telefone que o cliente digitou numa conversa de WhatsApp e que NÃO
