@@ -1,8 +1,10 @@
 // ─── ZIP codes typed in free text ────────────────────────────────────────────
 // Different from extractZip (scheduler.ts), which only looks at ADDRESSES and
 // therefore ignores a "33130" typed on its own as an answer ("what's the zip?"
-// → "33130"). Here a 5-digit token counts as a ZIP when it starts with 33 or 34
-// (South Florida), is not glued to "$" / digits, is not an apartment or unit
+// → "33130"). Here a 5-digit token counts as a ZIP when it starts with 32, 33 or
+// 34 (a Florida ZIP; 32xxx added 2026-10-21 so an Orlando / Vero Beach ZIP also
+// counts as "the client typed a ZIP" and reaches the service-area gate below),
+// is not glued to "$" / digits, is not an apartment or unit
 // number and is not followed by a street name (house number: "33055 SW 12 St",
 // "33055 Southwest 12th Street").
 // Used by clientAlreadyGaveZip (ai.ts) and withEarlierBookingFacts
@@ -18,7 +20,7 @@ export function zipsInText(text: string): string[] {
   const out: string[] = [];
   // Lookahead case-insensitive ("33130 USD", "33150 SQFT"); "ft" only as a
   // unit, never "Ft Lauderdale".
-  const re = /(?<![\d$,.#-])\b(3[34]\d{3})(?:-\d{4})?\b(?![\d,.]*\s*(?:sq|sf|ft(?!\.?\s*lauderdale)|feet|pies|k\b|dollars|usd))/gi;
+  const re = /(?<![\d$,.#-])\b(3[2-4]\d{3})(?:-\d{4})?\b(?![\d,.]*\s*(?:sq|sf|ft(?!\.?\s*lauderdale)|feet|pies|k\b|dollars|usd))/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(t)) !== null) {
     const zip = m[1];
@@ -27,4 +29,25 @@ export function zipsInText(text: string): string[] {
     out.push(zip);
   }
   return out;
+}
+
+// ─── Service area by ZIP (owner rule: Homestead to Jupiter) ──────────────────
+// Miami-Dade, Broward and Palm Beach are exactly the ZIPs 33000-33499 (330xx,
+// 331xx, 332xx, 333xx, 334xx). Everything else is out of area: 335xx-339xx are
+// Tampa Bay, Lakeland, Davenport and Fort Myers; 32xxx and 34xxx are Central
+// and North Florida, the Gulf coast and the Treasure Coast (Orlando, Windermere,
+// Kissimmee, Clearwater, Sarasota, Naples, Vero Beach...). The ONE exception is
+// Port St. Lucie (owner rule 2026-09-26: served, the owner sets up the quote).
+// Two visits were booked out of area while the prompt ("every ZIP in our area
+// starts with 33") was the only check: Davenport FL 33837 (wa_13478203091,
+// 2026-10-07, "We cover that area") and Windermere FL 34786
+// (fb_29035927539368442, 2026-10-21, "That's Windermere, we cover that area").
+export const PORT_ST_LUCIE_ZIPS = new Set(["34952", "34953", "34983", "34984", "34985", "34986", "34987", "34988"]);
+export function isServiceAreaZip(zip: string | null | undefined): boolean {
+  return /^33[0-4]\d{2}$/.test((zip ?? "").trim());
+}
+/** A 5-digit ZIP that is neither in the Homestead-to-Jupiter area nor Port St. Lucie. */
+export function isOutOfAreaZip(zip: string | null | undefined): boolean {
+  const z = (zip ?? "").trim();
+  return /^\d{5}$/.test(z) && !isServiceAreaZip(z) && !PORT_ST_LUCIE_ZIPS.has(z);
 }

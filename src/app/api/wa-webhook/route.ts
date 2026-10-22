@@ -5,11 +5,11 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
 import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -101,6 +101,15 @@ async function processBookingCommand(
   if (portStLucieStanding(history)) {
     console.warn("[WA] booking blocked — Port St. Lucie (the owner sets up the quote); sending the owner handoff");
     return { response: portStLucieHandoffMessage(lang, false), booked: false };
+  }
+  // OUT-OF-AREA ZIP guard (2026-10-21): the client's latest typed ZIP is outside
+  // the service area (330xx-334xx). Davenport FL 33837 (WA, 2026-10-07) and
+  // Windermere FL 34786 (FB, 2026-10-21) were booked as "we cover that area";
+  // a [BOOK] while such a ZIP stands is replaced by the decline.
+  const outOfAreaZip = outOfAreaZipStanding(history);
+  if (outOfAreaZip) {
+    console.warn("[WA] booking blocked — ZIP " + outOfAreaZip + " is outside the service area (330xx-334xx); sending the decline");
+    return { response: outOfAreaDeclineMessage(lang), booked: false };
   }
   if (mobileHomeStanding(history)) {
     console.warn("[WA] booking blocked — trailer / mobile home (we do not work in them); sending the decline");
@@ -245,6 +254,13 @@ async function processBookingCommand(
     if (!bookingAddressHasZip(bookingData.address, history)) {
       console.warn(`[WA] booking blocked — address without a client-given zip (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needZipMessage(lang), booked: false };
+    }
+    // The ZIP in the [BOOK] address must be inside the service area as well
+    // (the standing above reads the client's bubbles, this reads the tag).
+    const tagZipOutOfArea = bookingAddressOutOfArea(bookingData.address);
+    if (tagZipOutOfArea) {
+      console.warn("[WA] booking blocked — the [BOOK] address ZIP " + tagZipOutOfArea + " is outside the service area (" + JSON.stringify(bookingData.address ?? null) + "); sending the decline");
+      return { response: outOfAreaDeclineMessage(lang), booked: false };
     }
     // The NAME is not a requirement (owner rule 2026-09-16): on WhatsApp the
     // phone is the chat id, so the address alone books the visit; the name is
@@ -2091,6 +2107,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
     if (!isBookingConfirmed && portStLucieLeak(history, safeResponse)) {
       console.warn("[WA] Port St. Lucie — model offered a visit / priced / declined; replacing with the owner handoff");
       safeResponse = portStLucieHandoffMessage(lang, false);
+    }
+
+    // OUT-OF-AREA ZIP backstop (2026-10-21): while the client's latest ZIP is
+    // outside 330xx-334xx, a slot / visit offer, a details ask, a [BOOK] or a
+    // "we cover that area" is replaced by the decline.
+    if (!isBookingConfirmed && outOfAreaLeak(history, safeResponse)) {
+      console.warn("[WA] ZIP " + outOfAreaZipStanding(history) + " out of area — model offered a visit / asked details / claimed coverage; replacing with the decline");
+      safeResponse = outOfAreaDeclineMessage(lang);
     }
 
     // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated

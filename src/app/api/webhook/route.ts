@@ -53,7 +53,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -65,7 +65,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -170,6 +170,15 @@ async function processBookingCommand(
   if (portStLucieStanding(history)) {
     console.warn("[IG] booking blocked — Port St. Lucie (the owner sets up the quote); sending the owner handoff");
     return { response: portStLucieHandoffMessage(lang, portStLucieAskPhone(history)), booked: false };
+  }
+  // OUT-OF-AREA ZIP guard (2026-10-21): the client's latest typed ZIP is outside
+  // the service area (330xx-334xx). Davenport FL 33837 (WA, 2026-10-07) and
+  // Windermere FL 34786 (FB, 2026-10-21) were booked as "we cover that area";
+  // a [BOOK] while such a ZIP stands is replaced by the decline.
+  const outOfAreaZip = outOfAreaZipStanding(history);
+  if (outOfAreaZip) {
+    console.warn("[IG] booking blocked — ZIP " + outOfAreaZip + " is outside the service area (330xx-334xx); sending the decline");
+    return { response: outOfAreaDeclineMessage(lang), booked: false };
   }
   if (mobileHomeStanding(history)) {
     console.warn("[IG] booking blocked — trailer / mobile home (we do not work in them); sending the decline");
@@ -300,6 +309,13 @@ async function processBookingCommand(
     if (!bookingAddressHasZip(bookingData.address, history)) {
       console.warn(`[IG] booking blocked — address without a client-given zip (${JSON.stringify(bookingData.address ?? null)}); asking for it`);
       return { response: needZipMessage(lang), booked: false };
+    }
+    // The ZIP in the [BOOK] address must be inside the service area as well
+    // (the standing above reads the client's bubbles, this reads the tag).
+    const tagZipOutOfArea = bookingAddressOutOfArea(bookingData.address);
+    if (tagZipOutOfArea) {
+      console.warn("[IG] booking blocked — the [BOOK] address ZIP " + tagZipOutOfArea + " is outside the service area (" + JSON.stringify(bookingData.address ?? null) + "); sending the decline");
+      return { response: outOfAreaDeclineMessage(lang), booked: false };
     }
     // Require a REAL phone number. The model sometimes books with a non-number
     // (e.g. client says "Call me in Messenger" and it sets phone="Messenger"),
@@ -2064,6 +2080,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && portStLucieLeak(history, safeAiText)) {
       console.warn("[IG] Port St. Lucie — model offered a visit / priced / declined; replacing with the owner handoff");
       safeAiText = portStLucieHandoffMessage(lang, portStLucieAskPhone(history));
+    }
+
+    // OUT-OF-AREA ZIP backstop (2026-10-21): while the client's latest ZIP is
+    // outside 330xx-334xx, a slot / visit offer, a details ask, a [BOOK] or a
+    // "we cover that area" is replaced by the decline.
+    if (!isBookingConfirmed && outOfAreaLeak(history, safeAiText)) {
+      console.warn("[IG] ZIP " + outOfAreaZipStanding(history) + " out of area — model offered a visit / asked details / claimed coverage; replacing with the decline");
+      safeAiText = outOfAreaDeclineMessage(lang);
     }
 
     // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated

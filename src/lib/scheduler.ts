@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "./supabase";
-import { zipsInText } from "./zip-text";
+import { zipsInText, isOutOfAreaZip } from "./zip-text";
 
 const SCHEDULER_URL = "https://wtyezgfzzetfrhoaqemt.supabase.co";
 const SCHEDULER_ANON_KEY =
@@ -3033,6 +3033,26 @@ export function portStLucieAckMessage(lang: Lang): string {
   if (lang === "pt") return "Perfeito, anotado. O Ozzi, dono da empresa, vai entrar em contato com você em breve para combinar o orçamento.";
   if (lang === "es") return "Perfecto, anotado. Ozzi, el dueño de la empresa, se va a comunicar con usted en breve para coordinar el presupuesto.";
   return "Perfect, got it. Ozzi, the owner, will reach out to you shortly to arrange your quote.";
+}
+
+// OUT OF AREA BY ZIP (2026-10-21): the service area is exactly the ZIPs
+// 330xx-334xx (zip-text.ts isServiceAreaZip); Port St. Lucie has its own flow.
+// Sent by the brain and the webhooks whenever the client's latest typed ZIP is
+// outside it and the model still offered a visit, asked details, wrote a
+// [BOOK] or said "we cover that area" (Davenport FL 33837, 2026-10-07;
+// Windermere FL 34786, 2026-10-21). Never names the city (the model guesses
+// it), no dashes, no ¿ ¡, must not read as a scheduling push or a details ask.
+export function outOfAreaDeclineMessage(lang: Lang): string {
+  if (lang === "pt") return "Esse zip code fica fora da nossa área de atendimento, a gente só atende a costa leste do sul da Flórida, de Homestead até Jupiter. Se um dia tiver um projeto por aqui, é só me chamar!";
+  return lang === "es"
+    ? "Ese código postal está fuera de nuestra zona de servicio, solo cubrimos la costa este del sur de la Florida, de Homestead a Jupiter. Si algún día tiene un proyecto por acá, con gusto le ayudo."
+    : "That zip code is outside our service area, we only cover South Florida's east coast from Homestead to Jupiter. If you ever have a project on this side, I'm happy to help!";
+}
+// The ZIP inside a [BOOK] address that is outside the service area (and not
+// Port St. Lucie), or null. Read by the webhooks right after bookingAddressHasZip.
+export function bookingAddressOutOfArea(address?: string | null): string | null {
+  const zip = extractZip(address);
+  return zip && isOutOfAreaZip(zip) ? zip : null;
 }
 
 // We do NOT do epoxy, concrete/cement, microcement, resin, pavers or terrazzo

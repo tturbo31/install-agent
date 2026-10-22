@@ -1,8 +1,8 @@
-import { zipsInText } from "./zip-text";
+import { zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
@@ -3131,7 +3131,7 @@ export const MOBILE_HOME_NOTE = [
 // reach out" is the intended answer: the webhooks skip the 2026-09-14
 // redirectOwnerPromiseToPhone while it stands.
 const PORT_ST_LUCIE_RE = /(?<![a-zà-ÿ])(?:port\s*(?:st\.?|saint|santa?|s\.)\s*luc[ií][ae]|porto\s+s[aã]o\s+l[uú]cio|puerto\s+san(?:ta)?\s+luc[ií]a|psl|(?:st\.?|saint)\s*lucie\s+(?:west|county))(?![a-zà-ÿ])/i;
-const PORT_ST_LUCIE_ZIPS = new Set(["34952", "34953", "34983", "34984", "34985", "34986", "34987", "34988"]);
+// PORT_ST_LUCIE_ZIPS lives in zip-text.ts (shared with the service-area gate).
 export function isPortStLucieMention(text: string): boolean {
   const t = clientTextOnly(text);
   if (!t) return false;
@@ -3193,6 +3193,53 @@ export const PORT_ST_LUCIE_NOTE = [
   "3. If the client sends their phone number, or asks when they will be contacted, thank them briefly, say Ozzi will reach out shortly, and add [NOTIFY_OWNER] at the end.",
   "4. Do NOT tell the client to call or message Ozzi themselves: in this flow the owner contacts them.",
 ].join("\n");
+
+// ─── OUT-OF-AREA ZIP (service area gate by code, 2026-10-21) ─────────────────
+// The prompt alone was the gate and it failed twice. "We cover that area, I
+// have Thursday the 8th at 9am or 2pm" for 33837 (Davenport, Orlando side;
+// WhatsApp wa_13478203091, 2026-10-07, the visit was cancelled by hand) and
+// "That's Windermere, we cover that area. ... Does Thursday at 11am or 7pm
+// work?" for 34786 (Messenger fb_29035927539368442, 2026-10-21: the model had
+// just declined 34686 as Clearwater, then booked Windermere because Central
+// Florida was on no list and "every ZIP in our area starts with 33" is wrong
+// in both directions). Our area is exactly the ZIPs 330xx-334xx (zip-text.ts).
+// The client's LATEST typed ZIP decides (34686 then 34786 = 34786; an
+// out-of-area ZIP followed by an in-area one = in area). While it stands the
+// model gets the decline note, and a slot / visit offer, a details ask, a
+// [BOOK] or a "we cover that area" line is replaced by outOfAreaDeclineMessage;
+// the webhooks also refuse the [BOOK] (by this standing and by the ZIP in the
+// tag's address). Port St. Lucie ZIPs are excluded here, they have their own flow.
+export function outOfAreaZipStanding(history: Array<{ role: string; content: string }>): string | null {
+  let latest: string | null = null;
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const zips = zipsInText(clientTextOnly(m.content));
+    if (zips.length) latest = zips[zips.length - 1];
+  }
+  return latest && isOutOfAreaZip(latest) ? latest : null;
+}
+// "We cover that area" / "cubrimos esa zona" / "atendemos essa área", never
+// when negated ("we don't cover that area") or restricted ("we only cover...").
+const COVERAGE_CLAIM = /\b(?:we|i)\s+(?:do\s+|definitely\s+|absolutely\s+|also\s+)?(?:cover|serve|service|reach)\s+(?:that|this|your)\s+(?:area|zone|zip|neighborhood|city)\b|(?<!\b(?:no|solo|s[oó]lo)\s)\b(?:cubrimos|atendemos|llegamos\s+a)\s+(?:esa|esta|tu|su)\s+(?:zona|[aá]rea|ciudad)\b|(?<!\b(?:n[aã]o|s[oó])\s)\batendemos\s+(?:essa|esta|sua)\s+(?:[aá]rea|regi[aã]o|cidade)\b/i;
+export function claimsCoverage(text: string): boolean {
+  return COVERAGE_CLAIM.test(normalizeSmartPunct(text || ""));
+}
+export function outOfAreaLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!outOfAreaZipStanding(history)) return false;
+  const t = aiText || "";
+  return /\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t) || claimsCoverage(t);
+}
+export function outOfAreaNote(zip: string): string {
+  return [
+    "CRITICAL, OUT OF OUR SERVICE AREA (ZIP " + zip + "):",
+    "The client's property ZIP code is " + zip + ". Our service area is EXACTLY the ZIP codes 33000 to 33499 (Miami-Dade, Broward and Palm Beach, from Homestead to Jupiter). " + zip + " is outside it, so we do NOT cover that property, whatever city you think it is in (Central Florida, the Gulf coast, the Treasure Coast and other states are all outside).",
+    "1. Say so politely in the client's language, in one or two short sentences: that zip code is outside our service area, we only cover South Florida's east coast from Homestead to Jupiter, and close warmly (if they ever have a project on this side, happy to help). Do NOT name the city you think the ZIP belongs to and NEVER say \"we cover that area\".",
+    "2. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for the address or the phone. NEVER quote a price for that property. NEVER generate [BOOK:...].",
+    "3. If the same message also asks something else (is the vinyl waterproof, does it go over tile), answer that part briefly and still give the decline.",
+    "4. If earlier in this conversation a visit was offered, a slot was \"held\" or booking details were collected for this ZIP, that was a MISTAKE: do not confirm it, do not write [BOOK:...], apologize briefly and give the decline instead.",
+    "5. Only if the client sends a DIFFERENT zip code inside 33000-33499 (a property on the Miami side) return to the normal flow.",
+  ].join("\n");
+}
 
 // ─── "Send me your WhatsApp" / "what's your number?" ────────────────────────
 // Stela Cunha (FB 2026-09-17): first message "Me envi seu WhatsApp aí eu te
@@ -5257,7 +5304,7 @@ export async function getAIResponse(
 22. NO PRESSURE RULE: Propose the visit and offer time slots ONCE. After you have already proposed the visit, do NOT tack a scheduling push onto the end of every message ("what time works for you", "what day works", "so we can get started right away", or a list of slots). When the client asks an informational question (materials, specs, thickness, wear layer, lighting, timeline, etc.), ANSWER that question and stop, with no scheduling pressure appended. Re-offer specific slots or re-ask "what time works" ONLY when the client signals readiness to book or themselves asks about scheduling or availability. NEVER end two messages in a row with the same scheduling question, that is pressuring the client and is forbidden. When the client raises an obstacle ("I don't have access", "it's owner occupied", "I can't be there", "I'm just researching", "not this week"), acknowledge it and adapt, NEVER ignore it and keep offering the same slots; if a visit is genuinely blocked, hand to Ozzi with [NOTIFY_OWNER] instead of pushing.
 24. NEVER SAY A SLOT WAS TAKEN, WITH ONE EXCEPTION: never tell a client that a time "just got taken" or "is unavailable" out of the blue, and never ask them to "pick another time" or blame the slot when a booking fails (hand it to Ozzi with [NOTIFY_OWNER]). If a time the client asks for was simply never listed, just offer a listed time in a normal friendly way. THE EXCEPTION, and it is mandatory: when the client is ACCEPTING a time YOU offered earlier in this conversation and that time is no longer on its schedule line, you must own it in the first clause, in one short apology that it filled up since you offered it, and then offer that day's listed times (or the next day's). NEVER say you are holding, confirming or penciling in a time that is not on its line: a client who accepted "6pm" four hours after the offer, when 6pm had already filled, was told "I'm holding that 6pm for you!" and then got a different day (2026-09-30). A time is only "confirmed" while it is still listed on that day's line.
 25. CAN BOOK ANY LISTED DAY, INCLUDING FUTURE WEEKS: The REAL-TIME SCHEDULE covers about three weeks ahead. You CAN and SHOULD book next week or the week after when the client wants it. NEVER say you cannot see, access, or open the calendar for a future week, and never say you can only book this week. Any date shown in the schedule is bookable. If the same weekday appears more than once, use the soonest one unless the client says "next week" or names a specific date.
-26. SERVICE AREA HARD GATE (overrides scheduling): We serve ONLY the Miami / South Florida EAST coast, from Homestead up to Jupiter (Miami-Dade, Broward, Palm Beach). We do NOT serve the Gulf / WEST coast at all (Tampa, St. Petersburg, Clearwater, Sarasota, Bradenton, Fort Myers, Cape Coral, Lehigh Acres, Estero, Bonita Springs, Naples, Marco Island, Port Charlotte, Punta Gorda), nor north of Jupiter (Treasure Coast), nor the Florida Keys south of Homestead. BEFORE proposing a visit, offering any time slot, confirming an appointment, or generating [BOOK:...], you MUST check the client's stated city/address. If it is on the west/Gulf coast or otherwise outside Homestead-to-Jupiter, you MUST NOT book — politely say we only serve the Miami area (the South Florida east coast from Homestead to Jupiter) and we do not cover their area. NEVER generate [BOOK:...] for an out-of-area address under any circumstance. This rule overrides every scheduling instruction.
+26. SERVICE AREA HARD GATE (overrides scheduling): We serve ONLY the Miami / South Florida EAST coast, from Homestead up to Jupiter (Miami-Dade, Broward, Palm Beach). We do NOT serve the Gulf / WEST coast at all (Tampa, St. Petersburg, Clearwater, Sarasota, Bradenton, Fort Myers, Cape Coral, Lehigh Acres, Estero, Bonita Springs, Naples, Marco Island, Port Charlotte, Punta Gorda), nor Central and North Florida (Orlando, Windermere, Kissimmee, Davenport, Clermont, Lakeland, Ocala, Jacksonville), nor north of Jupiter (Treasure Coast), nor the Florida Keys south of Homestead. By ZIP code our area is exactly 33000-33499 (330xx-334xx): any other ZIP is out of area, Port St. Lucie excepted, whatever city you think it is, and the city of a ZIP is never asserted. BEFORE proposing a visit, offering any time slot, confirming an appointment, or generating [BOOK:...], you MUST check the client's stated city/address. If it is on the west/Gulf coast or otherwise outside Homestead-to-Jupiter, you MUST NOT book — politely say we only serve the Miami area (the South Florida east coast from Homestead to Jupiter) and we do not cover their area. NEVER generate [BOOK:...] for an out-of-area address under any circumstance. This rule overrides every scheduling instruction.
 27. NO SQFT ARITHMETIC / NO INVENTED TOTALS: NEVER add, subtract, or recompute the client's stated square footage into a different number, and NEVER narrate a calculation out loud (forbidden examples: "that puts you at about 1,600 sqft to cover", "1900 minus 300", "so that's X sqft total"). Do NOT assume some rooms (bathrooms, laundry, kitchen) get a different material and subtract them, the whole job is the same flooring unless the client says otherwise. If you need to reference the size, repeat the client's own number back unchanged. For ANY job of 500 sqft or more, do NOT compute, quote, or restate any sqft total at all, just acknowledge warmly and move to the free in-person visit. Math errors and invented totals destroy trust, so when unsure, say nothing about the number and propose the visit.
 28. BATHROOM RULE (OZZI DIRECT, owner rule 2026-09-11): We DO bathroom remodels (reforma de banheiro, remodelación de baño) and bathroom work (shower, tub, vanity), but they are NOT quoted and NOT scheduled through this chat: Ozzi handles bathroom quotes and appointments personally. When the client asks if we do, offer, or want a bathroom remodel or renovation, any shower / tub / vanity work, a bathroom quote, or simply "do you do bathrooms?": confirm YES we do it in one short clause, then say bathroom quotes and appointments are handled by Ozzi directly and give his number (561) 674-8334, and stop. NEVER quote a bathroom price (not even approximate), NEVER propose or set up a visit, NEVER offer slots, NEVER ask for the name, address, phone or zip for it, NEVER generate [BOOK:...] for it, and never decline it for being small. If the client insists on a price or a visit here, hold the line: you can't give a quote or set anything up for a bathroom through here, it has to go through Ozzi, number repeated. This replaces the old "bathroom remodel = free visit" rule. FLOORING for a single bathroom and nothing else with no size stated is an obviously small area: Ozzi direct as well (rule 18), no need to ask the size; a stated size follows the size rules. A repair of any kind (fixing or replacing damaged tiles, patching) is something we do NOT do and never visit for, see rule 39. If the bathroom comes together with a flooring job for other rooms or the whole house, handle that flooring part by the normal rules and still send the bathroom part to Ozzi.
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
@@ -5341,6 +5388,14 @@ export async function getAIResponse(
     dynamicSystem += "\n\n---\n\n" + PORT_ST_LUCIE_NOTE;
   }
 
+  // OUT-OF-AREA ZIP standing (2026-10-21, Davenport 33837 / Windermere 34786
+  // booked as "we cover that area") → the decline block with the ZIP.
+  const outOfAreaStandingZip = outOfAreaZipStanding(messages);
+  if (outOfAreaStandingZip) {
+    console.log("[AI] ZIP " + outOfAreaStandingZip + " is outside the service area — injecting the decline block");
+    dynamicSystem += "\n\n---\n\n" + outOfAreaNote(outOfAreaStandingZip);
+  }
+
   // LANGUAGE SWITCH → the note is read last (Leticia, FB 2026-09-17: "No,
   // speak English" got "Already in English!").
   if (langSwitch) {
@@ -5387,7 +5442,7 @@ export async function getAIResponse(
     const firstBurst = messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n");
     if (
       clientTextOnly(firstBurst).trim() && !openerCoversMessage(firstBurst) && !mentionsRejection(firstBurst) &&
-      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)
+      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null
     ) {
       console.log("[AI] First message says something specific — injecting the answer-it-first block");
       dynamicSystem += "\n\n---\n\n" + firstMessageContentNote(firstBurst);
@@ -5654,7 +5709,7 @@ export async function getAIResponse(
       const burst = (messages ?? []).slice(lastA + 1).filter((m) => m.role === "user").map((m) => m.content || "").join("\n");
       if (process.env.WHICH_FLOOR_BACKSTOP !== "off" && isWhichFloorQuestion(burst)) {
         const bookable = !clientAlreadyGaveZip(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages)
-          && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
+          && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
         const full = bookable && isPureWhichFloorBurst(burst) && !/\[BOOK:/i.test(cleaned);
         const fixed = fixWhichFloorReply(cleaned, usersLang(), full);
         if (fixed !== cleaned) {
@@ -5790,6 +5845,15 @@ export async function getAIResponse(
       cleaned = portStLucieHandoffMessage(usersLang(), portStLucieAskPhone(messages));
     }
 
+    // OUT-OF-AREA ZIP backstop (2026-10-21): while the client's latest ZIP is
+    // outside 330xx-334xx, a slot / visit offer, a details ask, a [BOOK] or a
+    // "we cover that area" is replaced by the decline (Davenport 33837 and
+    // Windermere 34786 got times and a [BOOK] from the model).
+    if (outOfAreaLeak(messages, cleaned)) {
+      console.warn("[AI] ZIP " + outOfAreaZipStanding(messages) + " out of area — model offered a visit / asked details / claimed coverage; replaced with the decline. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 220));
+      cleaned = outOfAreaDeclineMessage(usersLang());
+    }
+
     // Never claim to be a human (2026-09-21): asked "person or bot?", the team
     // line stays and the claim goes. Only on the turn where the client asked.
     if (clientAskedBotOrHuman(messages)) cleaned = stripHumanClaim(cleaned, usersLang());
@@ -5797,7 +5861,7 @@ export async function getAIResponse(
     // "What's your number?" while a visit is being set up (Brickell, FB
     // 2026-09-14): the number alone ended the booking. Append the pending
     // question. The referral flows own their replies and are left alone.
-    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
+    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
       const kept = keepBookingThreadAfterPhone(messages, cleaned, usersLang());
       if (kept !== cleaned) {
         console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
@@ -5808,7 +5872,7 @@ export async function getAIResponse(
     // "Send me your WhatsApp" / "what's your number?" and the reply came back
     // without the number (Stela Cunha, FB 2026-09-17): prepend our WhatsApp
     // line in the client's language. The referral flows own their replies.
-    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
+    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
       const withNumber = ensureContactNumber(messages, cleaned, usersLang());
       if (withNumber !== cleaned) {
         console.warn("[AI] contact request — reply had no number; prepended our WhatsApp line");
@@ -5838,7 +5902,7 @@ export async function getAIResponse(
     // do not speak English (or asked for a language) and the reply is still in
     // the wrong language, or comments "Already in English": ship the
     // deterministic language-confirming line instead.
-    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages)) {
+    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
       const inLang = enforceLanguageSwitch(messages, cleaned, langSwitch);
       if (inLang !== cleaned) {
         console.warn("[AI] language switch to " + langSwitch.target + " — reply was in the wrong language; replaced with the language-confirming line");
