@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchWaQueueHealth, sendWhatsAppMessage } from "@/lib/whatsapp";
+import { fetchWaQueueHealth, sendWhatsAppMessage, notifyOwners, CLIENT_ATTENTION_PHONES } from "@/lib/whatsapp";
 import { judgeWaQueue } from "@/lib/wa-queue-policy";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 
@@ -13,6 +13,10 @@ const ZAPI_BASE = "https://api.z-api.io";
 // is disconnected / out of subscription / wrong token. Optional &send=<phone>
 // (or &send=1 for the owner number) performs a real test send and returns the
 // raw Z-API result so the exact send error is visible. Admin-secret protected.
+// Optional &alertTest=1 fires a REAL client-attention alert through the same
+// path the webhooks use (notifyOwners), labelled as a test, and returns the
+// per-phone result — proves in production who receives those alerts
+// (owners + Ruani since 22/10/2026).
 export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   if (!isDashboardAuthorized(secret)) {
@@ -61,6 +65,17 @@ export async function GET(req: NextRequest) {
       "[Teste OzziFloors] Diagnostico de entrega do WhatsApp. Se voce recebeu, o envio esta funcionando. Pode ignorar."
     );
     out.testSend = { phone, result };
+  }
+
+  if (req.nextUrl.searchParams.get("alertTest") === "1") {
+    const results = await notifyOwners({
+      platform: "Teste do sistema",
+      clientName: "TESTE DO SISTEMA (pode ignorar)",
+      clientId: "teste",
+      recentMessages: [{ role: "user", content: "[Teste] Conferindo quem recebe os avisos de cliente que precisa de atencao. Nenhum cliente para atender." }],
+      alert: "🧪 TESTE DO SISTEMA — NAO E CLIENTE. Este aviso confere que os avisos de cliente chegam ao Ozzi, ao dono e a Ruani.",
+    });
+    out.alertTest = { phones: CLIENT_ATTENTION_PHONES, results };
   }
 
   return NextResponse.json(out, { status: 200 });

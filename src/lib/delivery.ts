@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { sendWhatsAppMessage, CLIENT_ATTENTION_PHONES } from "@/lib/whatsapp";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { LEGACY_ADMIN_SECRET } from "@/lib/admin-auth";
 import {
@@ -33,6 +33,11 @@ const ALERT_EVERY_MS = 60 * 60 * 1000; // max 1 owner alert per channel per hour
 // same person on 2026-08-26).
 const RECIPIENT_ALERT_EVERY_MS = 24 * 60 * 60 * 1000;
 const OWNER_PHONES = ["15616748334", "556294554477"];
+// Avisos que NOMEIAM um cliente esperando atendimento (conversa pausada sem
+// resposta, 1 cliente inalcancavel, resposta perdida, mensagem perdida) vao
+// tambem para a Ruani — CLIENT_ATTENTION_PHONES (22/10/2026). Avisos de
+// infraestrutura (canal inteiro fora, fila da Z-API, bloqueio de link) ficam
+// so com os donos.
 
 const CHANNEL_LABEL: Record<string, string> = {
   instagram: "Instagram",
@@ -296,7 +301,7 @@ export async function reportSendFailure(
         `O sistema vai reentregar sozinho as respostas que falharem assim que o canal voltar (retry automatico por 48h).`,
         `Ate resolver, responda os clientes manualmente pelo app.`,
       ].join("\n");
-  await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+  await Promise.allSettled((perRecipient ? CLIENT_ATTENTION_PHONES : OWNER_PHONES).map((p) => sendWhatsAppMessage(p, msg)));
 }
 
 const PAUSED_ALERT_EVERY_MS = 6 * 60 * 60 * 1000; // per conversation
@@ -329,7 +334,7 @@ export async function alertPausedBacklog(params: {
       ``,
       `Responda pelo app ou reative a IA no painel.`,
     ].join("\n");
-    await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+    await Promise.allSettled(CLIENT_ATTENTION_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
   } catch (err) {
     console.error("[DELIVERY] paused-backlog alert failed:", err);
   }
@@ -754,7 +759,7 @@ export async function recoverLostReplies(): Promise<void> {
         ``,
         `Reenvio automatico = a mensagem do cliente foi reprocessada e respondida pelo fluxo normal.`,
       ].join("\n");
-      await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+      await Promise.allSettled(CLIENT_ATTENTION_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
     }
   } catch (err) {
     console.error("[DELIVERY] lost-reply sweep error:", err);
@@ -962,7 +967,7 @@ export async function recoverLostInbounds(): Promise<void> {
         ``,
         `Reprocessada automaticamente = o bot leu a mensagem direto da thread e respondeu pelo fluxo normal.`,
       ].join("\n");
-      await Promise.allSettled(OWNER_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
+      await Promise.allSettled(CLIENT_ATTENTION_PHONES.map((p) => sendWhatsAppMessage(p, msg)));
     }
   } catch (err) {
     console.error("[DELIVERY] lost-inbound sweep error:", err);

@@ -139,6 +139,10 @@ for (const [f, tag, ask] of [["fb-webhook", "FB", "portStLucieAskPhone(history)"
 }
 ck("Dreaming: trava 14 (nunca aprender a recusar Port St. Lucie)", /14\. PORT ST\. LUCIE IS SERVED, AND THE OWNER SETS UP THE QUOTE/.test(dream));
 ck("aviso vai para os DOIS WhatsApps (OWNER_PHONES com 2 números)", /const OWNER_PHONES = \["15616748334", "556294554477"\];/.test(readFileSync(join(process.cwd(), "src/lib/whatsapp.ts"), "utf-8")));
+ck("aviso de cliente vai tambem para a Ruani (CLIENT_ATTENTION_PHONES = donos + 556291047525, 22/10/2026)", (() => {
+  const wa = readFileSync(join(process.cwd(), "src/lib/whatsapp.ts"), "utf-8");
+  return wa.includes('const RUANI_PHONE = "556291047525";') && wa.includes("export const CLIENT_ATTENTION_PHONES = [...OWNER_PHONES, RUANI_PHONE];") && wa.includes("CLIENT_ATTENTION_PHONES.map(async (phone) =>");
+})());
 
 async function live() {
   if (process.env.LIVE !== "1") { console.log("\n(ao vivo pulado; LIVE=1 para rodar)"); return; }

@@ -140,7 +140,7 @@ function main() {
   ck("outcome persisted per bubble (lostinbound-result|…)", /lostinbound-result\|\$\{outcome\}/.test(d));
   ck("paused (mode=human) threads are worded as 'responda pelo app', not 'reprocessada'",
     /modeOf\.get\(`fb_\$\{l\.clientId\}`\) === "human"/.test(d) && /conversa pausada \(modo humano\)[^"]*responda pelo app/.test(d));
-  ck("owner alert throttled to 1/h and sent to both owner phones", /shouldAlert\("lostinbound", "alert", LOST_INBOUND_ALERT_EVERY_MS\)/.test(d) && /OWNER_PHONES\.map\(\(p\) => sendWhatsAppMessage\(p, msg\)\)/.test(d));
+  ck("owner alert throttled to 1/h and sent to owners + Ruani (CLIENT_ATTENTION_PHONES)", /shouldAlert\("lostinbound", "alert", LOST_INBOUND_ALERT_EVERY_MS\)\)\) \{[\s\S]{0,900}?CLIENT_ATTENTION_PHONES\.map\(\(p\) => sendWhatsAppMessage\(p, msg\)\)/.test(d));
   ck("sweep never throws out of the webhook (try/catch with a logged error)", /catch \(err\) \{\s*console\.error\("\[DELIVERY\] lost-inbound sweep error:", err\);/.test(d));
 
   console.log("\n[6] all three webhooks run the sweep");

@@ -100,6 +100,9 @@ function main() {
   ck("IG token alert points to settoken (fix without deploy)", /settoken/.test(del));
   ck("FB token alert points to setfbtoken (fix without deploy)", /setfbtoken/.test(del));
   ck("alert goes to both owner phones via WhatsApp", /OWNER_PHONES = \["15616748334", "556294554477"\]/.test(del));
+  ck("per-client unreachable alert reaches Ruani too; channel-wide stays with the owners", del.includes("(perRecipient ? CLIENT_ATTENTION_PHONES : OWNER_PHONES).map((p) => sendWhatsAppMessage(p, msg))"));
+  ck("paused-backlog / lost-reply / lost-inbound alerts use CLIENT_ATTENTION_PHONES (3 sites)", (del.match(/CLIENT_ATTENTION_PHONES\.map\(\(p\) => sendWhatsAppMessage\(p, msg\)\)/g) ?? []).length === 3);
+  ck("infra alerts (WA queue, IG link block) stay with OWNER_PHONES only (2 sites)", (del.match(/OWNER_PHONES\.map\(\(p\) => sendWhatsAppMessage\(p, msg\)\)/g) ?? []).length === 2);
   ck("paused-backlog alert exists + 1h staleness gate", /alertPausedBacklog/.test(del) && /PAUSED_STALE_MS = 60 \* 60 \* 1000/.test(del));
 
   // ── 5. Panel manual send + follow-up sweep can't lie either ──────────────

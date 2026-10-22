@@ -4,6 +4,13 @@ const ZAPI_BASE = "https://api.z-api.io";
 
 const OWNER_PHONES = ["15616748334", "556294554477"];
 
+// Ruani (22/10/2026, pedido do dono): recebe TODO aviso de cliente que precisa
+// de atencao por algum problema — os mesmos que chegam ao Ozzi e ao dono.
+// Avisos de infraestrutura (token, fila da Z-API, bloqueio de link, canal
+// inteiro fora) continuam so com os donos: ela nao tem como agir neles.
+const RUANI_PHONE = "556291047525";
+export const CLIENT_ATTENTION_PHONES = [...OWNER_PHONES, RUANI_PHONE];
+
 function getInstanceId(): string {
   return process.env.ZAPI_INSTANCE_ID!;
 }
@@ -47,6 +54,26 @@ export async function sendWhatsAppMessage(phone: string, text: string): Promise<
     if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
   }
   return last;
+}
+
+// Does this number have WhatsApp? (Z-API phone-exists). Used before the FIRST
+// message to a client who never wrote to us (landing-page booking, 03/10/2026):
+// in the US many mobiles are not on WhatsApp, and send-text to them fails
+// silently. true/false = Z-API answered; null = could not ask (caller decides).
+export async function phoneHasWhatsApp(phone: string): Promise<boolean | null> {
+  try {
+    const url = `${ZAPI_BASE}/instances/${getInstanceId()}/token/${getToken()}/phone-exists/${encodeURIComponent(phone)}`;
+    const res = await fetch(url, { headers: { "Client-Token": getClientToken() }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) {
+      console.error(`[WA] phone-exists HTTP ${res.status} phone=${phone}`);
+      return null;
+    }
+    const j = (await res.json().catch(() => null)) as { exists?: boolean } | null;
+    return typeof j?.exists === "boolean" ? j.exists : null;
+  } catch (err) {
+    console.error(`[WA] phone-exists exception phone=${phone}:`, err);
+    return null;
+  }
 }
 
 // React to a client's message with an emoji (e.g. a thumbs up) instead of
@@ -135,7 +162,7 @@ export async function notifyOwners(params: {
   clientId: string;
   recentMessages: { role: string; content: string }[];
   alert?: string | null;
-}): Promise<void> {
+}): Promise<(WaSendResult & { phone: string })[]> {
   const { platform, clientName, clientId, recentMessages, alert } = params;
   const lines = recentMessages.slice(-8).map((m) => {
     const who = m.role === "user" ? "Cliente" : "Agente";
@@ -153,7 +180,9 @@ export async function notifyOwners(params: {
     ``,
     `Entre em contato com o cliente!`,
   ].join("\n");
-  await Promise.allSettled(OWNER_PHONES.map((phone) => sendWhatsAppMessage(phone, msg)));
+  // devolve o resultado por numero: o /api/wa-diag?alertTest=1 prova em
+  // producao quem recebeu (sendWhatsAppMessage nunca lanca)
+  return Promise.all(CLIENT_ATTENTION_PHONES.map(async (phone) => ({ phone, ...(await sendWhatsAppMessage(phone, msg)) })));
 }
 
 export async function downloadZApiAudio(audioUrl: string): Promise<{ buffer: ArrayBuffer; contentType: string } | null> {
