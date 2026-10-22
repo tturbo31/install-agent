@@ -24,6 +24,7 @@ import {
   tomorrowInTz,
   isRetractedInstallNotice,
   retractInstallNoticeText,
+  INSTALL_FALLBACK_CONTACT,
 } from "../lib/instalacao";
 import { encodeInstalacaoLogKey, decodeInstalacaoLogKey, instalacaoLogSlot, type InstalacaoLogRecord } from "../lib/instalacao-log";
 
@@ -215,6 +216,9 @@ async function main() {
   ck("09:00Z (all_day do Lovable) formatado vira 5am e é cortado", placeholder.text === "Wednesday, August 26" && placeholder.horarioSuspeito === "5am", JSON.stringify(placeholder));
   ck("endpoint avisa o dono quando remove o horário", /notifyOwners\(/.test(rotaSrc) && /installTimeAlert\(/.test(rotaSrc));
   ck("template nomeia a equipe de instalação como executora", /Our installation team will arrive/.test(rotaSrc));
+  // Regra do dono 22/10/2026 (Jeff Jacobs, job sem vendedor): contato = Ozzi (561) 674-8334, nunca sem contato.
+  ck("sem vendedor completo → contato é o Ozzi (561) 674-8334", /reach out directly to \$\{INSTALL_FALLBACK_CONTACT\.nome\} at \$\{INSTALL_FALLBACK_CONTACT\.telefone\}/.test(rotaSrc) && !/the sales rep who put together your estimate\.`\)/.test(rotaSrc));
+  ck("constante do contato de reserva = Ozzi (561) 674-8334", INSTALL_FALLBACK_CONTACT.nome === "Ozzi" && INSTALL_FALLBACK_CONTACT.telefone === "(561) 674-8334");
 
   // ── 3a. STATIC (22/10/2026): só quem tem obra amanhã ───────────────────────
   console.log("\n[3a] Static: trava de data + verificação na plataforma, falha fechada, alerta ao dono");

@@ -59,6 +59,13 @@ console.log("\nDRY telefone desconhecido com data de amanha -> liberado (platafo
 const d4 = await post({ telefone_cliente: "15550000001", data_instalacao: amanhaTxt, nome_cliente: "Teste Livre", nome_vendedor: "Diego", telefone_vendedor: "(954) 325-6735", dry: true });
 ck("200 dry, bloqueado:false, verificacao 0 quotes", d4.status === 200 && d4.json?.bloqueado === false && d4.json?.verificacao?.ok === true && d4.json?.verificacao?.quotes === 0, JSON.stringify(d4.json).slice(0, 400));
 
+console.log("\nDRY sem vendedor -> contato e o Ozzi (561) 674-8334 (regra do dono 22/10/2026)");
+const d5 = await post({ telefone_cliente: "15550000001", data_instalacao: amanhaTxt, nome_cliente: "Teste Sem Vendedor", dry: true });
+ck("mensagem traz 'reach out directly to Ozzi at (561) 674-8334'", d5.status === 200 && /reach out directly to Ozzi at \(561\) 674-8334\./.test(d5.json?.mensagem ?? ""), d5.json?.mensagem);
+ck("mensagem nao fala em 'sales rep' sem vendedor", !/sales rep/.test(d5.json?.mensagem ?? ""), d5.json?.mensagem);
+const d6 = await post({ telefone_cliente: "15550000001", data_instalacao: amanhaTxt, nome_cliente: "Teste Vendedor Sem Fone", nome_vendedor: "Chris", dry: true });
+ck("vendedor sem telefone -> tambem cai no Ozzi", /reach out directly to Ozzi at \(561\) 674-8334\./.test(d6.json?.mensagem ?? ""), d6.json?.mensagem);
+
 console.log("\nDayana: nenhuma mensagem nova no historico depois dos testes");
 const depoisD = await msgsDe("17868770477");
 ck("historico da Dayana intacto", depoisD === antesD, `${antesD} -> ${depoisD}`);

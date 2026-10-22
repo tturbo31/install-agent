@@ -9,6 +9,7 @@ import {
   formatInstallDateTime,
   installTimeAlert,
   INSTALL_ARRIVAL_WINDOW,
+  INSTALL_FALLBACK_CONTACT,
   INSTALL_DEDUP_HOURS,
   isDuplicateInstallNotice,
   checkInstallDateIsTomorrow,
@@ -32,6 +33,9 @@ import { verificarObraNaPlataforma } from "@/lib/instalacao-verificar";
 //
 //   Obrigatórios: telefone_cliente e data_instalacao — sem eles NADA é enviado
 //   e o erro fica no log. Os demais campos só enriquecem a mensagem.
+//   SEM VENDEDOR (regra do dono 22/10/2026): nome_vendedor/telefone_vendedor
+//   ausentes → o contato na mensagem é o Ozzi, (561) 674-8334. O integrador
+//   deve chamar mesmo sem vendedor, nunca inventar um.
 //   Opcional: "dry": true → monta a mensagem e devolve sem enviar (preview).
 //   Opcional: "data_instalacao_iso": "2026-08-26T14:00:00-04:00" (ISO 8601 COM
 //     fuso). Quando presente e válido, NÓS formatamos a data em horário da
@@ -131,12 +135,12 @@ function composeConfirmation(params: {
   // antiga dizia "<vendedor> will be taking care of your installation", o que
   // fazia o cliente entender que o representante de vendas faria a instalação.
   // (A equipe já foi nomeada como executora na frase de cima.)
+  // Sem vendedor completo (nome E telefone) o contato é o Ozzi — regra do dono
+  // 22/10/2026 (Jeff Jacobs, job sem vendedor): o aviso nunca sai sem contato.
   if (nomeVendedor && telefoneVendedor) {
     partes.push(`If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate, at ${telefoneVendedor}.`);
-  } else if (nomeVendedor) {
-    partes.push(`If you have any questions, you can reach out directly to ${nomeVendedor}, the sales rep who put together your estimate.`);
-  } else if (telefoneVendedor) {
-    partes.push(`If you have any questions, you can reach the sales rep who put together your estimate directly at ${telefoneVendedor}.`);
+  } else {
+    partes.push(`If you have any questions, you can reach out directly to ${INSTALL_FALLBACK_CONTACT.nome} at ${INSTALL_FALLBACK_CONTACT.telefone}.`);
   }
 
   partes.push(`See you soon! 🏠`);
@@ -475,6 +479,6 @@ export async function GET() {
     auth: "header Authorization: Bearer <token>",
     obrigatorios: ["telefone_cliente", "data_instalacao"],
     opcionais: ["data_instalacao_iso", "nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
-    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono; mesmo telefone avisado ha menos de 20h responde 200 com enviado:false e duplicado:true (nada e reenviado); desde 22/10/2026 a data recebida tem que ser AMANHA na Florida e a plataforma tem que confirmar que o cliente nao tem obra ja concluida sem contrato novo — senao 409 {bloqueado:true, motivo} (ou 503 se a plataforma nao responder): nada e enviado e o dono e avisado",
+    nota: "sem nome_vendedor/telefone_vendedor o contato na mensagem e o Ozzi (561) 674-8334 (chame mesmo sem vendedor; nunca invente um); data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono; mesmo telefone avisado ha menos de 20h responde 200 com enviado:false e duplicado:true (nada e reenviado); desde 22/10/2026 a data recebida tem que ser AMANHA na Florida e a plataforma tem que confirmar que o cliente nao tem obra ja concluida sem contrato novo — senao 409 {bloqueado:true, motivo} (ou 503 se a plataforma nao responder): nada e enviado e o dono e avisado",
   });
 }

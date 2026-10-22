@@ -73,6 +73,11 @@ export function sanitizeInstallDate(raw: string): SanitizedInstallDate {
 // que venha do integrador (texto livre ou ISO) é removido — plausível ou não.
 export const INSTALL_ARRIVAL_WINDOW = "between 10am and 11am";
 
+// Job SEM vendedor (regra do dono 22/10/2026, caso Jeff Jacobs): o aviso sai do
+// mesmo jeito e o contato para dúvidas é o Ozzi, (561) 674-8334. Antes a frase
+// do contato era simplesmente omitida — e o app nem chamava o agente.
+export const INSTALL_FALLBACK_CONTACT = { nome: "Ozzi", telefone: "(561) 674-8334" } as const;
+
 export function stripInstallTime(raw: string): string {
   const text = (raw ?? "").trim();
   const m = text.match(TIME_TOKEN);
