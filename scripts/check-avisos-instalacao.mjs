@@ -53,7 +53,7 @@ for (const c of chamadas) { const d = c.t.slice(0, 10); (porDiaSt[d] ??= {})[c.s
 for (const [d, st] of Object.entries(porDiaSt).sort()) console.log(`  ${d}: ${Object.entries(st).map(([k, v]) => `${k}=${v}`).join("  ")}`);
 const problemas = chamadas.filter((c) => c.st !== "ok" && c.st !== "dry");
 if (problemas.length) {
-  console.log("  CHAMADAS QUE NÃO VIRARAM AVISO:");
+  console.log("  CHAMADAS QUE NÃO VIRARAM AVISO (bloqueado = data não é amanhã ou obra já concluída na plataforma; verif = plataforma não respondeu; nos dois NADA saiu e o dono foi avisado):");
   for (const c of problemas) console.log(`    ${c.t.replace("T", " ").slice(0, 16)}Z ${c.st.padEnd(9)} tel=${c.tel ?? "-"} nome=${c.nome ?? "-"} data=${c.rec ?? "-"} | ${c.err ?? ""}`);
 }
 const oks = chamadas.filter((c) => c.st === "ok");
@@ -86,7 +86,10 @@ for (const a of avisos ?? []) {
   const vend = (a.content.match(/reach out directly to ([^,]+),/) || [])[1] ?? "-";
   const tv = (a.content.match(/estimate, at ([^.]+)\./) || [])[1] ?? "-";
   const temHorario = /\bat \d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(a.content.replace(/between 10am and 11am/, ""));
-  console.log(`  ${a.created_at.replace("T", " ").slice(0, 16)}Z ${ig.padEnd(16)} ${nome.padEnd(26)} ${data.padEnd(28)} vendedor: ${vend} ${tv}${temHorario ? "  ⚠ HORÁRIO NO TEXTO" : ""}`);
+  // Aviso enviado por engano e retratado depois (22/10/2026, caso Dayana): fica na lista, marcado.
+  const retratado = /^\s*\[RETRATADO/.test(a.content);
+  const nomeR = retratado ? ((a.content.match(/\] Hi ([^!]+)!/) || [])[1] ?? nome) : nome;
+  console.log(`  ${a.created_at.replace("T", " ").slice(0, 16)}Z ${ig.padEnd(16)} ${nomeR.padEnd(26)} ${data.padEnd(28)} vendedor: ${vend} ${tv}${temHorario ? "  ⚠ HORÁRIO NO TEXTO" : ""}${retratado ? "  ⚠ RETRATADO (enviado por engano — cliente sem obra)" : ""}`);
   const d = tel10(ig);
   if (d) (avisosPorTel[d] ??= []).push(a.created_at.slice(0, 10) + " → " + data);
 }

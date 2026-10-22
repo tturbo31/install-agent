@@ -11,8 +11,12 @@ import {
   INSTALL_ARRIVAL_WINDOW,
   INSTALL_DEDUP_HOURS,
   isDuplicateInstallNotice,
+  checkInstallDateIsTomorrow,
+  installBlockedAlert,
+  installUnverifiedAlert,
 } from "@/lib/instalacao";
 import { registrarChamadaInstalacao } from "@/lib/instalacao-log";
+import { verificarObraNaPlataforma } from "@/lib/instalacao-verificar";
 
 // ─── POST /api/confirmar-instalacao — confirmação de instalação via WhatsApp ─
 // Chamado por sistemas externos (ex.: Ozzi Plataforma) quando uma instalação é
@@ -57,7 +61,19 @@ import { registrarChamadaInstalacao } from "@/lib/instalacao-log";
 //   do que o Lovable mandou sobrevive aos ~45 min dos logs da Vercel.
 //   Leitura: scripts/check-avisos-instalacao.mjs.
 //
-// Responses: 200 {"ok":true,...} | 400 campos inválidos | 401 token errado | 502 Z-API.
+//   SÓ QUEM TEM OBRA AMANHÃ (22/10/2026, caso Dayana): o app chamou com
+//   "Friday, October 23" para uma cliente SEM obra marcada ("You have the wrong
+//   number"). Duas travas, ANTES de qualquer envio:
+//     1. a data recebida tem que ser AMANHÃ na Flórida (checkInstallDateIsTomorrow);
+//     2. a plataforma confirma que o cliente não tem obra já concluída sem
+//        contrato novo depois (GET /api/instalacao/verificar da plataforma).
+//   Bloqueio → 409 {"ok":false,"bloqueado":true,"motivo":...} (o app marca
+//   revisão manual) + alerta ao dono. Plataforma fora do ar → 503 e NADA sai
+//   (falha fechada: aqui um aviso errado é o dano grave) + alerta ao dono.
+//   `dry` passa pelas mesmas travas e devolve bloqueado/motivo sem bloquear.
+//
+// Responses: 200 {"ok":true,...} | 400 campos inválidos | 401 token errado |
+//            409 bloqueado | 502 Z-API | 503 verificação na plataforma indisponível.
 export const maxDuration = 60;
 
 // Mesma disciplina do /api/enviar (admin-auth.ts): este endpoint dispara
@@ -212,8 +228,8 @@ async function recordInHistory(phone: string, text: string): Promise<boolean> {
   }
 }
 
-function erro(status: number, msg: string) {
-  return NextResponse.json({ ok: false, erro: msg }, { status });
+function erro(status: number, msg: string, extras?: Record<string, unknown>) {
+  return NextResponse.json({ ok: false, erro: msg, ...(extras ?? {}) }, { status });
 }
 
 export async function POST(req: NextRequest) {
@@ -308,11 +324,36 @@ export async function POST(req: NextRequest) {
     iso: !!viaIso,
   };
 
+  // ── Trava 1 (22/10/2026): "starts tomorrow" só com data de AMANHÃ ──────────
+  const dataCheck = checkInstallDateIsTomorrow(dataInstalacao!, agora);
+  // ── Trava 2 (22/10/2026): a plataforma confirma que não é obra já concluída ─
+  // (não gasta a chamada quando a data já reprovou)
+  const verif = dataCheck.status === "nao_e_amanha" ? null : await verificarObraNaPlataforma(telefoneCliente!);
+  let bloqueio: { st: "bloqueado" | "verif"; http: number; motivo: string } | null = null;
+  if (dataCheck.status === "nao_e_amanha") {
+    bloqueio = {
+      st: "bloqueado",
+      http: 409,
+      motivo: `a data recebida (${JSON.stringify(dataInstalacao)} = ${dataCheck.data}) nao e amanha na Florida (${dataCheck.amanha}) — "starts tomorrow" nao pode sair`,
+    };
+  } else if (verif && !verif.ok) {
+    bloqueio = { st: "verif", http: 503, motivo: `a plataforma nao respondeu a verificacao de obra (${verif.erro})` };
+  } else if (verif && verif.ok && verif.bloquear) {
+    bloqueio = { st: "bloqueado", http: 409, motivo: verif.motivo ?? "a plataforma mandou bloquear" };
+  }
+  const verificacao = verif
+    ? verif.ok
+      ? { ok: true, bloquear: verif.bloquear, motivo: verif.motivo, obra_concluida: verif.obra_concluida, contrato_depois: verif.contrato_depois, quotes: verif.quotes, jobs: verif.jobs }
+      : { ok: false, erro: verif.erro }
+    : null;
+  const notaData = dataCheck.status === "nao_interpretada" ? `data nao interpretada (${JSON.stringify(dataInstalacao)}); valeu so a plataforma` : null;
+
   // ── Duplicidade: mesmo telefone avisado há <20h → não reenvia ──────────────
   const avisoAnteriorEm = await findDuplicateNotice(telefoneCliente!, agora);
 
   if (body.dry === true) {
-    await registrarChamadaInstalacao({ ...base, st: "dry", err: avisoAnteriorEm ? `duplicado de ${avisoAnteriorEm}` : null });
+    const nota = bloqueio ? `${bloqueio.st}: ${bloqueio.motivo}` : avisoAnteriorEm ? `duplicado de ${avisoAnteriorEm}` : notaData;
+    await registrarChamadaInstalacao({ ...base, st: "dry", err: nota });
     return NextResponse.json({
       ok: true,
       dry: true,
@@ -323,6 +364,37 @@ export async function POST(req: NextRequest) {
       via_iso: !!viaIso,
       duplicado: !!avisoAnteriorEm,
       aviso_anterior_em: avisoAnteriorEm,
+      bloqueado: !!bloqueio,
+      motivo: bloqueio?.motivo ?? null,
+      data_check: dataCheck,
+      verificacao,
+    });
+  }
+
+  if (bloqueio) {
+    console.warn(`[INSTALACAO] ${bloqueio.st.toUpperCase()} phone=${telefoneCliente} data=${JSON.stringify(dataInstalacao)} — nada enviado: ${bloqueio.motivo}`);
+    await registrarChamadaInstalacao({ ...base, st: bloqueio.st, err: bloqueio.motivo });
+    // O dono decide: se a instalação for real, manda na mão. Best effort.
+    try {
+      await notifyOwners({
+        platform: "WhatsApp",
+        clientName: nomeCliente,
+        clientId: telefoneCliente!,
+        recentMessages: [{ role: "assistant", content: `(NAO ENVIADO) ${mensagem}` }],
+        alert:
+          bloqueio.st === "verif"
+            ? installUnverifiedAlert({ nome: nomeCliente, telefone: telefoneCliente!, dataRecebida: dataInstalacao!, erro: verif && !verif.ok ? verif.erro : "sem resposta" })
+            : installBlockedAlert({ nome: nomeCliente, telefone: telefoneCliente!, dataRecebida: dataInstalacao!, motivo: bloqueio.motivo }),
+      });
+    } catch (err) {
+      console.error("[INSTALACAO] alerta de bloqueio falhou:", err);
+    }
+    return erro(bloqueio.http, `aviso NAO enviado: ${bloqueio.motivo}`, {
+      bloqueado: true,
+      enviado: false,
+      motivo: bloqueio.motivo,
+      data_check: dataCheck,
+      verificacao,
     });
   }
 
@@ -338,6 +410,8 @@ export async function POST(req: NextRequest) {
       data_usada: dataFinal,
       horario_suspeito: guarda.horarioSuspeito,
       via_iso: !!viaIso,
+      data_check: dataCheck,
+      verificacao,
     });
   }
 
@@ -357,7 +431,7 @@ export async function POST(req: NextRequest) {
   }
 
   const registrado = await recordInHistory(telefoneCliente!, mensagem);
-  await registrarChamadaInstalacao({ ...base, st: "ok", err: registrado ? null : "historico nao gravado" });
+  await registrarChamadaInstalacao({ ...base, st: "ok", err: [notaData, registrado ? null : "historico nao gravado"].filter(Boolean).join("; ") || null });
 
   // Horário removido → o dono precisa confirmar a hora com o cliente. Best
   // effort: o WhatsApp do cliente já saiu, um alerta que falha não vira erro.
@@ -387,6 +461,8 @@ export async function POST(req: NextRequest) {
     data_usada: dataFinal,
     horario_suspeito: guarda.horarioSuspeito,
     via_iso: !!viaIso,
+    data_check: dataCheck,
+    verificacao,
   });
 }
 
@@ -399,6 +475,6 @@ export async function GET() {
     auth: "header Authorization: Bearer <token>",
     obrigatorios: ["telefone_cliente", "data_instalacao"],
     opcionais: ["data_instalacao_iso", "nome_cliente", "nome_vendedor", "telefone_vendedor", "dry"],
-    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono; mesmo telefone avisado ha menos de 20h responde 200 com enviado:false e duplicado:true (nada e reenviado)",
+    nota: "data_instalacao_iso (ISO 8601 com fuso) e formatada por nos em horario da Florida e tem prioridade; o HORARIO do job nunca vai ao cliente (a mensagem diz que a instalacao comeca amanha e a equipe chega entre 10am e 11am); horario fora de 7h-19h ainda gera alerta ao dono; mesmo telefone avisado ha menos de 20h responde 200 com enviado:false e duplicado:true (nada e reenviado); desde 22/10/2026 a data recebida tem que ser AMANHA na Florida e a plataforma tem que confirmar que o cliente nao tem obra ja concluida sem contrato novo — senao 409 {bloqueado:true, motivo} (ou 503 se a plataforma nao responder): nada e enviado e o dono e avisado",
   });
 }

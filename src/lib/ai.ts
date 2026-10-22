@@ -4865,16 +4865,22 @@ const FOREIGN_PHONE = /(?:\b(?:at|on|to|al|en|no)\s+)?(?:\+?1[\s.\-]?)?\(?\d{3}\
 // Mesma regex de src/lib/instalacao.ts (INSTALL_CONFIRMATION_RE) — duplicada
 // aqui para não criar import circular (instalacao.ts importa de ai.ts).
 const INSTALL_CONFIRMATION_TEXT = /installation (?:is confirmed for|starts tomorrow)/i;
+// Aviso enviado por engano e retratado (22/10/2026, caso Dayana) ganha este
+// prefixo no histórico e deixa de valer como confirmação (mesmo marcador de
+// INSTALL_RETRACTED_PREFIX em instalacao.ts — repetido pelo motivo acima).
+const INSTALL_RETRACTED_TEXT = "[RETRATADO";
+const isOurConfirmation = (m: { role: string; content: string }) =>
+  m.role === "assistant" && INSTALL_CONFIRMATION_TEXT.test(m.content) && !(m.content ?? "").trimStart().startsWith(INSTALL_RETRACTED_TEXT);
 
 export function hasInstallationConfirmation(messages: { role: string; content: string }[]): boolean {
-  return messages.some((m) => m.role === "assistant" && INSTALL_CONFIRMATION_TEXT.test(m.content));
+  return messages.some(isOurConfirmation);
 }
 
 // Extracts the allowed phone digits from installation-confirmation messages in
 // the history. Normalized the same way scrubForeignPhones normalizes matches.
 export function installConfirmationPhones(messages: ChatMessage[]): string[] {
   return messages
-    .filter((m) => m.role === "assistant" && INSTALL_CONFIRMATION_TEXT.test(m.content))
+    .filter(isOurConfirmation)
     .flatMap((m) => m.content.match(/\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/g) ?? [])
     .map((p) => p.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""));
 }

@@ -20,6 +20,10 @@ import {
   installHandoffMessage,
   findRecentInstallationConfirmation,
   isDuplicateInstallNotice,
+  checkInstallDateIsTomorrow,
+  tomorrowInTz,
+  isRetractedInstallNotice,
+  retractInstallNoticeText,
 } from "../lib/instalacao";
 import { encodeInstalacaoLogKey, decodeInstalacaoLogKey, instalacaoLogSlot, type InstalacaoLogRecord } from "../lib/instalacao-log";
 
@@ -133,6 +137,41 @@ async function main() {
   const n1 = instalacaoLogSlot(agora.getTime()), n2 = instalacaoLogSlot(agora.getTime());
   ck("sem janela: carimbo exato e rand aleatório (chaves distintas)", n1.t === agora.toISOString() && n1.epoch === agora.getTime() && n1.rand !== n2.rand, `${n1.rand} ${n2.rand}`);
 
+  // ── 1f. UNIT: a data do aviso tem que ser AMANHÃ na Flórida (22/10/2026) ──
+  console.log("\n[1f] checkInstallDateIsTomorrow: 'starts tomorrow' só com a data de amanhã (caso Dayana)");
+  const hoje = new Date("2026-10-22T13:00:05Z"); // rodada do Lovable: 9h na Flórida
+  const chk = (s: string, now = hoje) => checkInstallDateIsTomorrow(s, now);
+  ck("amanhã na Flórida = 2026-10-23", tomorrowInTz(hoje) === "2026-10-23", tomorrowInTz(hoje));
+  ck("'Friday, October 23' (formato do Lovable) → ok", chk("Friday, October 23").status === "ok", JSON.stringify(chk("Friday, October 23")));
+  ck("'Thursday, October 22' (hoje) → nao_e_amanha", chk("Thursday, October 22").status === "nao_e_amanha", JSON.stringify(chk("Thursday, October 22")));
+  ck("'Saturday, October 24' → nao_e_amanha", chk("Saturday, October 24").status === "nao_e_amanha");
+  ck("'Friday, October 23 at 5am' → ok (horário ignorado)", chk("Friday, October 23 at 5am").status === "ok");
+  ck("'October 23rd, 2026' → ok", chk("October 23rd, 2026").status === "ok", JSON.stringify(chk("October 23rd, 2026")));
+  ck("'Oct. 23' → ok", chk("Oct. 23").status === "ok");
+  ck("'2026-10-23' → ok", chk("2026-10-23").status === "ok");
+  ck("'10/23/2026' → ok", chk("10/23/2026").status === "ok");
+  ck("'10/23' → ok", chk("10/23").status === "ok");
+  ck("'viernes, 23 de octubre' → ok", chk("viernes, 23 de octubre").status === "ok", JSON.stringify(chk("viernes, 23 de octubre")));
+  ck("'sexta-feira, 23 de outubro' → ok", chk("sexta-feira, 23 de outubro").status === "ok", JSON.stringify(chk("sexta-feira, 23 de outubro")));
+  ck("'October 23, 2025' (ano errado) → nao_e_amanha", chk("October 23, 2025").status === "nao_e_amanha");
+  ck("'TBD' → nao_interpretada (não bloqueia por si)", chk("TBD").status === "nao_interpretada");
+  ck("'February 30' → nao_interpretada", chk("February 30").status === "nao_interpretada");
+  const virada = new Date("2026-12-31T13:00:00Z");
+  ck("31/12: 'Friday, January 1' → ok (ano que vem)", chk("Friday, January 1", virada).status === "ok", JSON.stringify(chk("Friday, January 1", virada)));
+  const noite = new Date("2026-10-22T03:30:00Z"); // 23:30 de 21/10 na Flórida
+  ck("23:30 FL de 21/10: amanhã é 22/10 (dia da Flórida, não UTC)", chk("Thursday, October 22", noite).status === "ok", JSON.stringify(chk("Thursday, October 22", noite)));
+
+  // ── 1g. UNIT: aviso RETRATADO não conta (22/10/2026) ─────────────────────
+  console.log("\n[1g] aviso RETRATADO: fora da etapa de instalação, da duplicidade e do contexto do cérebro");
+  const retratado = retractInstallNoticeText(CONFIRMATION, "cliente sem obra marcada", "22/10/2026");
+  ck("texto retratado começa com o marcador e preserva o original", isRetractedInstallNotice(retratado) && retratado.includes("starts tomorrow, Wednesday, August 26"), retratado.slice(0, 120));
+  ck("findRecentInstallationConfirmation ignora o retratado", findRecentInstallationConfirmation([{ role: "assistant", content: retratado, created_at: agora.toISOString() }], agora) === null);
+  ck("isDuplicateInstallNotice ignora o retratado", isDuplicateInstallNotice([avisoHa(1, retratado)], agora) === false);
+  ck("hasInstallationConfirmation (cérebro) ignora o retratado", hasInstallationConfirmation([{ role: "assistant", content: retratado }]) === false);
+  ck("installConfirmationPhones ignora o retratado", installConfirmationPhones([{ role: "assistant", content: retratado }] as ChatMessage[]).length === 0);
+  ck("aviso normal continua valendo", !!findRecentInstallationConfirmation([avisoHa(1)], agora) && hasInstallationConfirmation([{ role: "assistant", content: CONFIRMATION }]));
+  ck("registro aceita st bloqueado/verif", decodeInstalacaoLogKey(encodeInstalacaoLogKey({ ...rec, st: "bloqueado", err: "obra concluida" }, agora.getTime(), "ab12"))?.rec.st === "bloqueado" && decodeInstalacaoLogKey(encodeInstalacaoLogKey({ ...rec, st: "verif" }, agora.getTime(), "ab12"))?.rec.st === "verif");
+
   // ── 2. UNIT: ack × dúvida ─────────────────────────────────────────────────
   console.log("\n[2] isInstallAck: agradecimento/ack → 👍; dúvida → handoff");
   for (const t of ["Thank you!", "That sounds better! Ha! See you tomorrow", "👍", "Ok", "Perfect, thanks", "See you then", "Sounds good!", "Gracias!", "Obrigada", "Yes", "Got it, thank you", "🙏",
@@ -176,6 +215,18 @@ async function main() {
   ck("09:00Z (all_day do Lovable) formatado vira 5am e é cortado", placeholder.text === "Wednesday, August 26" && placeholder.horarioSuspeito === "5am", JSON.stringify(placeholder));
   ck("endpoint avisa o dono quando remove o horário", /notifyOwners\(/.test(rotaSrc) && /installTimeAlert\(/.test(rotaSrc));
   ck("template nomeia a equipe de instalação como executora", /Our installation team will arrive/.test(rotaSrc));
+
+  // ── 3a. STATIC (22/10/2026): só quem tem obra amanhã ───────────────────────
+  console.log("\n[3a] Static: trava de data + verificação na plataforma, falha fechada, alerta ao dono");
+  ck("endpoint confere que a data é amanhã", /checkInstallDateIsTomorrow\(dataInstalacao!, agora\)/.test(rotaSrc));
+  ck("endpoint pergunta à plataforma antes de enviar", /verificarObraNaPlataforma\(telefoneCliente!\)/.test(rotaSrc));
+  ck("plataforma fora do ar → 503 e nada sai (falha fechada)", /st: "verif", http: 503/.test(rotaSrc));
+  ck("bloqueio → 409 com motivo", /st: "bloqueado", http: 409/.test(rotaSrc) && /bloqueado: true/.test(rotaSrc));
+  ck("bloqueio avisa o dono", /installBlockedAlert\(/.test(rotaSrc) && /installUnverifiedAlert\(/.test(rotaSrc));
+  ck("as travas rodam ANTES da duplicidade e do envio", rotaSrc.indexOf("checkInstallDateIsTomorrow(dataInstalacao!") < rotaSrc.indexOf("findDuplicateNotice(telefoneCliente!") && rotaSrc.indexOf("if (bloqueio)") < rotaSrc.indexOf("sendWhatsAppMessage(telefoneCliente!"));
+  ck("dry passa pelas travas e devolve bloqueado/motivo", /dry: true,[\s\S]*?bloqueado: !!bloqueio/.test(rotaSrc));
+  const verifSrc = readFileSync(join(process.cwd(), "src/lib/instalacao-verificar.ts"), "utf-8");
+  ck("cliente da plataforma: timeout, 2 tentativas, nunca lança", /TIMEOUT_MS = 8_000/.test(verifSrc) && /TENTATIVAS = 2/.test(verifSrc) && /return \{ ok: false, erro: ultimo \}/.test(verifSrc));
 
   // ── 3b. Regra do dono 27/08: SEM horário do job; "starts tomorrow" + chegada 10–11am
   console.log("\n[3b] Aviso de véspera sem horário do job (regra 27/08/2026)");

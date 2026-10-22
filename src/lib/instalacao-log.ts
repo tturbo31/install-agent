@@ -30,7 +30,9 @@ export type InstalacaoLogStatus =
   | "dry" // preview (dry:true) — nada enviado
   | "400" // telefone_cliente/data_instalacao ausentes ou inválidos
   | "401" // token errado/ausente
-  | "zapi"; // Z-API recusou o envio
+  | "zapi" // Z-API recusou o envio
+  | "bloqueado" // 22/10/2026: data não é amanhã, ou plataforma diz obra já concluída — nada enviado, dono avisado
+  | "verif"; // 22/10/2026: plataforma não respondeu à verificação — nada enviado (falha fechada), dono avisado
 
 export type InstalacaoLogRecord = {
   t: string; // ISO da chamada

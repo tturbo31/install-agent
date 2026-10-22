@@ -193,6 +193,8 @@ export function findRecentInstallationConfirmation(
   for (let i = (rows ?? []).length - 1; i >= 0; i--) {
     const m = rows[i];
     if (m.role !== "assistant" || !INSTALL_CONFIRMATION_RE.test(m.content ?? "")) continue;
+    // Aviso enviado por engano e retratado (22/10/2026): não é etapa de instalação.
+    if (isRetractedInstallNotice(m.content)) continue;
     if (!m.created_at) return { content: m.content, created_at: null };
     const at = new Date(m.created_at).getTime();
     if (Number.isNaN(at)) return { content: m.content, created_at: m.created_at };
@@ -219,4 +221,165 @@ export function isDuplicateInstallNotice(
   const hit = findRecentInstallationConfirmation(rows, now, INSTALL_DEDUP_HOURS / 24);
   // Linha sem created_at (histórico antigo) não prova nada sobre "hoje".
   return !!hit && !!hit.created_at;
+}
+
+// ─── Aviso RETRATADO (22/10/2026) ─────────────────────────────────────────────
+// Caso Dayana (786) 877-0477: o aviso de véspera saiu para uma cliente SEM obra
+// marcada ("You have the wrong number"). A linha dele no histórico ganha este
+// prefixo e, a partir daí, não vale como etapa de instalação (handoff/👍), não
+// barra o próximo aviso como duplicado e não entra no contexto de
+// "INSTALLATION CONFIRMED" do cérebro (ai.ts repete o marcador para não criar
+// import circular). O texto original fica preservado depois do marcador.
+export const INSTALL_RETRACTED_PREFIX = "[RETRATADO";
+
+export function isRetractedInstallNotice(content: string | null | undefined): boolean {
+  return (content ?? "").trimStart().startsWith(INSTALL_RETRACTED_PREFIX);
+}
+
+export function retractInstallNoticeText(original: string, motivo: string, quando: string): string {
+  return `${INSTALL_RETRACTED_PREFIX} ${quando}: aviso de instalação enviado por engano — ${motivo}] ${original}`;
+}
+
+// ─── A data do aviso tem que ser AMANHÃ (22/10/2026) ─────────────────────────
+// O texto diz "starts tomorrow, <data>". Se a data que o app mandou não é o dia
+// seguinte na Flórida, a mensagem está errada por construção e NÃO sai (409 ao
+// integrador → revisão manual no app; dono avisado). Formatos aceitos: o do
+// Lovable ("Friday, October 23"), com ou sem dia da semana/ano/horário,
+// "Oct 23", "23 de octubre", "10/23/2026", "2026-10-23". Texto sem data
+// reconhecível ("TBD") NÃO bloqueia por si (fica registrado) — a trava da
+// plataforma continua valendo para ele.
+const MONTHS: Record<string, number> = {
+  jan: 1, january: 1, enero: 1, ene: 1, janeiro: 1,
+  feb: 2, february: 2, febrero: 2, fevereiro: 2, fev: 2,
+  mar: 3, march: 3, marzo: 3, marco: 3,
+  apr: 4, april: 4, abril: 4, abr: 4,
+  may: 5, mayo: 5, maio: 5, mai: 5,
+  jun: 6, june: 6, junio: 6, junho: 6,
+  jul: 7, july: 7, julio: 7, julho: 7,
+  aug: 8, august: 8, agosto: 8, ago: 8,
+  sep: 9, sept: 9, september: 9, septiembre: 9, setiembre: 9, setembro: 9, set: 9,
+  oct: 10, october: 10, octubre: 10, outubro: 10, out: 10,
+  nov: 11, november: 11, noviembre: 11, novembro: 11,
+  dec: 12, december: 12, diciembre: 12, dezembro: 12, dez: 12, dic: 12,
+};
+
+// "YYYY-MM-DD" de um instante, no fuso dado.
+export function dayInTz(now: Date, tz: string = INSTALL_TZ): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now).map((x) => [x.type, x.value])
+  );
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+function shiftDay(day: string, n: number): string {
+  const d = new Date(`${day}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+export function tomorrowInTz(now: Date, tz: string = INSTALL_TZ): string {
+  return shiftDay(dayInTz(now, tz), 1);
+}
+
+function validDay(y: number, m: number, d: number): string | null {
+  if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d) return null;
+  return t.toISOString().slice(0, 10);
+}
+
+// Sem ano no texto: o ano (anterior, atual ou seguinte) que deixa a data mais
+// perto de hoje — "January 1" mandado em 31/12 é o ano que vem.
+function closestYear(m: number, d: number, today: string): string | null {
+  const y0 = Number(today.slice(0, 4));
+  const ref = Date.parse(`${today}T12:00:00Z`);
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const y of [y0 - 1, y0, y0 + 1]) {
+    const iso = validDay(y, m, d);
+    if (!iso) continue;
+    const dist = Math.abs(Date.parse(`${iso}T12:00:00Z`) - ref);
+    if (dist < bestDist) {
+      best = iso;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+function fullYear(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return raw.length === 2 ? 2000 + n : n;
+}
+
+export function parseInstallDateText(raw: string, now: Date = new Date(), tz: string = INSTALL_TZ): string | null {
+  const today = dayInTz(now, tz);
+  const t = (raw ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return null;
+  // 1) ISO: 2026-10-23
+  const iso = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return validDay(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+  // 2) mês por extenso + dia: "october 23", "oct. 23rd, 2026"
+  for (const m of t.matchAll(/([a-z]{3,})\.?,? (\d{1,2})(?:st|nd|rd|th)?\b(?:,? (\d{4})\b)?/g)) {
+    const mon = MONTHS[m[1]];
+    if (!mon) continue;
+    const y = fullYear(m[3]);
+    return y ? validDay(y, mon, Number(m[2])) : closestYear(mon, Number(m[2]), today);
+  }
+  // 3) dia + mês por extenso: "23 de octubre", "23 october 2026"
+  for (const m of t.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?(?: de)? ([a-z]{3,})\b(?:(?: de)? (\d{4})\b)?/g)) {
+    const mon = MONTHS[m[2]];
+    if (!mon) continue;
+    const y = fullYear(m[3]);
+    return y ? validDay(y, mon, Number(m[1])) : closestYear(mon, Number(m[1]), today);
+  }
+  // 4) numérico americano: 10/23, 10/23/2026, 10/23/26 (dia/mês se o 1º não cabe em mês)
+  const num = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (num) {
+    let mon = Number(num[1]);
+    let day = Number(num[2]);
+    if (mon > 12 && day <= 12) [mon, day] = [day, mon];
+    const y = fullYear(num[3]);
+    return y ? validDay(y, mon, day) : closestYear(mon, day, today);
+  }
+  return null;
+}
+
+export type InstallDateCheck = {
+  status: "ok" | "nao_e_amanha" | "nao_interpretada";
+  data: string | null; // a data lida do texto (YYYY-MM-DD)
+  amanha: string; // amanhã na Flórida (YYYY-MM-DD)
+};
+
+export function checkInstallDateIsTomorrow(raw: string, now: Date = new Date(), tz: string = INSTALL_TZ): InstallDateCheck {
+  const amanha = tomorrowInTz(now, tz);
+  const data = parseInstallDateText(raw, now, tz);
+  if (!data) return { status: "nao_interpretada", data: null, amanha };
+  return { status: data === amanha ? "ok" : "nao_e_amanha", data, amanha };
+}
+
+// Alertas ao dono quando o aviso NÃO sai (22/10/2026). Sem acento, como as
+// outras notificações (notifyOwners).
+export function installBlockedAlert(params: { nome: string | null; telefone: string; dataRecebida: string; motivo: string }): string {
+  const quem = params.nome ? `${params.nome} (${params.telefone})` : params.telefone;
+  return (
+    `AVISO DE INSTALACAO BLOQUEADO (nada foi enviado): o app chamou o agente para ${quem} ` +
+    `com instalacao "${params.dataRecebida}", mas ${params.motivo}. ` +
+    `Se a instalacao for real, confira o job no app e mande o aviso manualmente.`
+  );
+}
+
+export function installUnverifiedAlert(params: { nome: string | null; telefone: string; dataRecebida: string; erro: string }): string {
+  const quem = params.nome ? `${params.nome} (${params.telefone})` : params.telefone;
+  return (
+    `AVISO DE INSTALACAO NAO ENVIADO: nao consegui conferir na plataforma se ${quem} tem obra marcada ` +
+    `para "${params.dataRecebida}" (${params.erro}). Se a instalacao for real, mande o aviso manualmente.`
+  );
 }
