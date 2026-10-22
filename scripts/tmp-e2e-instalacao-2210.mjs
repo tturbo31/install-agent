@@ -23,8 +23,12 @@ const msgsDe = async (tel) => { const { data: c } = await ag.from("instagram_con
 
 console.log("\nPLATAFORMA: GET /api/instalacao/verificar");
 const gv = async (tel) => { const r = await fetch(`${PLAT}/api/instalacao/verificar?telefone=${tel}`, { headers: { "x-webhook-token": env.PLATAFORMA_WEBHOOK_TOKEN } }); return { status: r.status, json: await r.json().catch(() => null) }; };
-const v1 = await gv("17868770477");
-ck("Dayana -> bloquear:true (obra concluida 20/10, sem contrato novo)", v1.status === 200 && v1.json?.bloquear === true && /2026-10-20/.test(v1.json?.motivo ?? ""), JSON.stringify(v1.json).slice(0, 300));
+// Imara (786) 587-6581: obra concluida de verdade em 21/10 (export do Lovable), contrato anterior -> bloqueia.
+// (Dayana deixou de servir de fixture em 22/10: o "concluido 20/10" dela era o webhook disparado no Hold e foi zerado.)
+const v1 = await gv("17865876581");
+ck("Imara -> bloquear:true (obra concluida 21/10, sem contrato novo)", v1.status === 200 && v1.json?.bloquear === true && /2026-10-21/.test(v1.json?.motivo ?? ""), JSON.stringify(v1.json).slice(0, 300));
+const v0 = await gv("17868770477");
+ck("Dayana -> bloquear:false (job em Hold, data_conclusao zerada em 22/10)", v0.status === 200 && v0.json?.bloquear === false && v0.json?.jobs?.length === 1 && v0.json?.jobs?.[0]?.data_conclusao === null, JSON.stringify(v0.json).slice(0, 300));
 const v2 = await gv("17864574876");
 ck("Sonia Gordon -> bloquear:false (contrato 15/10, sem job)", v2.status === 200 && v2.json?.bloquear === false, JSON.stringify(v2.json).slice(0, 300));
 const v3 = await fetch(`${PLAT}/api/instalacao/verificar?telefone=17868770477`);
@@ -34,11 +38,11 @@ console.log("\nGET uso do agente");
 const g = await (await fetch(URL)).json();
 ck("GET explica a trava de data/plataforma", /AMANHA na Florida/.test(g?.nota ?? "") && /409/.test(g?.nota ?? ""), JSON.stringify(g).slice(0, 300));
 
-console.log("\nDRY Dayana com a data de amanha -> bloqueado pela PLATAFORMA (obra concluida), nada enviado");
+console.log("\nDRY Imara com a data de amanha -> bloqueado pela PLATAFORMA (obra concluida 21/10), nada enviado");
 const antesD = await msgsDe("17868770477");
-const d1 = await post({ telefone_cliente: "17868770477", data_instalacao: amanhaTxt, nome_cliente: "Dayana", nome_vendedor: "Chris", telefone_vendedor: "(954) 487-7741", dry: true });
+const d1 = await post({ telefone_cliente: "17865876581", data_instalacao: amanhaTxt, nome_cliente: "Imara", nome_vendedor: "Diego", telefone_vendedor: "(954) 325-6735", dry: true });
 ck("200 dry, bloqueado:true, data_check ok", d1.status === 200 && d1.json?.dry === true && d1.json?.bloqueado === true && d1.json?.data_check?.status === "ok", JSON.stringify(d1.json).slice(0, 400));
-ck("motivo = obra concluida em 2026-10-20", /CONCLU[I\u00cd]DA em 2026-10-20/i.test(d1.json?.motivo ?? ""), d1.json?.motivo);
+ck("motivo = obra concluida em 2026-10-21", /CONCLU[I\u00cd]DA em 2026-10-21/i.test(d1.json?.motivo ?? ""), d1.json?.motivo);
 ck("verificacao.ok e bloquear:true", d1.json?.verificacao?.ok === true && d1.json?.verificacao?.bloquear === true, JSON.stringify(d1.json?.verificacao));
 
 console.log("\nDRY Sonia Gordon com a data de amanha -> LIBERADO (duplicado: ja avisada hoje)");
