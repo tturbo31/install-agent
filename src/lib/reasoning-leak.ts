@@ -97,7 +97,11 @@ const WAIT_MARKER = /(?:^|[\s…])(?<!\b(?:please|to|the|a|no|can|cannot|can'?t|
 const SELF_TALK = new RegExp(
   [
     /\blet\s+me\s+(?:re-?read|re-?check|redo|recalculate|reconsider|think|look\s+again)\b/.source,
-    /\blet\s+me\s+offer\b/.source,
+    // "Let me offer Wednesday 7pm or Thursday 6pm. Then ask for the address."
+    // (Julie) is the model planning; "Let me offer you Wednesday at 9am or
+    // 6pm, which works?" is said TO the client and shipped as "33132 is
+    // covered." alone when this signal ate it (Dragos check, 26/10/2026).
+    /\blet\s+me\s+offer\b(?!\s+you\b)/.source,
     /\blet\s+me\s+ask\s+(?:for|which|about|them)\b/.source,
     /\bi\s+need\s+to\s+ask\s+(?:which|for|about|them|the|their|what)\b/.source,
     /\bi(?:'ll|\s+will)\s+keep\s+(?:it|this)\s+(?:simple|short|brief)\b/.source,

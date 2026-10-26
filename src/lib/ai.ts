@@ -612,12 +612,29 @@ export function isVisitProposalWithZipAsk(text: string): boolean {
   return /\b(?:visit|measure|samples?|estimate|visita|medir|muestras|amostras|or[cç]amento)\b/i.test(t) && /\bzip\b|c[oó]digo\s+postal/i.test(t) && /\?/.test(t);
 }
 
-// Resposta curta de localização ("33024", "Homestead", "Coral Gables FL"):
-// sem pergunta, até 4 palavras.
+// Resposta de localização ao nosso pedido de ZIP: "33024", "Homestead", "Coral
+// Gables FL" (curta, sem pergunta) OU o ZIP / o ENDEREÇO em qualquer frase.
+// Dragos (wa_17738995511, 26/10/2026 11:45) respondeu "50 Biscayne blvd, Miami
+// 33132": cinco palavras, a regra das 4 palavras não reconheceu a resposta, o
+// anti-pressão disparou (nossa proposta da visita conta como push) e comeu a
+// oferta de horários; o cliente recebeu só "33132 is covered, we're in that
+// area all the time." e nenhum horário (reproduzido ao vivo 2/2). Um ZIP ou um
+// número + rua no texto É a resposta à nossa pergunta, com ou sem uma pergunta
+// do cliente junto ("33132, is the quarter round included?"): o modelo responde
+// e oferece os horários, que é o fluxo, não pressão.
+const STREET_ADDRESS = /\b\d{1,6}[a-z]?\s+(?:(?:[nsew]{1,2}\.?|north|south|east|west|northwest|northeast|southwest|southeast)\s+)?(?:[a-z0-9'.-]+\s+){0,4}(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|(?<!\b(?:the|a|my|no|any|that|this|one|other|either|same|long|right|wrong|best|only)\s)way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|trl|trail|calle|avenida|rua)\b/i;
 export function isLocationAnswer(userText: string): boolean {
   const t = (userText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
   if (!t) return false;
+  if (zipsInText(t).length > 0 || STREET_ADDRESS.test(t)) return true;
   return t.split(/\s+/).length <= 4 && !/\?/.test(t);
+}
+
+// Nossa mensagem pediu o ZIP, com ou sem a proposta da visita na mesma frase
+// ("Yes, 100% waterproof. What's the zip code of the property?").
+export function asksForZip(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return /\bzip\b|c[oó]digo\s+postal|\bcep\b/i.test(t) && /\?/.test(t);
 }
 
 // Our OWN lines that RESTATE the booked day and time are not offers. Since
@@ -1387,14 +1404,28 @@ export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
     .slice(-3)
     .some((m) => isSchedulingPush(m.content) || isVisitProposalWithZipAsk(m.content));
   const lastMsg = messages[messages.length - 1];
-  // Resposta ao pedido de ZIP (fluxo restaurado 29/09/2026): nossa última
-  // mensagem pediu o ZIP na proposta da visita e o cliente respondeu com o
-  // ZIP, a cidade ou uma resposta curta sem pergunta → o próximo turno DEVE
-  // oferecer os horários; isso é o fluxo, não pressão. Uma pergunta
-  // informativa ("is it waterproof?") continua protegida.
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (lastMsg?.role === "user" && lastAssistant && isVisitProposalWithZipAsk(lastAssistant.content) && isLocationAnswer(lastMsg.content)) {
-    return false;
+  // Resposta ao pedido de ZIP (fluxo restaurado 29/09/2026): pedimos o ZIP na
+  // proposta da visita e o cliente respondeu com o ZIP, a cidade ou uma
+  // resposta curta sem pergunta → o próximo turno DEVE oferecer os horários;
+  // isso é o fluxo, não pressão. Uma pergunta informativa SEM o ZIP ("is it
+  // waterproof?") continua protegida.
+  // Dragos (wa_17738995511, 26/10/2026): o endereço completo ("50 Biscayne
+  // blvd, Miami 33132") e o ZIP dentro de uma frase contam como resposta
+  // (isLocationAnswer); o pedido do ZIP vale sem a palavra "visit" na frase
+  // (asksForZip); e a exceção dura enquanto NENHUM horário foi ofertado desde o
+  // pedido: depois do turno que saiu sem horário ("33132 is covered, we're in
+  // that area all the time."), um "ok" ou uma pergunta do cliente ainda recebe
+  // a primeira oferta, que nunca é repetição. A rede volta a valer assim que
+  // uma mensagem nossa pôs um horário na mesa.
+  let lastZipAsk = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant" && (isVisitProposalWithZipAsk(messages[i].content) || asksForZip(messages[i].content))) { lastZipAsk = i; break; }
+  }
+  if (lastMsg?.role === "user" && lastZipAsk >= 0) {
+    const since = messages.slice(lastZipAsk + 1);
+    const answered = since.some((m) => m.role === "user" && isLocationAnswer(m.content));
+    const offeredSince = since.some((m) => m.role === "assistant" && isSchedulingPush(m.content.split(/\n\n?\[SYSTEM:/)[0]));
+    if (answered && !offeredSince) return false;
   }
   return (
     recentAssistantPushed &&
