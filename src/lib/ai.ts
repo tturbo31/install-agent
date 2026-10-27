@@ -1,7 +1,7 @@
 import { zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
+import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, WHAT_IS_INCLUDED_TWO_TIER_ASK, WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE, INCLUSIONS_TWO_TIER_SENTENCE, AD_PRICE_TIER_NOTE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
@@ -320,8 +320,18 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
       if (rule.id?.startsWith("see_options") && /\b(?:payment|pay|paying|financ\w*|deposit|installments?)\b/i.test(text)) continue;
       if (rule.id === "price_negotiation") return priceNegotiationHandoff(text);
       if (rule.id === "what_included") {
+        // The ad this client saw shows "$2,350 ❌ materials / $5,100 ✅ with
+        // materials" (owner rule 2026-10-27, caso Jason): the answer must state
+        // the contrast, never the bare "our vinyl promo includes the floor" line
+        // that let a client believe the $2,350 covered the vinyl and the quarter
+        // round. Vinyl already known + size already stated → the model (same
+        // contrast from the AD PRICE CONTEXT note, then the visit or the Ozzi
+        // line per the size rules).
+        const priceTier = conversationAdPriceTier(messages);
+        if (priceTier && adType === "vinyl") return scopeAlreadyStated(messages) ? null : WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE;
         // Known type → its exact inclusions.
         if (adType) return whatIsIncludedResponseFor(adType);
+        if (priceTier && !carpetLead) return WHAT_IS_INCLUDED_TWO_TIER_ASK;
         // Type still unknown → ask which type first (tile is labor only, vinyl
         // includes the material). But ask AT MOST ONCE: if we already asked the
         // type, hand the repeat to the full-context model so it never resends the
@@ -398,6 +408,61 @@ export function detectAdFlooringType(...signals: Array<string | null | undefined
 function adFlooringTypeFromMarker(text: string): AdFlooringType | null {
   const m = text.match(/\[AD_FLOORING_TYPE:\s*(tile|vinyl|hardwood)\]/i);
   return m ? (m[1].toLowerCase() as AdFlooringType) : null;
+}
+
+// ─── AD PRICE TIER (owner rule 2026-10-27, caso Jason) ──────────────────────
+// Our engagement ads show two prices, "$2,350 ❌ materials" and "$5,100 ✅ with
+// materials" for 1000 sq ft, and the greeting usually quotes the $2,350. A lead
+// who read that and asks "what's included" must hear the contrast (the $2,350
+// is the installation only, the $5 per sq ft promo includes the luxury vinyl
+// floor, the installation and the quarter round), never the bare "our vinyl
+// promo includes the floor" line. The tier is read from the ad's own text (body
+// or greeting, via fetchAdCreative) or from the client quoting those numbers.
+// Deliberately narrow: only the two figures and the ❌/✅ materials marks.
+export type AdPriceTier = "two_tier";
+const AD_PRICE_TWO_TIER = /\$\s?2[,.]?350(?!\d)|\$\s?5[,.]?100(?!\d)|❌\s*materia|✅\s*(?:with|con|com)\s*materia|(?<!\d)2[,.]?350\s*(?:for|por|para)\s*(?:the\s+)?1[,.]?000\b/i;
+// The herringbone ads carry their own prices ("$4000 ❌ materials / $7600 ✅"):
+// their rules live in HERRINGBONE PATTERN, never the two-tier vinyl note.
+const AD_HERRINGBONE_AD = /herr?ing\s*bone|harringbone|\$\s?4[,.]?000(?!\d)|\$\s?7[,.]?600(?!\d)/i;
+
+export function detectAdPriceTier(...signals: Array<string | null | undefined>): AdPriceTier | null {
+  const blob = signals.filter(Boolean).join(" ");
+  if (!blob.trim()) return null;
+  if (AD_HERRINGBONE_AD.test(blob)) return null;
+  return AD_PRICE_TWO_TIER.test(blob) ? "two_tier" : null;
+}
+
+export function adPriceTierFromMarker(text: string): AdPriceTier | null {
+  return /\[AD_PRICE_TIER:\s*two_tier\]/i.test(text || "") ? "two_tier" : null;
+}
+
+// The tier known for this conversation: the marker the webhooks inject (read
+// from the ad's own text), or the client quoting the ad's numbers themselves.
+export function conversationAdPriceTier(messages: ChatMessage[]): AdPriceTier | null {
+  const last = messages[messages.length - 1];
+  if (last && adPriceTierFromMarker(last.content)) return "two_tier";
+  const userText = messages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+    .join(" ");
+  return detectAdPriceTier(userText);
+}
+
+// The system note the webhooks inject when the tier is known (AD_PRICE_TIER_NOTE
+// in system-prompt.ts is the single source of truth; the eval reads it too).
+export function adPriceTierNote(): string {
+  return AD_PRICE_TIER_NOTE;
+}
+
+// Deterministic guarantee of the owner's phrase (2026-10-27): when the client
+// saw the two-price ad and the reply names the full promo only as "$5,100", the
+// "$5 per sq ft" wording goes in and the $5,100 stays as the ad's line. With the
+// note injected, 1 of 3 live runs still said "The $5,100 includes the vinyl...".
+const FIVE_PER_SQFT_RE = /\$\s?5(?:\.00)?\s*(?:per|por|a|al|\/)\s*(?:sq|square|pie|p[eé]|sqft)/i;
+export function fixTwoTierPromoWording(text: string, lang: "en" | "es" | "pt" = "en"): string {
+  if (!/\$\s?5,?100(?!\d)/.test(text) || FIVE_PER_SQFT_RE.test(text)) return text;
+  const per = lang === "en" ? "$5 per sq ft ($5,100 for 1000 sq ft)" : "$5 por sq ft ($5,100 por 1000 sq ft)";
+  return text.replace(/\$\s?5,?100(?!\d)(?:\s+(?:for|por|para)\s+(?:the\s+|los\s+|unos\s+)?1,?000\s*(?:sq\.?\s?(?:ft|feet)\.?|square\s+feet|pies(?:\s+cuadrados)?|p[eé]s(?:\s+quadrados)?))?/i, per);
 }
 
 function whatIsIncludedResponseFor(type: AdFlooringType | null): string {
@@ -2412,7 +2477,7 @@ export const FIRST_MESSAGE_CONTENT_NOTE = [
   "- Our address or where we are: based in Miami, serving all of South Florida from Homestead to Jupiter, and we bring the samples to their home.",
   "- A floor size of 500 sqft or more, even written as \"2000 ft\", \"1200 feet\" or \"800 pies\", or a whole house or a whole apartment: your answer to it is the free in-person visit, because for that size we measure in person and give the exact price there (OPENER EXCEPTION). Never a total. You can still ask the type in the same message. A smaller size follows the size rules.",
   "- A place they name: whether we cover it. Removing the old floor, the process, the warranty, the product: the real answer from these rules.",
-  "NO PER-SQFT RATE YET: until the client picks a flooring type, never state the $5 vinyl promo, the $4.50 tile rate or the $3.20 hardwood rate, not even as a list of all three. For what is included, say it depends on the floor: the vinyl promo includes the material, the labor and the quarter round, tile and hardwood are labor only.",
+  "NO PER-SQFT RATE YET: until the client picks a flooring type, never state the $5 vinyl promo, the $4.50 tile rate or the $3.20 hardwood rate, not even as a list of all three. For what is included, say it depends on the floor: the vinyl promo includes the material, the labor and the quarter round, tile and hardwood are labor only. EXCEPTION, AD PRICE CONTEXT: when the system note carries [AD PRICE CONTEXT ...], the client's ad showed $2,350 for 1000 sq ft without materials and $5,100 with materials, so for what is included say that the $2,350 is the installation only, they supply the floor, and that the $5 per sq ft promo is the one that includes the luxury vinyl floor, the installation and the quarter round.",
   "Then, in the SAME message and only if the flooring type is still unknown, ask which one they want: tile, vinyl, or hardwood. A reply that is ONLY the type question, or that says \"it depends on the flooring type\" without answering what they asked, is WRONG.",
   "If the message is a goodbye, a no thanks, a wrong tap, spam or not about flooring at all, this block does not apply: follow the other rules.",
 ].join("\n");
@@ -2500,19 +2565,22 @@ export function cannedFaqReanswer(lastText: string, messages: ChatMessage[], opt
   else if (AD_FAQ_INCLUSIONS.test(t)) fam = "inclusions";
   if (!fam) return null;
   const lang = detectLang(t) === "es" ? "es" : "en";
+  // Two-price ad lead (AD PRICE CONTEXT, owner 2026-10-27): the inclusions
+  // re-answer states the $2,350 install-only / $5 per sq ft full-promo contrast.
+  const answer = fam === "inclusions" && conversationAdPriceTier(messages) ? INCLUSIONS_TWO_TIER_SENTENCE[lang] : FAQ_REANSWERS[lang][fam];
   if (opts?.quick) {
     // "Here it is again" + the answer, then the free visit (unless a visit is
     // already on the table), never the type question a second time.
     const visitOffered =
       messages.some((m) => m.role === "assistant" && /\b(?:visit|visita)\b/i.test(m.content)) ||
-      /\b(?:visit|visita)\b/i.test(FAQ_REANSWERS[lang][fam]);
-    return FAQ_REANSWER_LEADS[lang][1] + " " + FAQ_REANSWERS[lang][fam] + (visitOffered ? "" : FAQ_REANSWER_VISIT_PIVOT[lang]);
+      /\b(?:visit|visita)\b/i.test(answer);
+    return FAQ_REANSWER_LEADS[lang][1] + " " + answer + (visitOffered ? "" : FAQ_REANSWER_VISIT_PIVOT[lang]);
   }
   const norm = (s: string) => s.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().toLowerCase();
   const asks = messages.filter((m) => m.role === "user" && norm(m.content) === norm(lastText)).length;
   const lead = FAQ_REANSWER_LEADS[lang][Math.max(0, asks - 1) % FAQ_REANSWER_LEADS[lang].length];
   const typeAsk = conversationFlooringType(messages) ? "" : FAQ_REANSWER_TYPE_ASK[lang];
-  return `${lead} ${FAQ_REANSWERS[lang][fam]}${typeAsk}`;
+  return `${lead} ${answer}${typeAsk}`;
 }
 
 // FAQ button + texto DIGITADO na mesma rajada (Emanuel "When can I get an
@@ -5216,7 +5284,7 @@ export async function getAIResponse(
         if (AD_FAQ_PROCESS.test(burst)) topics.push("process");
         if (AD_FAQ_DISCOUNT.test(burst)) topics.push("discount");
         if (AD_FAQ_INCLUSIONS.test(burst)) topics.push("inclusions");
-        const combined = composeAdFaqOpener(topics, lang);
+        const combined = composeAdFaqOpener(topics, lang, { twoTier: !!conversationAdPriceTier(messages) });
         if (combined) {
           console.log(`[AI] First contact, ${topics.length} ad-FAQs tapped (${topics.join("+")}) — answering all of them + asking the type`);
           return { text: combined, inputTokens: 0, outputTokens: 0 };
@@ -5247,6 +5315,13 @@ export async function getAIResponse(
       // them properly instead of the generic opener steamrolling the question
       // (8 leads hit the two unmapped variants in the 3-day review).
       if (!faqPlusTyped && AD_FAQ_INCLUSIONS.test(burst)) {
+        // Two-price ad (AD PRICE CONTEXT, owner 2026-10-27, caso Jason): the
+        // client just read "$2,350", so the line states the contrast, never the
+        // bare "our vinyl promo includes the floor" answer.
+        if (conversationAdPriceTier(messages)) {
+          console.log("[AI] First contact, ad-FAQ (inclusions) — two-price ad line ($2,350 install only / $5 per sq ft full promo)");
+          return { text: WHAT_IS_INCLUDED_TWO_TIER_ASK, inputTokens: 0, outputTokens: 0 };
+        }
         console.log("[AI] First contact, ad-FAQ (inclusions) — inclusions ask-type line");
         return { text: WHAT_IS_INCLUDED_ASK_TYPE, inputTokens: 0, outputTokens: 0 };
       }
@@ -5372,7 +5447,7 @@ export async function getAIResponse(
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
 30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
 31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.
-32. AD PRICE MISMATCH RULE: If the client quotes a price they saw in one of our ads ("the ad says $2,350 for 1000 sqft", "the promotion mentioned $2,300") that does NOT match the promotions in these rules, NEVER confirm, endorse, repeat, or validate that number as ours, and NEVER do math that legitimizes it (never "that $2,300 promo is our vinyl package"). Say the promotions vary by flooring type and the exact price is confirmed at the free in-person measure, then continue the normal flow. Never call the ad wrong or fake either, just move to what you can offer.
+32. AD PRICE MISMATCH RULE: Our own ads show exactly two figures, "$2,350 for 1000 sq ft without materials" and "$5,100 for 1000 sq ft with materials". When the client quotes one of THOSE, it is ours: confirm it plainly, the $2,350 is the installation only (they supply the floor) and the $5,100 line is our $5 per square foot promo with the luxury vinyl floor, the installation and the quarter round included, then continue the normal flow with the size rules unchanged. If the client quotes any OTHER price they saw in an ad ("the promotion mentioned $2,300", "$4,500 for 1000 sqft") that does NOT match the promotions in these rules, NEVER confirm, endorse, repeat, or validate that number as ours, and NEVER do math that legitimizes it (never "that $2,300 promo is our vinyl package"). Say the promotions vary by flooring type and the exact price is confirmed at the free in-person measure, then continue the normal flow. Never call the ad wrong or fake either, just move to what you can offer.
 33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. Both options come from the SOONEST day in the schedule that has open times (today first, then tomorrow; see SOONEST DAY FIRST in the schedule) and give the client a real choice on that day: the two listed times that fit whatever the client said about when they are free, otherwise that day's EARLIEST and LATEST open times, both read from that day's line in the schedule (a line "3pm, 4pm, 5pm" gives "3pm or 5pm"; a line "9am, 11am, 1pm, 3pm, 5pm, 7pm" gives "9am or 7pm"; a time that is not printed on the line does not exist that day, whatever other days list, so read it on the line before you write it), never its first two hours by default (owner rule 2026-10-15: no preferred hour, the whole day is open to the client). If that day has only one open time, that one plus one open time of the next day. When the day's line lists two or more times, your two options both come from it and you do NOT add another day ('or Saturday at 9am or 11am' on top of Friday's two is four options and is forbidden). Every time on a line is open with someone on the team and there is no order between team members and no preferred hour (owner rules 2026-09-30 and 2026-10-15): the DAY fills, today before tomorrow, and whoever is free takes it. If the client asks for any other time listed on that day's line, it is open, confirm it. The CLIENT AVAILABILITY RULE still applies first.
 34. NO INVENTED COMPANY FACTS: NEVER state years in business, number of installers or crews, business hours, company history, or any company fact that is not written in these rules. If asked, keep it warm and general (the team has deep local experience across South Florida) and steer back to the free visit. Also never assert which city a zip code belongs to.
 35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].
@@ -5754,6 +5829,16 @@ export async function getAIResponse(
           cleaned = fixed;
           console.log(`[AI] herringbone price backstop (${kind}): the reply quoted the $5/$2/$3.20 rate for a herringbone floor, replaced with $4 labor + $7.50 material`);
         }
+      }
+    }
+
+    // Anúncio de dois preços (dono, 27/10/2026): a promo completa sai como
+    // "$5 per sq ft", nunca só como "$5,100" (1 em 3 rodadas ao vivo).
+    if (process.env.TWO_TIER_BACKSTOP !== "off" && conversationAdPriceTier(messages)) {
+      const fixed = fixTwoTierPromoWording(cleaned, usersLang());
+      if (fixed !== cleaned) {
+        cleaned = fixed;
+        console.log("[AI] two-price ad backstop: the reply named the full promo only as $5,100, now $5 per sq ft");
       }
     }
 

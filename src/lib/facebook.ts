@@ -120,6 +120,29 @@ export async function fetchFacebookProfile(psid: string): Promise<{ name?: strin
   }
 }
 
+// The ad's greeting (page_welcome_message): the "Hi {{user_first_name}}! ...
+// starting at $2,350" bubble the client reads before writing anything. It is a
+// JSON string inside the story spec; its texts (the welcome message and the
+// quick-replies variant) join the creative's signals so the price the client
+// actually saw is visible to the webhooks (owner rule 2026-10-27, caso Jason:
+// read what the ad promised before saying what is included).
+function adGreetingText(raw: unknown): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const pwm = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<string, any>;
+    const texts = [pwm?.text_format?.message?.text, pwm?.image_format?.message?.text]
+      .filter((t): t is string => typeof t === "string" && t.trim().length > 0);
+    return texts.length ? texts.join(" | ") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Per-ad cache: the webhooks re-read the creative on EVERY turn of an ad lead
+// (flooring type + price tier), so one Graph call per ad per instance is enough.
+const AD_CREATIVE_TTL_MS = 6 * 3600_000;
+const adCreativeCache = new Map<string, { at: number; value: { text: string | null; imageUrl: string | null } }>();
+
 // Best-effort: "see the ad" by pulling its creative (all text fields + the main
 // image) from the Meta Graph API using the ad_id that Meta sends on the referral.
 // This is how we identify the flooring type (tile vs vinyl vs hardwood) even when
@@ -131,6 +154,8 @@ export async function fetchAdCreative(adId: string): Promise<{ text: string | nu
   const empty = { text: null as string | null, imageUrl: null as string | null };
   try {
     if (!adId || !/^\d{3,}$/.test(adId)) return empty;
+    const hit = adCreativeCache.get(adId);
+    if (hit && Date.now() - hit.at < AD_CREATIVE_TTL_MS) return hit.value;
     const token = (await getAdsToken()) || (await getToken());
     const fields = "name,creative{name,title,body,image_url,thumbnail_url,link_url,object_story_spec,asset_feed_spec}";
     const res = await fetch(`${FB_API}/${adId}?fields=${encodeURIComponent(fields)}&access_token=${token}`);
@@ -141,8 +166,9 @@ export async function fetchAdCreative(adId: string): Promise<{ text: string | nu
     const oss = (c.object_story_spec ?? {}) as Record<string, any>;
     const link = (oss.link_data ?? oss.video_data ?? oss.template_data ?? {}) as Record<string, any>;
     const afs = (c.asset_feed_spec ?? {}) as Record<string, any>;
+    const greeting = adGreetingText(link.page_welcome_message ?? afs.additional_data?.page_welcome_message);
     const texts: Array<string | undefined> = [
-      data.name, c.name, c.title, c.body, c.link_url,
+      data.name, c.name, c.title, c.body, c.link_url, greeting,
       link.message, link.name, link.caption, link.description, link.link,
       ...(Array.isArray(afs.titles) ? afs.titles.map((t: any) => t?.text) : []),
       ...(Array.isArray(afs.bodies) ? afs.bodies.map((b: any) => b?.text) : []),
@@ -152,7 +178,9 @@ export async function fetchAdCreative(adId: string): Promise<{ text: string | nu
     const imageUrl =
       c.image_url || c.thumbnail_url || link.picture ||
       (Array.isArray(afs.images) && afs.images[0]?.url) || null;
-    return { text, imageUrl: imageUrl || null };
+    const value = { text, imageUrl: imageUrl || null };
+    if (text || value.imageUrl) adCreativeCache.set(adId, { at: Date.now(), value });
+    return value;
   } catch {
     return empty;
   }

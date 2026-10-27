@@ -787,6 +787,31 @@ async function lerContratoPersistido(convId: string): Promise<{ contrato: Contra
   }
 }
 
+// ad_id do anúncio de origem já persistido (funil_adx_, senão a chave legada
+// funil_ad_), SÓ banco e nunca lança: os webhooks o usam em QUALQUER turno para
+// reler o criativo (tipo de piso e faixa de preço do anúncio), porque a tabela
+// de conversas não guarda o anúncio e o referral da Meta só vem na 1ª mensagem
+// (regra do dono 27/10/2026: ler o que o anúncio prometeu antes de dizer o que
+// está incluso).
+export async function adIdPersistidoDaConversa(convId: string): Promise<string | null> {
+  try {
+    const persistido = await lerContratoPersistido(convId);
+    if (persistido?.contrato.ad_id) return persistido.contrato.ad_id;
+    const { data } = await supabaseAdmin
+      .from("platform_settings")
+      .select("platform")
+      .like("platform", adKeyPrefix(convId) + "%")
+      .limit(1);
+    const key = data?.[0]?.platform as string | undefined;
+    if (!key) return null;
+    const rawId = key.slice("funil_ad_".length).split("::")[1];
+    const adId = rawId ? decodeURIComponent(rawId) : "";
+    return /^\d{3,}$/.test(adId) ? adId : null;
+  } catch {
+    return null;
+  }
+}
+
 async function gravarContrato(convId: string, contrato: ContratoAnuncio, keyAntiga?: string): Promise<void> {
   const compacto: ContratoAnuncio = {};
   for (const k of CAMPOS_CONTRATO) if (contrato[k]) compacto[k] = contrato[k];

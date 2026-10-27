@@ -6,7 +6,7 @@ import { fetchInstagramProfile, sendInstagramMessage, sendInstagramAudio } from 
 import { IG_CHANNEL_NOTE, neutralizeLinks, ensureIgFinancingHandoff } from "@/lib/ig-link-policy";
 import { getInstagramToken } from "@/lib/ig-token";
 import { fetchAdCreative } from "@/lib/facebook";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, dadosDeAnuncioDaConversa, adIdPersistidoDaConversa, persistirAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { classifyFeedShare, isFlooringShareNote, isShareCaption, wordlessShareOf, textCarriesClientIntent, SHARE_CAPTION_RECHECK_MS } from "@/lib/shared-media-policy";
 import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
@@ -36,6 +36,8 @@ import {
   isAckClosingBurst,
   detectAdFlooringType,
   adFlooringTypeNote,
+  detectAdPriceTier,
+  adPriceTierNote,
   classifyAdCreativeType,
   isConsecutiveDuplicate,
   slotApologyAlreadyGivenNote,
@@ -1749,7 +1751,10 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       if (!isBookingConfirmed) {
         const ref = messaging.referral;
         const convAny = conversation as Record<string, unknown>;
-        const adId = (ref?.ad_id ?? convAny.ad_id) as string | undefined;
+        // ad_id: fresh from this event, else the one the funnel persisted on the
+        // opening turn (the conversation table has no ad columns), so the ad's
+        // own text can be re-read on ANY turn (27/10/2026, AD PRICE CONTEXT).
+        const adId = ((ref?.ad_id ?? convAny.ad_id) as string | undefined) ?? (await adIdPersistidoDaConversa(conversation.id)) ?? undefined;
         const adSignals = [
           ref?.ads_context_data?.ad_title, ref?.ad_id,
           convAny.ad_title as string | undefined,
@@ -1763,20 +1768,19 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
         const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean) ||
           messagesForAI.some((m) => m.role === "user" && /\[Client (?:replied to|shared a post\/reel from) our ad/i.test(m.content));
         let adType = detectAdFlooringType(...adSignals);
-        // Still unknown? Actually SEE the ad: pull its creative (text + image)
-        // from Meta by ad_id, then fall back to the creative thumbnail we already
-        // have. Bounded to the opening turn and persisted so it never re-runs and
-        // the tile answer survives later turns. Vision is conservative (only a
-        // clear 'tile' verdict is trusted, since this advertiser's vinyl mimics
-        // wood/stone/marble); ad TEXT is trusted for all three types.
+        // The ad's own words (body + greeting, cached per ad id, ANY turn): they
+        // settle the flooring type when the referral was silent AND the price
+        // the client read ("$2,350 ❌ materials / $5,100 ✅ with materials").
+        const adCreative = adId ? await withTimeout(fetchAdCreative(adId), 6000) : null;
+        if (!adType && adCreative?.text) adType = detectAdFlooringType(adCreative.text);
+        // Still unknown? Look at the creative image (vision), bounded to the
+        // opening turn. Vision is conservative (only a clear 'tile' verdict is
+        // trusted, since this advertiser's vinyl mimics wood/stone/marble); ad
+        // TEXT is trusted for all three types.
         if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
           let resolved: AdFlooringType | null = null;
-          if (adId) {
-            const ad = await withTimeout(fetchAdCreative(adId), 6000);
-            if (ad?.text) resolved = detectAdFlooringType(ad.text);
-            if (!resolved && ad?.imageUrl) {
-              resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
-            }
+          if (adCreative?.imageUrl) {
+            resolved = (await withTimeout(classifyAdCreativeType(adCreative.imageUrl), 6000)) === "tile" ? "tile" : null;
           }
           if (!resolved) {
             const creative = ref?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
@@ -1795,6 +1799,19 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
           // Ad lead, type still unknown → ask the type. The hardcoded "what's
           // included" intercept also reads this note and refuses to assume vinyl.
           systemParts.push(AD_REPLY_NOTE);
+        }
+        // AD PRICE CONTEXT (owner rule 2026-10-27, caso Jason): the ad's body or
+        // greeting quotes "$2,350 ❌ materials / $5,100 ✅ with materials" (or the
+        // client quotes those numbers) → the model and the canned "what's
+        // included" lines state the contrast (the $2,350 is the installation
+        // only, the $5 per sq ft promo includes the luxury vinyl floor, the
+        // installation and the quarter round), never the bare vinyl-includes line.
+        const userBlobForTier = messagesForAI
+          .filter((m) => m.role === "user")
+          .map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+          .join(" ");
+        if (detectAdPriceTier(adCreative?.text, ref?.ads_context_data?.ad_title, convAny.ad_title as string | undefined, userBlobForTier)) {
+          systemParts.push(adPriceTierNote());
         }
       }
       // Scan last 3 user messages for a large-lead sqft mention

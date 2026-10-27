@@ -11,7 +11,7 @@ import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { classifyFeedShare, isFlooringShareNote, isShareCaption, wordlessShareOf, textCarriesClientIntent, SHARE_CAPTION_RECHECK_MS } from "@/lib/shared-media-policy";
 import { markShareDropped, shareDroppedAt, shareDropKey } from "@/lib/share-drop-marker";
 import { consultarMidiasNaPlataforma } from "@/lib/plataforma";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, detectAdPriceTier, adPriceTierNote, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, adRetapNudge, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
 import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
@@ -26,7 +26,7 @@ import {
   updateClientMemory,
 } from "@/lib/anthropic-memory";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa, midiasDaMensagem } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa, adIdPersistidoDaConversa, midiasDaMensagem } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 
 // 60s killed slow turns MID-FLIGHT (debounce 10s + media + vision + AI + send
@@ -1492,7 +1492,10 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
       if (!isBookingConfirmed) {
         const fbRef = messaging.referral as { ad_id?: string; ads_context_data?: { ad_title?: string; photo_url?: string } } | undefined;
         const convAny = conv as Record<string, unknown>;
-        const adId = (fbRef?.ad_id ?? convAny.ad_id) as string | undefined;
+        // ad_id: fresh from this event, else the one the funnel persisted on the
+        // opening turn (the conversation table has no ad columns), so the ad's
+        // own text can be re-read on ANY turn (27/10/2026, AD PRICE CONTEXT).
+        const adId = ((fbRef?.ad_id ?? convAny.ad_id) as string | undefined) ?? (await adIdPersistidoDaConversa(conv.id)) ?? undefined;
         const adSignals = [
           fbRef?.ads_context_data?.ad_title, fbRef?.ad_id,
           convAny.ad_title as string | undefined,
@@ -1505,19 +1508,18 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
         const isAdReply = isAdReferral || enrichedText.includes("[Client replied to our ad]") || adSignals.some(Boolean) ||
           messagesForAI.some((m) => m.role === "user" && /\[Client (?:replied to|shared a post\/reel from) our ad/i.test(m.content));
         let adType = detectAdFlooringType(...adSignals);
-        // Still unknown? Actually SEE the ad: pull its creative (text + image)
-        // from Meta by ad_id, then fall back to the creative thumbnail. Bounded to
-        // the opening turn and persisted so the tile answer survives later turns.
-        // Vision is conservative (only a clear 'tile' verdict is trusted); ad TEXT
-        // is trusted for all three types.
+        // The ad's own words (body + greeting, cached per ad id, ANY turn): they
+        // settle the flooring type when the referral was silent AND the price
+        // the client read ("$2,350 ❌ materials / $5,100 ✅ with materials").
+        const adCreative = adId ? await withTimeout(fetchAdCreative(adId), 6000) : null;
+        if (!adType && adCreative?.text) adType = detectAdFlooringType(adCreative.text);
+        // Still unknown? Look at the creative image (vision), bounded to the
+        // opening turn. Vision is conservative (only a clear 'tile' verdict is
+        // trusted); ad TEXT is trusted for all three types.
         if (!adType && isAdReply && !messagesForAI.some((m) => m.role === "assistant")) {
           let resolved: AdFlooringType | null = null;
-          if (adId) {
-            const ad = await withTimeout(fetchAdCreative(adId), 6000);
-            if (ad?.text) resolved = detectAdFlooringType(ad.text);
-            if (!resolved && ad?.imageUrl) {
-              resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
-            }
+          if (adCreative?.imageUrl) {
+            resolved = (await withTimeout(classifyAdCreativeType(adCreative.imageUrl), 6000)) === "tile" ? "tile" : null;
           }
           if (!resolved) {
             const creative = fbRef?.ads_context_data?.photo_url ?? (convAny.creative_url as string | undefined);
@@ -1536,6 +1538,19 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
           // Ad lead, type still unknown → ask the type. The hardcoded "what's
           // included" intercept also reads this note and refuses to assume vinyl.
           systemParts.push(AD_REPLY_NOTE);
+        }
+        // AD PRICE CONTEXT (owner rule 2026-10-27, caso Jason): the ad's body or
+        // greeting quotes "$2,350 ❌ materials / $5,100 ✅ with materials" (or the
+        // client quotes those numbers) → the model and the canned "what's
+        // included" lines state the contrast (the $2,350 is the installation
+        // only, the $5 per sq ft promo includes the luxury vinyl floor, the
+        // installation and the quarter round), never the bare vinyl-includes line.
+        const userBlobForTier = messagesForAI
+          .filter((m) => m.role === "user")
+          .map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0])
+          .join(" ");
+        if (detectAdPriceTier(adCreative?.text, fbRef?.ads_context_data?.ad_title, convAny.ad_title as string | undefined, userBlobForTier)) {
+          systemParts.push(adPriceTierNote());
         }
       }
       if (!isBookingConfirmed) {

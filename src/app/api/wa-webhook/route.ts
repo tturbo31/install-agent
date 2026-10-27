@@ -5,7 +5,7 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, detectAdPriceTier, adPriceTierNote, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
 import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
@@ -19,7 +19,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { trackConversationMetrics } from "@/lib/metrics";
-import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa } from "@/lib/funil";
+import { funilOnInboundMessage, funilOnBookingConfirmed, maybeRunFunilSilenceCheck, persistirAnuncioDaConversa, dadosDeAnuncioDaConversa, adIdPersistidoDaConversa } from "@/lib/funil";
 import { capturarRawFunil, capturarWebhookRaw } from "@/lib/funil-raw";
 import { enviarEventoFunil } from "@/lib/plataforma";
 import { findQuoteFollowupContext, composeQuoteReply, isQuoteRefusal, quoteHandoffActive, isTalkToOzziRequest, talkToOzziLang, talkToOzziMessage, QUOTE_HANDOFF_SUFFIX, QUOTE_TALK_TO_OZZI_ALERT, QUOTE_AFTER_HANDOFF_ALERT } from "@/lib/quote-reply";
@@ -1828,16 +1828,21 @@ async function handleWaMessage(body: Record<string, unknown>) {
           userBlob,
         ];
         let adType = detectAdFlooringType(...adSignals);
-        // Best-effort auto-detect from the ad creative (opening turn only, then
-        // persisted so the tile answer survives later turns). Vision is trusted
-        // only for a clear 'tile' verdict; ad TEXT is trusted for all three types.
-        const adId = convAny.ad_id as string | undefined;
+        // ad_id: captured on this turn, else the one the funnel persisted on the
+        // opening turn (the conversation table has no ad columns), so the ad's
+        // own text can be re-read on ANY turn (27/10/2026, AD PRICE CONTEXT).
+        const adId = (convAny.ad_id as string | undefined) ?? (await adIdPersistidoDaConversa(conv.id)) ?? undefined;
+        // The ad's own words (body + greeting, cached per ad id, ANY turn): they
+        // settle the flooring type when the referral was silent AND the price
+        // the client read ("$2,350 ❌ materials / $5,100 ✅ with materials").
+        const adCreative = adId ? await withTimeout(fetchAdCreative(adId), 6000) : null;
+        if (!adType && adCreative?.text) adType = detectAdFlooringType(adCreative.text);
+        // Still unknown? Look at the creative image (vision), opening turn only.
+        // Vision is trusted only for a clear 'tile' verdict.
         if (!adType && adId && !messagesForAI.some((m) => m.role === "assistant")) {
           let resolved: AdFlooringType | null = null;
-          const ad = await withTimeout(fetchAdCreative(adId), 6000);
-          if (ad?.text) resolved = detectAdFlooringType(ad.text);
-          if (!resolved && ad?.imageUrl) {
-            resolved = (await withTimeout(classifyAdCreativeType(ad.imageUrl), 6000)) === "tile" ? "tile" : null;
+          if (adCreative?.imageUrl) {
+            resolved = (await withTimeout(classifyAdCreativeType(adCreative.imageUrl), 6000)) === "tile" ? "tile" : null;
           }
           if (!resolved && convAny.creative_url) {
             resolved = (await withTimeout(classifyAdCreativeType(convAny.creative_url as string), 6000)) === "tile" ? "tile" : null;
@@ -1864,6 +1869,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
           } else {
             systemParts.push(AD_REPLY_NOTE);
           }
+        }
+        // AD PRICE CONTEXT (owner rule 2026-10-27, caso Jason): the ad's body or
+        // greeting quotes "$2,350 ❌ materials / $5,100 ✅ with materials" (or the
+        // client quotes those numbers) → the model and the canned "what's
+        // included" lines state the contrast (the $2,350 is the installation
+        // only, the $5 per sq ft promo includes the luxury vinyl floor, the
+        // installation and the quarter round), never the bare vinyl-includes line.
+        if (detectAdPriceTier(adCreative?.text, convAny.ad_title as string | undefined, userBlob)) {
+          systemParts.push(adPriceTierNote());
         }
       }
       const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
