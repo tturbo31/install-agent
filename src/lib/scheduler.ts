@@ -1098,9 +1098,9 @@ const MONTH_PATTERNS: Array<[number, RegExp]> = [
 const WEEKDAY_WORDS = "sundays?|domingos?|mondays?|lunes|segundas?|tuesdays?|tues|martes|ter[cç]as?|wednesdays?|wed|mi[eé]rcoles|quartas?|thursdays?|thurs?|jueves|quintas?|fridays?|viernes|sextas?|saturdays?|s[áa]bados?";
 const MONTH_WORDS = "jan(?:uary|eiro)?|enero|feb(?:ruary|rero)?|fevereiro|mar(?:ch|zo|ço)?|apr(?:il)?|abril|may|mayo|maio|jun(?:e|io|ho)?|jul(?:y|io|ho)?|aug(?:ust)?|agosto|sep(?:t(?:ember)?)?|septiembre|setembro|oct(?:ober)?|octubre|outubro|nov(?:ember|iembre|embro)?|dec(?:ember)?|diciembre|dezembro";
 // "Thursday July 31" / "Sunday, August 3rd" / "Friday the 31st of July"
-const OFFER_WD_MONTH_DAY = new RegExp(`\\b(${WEEKDAY_WORDS})\\b([,\\s]+(?:the\\s+)?)(${MONTH_WORDS})(\\s+)(\\d{1,2})(st|nd|rd|th)?\\b`, "gi");
-// "lunes 3 de agosto" / "domingo 2 de agosto"
-const OFFER_WD_DAY_MONTH = new RegExp(`\\b(${WEEKDAY_WORDS})\\b(\\s+)(\\d{1,2})(\\s+de\\s+)(${MONTH_WORDS})\\b`, "gi");
+const OFFER_WD_MONTH_DAY = new RegExp(`\\b((?:${WEEKDAY_WORDS})(?:-feira)?)\\b([,\\s]+(?:the\\s+)?)(${MONTH_WORDS})(\\s+)(\\d{1,2})(st|nd|rd|th)?\\b`, "gi");
+// "lunes 3 de agosto" / "domingo 2 de agosto" / "quarta-feira, 18 de dezembro"
+const OFFER_WD_DAY_MONTH = new RegExp(`\\b((?:${WEEKDAY_WORDS})(?:-feira)?)\\b([,\\s]+(?:el\\s+|dia\\s+|o\\s+dia\\s+)?)(\\d{1,2})(\\s+de\\s+)(${MONTH_WORDS})\\b`, "gi");
 
 function monthIndexOf(word: string): number | null {
   for (const [i, re] of MONTH_PATTERNS) if (re.test(word)) return i;
@@ -1113,14 +1113,18 @@ function weekdayOf(word: string): number | null {
 
 export function reconcileOfferedDates(
   text: string,
-  todayStr: string = easternTodayStr()
+  todayStr: string = easternTodayStr(),
+  history?: HistMsg[]
 ): { text: string; corrections: string[] } {
   const corrections: string[] = [];
   if (!text) return { text, corrections };
   const year = ymd(todayStr).year;
+  // The dates the client named in their own words (the webhooks pass the history):
+  // on one of those the DATE is right and the weekday word is what gets fixed.
+  const named = history ? clientNamedDates(history, todayStr) : null;
 
   // Returns the corrected day-of-month, or null when we should not touch it.
-  const fixDay = (weekdayWord: string, monthWord: string, dayNum: number): { day: number; month: number } | null => {
+  const fixDay = (weekdayWord: string, monthWord: string, dayNum: number): { day: number; month: number } | { weekday: number } | null => {
     const wantWeekday = weekdayOf(weekdayWord);
     const month = monthIndexOf(monthWord);
     if (wantWeekday === null || month === null) return null;
@@ -1138,9 +1142,15 @@ export function reconcileOfferedDates(
     // client their October date is out of range, and an unbounded snap turned it
     // into "Lunes 5 de octubre" — a date nobody had mentioned.
     const statedStr = stated.toISOString().slice(0, 10);
-    if (statedStr < todayStr || statedStr > addDaysStr(todayStr, 21)) return null;
     const have = stated.getUTCDay();
     if (have === wantWeekday) return null; // already consistent — no-op
+    // The date is the CLIENT's ("a date in December any date after the 18th" →
+    // "Wednesday December 18th at 9am or 8pm", WhatsApp 25/10/2026: the weekday came
+    // from the November 18 line, the month from the client): the weekday word is what
+    // is wrong, however far ahead the date is. A date more than a week in the past is
+    // a story, not an offer, and stays untouched.
+    if (named?.has(statedStr) && statedStr >= addDaysStr(todayStr, -7)) return { weekday: have };
+    if (statedStr < todayStr || statedStr > addDaysStr(todayStr, 21)) return null;
     // Snap to the nearest date carrying the named weekday (±3 days max: the
     // model miscounts by a day or two, it does not pick a different week).
     const forward = (((wantWeekday - have) % 7) + 7) % 7;
@@ -1170,9 +1180,30 @@ export function reconcileOfferedDates(
     return /^[A-Z]/.test(originalMonthWord) ? name.charAt(0).toUpperCase() + name.slice(1) : name;
   };
 
+  // The weekday word rewritten in the language of the original ("Wednesday" → "Friday",
+  // "miércoles" → "viernes", "quarta-feira" → "sexta-feira"), capitalized like it.
+  const weekdayWordFor = (weekdayWord: string, monthWord: string, weekday: number): string => {
+    const feira = /-feira$/i.test(weekdayWord);
+    const lang = feira || /^(?:segunda|ter[cç]a|quarta|quinta|sexta)/i.test(weekdayWord)
+      ? "pt"
+      : /^(?:lunes|martes|mi[eé]rcoles|jueves|viernes)/i.test(weekdayWord)
+        ? "es"
+        : /^(?:s[áa]bado|domingo)/i.test(weekdayWord)
+          ? (/(?:eiro|embro|outubro|mar[cç]o|maio|junho|julho|setembro)/i.test(monthWord) ? "pt" : "es")
+          : "en";
+    let name = (lang === "pt" ? DAY_NAMES_PT : lang === "es" ? DAY_NAMES_ES : DAY_NAMES)[weekday];
+    if (lang === "pt" && feira && weekday >= 1 && weekday <= 5) name += "-feira";
+    return /^[A-Z]/.test(weekdayWord) ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+  };
+
   let out = text.replace(OFFER_WD_MONTH_DAY, (whole, wd, sep, mo, gap, day, suffix) => {
     const fixed = fixDay(wd, mo, Number(day));
     if (fixed === null) return whole;
+    if ("weekday" in fixed) {
+      const wdOut = weekdayWordFor(wd, mo, fixed.weekday);
+      corrections.push(`${wd} ${mo} ${day} -> ${wdOut} ${mo} ${day}`);
+      return `${wdOut}${sep}${mo}${gap}${day}${suffix ?? ""}`;
+    }
     const moOut = fixed.month === monthIndexOf(mo) ? mo : monthWordFor(wd, mo, fixed.month);
     corrections.push(`${wd} ${mo} ${day} -> ${moOut} ${fixed.day}`);
     return `${wd}${sep}${moOut}${gap}${fixed.day}${suffix ? ordinalSuffix(fixed.day) : ""}`;
@@ -1180,6 +1211,11 @@ export function reconcileOfferedDates(
   out = out.replace(OFFER_WD_DAY_MONTH, (whole, wd, gap, day, mid, mo) => {
     const fixed = fixDay(wd, mo, Number(day));
     if (fixed === null) return whole;
+    if ("weekday" in fixed) {
+      const wdOut = weekdayWordFor(wd, mo, fixed.weekday);
+      corrections.push(`${wd} ${day} de ${mo} -> ${wdOut} ${day} de ${mo}`);
+      return `${wdOut}${gap}${day}${mid}${mo}`;
+    }
     const moOut = fixed.month === monthIndexOf(mo) ? mo : monthWordFor(wd, mo, fixed.month);
     corrections.push(`${wd} ${day} de ${mo} -> ${fixed.day} de ${moOut}`);
     return `${wd}${gap}${fixed.day}${mid}${moOut}`;
@@ -1760,12 +1796,12 @@ const DAY_REF_MONTH_DATE = new RegExp(`(?<![a-z])(${MONTH_WORDS})\\s+(\\d{1,2})(
 // "9/30", "09/30/2026" (US order). Never a clock ("9:30") and never inside a longer number.
 // "1/4 round", "1/2 inch": a fraction with its unit is not a date (fb_37685589211085730 wrote "don't like the 1/4 round").
 const DAY_REF_NUMERIC_DATE = new RegExp(String.raw`(?<![\d/:])(\d{1,2})\/(\d{1,2})(?:\/(?:20)?\d{2})?(?![\d/])` + FRACTION_UNIT_AFTER, "g");
-// "the 29th", "el 26", "dia 26", "26th": a number is a day of the month ONLY with
+// "the 29th", "el 26", "del 18", "dia 26", "26th": a number is a day of the month ONLY with
 // that lead-in or an ordinal suffix, and never when a clock unit follows.
 // "12955 sw 16th ct" / "NW 7th St" / "3rd floor" are street ordinals, never a day
 // (fb_28373764588956146, 21/09/2026: "16th ct" in the client's address read as
 // October 16 and would have moved a correct Wednesday visit).
-const DAY_REF_DOM = /(?:(?<![a-z])(?:the|el|dia|on the)\s+(\d{1,2})(?:st|nd|rd|th)?|(?<![\d$:/#-])(?<!\b(?:sw|nw|ne|se|n|s|e|w)\s)(\d{1,2})(?:st|nd|rd|th))(?![\d:/]|\s*(?:am|pm|a\.m|p\.m|h\b|hs\b|hrs\b|horas?\b|sq|pies|rooms?|bed|bath|people|days?|weeks?|min|%|k\b|de\s+(?:la\s+)?(?:manana|tarde|noche)|floor\b|fl\b|st\b|street\b|ave\b|avenue\b|ct\b|court\b|ter\b|terrace\b|dr\b|drive\b|rd\b|road\b|ln\b|lane\b|pl\b|place\b|way\b|blvd\b|boulevard\b|cir\b|circle\b|hwy\b|highway\b|pkwy\b|parkway\b|calle\b|avenida\b))/g;
+const DAY_REF_DOM = /(?:(?<![a-z])(?:the|el|del|dia|on the)\s+(\d{1,2})(?:st|nd|rd|th)?|(?<![\d$:/#-])(?<!\b(?:sw|nw|ne|se|n|s|e|w)\s)(\d{1,2})(?:st|nd|rd|th))(?![\d:/]|\s*(?:am|pm|a\.m|p\.m|h\b|hs\b|hrs\b|horas?\b|sq|pies|rooms?|bed|bath|people|days?|weeks?|min|%|k\b|de\s+(?:la\s+)?(?:manana|tarde|noche)|floor\b|fl\b|st\b|street\b|ave\b|avenue\b|ct\b|court\b|ter\b|terrace\b|dr\b|drive\b|rd\b|road\b|ln\b|lane\b|pl\b|place\b|way\b|blvd\b|boulevard\b|cir\b|circle\b|hwy\b|highway\b|pkwy\b|parkway\b|calle\b|avenida\b))/g;
 // "sabado 26" / "tuesday 29": the number right after a weekday word is its day of the month.
 const DAY_REF_WEEKDAY_DOM = new RegExp(`(?<![a-z])(${Object.keys(DAY_REF_WEEKDAY).join("|")})[,\\s]+(?:the\\s+|el\\s+|dia\\s+)?(\\d{1,2})(?:st|nd|rd|th)?(?![\\d:/]|\\s*(?:am|pm|a\\.m|p\\.m|h\\b|hs\\b|sq|pies|rooms?|bed|bath|people|days?|weeks?|min|%|k\\b))`, "g");
 function dayRefsOf(flat: string): DayRef[] {
@@ -2260,7 +2296,10 @@ const REQ_MAX_WINDOWS = 3;
 const REQ_MAX_AHEAD_DAYS = 400;
 const REQ_MONTH_FULL = "january|february|march|april|may|june|july|august|september|october|november|december|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|janeiro|fevereiro|marco|maio|junho|julho|setembro|outubro|novembro|dezembro";
 // "december 15" / "15 de diciembre" / "15th of december" are dates (handled by dayRefsOf), not a bare month.
-const REQ_MONTH_ONLY = new RegExp(String.raw`(?<![a-z])(?<!\d{1,2}(?:st|nd|rd|th)?\s+(?:de|of)\s+)(${REQ_MONTH_FULL})(?![a-z])(?!\s*(?:the\s+)?\d)`, "g");
+// A long month name glued to the next word still names the month ("Decemberany date after the 18th", WhatsApp 25/10/2026).
+const REQ_MONTH_LONG = "january|february|september|october|november|december|febrero|septiembre|setiembre|octubre|noviembre|diciembre|janeiro|fevereiro|setembro|outubro|novembro|dezembro";
+// "15 de diciembre" is a date (dayRefsOf), not a bare month. "the 15th of December" is a bare day plus a bare month: clientDaysOf binds them.
+const REQ_MONTH_ONLY = new RegExp(String.raw`(?<![a-z])(?<!\d{1,2}\s+de\s+)(?:(${REQ_MONTH_FULL})(?![a-z])|(${REQ_MONTH_LONG})(?=[a-z]))(?!\s*(?:the\s+)?\d)`, "g");
 const REQ_MONTH_CONTEXT = /(?:in|of|for|until|till|by|early|late|mid|end of|beginning of|first week of|hasta|en|de|em|ate)\s+$/;
 const REQ_MONTH_PART = /(?:(first|1st|early|beginning|start|principios|inicio|comeco|primera|primeira)|(second|2nd|segunda)|(mid|middle|mediados|meados|third|3rd|tercera|terceira)|(end|late|last|finales|fin|final|fim|ultima))\s+(?:week\s+|semana\s+|days?\s+|dias\s+)?(?:of\s+|in\s+|de\s+|do\s+|en\s+)?$/;
 const REQ_UNITS_AHEAD = /(?<![a-z])(?:in|en|em|dentro de|daqui a)\s+(\d{1,2}|two|three|four|five|six|dos|tres|cuatro|cinco|seis|duas|quatro)\s+(weeks?|semanas?|months?|meses|mes)(?![a-z])/g;
@@ -2278,19 +2317,93 @@ function firstOfMonthPlus(dateStr: string, n: number): string {
   const total = month + n;
   return `${year + Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, "0")}-01`;
 }
+// `after`: the client wants the days AFTER that date ("any date after the 18th"); the date itself is not in the window.
+export type RequestedWindow = { from: string; to: string; after?: string };
+
+// Month mentions of a message that name no day ("in December", "first week of January").
+type MonthMention = { index: number; end: number; month: number; part: RegExpExecArray | null };
+function monthMentionsOf(flat: string): MonthMention[] {
+  const out: MonthMention[] = [];
+  for (const mm of flat.matchAll(REQ_MONTH_ONLY)) {
+    const word = mm[1] ?? mm[2];
+    const month = monthIndexOf(word);
+    if (month === null) continue;
+    const before = flat.slice(0, mm.index ?? 0);
+    // "may" is a verb and "marco" a name unless a date word leads in
+    if ((word === "may" || word === "marco") && !REQ_MONTH_CONTEXT.test(before)) continue;
+    out.push({ index: mm.index ?? 0, end: (mm.index ?? 0) + word.length, month, part: REQ_MONTH_PART.exec(before.slice(-28)) });
+  }
+  return out;
+}
+// "after the 18th" / "después del 18" / "depois do dia 18": the days that FOLLOW that day.
+// "before the 18th" / "antes del 18": the days before it. "from the 18th" / "a partir del 18" include it.
+const REQ_AFTER_CUE = /(?<![a-z])(?:after|past|later\s+than|beyond|despues\s+(?:de|del)|depois\s+(?:de|do|da)|apos)\s+(?:the\s+|el\s+|o\s+|dia\s+|o\s+dia\s+|del\s+dia\s+|do\s+dia\s+)?$/;
+const REQ_BEFORE_CUE = /(?<![a-z])(?:before|prior\s+to|antes\s+(?:de|del|do|da))\s+(?:the\s+|el\s+|o\s+|dia\s+|o\s+dia\s+|del\s+dia\s+|do\s+dia\s+)?$/;
+// The days ONE client message names, resolved from the day it was written. A bare day
+// of the month ("the 18th") takes the month named in the same message (the nearest
+// mention before it, else the first after it): "a date in December any date after the
+// 18th" is December 18, not the nearest 18th. Resolving it to the nearest 18th put the
+// week of NOVEMBER 18 (a Wednesday) on the schedule, and the WhatsApp client of
+// 25/10/2026 got "Wednesday December 18th at 9am or 8pm" built from that line (December
+// 18 is a Friday; she had to correct the bot). A weekday the client gets wrong
+// ("Wednesday December 18th") does not kill the date. `bound` collects the month
+// mentions a day was attached to: that bare month is the day, not its first week.
+function clientDaysOf(flat: string, months: MonthMention[], base: string, bound: Set<number>): Array<{ date: string; cue: "after" | "before" | null }> {
+  // Inside a street address a bare day of the month is a house or unit number.
+  const refs = STREET_ADDRESS.test(flat) ? dayRefsOf(flat).filter((r) => r.kind !== "dom") : dayRefsOf(flat);
+  const out: Array<{ date: string; cue: "after" | "before" | null }> = [];
+  for (let i = 0; i < refs.length; i++) {
+    const ref = refs[i];
+    if (ref.kind !== "date" && ref.kind !== "dom") continue;
+    let self: DayRef = ref;
+    let group = refGroupAround(refs, i, flat);
+    if (ref.kind === "dom" && !group.some((r) => r.kind === "date")) {
+      // Anchors: the bare month mentions and the months of the full dates in the same
+      // message ("December 15th or the 20th": the 20th is December too).
+      const anchors: Array<{ index: number; end: number; month: number; mention: MonthMention | null }> = [
+        ...months.map((m) => ({ index: m.index, end: m.end, month: m.month, mention: m })),
+        ...refs.filter((r) => r.kind === "date" && r.month !== undefined).map((r) => ({ index: r.index, end: r.end, month: r.month as number, mention: null })),
+      ].sort((a, b) => a.index - b.index);
+      const mm = anchors.filter((a) => a.end <= ref.index).pop() ?? anchors.find((a) => a.index >= ref.end);
+      if (mm) {
+        if (mm.mention && !mm.mention.part) bound.add(mm.mention.index);
+        self = { index: ref.index, end: ref.end, kind: "date", month: mm.month, day: ref.day };
+        group = group.map((r) => (r === ref ? self : r));
+      }
+    }
+    const d = resolveRefGroup(group, base) ?? (group.length > 1 ? resolveDayRef(self, base) : null);
+    if (!d) continue;
+    const before = flat.slice(0, ref.index);
+    out.push({ date: d, cue: REQ_AFTER_CUE.test(before) ? "after" : REQ_BEFORE_CUE.test(before) ? "before" : null });
+  }
+  return out;
+}
+// Every date the client named in their own words, for the weekday↔date guard of the
+// sentence we send (reconcileOfferedDates): on a date the client named, the DATE is
+// right and the weekday word is what gets fixed.
+export function clientNamedDates(history: HistMsg[] | undefined, todayStr: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const flat = deaccentLowerText(stripSystemNote(m.content));
+    if (!flat.trim()) continue;
+    for (const { date } of clientDaysOf(flat, monthMentionsOf(flat), messageDateStr(m, todayStr), new Set())) out.add(date);
+  }
+  return out;
+}
 export function clientRequestedWindows(
   history: Array<{ role: string; content: string; at?: string; created_at?: string }> | undefined,
   todayStr: string,
   horizonEnd: string
-): Array<{ from: string; to: string }> {
+): RequestedWindow[] {
   const maxDate = addDaysStr(todayStr, REQ_MAX_AHEAD_DAYS);
-  const found: Array<{ from: string; to: string }> = [];
-  const add = (from: string, to: string) => {
+  const found: RequestedWindow[] = [];
+  const add = (from: string, to: string, after?: string) => {
     if (from < todayStr) from = todayStr;
     if (to > maxDate) to = maxDate;
     if (from <= horizonEnd) from = addDaysStr(horizonEnd, 1); // the 21-day list already shows up to horizonEnd
     if (from > to) return; // past, too far, or entirely inside the 21-day list
-    found.push({ from, to });
+    found.push(after ? { from, to, after } : { from, to });
   };
   const mk = (year: number, month: number, day: number) => `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   for (const m of history ?? []) {
@@ -2298,25 +2411,25 @@ export function clientRequestedWindows(
     const flat = deaccentLowerText(stripSystemNote(m.content));
     if (!flat.trim()) continue;
     const base = messageDateStr(m, todayStr);
-    // a) a day: "10/26", "December 15th", "15 de diciembre", "the 30th" (a bare day of the month only outside a street address)
-    const refs = STREET_ADDRESS.test(flat) ? dayRefsOf(flat).filter((r) => r.kind !== "dom") : dayRefsOf(flat);
+    // a) a day: "10/26", "December 15th", "15 de diciembre", "the 30th" (a bare day of the
+    //    month only outside a street address). A bare day takes the month named in the same
+    //    message; "after the 18th" wants the days that follow it, "before" the days before it.
     const story = REQ_PAST_CUE.test(flat) && !REQ_FUTURE_CUE.test(flat);
-    for (const ref of refs) {
-      if (ref.kind !== "date" && ref.kind !== "dom") continue;
-      if (story) continue;
-      const d = resolveDayRef(ref, base);
-      if (d) add(d, addDaysStr(d, REQ_WINDOW_DAYS - 1));
+    const months = monthMentionsOf(flat);
+    const bound = new Set<number>();
+    for (const { date: d, cue } of story ? [] : clientDaysOf(flat, months, base, bound)) {
+      if (cue === "after") add(addDaysStr(d, 1), addDaysStr(d, REQ_WINDOW_DAYS), d);
+      else if (cue === "before") add(addDaysStr(d, -REQ_WINDOW_DAYS), addDaysStr(d, -1));
+      else add(d, addDaysStr(d, REQ_WINDOW_DAYS - 1));
     }
-    // b) a month without a day: "in January", "first week of January", "end of November", "mediados de enero"
-    for (const mm of flat.matchAll(REQ_MONTH_ONLY)) {
-      const month = monthIndexOf(mm[1]);
-      if (month === null) continue;
-      const before = flat.slice(0, mm.index ?? 0);
-      // "may" is a verb and "marco" a name unless a date word leads in
-      if ((mm[1] === "may" || mm[1] === "marco") && !REQ_MONTH_CONTEXT.test(before)) continue;
+    // b) a month without a day: "in January", "first week of January", "end of November",
+    //    "mediados de enero". A bare month a day was bound to ("a date in December ... the
+    //    18th") is that day, not its first week.
+    for (const mm of months) {
+      if (bound.has(mm.index)) continue;
+      const { month, part } = mm;
       const b = ymd(base);
       const year = month >= b.month ? b.year : b.year + 1;
-      const part = REQ_MONTH_PART.exec(before.slice(-28));
       const last = lastDayOfMonth(year, month);
       let from = 1, to = REQ_WINDOW_DAYS;
       if (part?.[2]) { from = 8; to = 14; }
@@ -2337,10 +2450,16 @@ export function clientRequestedWindows(
     }
   }
   // newest mentions first, overlapping windows merged, capped
-  const out: Array<{ from: string; to: string }> = [];
+  const out: RequestedWindow[] = [];
   for (const w of found.reverse()) {
     const hit = out.find((o) => w.from <= o.to && o.from <= w.to);
-    if (hit) { hit.from = hit.from < w.from ? hit.from : w.from; hit.to = hit.to > w.to ? hit.to : w.to; continue; }
+    if (hit) {
+      hit.from = hit.from < w.from ? hit.from : w.from;
+      hit.to = hit.to > w.to ? hit.to : w.to;
+      if (w.after && !hit.after) hit.after = w.after;
+      if (hit.after && hit.from <= hit.after) delete hit.after; // the merged window now includes that day
+      continue;
+    }
     if (out.length >= REQ_MAX_WINDOWS) break;
     out.push({ ...w });
   }
@@ -2434,6 +2553,10 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     if (requestedRanges.length > 0) {
       lines.push("\nDATES THE CLIENT ASKED FOR (beyond the 21 days above; same format, same rules, every open time listed here is bookable):");
       for (const r of requestedRanges) {
+        if (r.after) {
+          const a = ymd(r.after);
+          lines.push(`(the client asked for a date AFTER ${DAY_NAMES[a.weekday]}, ${MONTH_NAMES[a.month]} ${a.day} [${r.after}]: that day itself is not wanted, never offer it; start from the first line below)`);
+        }
         for (let d = r.from; d <= r.to; d = addDaysStr(d, 1)) {
           const { weekday, month, day, year } = ymd(d);
           const displayDate = `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${d}]`;
@@ -2452,7 +2575,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
         "\n- When you offer day options, you MUST name open times for EVERY day you offer, taken from each day's own line (e.g. 'Wednesday at 9am or 11am — which works?'; only when a day has a single open time do you reach into the next day, e.g. 'Wednesday at 5pm, or Thursday at 9am'). NEVER offer a day without stating its available times: the client can only pick a time you actually showed, and a booking is only valid after the client explicitly chose one of the listed times. Offering 'Wednesday at 3pm or Thursday?' is FORBIDDEN — the client may pick Thursday assuming 3pm while you book a different hour." +
         "\n- A SUMMARY OF availability is not a list of times and is equally FORBIDDEN. Never write 'Sunday with several options', 'Tuesday has plenty of availability', 'Wednesday has full availability from 9am to 7pm', 'both with plenty of times to choose from', or anything similar: a range or a count lets the client answer '10am' or '2pm' — hours that are not on the line and do not exist — and you then have to walk it back. Spell out the actual open times, comma-separated, for every day you name, however many there are." +
         "\n- If the same weekday appears on more than one line (e.g. two Tuesdays), use the SOONEST one, UNLESS the client says 'next week' or names a specific date, then use that line instead." +
-        "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above." +
+        "\n- NEVER pair a weekday with a date from a different line. NEVER compute or guess a date yourself. The weekday name and the [YYYY-MM-DD] must always come from the same line above. A day the client names by its number ('the 18th') belongs to the month the client named and its week is listed under DATES THE CLIENT ASKED FOR: read its weekday from THAT line, never from another line that happens to carry the same day number." +
         "\n- NEVER tell a client a time was 'just taken', is 'no longer available', or ask them to 'pick another time'. If a time is not listed, simply offer a different time that IS listed, naturally." +
         "\n- ONE EXCEPTION, and it is mandatory: if the client is ACCEPTING a day/time YOU offered earlier in this same conversation and that time is no longer on its line above, you must OWN IT in the first clause before anything else — a short apology that it filled up since you offered it — and only then name the real open times. Swapping their accepted slot for a different one with no acknowledgement is the worst thing you can do here: a client who confirmed 'Friday 7pm 👍' and sent his name, address and phone got back 'The soonest I have open is Sunday at 11am or 1pm' and replied 'I thought you said Friday at 7?' (Rolando, 2026-07-29) — the owner had to step in by hand. Say something like 'I'm sorry, that Friday 7pm filled up while we were talking — the closest I have now is Sunday at 11am or 1pm, which works?'. Never pretend the earlier offer did not happen, and never make the client be the one to notice." +
         "\n- Until the visit is actually confirmed, do NOT tell the client a time is 'locked in', 'all set' or 'confirmed'. Say you are holding it while you collect their address and phone. Nine clients in five days were told a slot was theirs and then had it taken away." +

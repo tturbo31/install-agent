@@ -1972,9 +1972,11 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // Weekday↔date guard for the SENTENCE the client reads. reconcileBookingWeekday
     // only ever protected the [BOOK] payload, so "Thursday July 31" (a Friday) went
     // out to the client unchecked — they write the wrong date down (5-day review,
-    // 2026-08-01). The weekday word wins; the day number is snapped to it.
+    // 2026-08-01). The weekday word wins; the day number is snapped to it. On a date
+    // the client named themselves ("any date after the 18th" → "Wednesday December
+    // 18th", WhatsApp 25/10/2026) the DATE wins and the weekday word is fixed.
     {
-      const fixed = reconcileOfferedDates(safeAiText);
+      const fixed = reconcileOfferedDates(safeAiText, undefined, history);
       if (fixed.corrections.length) {
         console.warn(`[IG] offered date corrected in outbound text: ${fixed.corrections.join("; ")}`);
         safeAiText = fixed.text;
