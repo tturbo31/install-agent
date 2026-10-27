@@ -232,7 +232,7 @@ export function pickSellerForSlot(
 export const ZIP_FIRST_NOTE_HEADER = "ZIP CODE FIRST";
 type HistoryMsg = { role: string; content: string };
 const CLIENT_GENERATED_BRACKETS = /\[(?:Client (?:shared|replied)|Floor plan analysis|Image|Photo|Attachment|Sticker|Video)[^\]]*\]/gi;
-const STREET_ADDRESS = /\b\d{1,6}\s+(?:[nsew]{1,2}\.?\s+)?[a-z0-9'.]+(?:\s+[a-z0-9'.]+){0,3}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|calle|avenida|rua)\b/i;
+const STREET_ADDRESS = /\b\d{1,6}(?:\s+|(?=[a-z]{3,}))(?:[nsew]{1,2}\.?\s+)?[a-z0-9'.]+(?:\s+[a-z0-9'.]+){0,3}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|calle|avenida|rua)\b/i;
 const AREA_CITY = /\b(?:homestead|cutler bay|coral gables|miami|hialeah|doral|kendall|pembroke pines|hollywood|fort lauderdale|ft lauderdale|pompano|coral springs|sunrise|boca raton|boca|delray|boynton|west palm|palm beach|jupiter|aventura|sunny isles|brickell|wellington|weston|davie|plantation|miramar|deerfield|lake worth|palm beach gardens|port st\.? lucie|port saint lucie|tampa|orlando|naples|fort myers|ft myers|key largo|key west|stuart|vero beach)\b/i;
 export function zipAlreadyAskedInHistory(history: HistoryMsg[]): boolean {
   return (history ?? []).some(
@@ -3212,7 +3212,10 @@ export function addressHasStreetNumber(address?: string | null): boolean {
   let t = (address ?? "").toString();
   const zip = extractZip(t);
   if (zip) t = t.replace(new RegExp(`\\b${zip}(?:-\\d{4})?\\b`), " ");
-  return /\b\d{1,6}[a-z]?\b[\s,.-]*[a-z]/i.test(t);
+  // "105harbor street" (WA 25/10/2026): the house number may come
+  // glued to the street name; three or more letters right after the digits
+  // (never an ordinal like "251st") still count as number + street.
+  return /\b\d{1,6}(?:[a-z]?\b[\s,.-]*[a-z]|(?=[a-z]{3,}))/i.test(t);
 }
 
 // True only when the [BOOK] address carries a ZIP the CLIENT actually typed in

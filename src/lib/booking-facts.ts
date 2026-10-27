@@ -15,7 +15,7 @@ import { zipsInText } from "./zip-text";
 
 export type HistoryRow = { role: string; content: string; created_at?: string | null };
 
-const STREET_RE = /\b\d{2,6}\s+(?:[nsew]{1,2}\.?\s+)?(?:[a-zà-ú0-9]+\s+){0,4}?(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path|cv|cove)\b/i;
+const STREET_RE = /\b\d{2,6}(?:\s+|(?=[a-z]{3,}))(?:[nsew]{1,2}\.?\s+)?(?:[a-zà-ú0-9]+\s+){0,4}?(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path|cv|cove)\b/i;
 const PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
 const NAME_INTRO = /\b(?:my name is|name is|me llamo|mi nombre es|meu nome [eé]|name\s*:|nombre\s*:|nome\s*:)\s*[A-Za-zÀ-ú]/i;
 const CLIENT_SYSTEM_BRACKETS = /\[(?:Client (?:shared|replied)|Floor plan analysis|Image|Photo|Attachment|Sticker|Video|floor plan or photo)[^\]]*\]/gi;

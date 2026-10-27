@@ -39,6 +39,7 @@ import {
   classifyAdCreativeType,
   isConsecutiveDuplicate,
   slotApologyAlreadyGivenNote,
+  addressAlreadyTypedNote,
   stripRepeatedSlotApology,
   adRetapNudge,
   recapForDuplicateReply,
@@ -1714,6 +1715,11 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // pedido outro dia. Uma vez basta — a menos que o CLIENTE retome o horário.
       const slotApologyNote = slotApologyAlreadyGivenNote(messagesForAI);
       if (slotApologyNote) systemParts.push(slotApologyNote);
+      // Endereço e ZIP digitados em bolhas separadas (WA 25/10/2026):
+      // os dois vão citados na nota para o modelo não pedir "the full address"
+      // de novo; o [BOOK] segue as regras normais.
+      const typedAddressNote = !isBookingConfirmed && !isRescheduling ? addressAlreadyTypedNote(history) : null;
+      if (typedAddressNote) systemParts.push(typedAddressNote);
       // O cliente está aceitando AGORA um horário que ofertamos e que já saiu da
       // linha do dia (encheu entre a oferta e a resposta): o modelo recebe o
       // horário aceito, o dia e os horários reais para assumir e reofertar.

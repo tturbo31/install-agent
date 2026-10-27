@@ -622,7 +622,7 @@ export function isVisitProposalWithZipAsk(text: string): boolean {
 // número + rua no texto É a resposta à nossa pergunta, com ou sem uma pergunta
 // do cliente junto ("33132, is the quarter round included?"): o modelo responde
 // e oferece os horários, que é o fluxo, não pressão.
-const STREET_ADDRESS = /\b\d{1,6}[a-z]?\s+(?:(?:[nsew]{1,2}\.?|north|south|east|west|northwest|northeast|southwest|southeast)\s+)?(?:[a-z0-9'.-]+\s+){0,4}(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|(?<!\b(?:the|a|my|no|any|that|this|one|other|either|same|long|right|wrong|best|only)\s)way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|trl|trail|calle|avenida|rua)\b/i;
+const STREET_ADDRESS = /\b\d{1,6}[a-z]?(?:\s+|(?=[a-z]{3,}))(?:(?:[nsew]{1,2}\.?|north|south|east|west|northwest|northeast|southwest|southeast)\s+)?(?:[a-z0-9'.-]+\s+){0,4}(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|(?<!\b(?:the|a|my|no|any|that|this|one|other|either|same|long|right|wrong|best|only)\s)way|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|trl|trail|calle|avenida|rua)\b/i;
 export function isLocationAnswer(userText: string): boolean {
   const t = (userText || "").split(/\n\n?\[SYSTEM:/)[0].trim();
   if (!t) return false;
@@ -823,6 +823,31 @@ export function clientAlreadyGaveZip(messages: Array<{ role: string; content: st
   return (messages ?? []).some(
     (m) => m.role === "user" && zipsInText((m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ")).length > 0
   );
+}
+// ENDEREÇO + ZIP EM BOLHAS SEPARADAS (cliente WA, 25/10/2026
+// 21:32 ET): "33404" respondeu a pergunta do ZIP, "105harbor street riviera
+// beaches" respondeu o pedido do endereço, e o modelo ainda assim pediu "the
+// full address ... with the zip code" duas vezes (o backstop do ZIP repetido
+// apagou só o "with the zip code" e sobrou "What's the full address for 105
+// Harbor Street, Riviera Beach?"; na vez seguinte, "What's the full street
+// address for Riviera Beach?"). As regras ZIP/ADDRESS ALREADY GIVEN do prompt
+// não bastaram: os fatos vão CITADOS na nota do turno, para o modelo não ter
+// mais nada a pedir. A nota só informa; o [BOOK] continua regido pelas regras
+// normais (horário confirmado etc.) e o retry forçado segue como rede.
+const TYPED_PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
+export function addressAlreadyTypedNote(history: Array<{ role: string; content: string }>): string | null {
+  let street: string | null = null;
+  let zip: string | null = null;
+  for (const m of history ?? []) {
+    if (m.role !== "user") continue;
+    const t = (m.content || "").split(/\n\n?\[SYSTEM:/)[0].replace(CLIENT_SYSTEM_BRACKETS, " ").replace(/\s+/g, " ").trim();
+    if (!t) continue;
+    const zips = zipsInText(t);
+    if (zips.length) zip = zips[zips.length - 1];
+    if (t.length <= 160 && STREET_ADDRESS.test(t)) street = t.replace(TYPED_PHONE_RE, " ").replace(/\s+/g, " ").trim();
+  }
+  if (!street || !zip) return null;
+  return `[ADDRESS ALREADY TYPED: the client already typed the street address "${street}" and the zip code ${zip} (possibly in separate messages). Together that IS the complete property address: do NOT ask for the address, the street, the city or the zip code again, not even to confirm it. As soon as the client has confirmed a specific day and time, write the [BOOK:...] tag in that same message using that street address plus the zip code ${zip} in the "address" field (for example "105 Harbor Street, Riviera Beach, FL 33404" when the client typed "105harbor street riviera beaches" and "33404": fix spacing and capitalization only, a house number may come glued to the street name; never change the number, the street or the zip code).]`;
 }
 // SHOWROOM (caso WA 27/08/2026): o cliente perguntou "Do you have a showroom"
 // e o modelo respondeu "We don't have a showroom". Regra do dono: a resposta é
@@ -1962,7 +1987,7 @@ const QUESTION_SIGNALS = /\?|\b(how|what|when|where|why|which|who|do you|do u|do
 // FL 33032 786-368-1800" (77 chars, no question word, contains "thank you")
 // was classified as a farewell, so the bot stayed silent AND never booked the
 // visit. Detect a phone number, a ZIP, or a "<number> <street>" address token.
-const BOOKING_INFO_SIGNALS = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b\d{5}(?:-\d{4})?\b|\b\d{1,6}\s+\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida)\b/i;
+const BOOKING_INFO_SIGNALS = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}|\b\d{5}(?:-\d{4})?\b|\b\d{1,6}(?:\s+|(?=[a-z]{3,}))\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida)\b/i;
 
 export function containsBookingInfo(text: string): boolean {
   return BOOKING_INFO_SIGNALS.test(text || "");
@@ -6534,7 +6559,7 @@ export function softenVisitClaim(text: string, lang: "en" | "es" | "pt" = "en"):
 // and a phone (typed, or the WhatsApp number). The name is never checked:
 // it is not a booking requirement (owner rule 2026-09-16), the retry note tells
 // the model to write the tag with "name":"" when the client never said it.
-const STREET_RE = /\b\d{1,6}\s+(?:[nsew]{1,2}\s+)?\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path)\b/i;
+const STREET_RE = /\b\d{1,6}(?:\s+|(?=[a-z]{3,}))(?:[nsew]{1,2}\s+)?\w+(?:\s+\w+){0,4}\s+(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path)\b/i;
 const PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
 const ZIP_RE = /\b\d{5}\b/;
 export function bookingDataLooksComplete(history: Array<{ role: string; content: string }>, phoneKnown: boolean): boolean {
@@ -6594,7 +6619,7 @@ const ASK_ITEM_RES: Array<[AskItem, RegExp]> = [
   ["name", /\b(?:name|nombre|nome)\b/i],
 ];
 const ASK_VERB = /\b(?:can i (?:get|have)|could i (?:get|have)|may i (?:get|have)|i(?:'ll)? (?:just |still )?need|(?:still|just) need|need your|what(?:'s| is) (?:the|your)|please send|send me|me (?:das|pasas?|mandas?|env[ií]as?|dices?|confirmas?)|dame|p[aá]same|necesito|cu[aá]l (?:es|ser[ií]a)|qual [eé]|me (?:passa|manda|envia|diz)|preciso)\b/i;
-const STREET_ADDRESS_RE = /\b\d{2,6}\s+(?:[nsew]{1,2}\.?\s+)?(?:[a-zà-ú0-9]+\s+){0,4}?(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path|cv|cove)\b/i;
+const STREET_ADDRESS_RE = /\b\d{2,6}(?:\s+|(?=[a-z]{3,}))(?:[nsew]{1,2}\.?\s+)?(?:[a-zà-ú0-9]+\s+){0,4}?(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|way|ter|terrace|pl|place|hwy|highway|cir|circle|calle|avenida|trail|trl|pkwy|parkway|loop|run|path|cv|cove)\b/i;
 const CLIENT_PHONE_RE = /\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/;
 const NAME_INTRO_RE = /\b(?:my name is|name is|me llamo|mi nombre es|meu nome [eé])\s*:?\s*[A-Za-zÀ-ú]|\b(?:name|nombre|nome)\s*:\s*[A-Za-zÀ-ú]|\b(?:is|es|[eé])\s+(?:my|mi|o?\s*meu)\s+(?:name|nombre|nome)\b/i;
 const NAME_IM_RE = /\b(?:I'?m|This is|Soy|Sou)\s+[A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)?\s*[.!]?$/;
