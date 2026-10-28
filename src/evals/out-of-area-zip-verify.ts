@@ -24,7 +24,7 @@
  */
 import {
   outOfAreaZipStanding, outOfAreaLeak, claimsCoverage, outOfAreaNote, containsSchedulingOffer, isAskingForBookingInfo,
-  portStLucieStanding, isPortStLucieHandoff, clientAlreadyGaveZip, getAIResponse, type ChatMessage,
+  portStLucieStanding, isPortStLucieHandoff, isSizeAsk, clientAlreadyGaveZip, getAIResponse, type ChatMessage,
 } from "../lib/ai";
 import { outOfAreaDeclineMessage, bookingAddressOutOfArea, bookingAddressHasZip, extractZip } from "../lib/scheduler";
 import { zipsInText, isServiceAreaZip, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "../lib/zip-text";
@@ -131,7 +131,7 @@ const dream = readFileSync(join(process.cwd(), "src/lib/dreaming.ts"), "utf-8").
 ck("prompt: ZIP CODE TEST = 33000-33499, Orlando/Windermere listados, nunca nomear a cidade, nunca 'we cover that area'", /ZIP CODE TEST: our service area is EXACTLY the ZIP codes 33000 to 33499/.test(base) && /Orlando, Windermere, Kissimmee/.test(base) && /never name the city you think a ZIP belongs to/.test(base) && /NEVER say "we cover that area" for such a ZIP/.test(base) && /except the Port St\. Lucie ZIPs, see the note/.test(base));
 ck("prompt: Central / North Florida fora da área + 'lista não cobre'", /nor Central and North Florida: Orlando and everything around it \(Windermere, Kissimmee, Davenport/.test(base) && /Not being on these lists does not make a place covered/.test(base));
 ck("ai.ts: regra 26 com Central Florida + faixa de ZIP", /nor Central and North Florida \(Orlando, Windermere, Kissimmee, Davenport, Clermont, Lakeland, Ocala, Jacksonville\), nor north of Jupiter/.test(ai) && /By ZIP code our area is exactly 33000-33499 \(330xx-334xx\)/.test(ai));
-ck("ai.ts: nota dinâmica + rede de vazamento + 5 guardas de fluxo", /dynamicSystem \+= "\\n\\n---\\n\\n" \+ outOfAreaNote\(outOfAreaStandingZip\);/.test(ai) && /if \(outOfAreaLeak\(messages, cleaned\)\) \{[\s\S]{0,400}cleaned = outOfAreaDeclineMessage\(usersLang\(\)\);/.test(ai) && (ai.match(/!portStLucieStanding\(messages\) && outOfAreaZipStanding\(messages\) === null/g) ?? []).length === 5);
+ck("ai.ts: nota dinâmica + rede de vazamento + 5 guardas de fluxo", /dynamicSystem \+= "\\n\\n---\\n\\n" \+ outOfAreaNote\(outOfAreaStandingZip\);/.test(ai) && /if \(outOfAreaLeak\(messages, cleaned\)\) \{[\s\S]{0,400}cleaned = outOfAreaDeclineMessage\(usersLang\(\)\);/.test(ai) && (ai.match(/!portStLucieReferral\(messages\) && outOfAreaZipStanding\(messages\) === null/g) ?? []).length === 5);
 ck("ai.ts: PSL ZIPs vêm de zip-text (uma fonte só)", /import \{ zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS \} from "\.\/zip-text";/.test(ai) && !/const PORT_ST_LUCIE_ZIPS = new Set/.test(ai));
 ck("scheduler.ts: outOfAreaDeclineMessage + bookingAddressOutOfArea", /export function outOfAreaDeclineMessage\(lang: Lang\)/.test(sched) && /export function bookingAddressOutOfArea\(address\?: string \| null\): string \| null/.test(sched));
 for (const [f, tag, leakVar] of [["fb-webhook", "FB", "safeResponse"], ["wa-webhook", "WA", "safeResponse"], ["webhook", "IG", "safeAiText"]]) {
@@ -180,10 +180,10 @@ async function live() {
     const c1 = await get([...fran.slice(0, -1), U("33186")]);
     console.log("   C1:", clean(c1).replace(/\s+/g, " ").slice(0, 200));
     ck("controle 33186: oferece horário, sem recusa", offersTime(c1) && !declines(c1), c1);
-    // Controle: PSL continua no fluxo do dono
+    // Controle: PSL tem fluxo próprio (regra 28/10: "3 bedroom" sem metragem → pergunta a metragem)
     const c2 = await get([...fran.slice(0, -1), U("34953")]);
     console.log("   C2:", clean(c2).replace(/\s+/g, " ").slice(0, 200));
-    ck("controle 34953 (PSL): handoff do dono, não a recusa", isPortStLucieHandoff(c2) && !declines(c2), c2);
+    ck("controle 34953 (PSL sem metragem): pergunta a metragem, não a recusa", isSizeAsk(c2) && /Port St\. Lucie/.test(c2) && !declines(c2) && !isPortStLucieHandoff(c2), c2);
     // Controle: fora e depois dentro → horário
     const c3 = await get([...steve, A(outOfAreaDeclineMessage("en")), U("Oh sorry, that's my office. The house is 33186")]);
     console.log("   C3:", clean(c3).replace(/\s+/g, " ").slice(0, 200));

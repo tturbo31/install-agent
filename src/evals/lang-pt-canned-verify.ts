@@ -98,7 +98,7 @@ ck("cancellationConfirmedMessage pt usa às 10am", /às 10am/i.test(cancellation
 
 console.log("\n[C. Recuperação de slot: mesmo dia primeiro, sem loop, PT no fonte]");
 const sched = readFileSync(join(process.cwd(), "src/lib/scheduler.ts"), "utf8");
-ck("mesmo dia pedido é tentado antes do 'mais cedo geral'", /Same-day alternatives first/.test(sched) && sched.indexOf("Same-day alternatives first") < sched.indexOf("getNextOpenSlots(21)"), "ordem invertida ou branch removido");
+ck("mesmo dia pedido é tentado antes do 'mais cedo geral'", /Same-day alternatives first/.test(sched) && sched.indexOf("Same-day alternatives first") < sched.indexOf("getNextOpenSlots(21, opts)"), "ordem invertida ou branch removido");
 ck("hora que falhou nunca é reoferecida", /Never re-offer the very time that just failed/.test(sched), "filtro do requestedTime removido");
 ck("anti-loop: recuperação repetida devolve null (→ handoff)", /recovery already sent once/.test(sched), "loop da Anna pode voltar");
 ck("variante PT da recuperação existe", /Esse horário exato eu não tenho disponível/.test(sched) && /O mais cedo que tenho disponível/.test(sched), "PT sumiu da recuperação");
@@ -108,7 +108,7 @@ const ig = readFileSync(join(process.cwd(), "src/app/api/webhook/route.ts"), "ut
 const fb = readFileSync(join(process.cwd(), "src/app/api/fb-webhook/route.ts"), "utf8");
 const wa = readFileSync(join(process.cwd(), "src/app/api/wa-webhook/route.ts"), "utf8");
 for (const [nome, src] of [["IG", ig], ["FB", fb], ["WA", wa]] as const) {
-  ck(`${nome}: slotConflictRecoveryMessage(lang, date, history, time)`, /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time(?:, bookingData\.address)?\)/.test(src), "voltou à chamada sem contexto do dia pedido");
+  ck(`${nome}: slotConflictRecoveryMessage(lang, date, history, time)`, /slotConflictRecoveryMessage\(lang, bookingData\.date, history, bookingData\.time(?:, bookingData\.address)?(?:, \{ portStLucie: pslHours \})?\)/.test(src), "voltou à chamada sem contexto do dia pedido");
   ck(`${nome}: lang usa o tipo Lang (com pt)`, /lang: Lang/.test(src), "tipo estreitado de volta a es|en");
 }
 

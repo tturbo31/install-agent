@@ -269,6 +269,24 @@ export function offerPair(times: string[]): string[] {
   return t.length <= 2 ? [...t] : [t[0], t[t.length - 1]];
 }
 
+// ─── PORT ST. LUCIE VISIT HOURS (owner rule 2026-10-28) ──────────────────────
+// "Se for marcar visita [em Port St. Lucie], ela tem que marcar os primeiros
+// horários da manhã ou da tarde. Ela não pode marcar no meio do dia." The
+// seller drives up there at the start or at the end of the day, so a Port St.
+// Lucie visit is ONLY at the first time of the morning (before 10am: 9am on
+// the grids of 2026-10-28) or in the late afternoon (5pm or later). Every
+// schedule a Port St. Lucie client sees goes through this filter (the model's
+// schedule lines, the canned re-offers) and the three webhooks block a [BOOK]
+// at any other hour (ai.ts portStLucieMode decides who is in that flow).
+export const PSL_MORNING_END_MIN = 10 * 60;
+export const PSL_LATE_START_MIN = 17 * 60;
+export function portStLucieHourAllowed(time: string | null | undefined): boolean {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm(time));
+  if (!m) return false;
+  const min = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return min < PSL_MORNING_END_MIN || min >= PSL_LATE_START_MIN;
+}
+
 // Every open hour of one day across the whole team, earliest first (owner
 // rule 2026-09-30: no seller hierarchy, the day fills). `notBefore` drops
 // today's hours inside the same-day notice. This is the ONLY source of the
@@ -1582,9 +1600,13 @@ export function bookedTimeSeenInConversation(
 
 // Sent when the client picked a day but the [BOOK] hour was never shown to them:
 // re-offer with that day's REAL open times so the pick that follows is explicit.
-export async function needTimeChoiceMessage(lang: Lang, dateStr: string): Promise<string> {
+export async function needTimeChoiceMessage(lang: Lang, dateStr: string, opts?: { portStLucie?: boolean }): Promise<string> {
   try {
     let slots = await getPreferredSlots(dateStr);
+    if (opts?.portStLucie) {
+      slots = slots.filter(portStLucieHourAllowed);
+      if (slots.length === 0) return portStLucieHoursMessage(lang, dateStr);
+    }
     if (dateStr === easternTodayStr()) {
       const nowET = easternNowHM();
       const cutoff = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
@@ -2466,7 +2488,7 @@ export function clientRequestedWindows(
   return out.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 }
 
-export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }> }): Promise<string> {
+export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }>; portStLucie?: boolean }): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
 
@@ -2497,6 +2519,12 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
     const bookings = (bookedData ?? []) as BookingRow[];
 
     const lines: string[] = ["REAL-TIME SCHEDULE AVAILABILITY (always use this, never guess):"];
+    // Port St. Lucie client (owner rule 2026-10-28): every line below keeps
+    // only the first morning time and the 5pm-and-later times.
+    const pslOnly = (s: string[]) => (opts?.portStLucie ? s.filter(portStLucieHourAllowed) : s);
+    if (opts?.portStLucie) {
+      lines.push("PORT ST. LUCIE CLIENT (owner rule 2026-10-28): the visit there is ONLY at the first time of the morning or in the late afternoon (5pm or later), never in the middle of the day, so the lines below already show ONLY those times. A midday time (11am, 1pm, 3pm...) does not exist for this client, even if the client asks for it: say in a few words that in Port St. Lucie the visit is first thing in the morning or late in the afternoon, and offer from these lines.");
+    }
 
     const nowET = easternNowHM();
     const nowMinutesPlus30 = nowET.hour * 60 + nowET.minute + SAME_DAY_MIN_NOTICE_MIN;
@@ -2517,7 +2545,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
         : undefined;
       // Owner rule 2026-09-30: no seller hierarchy. The line carries EVERY open
       // hour of the day across the team, earliest first, so the day fills.
-      const slots = openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore);
+      const slots = pslOnly(openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore));
       if (slots.length > 0) {
         hasAnySlot = true;
         const formatted = slots.map((s) => {
@@ -2560,7 +2588,7 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
         for (let d = r.from; d <= r.to; d = addDaysStr(d, 1)) {
           const { weekday, month, day, year } = ymd(d);
           const displayDate = `${DAY_NAMES[weekday]}, ${MONTH_NAMES[month]} ${day}, ${year} [${d}]`;
-          const slots = openHoursForDay(sellers, d, weekday, r.bookings, r.daysOff, undefined);
+          const slots = pslOnly(openHoursForDay(sellers, d, weekday, r.bookings, r.daysOff, undefined));
           lines.push(slots.length > 0 ? `• ${displayDate}: ${slots.map(fmt12).join(", ")}` : `• ${displayDate}: fully booked`);
         }
       }
@@ -2607,7 +2635,8 @@ function fmt12(slot: string): string {
 // returns structured data so we can build a recovery offer. Today's already-past
 // slots are dropped (30-min buffer), and fully-booked days are omitted.
 export async function getNextOpenSlots(
-  maxDays = 21
+  maxDays = 21,
+  opts?: { portStLucie?: boolean }
 ): Promise<Array<{ dateStr: string; weekday: number; times: string[] }>> {
   const db = await getAuthenticatedClient();
   const todayStr = easternTodayStr();
@@ -2639,7 +2668,8 @@ export async function getNextOpenSlots(
       ? String(Math.floor(nowMinutesPlus30 / 60)).padStart(2, "0") + ":" + String(nowMinutesPlus30 % 60).padStart(2, "0")
       : undefined;
     // The same hours the model's schedule lists: every open hour of the day.
-    const times = openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore);
+    const all = openHoursForDay(sellers, dateStr, weekday, bookings, daysOff, notBefore);
+    const times = opts?.portStLucie ? all.filter(portStLucieHourAllowed) : all;
     if (times.length > 0) out.push({ dateStr, weekday, times });
   }
   return out;
@@ -2667,7 +2697,8 @@ export async function slotConflictRecoveryMessage(
   lang: Lang,
   requestedDate?: string,
   history?: Array<{ role: string; content: string }>,
-  requestedTime?: string
+  requestedTime?: string,
+  opts?: { portStLucie?: boolean }
 ): Promise<string | null> {
   try {
     let msg: string | null = null;
@@ -2690,6 +2721,7 @@ export async function slotConflictRecoveryMessage(
         const failedHM = /^(\d{1,2}):(\d{2})/.exec((requestedTime ?? "").trim());
         const failedMin = failedHM ? parseInt(failedHM[1], 10) * 60 + parseInt(failedHM[2], 10) : null;
         let slots = (await getPreferredSlots(requestedDate)).filter((s) => {
+          if (opts?.portStLucie && !portStLucieHourAllowed(s)) return false;
           if (failedMin === null) return true;
           const [h, min] = s.split(":").map(Number);
           return h * 60 + min !== failedMin;
@@ -2721,7 +2753,7 @@ export async function slotConflictRecoveryMessage(
     }
 
     if (!msg) {
-      const open = await getNextOpenSlots(21);
+      const open = await getNextOpenSlots(21, opts);
       if (open.length === 0) return null;
       const first = open[0];
       const times = offerPair(first.times).map(fmt12);
@@ -3138,24 +3170,95 @@ export function mobileHomeDeclineMessage(lang: Lang): string {
     : "Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!";
 }
 
-// PORT ST. LUCIE (owner rule 2026-09-26): we are starting to serve it, but the
-// quote there is arranged by the owner himself, never by the chat. Sent by the
-// brain on the turn the client says they are there (with [NOTIFY_OWNER]) and
-// by the brain / the webhooks whenever a slot, a visit, a price, a [BOOK] or a
-// decline leaks while it stands. `askPhone` adds the number question on
-// Instagram / Messenger when the client has not typed one (WhatsApp already
-// has it). No "visit" / "free estimate" / "pessoalmente" words: those trip the
-// leak detectors. The "will reach out" promise is deliberate here, the
-// webhooks skip the 2026-09-14 redirect for this flow.
-export function portStLucieHandoffMessage(lang: Lang, askPhone: boolean): string {
-  if (lang === "pt") return "Port St. Lucie a gente atende sim, estamos começando por aí. O Ozzi, dono da empresa, vai entrar em contato com você direto para combinar o orçamento" + (askPhone ? ", qual o melhor número para falar com você?" : ".");
-  if (lang === "es") return "Port St. Lucie sí lo atendemos, estamos empezando en esa zona. Ozzi, el dueño de la empresa, se va a comunicar con usted directamente para coordinar el presupuesto" + (askPhone ? ", cuál es el mejor número para contactarlo?" : ".");
-  return "Port St. Lucie works, we're just starting to serve that area. Ozzi, the owner, will reach out to you directly to arrange your quote" + (askPhone ? ", what's the best number to reach you?" : ".");
+// PORT ST. LUCIE (owner rule 2026-09-26, rewritten 2026-10-28): the size
+// decides (ai.ts portStLucieMode). Size unknown → portStLucieSizeAskMessage;
+// under 1,000 sq ft → portStLucieCallOzziMessage (the client calls Ozzi, no
+// "Ozzi will reach out", no "?" and no visit words, so the leak detectors and
+// the 2026-09-14 promise redirect leave it alone); 1,000+ → the normal flow,
+// with portStLucieVisitMessage only as the swap for a decline and
+// portStLucieHoursMessage when a midday hour was picked. No dashes, no ¿ ¡.
+const PSL_INTRO: Record<Lang, string> = {
+  en: "Port St. Lucie works, we're just starting to serve that area. ",
+  es: "Port St. Lucie sí lo atendemos, estamos empezando en esa zona. ",
+  pt: "Port St. Lucie a gente atende sim, estamos começando por aí. ",
+};
+export function portStLucieSizeAskMessage(lang: Lang, intro = true): string {
+  const i = intro ? PSL_INTRO[lang] : "";
+  if (lang === "pt") return i + "Mais ou menos quantos pés quadrados tem o projeto?";
+  if (lang === "es") return i + "Más o menos cuántos pies cuadrados tiene el proyecto?";
+  return i + "About how many square feet is the project?";
 }
-export function portStLucieAckMessage(lang: Lang): string {
-  if (lang === "pt") return "Perfeito, anotado. O Ozzi, dono da empresa, vai entrar em contato com você em breve para combinar o orçamento.";
-  if (lang === "es") return "Perfecto, anotado. Ozzi, el dueño de la empresa, se va a comunicar con usted en breve para coordinar el presupuesto.";
-  return "Perfect, got it. Ozzi, the owner, will reach out to you shortly to arrange your quote.";
+export function portStLucieCallOzziMessage(lang: Lang, sqft: number | null, intro = true): string {
+  const i = intro ? PSL_INTRO[lang] : "";
+  if (lang === "pt") {
+    return i + (sqft !== null
+      ? "Para projetos com menos de 1.000 pés quadrados aí, quem cuida é o Ozzi, dono da empresa, direto. Liga pra ele no (561) 674-8334."
+      : "Para combinar aí, o melhor é falar direto com o Ozzi, dono da empresa. Liga pra ele no (561) 674-8334.");
+  }
+  if (lang === "es") {
+    return i + (sqft !== null
+      ? "Para proyectos de menos de 1,000 pies cuadrados allá, lo atiende Ozzi, el dueño, directamente. Llámelo al (561) 674-8334."
+      : "Para coordinarlo allá, lo mejor es hablar directo con Ozzi, el dueño. Llámelo al (561) 674-8334.");
+  }
+  return i + (sqft !== null
+    ? "For projects under 1,000 square feet up there, Ozzi, the owner, handles them directly. Please give him a call at (561) 674-8334."
+    : "For that one, the best is to set it up with Ozzi, the owner, directly. Please give him a call at (561) 674-8334.");
+}
+export function portStLucieCallOzziInsistMessage(lang: Lang): string {
+  if (lang === "pt") return "Esse eu não consigo fechar por aqui, em Port St. Lucie tem que ser direto com o Ozzi. Liga pra ele no (561) 674-8334.";
+  if (lang === "es") return "Ese no lo puedo coordinar por aquí, en Port St. Lucie tiene que ser directo con Ozzi. Llámelo al (561) 674-8334.";
+  return "I'm not able to set that one up through here, in Port St. Lucie it has to be with Ozzi directly. Please call him at (561) 674-8334.";
+}
+export function portStLucieVisitMessage(lang: Lang, intro = true, zipKnown = false): string {
+  const i = intro ? PSL_INTRO[lang] : "";
+  if (lang === "pt") return i + "Para esse tamanho eu meço aí e passo o preço exato, a visita é grátis. " + (zipKnown ? "Qual dia fica melhor para você?" : "Qual é o zip code do imóvel?");
+  if (lang === "es") return i + "Para ese tamaño mido en persona y le doy el precio exacto, la visita es gratis. " + (zipKnown ? "Qué día le queda mejor?" : "Cuál es el código postal de la propiedad?");
+  return i + "For that size I measure in person and give you the exact price, the visit is free. " + (zipKnown ? "What day works best for you?" : "What's the zip code of the property?");
+}
+// A midday hour was picked / booked for a Port St. Lucie visit: say when the
+// visits there are and offer the real Port St. Lucie times, that same day
+// first (its earliest and its latest), else the soonest day that has any.
+export async function portStLucieHoursMessage(lang: Lang, requestedDate?: string, failedTime?: string): Promise<string> {
+  const lead = lang === "pt"
+    ? "Em Port St. Lucie a visita é logo cedo de manhã ou no fim da tarde"
+    : lang === "es"
+      ? "En Port St. Lucie la visita es a primera hora de la mañana o al final de la tarde"
+      : "In Port St. Lucie the visit is first thing in the morning or late in the afternoon";
+  const ask = lang === "pt" ? "qual fica melhor para você?" : lang === "es" ? "cuál le queda mejor?" : "which works better for you?";
+  try {
+    const todayStr = easternTodayStr();
+    const failed = failedTime ? hhmm(failedTime) : null;
+    if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      let slots = (await getPreferredSlots(requestedDate)).filter((s) => portStLucieHourAllowed(s) && s !== failed);
+      if (requestedDate === todayStr) {
+        const nowET = easternNowHM();
+        slots = slots.filter((s) => !isSameDaySlotTooSoon(s, nowET.hour * 60 + nowET.minute));
+      }
+      if (slots.length > 0) {
+        const list = joinTimes(lang, offerPair(slots).map(fmt12));
+        if (lang === "pt") return `${lead}, nesse dia tenho ${list}, ${ask}`;
+        if (lang === "es") return `${lead}, ese día tengo ${list}, ${ask}`;
+        return `${lead}, that day I have ${list}, ${ask}`;
+      }
+    }
+    const open = (await getNextOpenSlots(21, { portStLucie: true })).filter((d) => !(failed && d.dateStr === requestedDate && d.times.length === 1 && d.times[0] === failed));
+    if (open.length > 0) {
+      const first = open[0];
+      let offer = `${dayPhrase(lang, first.dateStr, todayStr)} ${lang === "en" ? "at" : lang === "es" ? "a las" : "às"} ${joinTimes(lang, offerPair(first.times).map(fmt12))}`;
+      if (first.times.length === 1 && open[1]) {
+        const sep = lang === "en" ? " or " : lang === "es" ? " o " : " ou ";
+        offer += sep + `${dayPhrase(lang, open[1].dateStr, todayStr)} ${lang === "en" ? "at" : lang === "es" ? "a las" : "às"} ${fmt12(open[1].times[0])}`;
+      }
+      if (lang === "pt") return `${lead}, o mais cedo que tenho é ${offer}, ${ask}`;
+      if (lang === "es") return `${lead}, lo más pronto que tengo es ${offer}, ${ask}`;
+      return `${lead}, the soonest I have is ${offer}, ${ask}`;
+    }
+  } catch (err) {
+    console.error("portStLucieHoursMessage error:", err);
+  }
+  if (lang === "pt") return `${lead}, e esses horários estão cheios nas próximas semanas. Liga pro Ozzi no (561) 674-8334 para combinar.`;
+  if (lang === "es") return `${lead}, y esos horarios están llenos las próximas semanas. Llame a Ozzi al (561) 674-8334 para coordinarlo.`;
+  return `${lead}, and those times are full for the next few weeks. Please call Ozzi at (561) 674-8334 to set it up.`;
 }
 
 // OUT OF AREA BY ZIP (2026-10-21): the service area is exactly the ZIPs

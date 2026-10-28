@@ -2,7 +2,7 @@ import { zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, WHAT_IS_INCLUDED_TWO_TIER_ASK, WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE, INCLUSIONS_TWO_TIER_SENTENCE, AD_PRICE_TIER_NOTE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, portStLucieAckMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
@@ -1541,7 +1541,7 @@ export function antiPressureShouldFire(messages: ChatMessage[]): boolean {
 // Detects if client's message mentions >= 500 sqft (or equivalent sqm).
 // Returns the sqft value, or null if not a large lead.
 export function detectLargeLeadSqft(text: string): number | null {
-  const sqftMatch = text.match(/\b(?:around|about|approximately|roughly)?\s*(\d[\d,]*)\s*(?:sqft|sq\.?\s*ft\.?|square\s+feet?)/i);
+  const sqftMatch = text.match(/\b(?:around|about|approximately|roughly)?\s*(\d[\d,]*)\s*(?:sqft|sq\.?\s*ft\.?|square\s+feet?|s\s*\/\s*f\b|sg\.?\s*ft)/i);
   if (sqftMatch) {
     const n = parseInt(sqftMatch[1].replace(/,/g, ""), 10);
     if (n >= 500) return n;
@@ -2621,7 +2621,7 @@ export function faqButtonPlusTypedText(burst: string): boolean {
 // Metric side: 47+ m2 ≈ 500+ sqft.
 export function mentionsLargeSqft(text: string): boolean {
   const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
-  const re = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(sq\.?\s*(?:ft|feet|foot)?\.?|sf\b|sqft|square\s*(?:feet|foot|ft)|ft2|ft²|pies(?:\s+cuadrados)?|m2|m²|mts?2|metros?(?:\s+cuadrados)?)/gi;
+  const re = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(sq\.?\s*(?:ft|feet|foot)?\.?|sf\b|s\s*\/\s*f\b|sg\.?\s*ft|sqft|square\s*(?:feet|foot|ft)|ft2|ft²|pies(?:\s+cuadrados)?|m2|m²|mts?2|metros?(?:\s+cuadrados)?)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(t))) {
     const n = parseFloat(m[1].replace(/,/g, ""));
@@ -3255,18 +3255,27 @@ export const MOBILE_HOME_NOTE = [
   "6. Our \"mobile showroom\" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.",
 ].join("\n");
 
-// ─── PORT ST. LUCIE (owner rule 2026-09-26) ──────────────────────────────────
-// We are starting to serve Port St. Lucie, but NOT through this chat: the
-// moment the client says they are there (the city in any spelling, "PSL", St.
-// Lucie West / County, or one of its ZIP codes), the reply says we serve it and
-// that Ozzi, the owner, will reach out personally to arrange the quote; the
-// owners get the WhatsApp alert ([NOTIFY_OWNER] reaches both numbers) and the
-// reply asks for the best phone only where we do not have it. No slots, no
-// visit offer, no price, no [BOOK], and no decline: until this date the prompt
-// declined Port St. Lucie as "north of Jupiter", so the model may still try.
-// Only the client's own words count. This is the ONE flow where "Ozzi will
-// reach out" is the intended answer: the webhooks skip the 2026-09-14
-// redirectOwnerPromiseToPhone while it stands.
+// ─── PORT ST. LUCIE (owner rule 2026-09-26, rewritten 2026-10-28) ────────────
+// 2026-09-26: we started serving Port St. Lucie, but the chat never booked
+// there: every lead got "Ozzi, the owner, will reach out to you directly to
+// arrange your quote" plus the owners' WhatsApp alert, and waited. 2026-10-28
+// (owner, after Jesus Rivera on Messenger, fb_38098546056458916: "1500 S/F???
+// in Port St Lucie." got that line and the owner had to take over by hand):
+// the SIZE decides now.
+//   - 1,000 sq ft or more: the chat books the free visit like anywhere else,
+//     but ONLY at the first time of the morning or in the late afternoon (5pm
+//     or later), never in the middle of the day. The schedule the model reads
+//     and every canned re-offer are filtered (scheduler portStLucieHourAllowed)
+//     and a [BOOK] at a midday hour is blocked in the three webhooks.
+//   - under 1,000 sq ft: the client gets Ozzi's number and is asked to call
+//     him. No price, no visit, no slot, no [BOOK].
+//   - size unknown: one short question for the square feet first.
+// A whole house / home with no figure counts as 1,000+ (houses there are
+// bigger than that). After two size questions with no figure, the client gets
+// Ozzi's number instead of a third one. Nothing in this flow promises that
+// Ozzi will reach out anymore, so the 2026-09-14 redirect to his number runs
+// for Port St. Lucie too. Only the client's own words count (the city / ZIP
+// and the size).
 const PORT_ST_LUCIE_RE = /(?<![a-zà-ÿ])(?:port\s*(?:st\.?|saint|santa?|s\.)\s*luc[ií][ae]|porto\s+s[aã]o\s+l[uú]cio|puerto\s+san(?:ta)?\s+luc[ií]a|psl|(?:st\.?|saint)\s*lucie\s+(?:west|county))(?![a-zà-ÿ])/i;
 // PORT_ST_LUCIE_ZIPS lives in zip-text.ts (shared with the service-area gate).
 export function isPortStLucieMention(text: string): boolean {
@@ -3278,58 +3287,175 @@ export function isPortStLucieMention(text: string): boolean {
 export function portStLucieStanding(history: Array<{ role: string; content: string }>): boolean {
   return (history ?? []).some((m) => m.role === "user" && isPortStLucieMention(m.content));
 }
-// Our own handoff line (any language), so the leak check never flags it and
-// the client's next turn is not answered with the same canned text again.
+// The 2026-09-26 handoff ("Ozzi, the owner, will reach out"), still in the
+// history of the Port St. Lucie leads of 26/09 to 28/10.
 const PORT_ST_LUCIE_HANDOFF_RE = /\bozzi\b[^.!?\n]{0,60}\b(?:owner|dueñ[oa]|dono)\b|\b(?:owner|dueñ[oa]|dono)\b[^.!?\n]{0,60}\bozzi\b/i;
 export function isPortStLucieHandoff(text: string): boolean {
   const t = text || "";
   return /port\s*st\.?\s*lucie/i.test(t) && PORT_ST_LUCIE_HANDOFF_RE.test(t);
 }
-export function portStLucieHandoffGiven(history: Array<{ role: string; content: string }>): boolean {
-  return (history ?? []).some((m) => m.role === "assistant" && isPortStLucieHandoff(m.content));
-}
-// The client's phone is known on WhatsApp (the channel note says so) or when
-// the client typed one in any bubble. Otherwise the handoff asks for it.
 const PSL_PHONE_RE = /(?:\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)/;
-export function clientTypedPhone(history: Array<{ role: string; content: string }>): boolean {
-  return (history ?? []).some((m) => m.role === "user" && PSL_PHONE_RE.test(clientTextOnly(m.content)));
+
+export const PSL_VISIT_MIN_SQFT = 1000;
+
+// Our size question ("About how many square feet is the project?", "Cuántos
+// pies cuadrados tiene?", "Quantos pés quadrados?"): a QUESTION sentence with
+// a size word and a quantity word. "For 875 sqft I need to measure in person.
+// What's the zip code?" is not one (the size word sits outside the question).
+const SIZE_WORD_RE = /\b(?:square\s*f(?:ee|oo)t|sq\.?\s*ft|sqft|s\/f|pies\s+cuadrados|p[eé]s\s+quadrados|metros?\s+(?:cuadrados|quadrados)|tama[ñn]o|tamanho|metragem|how\s+big)\b/i;
+const SIZE_QTY_RE = /\b(?:how\s+(?:many|much|big)|about|approximately|roughly|cu[aá]nt[oa]s?|m[aá]s\s+o\s+menos|quant[oa]s?|mais\s+ou\s+menos|what(?:'s|\s+is)\s+the\s+(?:size|total|square)|qu[eé]\s+tama[ñn]o|qual\s+(?:[eé]\s+)?(?:o\s+)?tamanho)\b/i;
+export function isSizeAsk(text: string): boolean {
+  const t = normalizeSmartPunct((text || "").split(/\n\n?\[SYSTEM:/)[0]);
+  return (t.match(/[^.!?\n]*\?/g) ?? []).some((q) => SIZE_WORD_RE.test(q) && SIZE_QTY_RE.test(q));
 }
-export function lastClientBubbleHasPhone(history: Array<{ role: string; content: string }>): boolean {
-  const last = [...(history ?? [])].reverse().find((m) => m.role === "user");
-  return !!last && PSL_PHONE_RE.test(clientTextOnly(last.content));
+// "1,600", "about 1200", "1700 the whole house", "1.500" right after our size
+// question. Not a size: money, a clock time, a street address, a phone.
+const BARE_SIZE_NUM = /(?<![\d.,$#])(\d{1,2}[.,]\d{3}|\d{3,4})(?!\d|[.,]\d)/;
+const NOT_A_SIZE_CTX = /\$|\d\s*(?:am|pm|a\.\s?m|p\.\s?m)\b|\d:\d{2}|\b(?:st|street|ave|avenue|blvd|boulevard|dr|drive|rd|road|ln|lane|ct|court|ter|terrace|pl|place|hwy|highway|cir|circle|pkwy|parkway|trl|trail|apt|unit|suite|calle|avenida|rua)\b|\b(?:dollars?|d[oó]lares?|reais|budget|bucks)\b/i;
+function bareSizeAnswer(text: string): number | null {
+  const s = (text || "").trim();
+  if (!s || s.length > 90 || NOT_A_SIZE_CTX.test(s) || PSL_PHONE_RE.test(s)) return null;
+  const m = s.match(BARE_SIZE_NUM);
+  if (!m) return null;
+  const v = parseSqNum(m[1]);
+  return v >= 100 && v <= 20000 ? Math.round(v) : null;
 }
-export function portStLucieAskPhone(history: Array<{ role: string; content: string }>): boolean {
-  if ((history ?? []).some((m) => /\[WHATSAPP CHANNEL/i.test(m.content || ""))) return false;
-  return !clientTypedPhone(history);
+const WHOLE_HOME_RE = /\b(?:whole|entire|full|complete)\s+(?:house|home)\b|\ball\s+(?:the\s+|of\s+the\s+|my\s+)?(?:house|home)\b|\btoda\s+(?:a|la|mi|minha|nuestra|nossa)\s+casa\b|\bcasa\s+(?:toda|inteira|entera|completa)\b/i;
+
+// The project size the client gave, newest statement wins: a figure with a
+// unit (clientSqftSignals: "1500 S/F", "875 sg ft", "about 1,200 sqft", "12x14
+// kitchen", metric), the floor-plan analysis total, or a bare number answering
+// our size question. Several figures in ONE message are summed; "over N"
+// counts as N, "under N" as N - 1. A later "whole house" with no figure marks
+// the home as 1,000+ (wholeHome), a later figure clears it.
+export function portStLucieSize(history: Array<{ role: string; content: string }>): { sqft: number | null; wholeHome: boolean } {
+  let sqft: number | null = null;
+  let wholeHome = false;
+  let lastAssistant = "";
+  for (const m of history ?? []) {
+    if (m.role === "assistant") { lastAssistant = m.content || ""; continue; }
+    if (m.role !== "user") continue;
+    const raw = m.content || "";
+    const t = clientTextOnly(raw);
+    let sum = 0;
+    let stated = false;
+    for (const s of [...clientSqftSignals(t), ...analysisSqftSignals(raw)]) {
+      const v = s.q === "under" ? s.v - 1 : s.v;
+      if (v > 0) { sum += v; stated = true; }
+    }
+    if (!stated && t && isSizeAsk(lastAssistant)) {
+      const b = bareSizeAnswer(t);
+      if (b !== null) { sum = b; stated = true; }
+    }
+    if (stated) { sqft = sum; wholeHome = false; }
+    else if (t && WHOLE_HOME_RE.test(t)) wholeHome = true;
+  }
+  return { sqft, wholeHome };
 }
-// Post-model backstop while Port St. Lucie stands: a slot or visit offer, a
-// price, a booking-details ask, a [BOOK], or a decline ("outside our area",
-// "we don't cover") is replaced by the handoff.
+
+export type PortStLucieMode = "ask_size" | "call_ozzi" | "visit";
+// null = no Port St. Lucie in the client's words.
+export function portStLucieMode(history: Array<{ role: string; content: string }>): PortStLucieMode | null {
+  if (!portStLucieStanding(history)) return null;
+  const { sqft, wholeHome } = portStLucieSize(history);
+  if (wholeHome) return "visit";
+  if (sqft !== null) return sqft >= PSL_VISIT_MIN_SQFT ? "visit" : "call_ozzi";
+  const asks = (history ?? []).filter((m) => m.role === "assistant" && isSizeAsk(m.content)).length;
+  return asks >= 2 ? "call_ozzi" : "ask_size";
+}
+// The two modes where the flow is NOT the normal booking (the referral-style
+// guards of getAIResponse step aside for them, like for the other referrals).
+export function portStLucieReferral(history: Array<{ role: string; content: string }>): boolean {
+  const m = portStLucieMode(history);
+  return m === "ask_size" || m === "call_ozzi";
+}
+// We already told this client that we serve Port St. Lucie (the 26/09 handoff
+// or any line of this flow): the next canned line skips the intro.
+export function portStLucieIntroGiven(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "assistant" && /port\s*st\.?\s*lucie/i.test(m.content || ""));
+}
+// Ozzi's number already went out (our line or the model's; the WhatsApp photo
+// redirect carries it too but is not this referral).
+export function portStLucieCallSent(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "assistant" && OZZI_DIRECT_NUMBER.test(m.content || "") && !/whatsapp/i.test(m.content || ""));
+}
+// The deterministic line for the current mode (first turn, [BOOK] guard, leak net).
+export function portStLucieReply(history: Array<{ role: string; content: string }>, lang: "en" | "es" | "pt"): string {
+  const mode = portStLucieMode(history);
+  const intro = !portStLucieIntroGiven(history);
+  if (mode === "call_ozzi") {
+    return portStLucieCallSent(history) ? portStLucieCallOzziInsistMessage(lang) : portStLucieCallOzziMessage(lang, portStLucieSize(history).sqft, intro);
+  }
+  if (mode === "visit") return portStLucieVisitMessage(lang, intro, clientAlreadyGaveZip(history));
+  return portStLucieSizeAskMessage(lang, intro);
+}
+// Post-model backstop. Size unknown: a slot / visit offer, an address or zip
+// ask, a [BOOK] or a decline. Under 1,000: the same plus any dollar figure or
+// booking-details ask, or the first reply after the size without Ozzi's
+// number. 1,000+: only a decline (the rest is the normal flow; the hours are
+// filtered upstream and the [BOOK] guard checks the hour).
 const OUT_OF_AREA_DENIAL = /\b(?:outside|out\s+of)\s+(?:our|the)\s+(?:service\s+)?(?:area|range|zone)|\b(?:don'?t|do\s+not|can'?t|cannot|won'?t)\s+(?:currently\s+)?(?:serve|cover|service|reach|go\s+(?:up|out)\s+(?:there|that\s+far))\b|\bnorth\s+of\s+jupiter\b|\bonly\s+(?:serve|cover|service)\b|\bfuera\s+de\s+(?:nuestra\s+)?(?:zona|[aá]rea)|\bno\s+(?:cubrimos|atendemos|llegamos|damos\s+servicio)\b|\bfora\s+da\s+(?:nossa\s+)?(?:[aá]rea|zona)|\bn[aã]o\s+(?:atendemos|cobrimos|chegamos)\b/i;
 export function portStLucieLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
-  if (!portStLucieStanding(history)) return false;
+  const mode = portStLucieMode(history);
+  if (!mode) return false;
   const t = aiText || "";
-  if (isPortStLucieHandoff(t)) return false;
-  // Asking for the phone is part of this flow (the handoff asks it too): only
-  // an address / zip request counts as a booking-details leak here.
-  const asksAddress = t.includes("?") && /\b(?:address|property\s+address|zip(?:\s*code)?|postal\s+code|c[oó]digo\s+postal|cep|direcci[oó]n|endere[çc]o)\b/i.test(t);
-  if (/\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || asksAddress || OUT_OF_AREA_DENIAL.test(normalizeSmartPunct(t))) return true;
-  // "Ozzi will reach out to set up your free estimate" is the right answer in
-  // this flow, so the visit-offer words only count in a sentence that does not
-  // hand the visit to Ozzi.
-  return (t.match(/[^.!?\n]+(?:[.!?]+|\n+|$)/g) ?? []).some((sentence) => !/\bozzi\b/i.test(sentence) && VISIT_OFFER.test(sentence));
+  const declines = OUT_OF_AREA_DENIAL.test(normalizeSmartPunct(t));
+  if (mode === "visit") return declines;
+  if (declines || /\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t)) return true;
+  if (mode === "ask_size") {
+    return t.includes("?") && /\b(?:address|property\s+address|zip(?:\s*code)?|postal\s+code|c[oó]digo\s+postal|cep|direcci[oó]n|endere[çc]o)\b/i.test(t);
+  }
+  if (/\$\s?\d/.test(t) || isAskingForBookingInfo(t)) return true;
+  return !portStLucieCallSent(history) && !OZZI_DIRECT_NUMBER.test(t);
 }
-// The line on top of the owners' WhatsApp alert (no accents on purpose, like
-// the rest of that message).
-export const PORT_ST_LUCIE_ALERT = "LEAD DE PORT ST. LUCIE: o chat NAO agenda la. O dono precisa entrar em contato com o cliente para marcar o orcamento.";
-export const PORT_ST_LUCIE_NOTE = [
-  "CRITICAL, PORT ST. LUCIE (THE OWNER SETS UP THE QUOTE HIMSELF):",
-  "The client is in Port St. Lucie. Owner rule (2026-09-26): we DO serve Port St. Lucie now, it is the ONE exception to the Homestead-to-Jupiter service area, but the quote there is arranged by Ozzi, the owner, personally, never by this chat.",
-  "1. NEVER say we don't cover, don't serve or don't reach Port St. Lucie, never call it outside our area or north of our limit. NEVER offer visit times, NEVER propose or set up a visit or an estimate yourself, NEVER quote a price or a rate, NEVER ask for the address, NEVER generate [BOOK:...].",
-  "2. Answer whatever the client asks briefly (the floors we install, how it works, product facts) and, when it fits, remind them in one short clause that Ozzi, the owner, will reach out to them directly to arrange the quote. One or two short sentences, in the client's language.",
-  "3. If the client sends their phone number, or asks when they will be contacted, thank them briefly, say Ozzi will reach out shortly, and add [NOTIFY_OWNER] at the end.",
-  "4. Do NOT tell the client to call or message Ozzi themselves: in this flow the owner contacts them.",
-].join("\n");
+// Size unknown and the reply answered without asking anything: the size
+// question goes at the end (no intro). A reply that already asks something,
+// or carries a tag, is left alone.
+export function portStLucieEnsureSizeAsk(history: Array<{ role: string; content: string }>, reply: string, lang: "en" | "es" | "pt"): string {
+  if (portStLucieMode(history) !== "ask_size") return reply;
+  const t = reply || "";
+  if (!t.trim() || t.includes("?") || /\[[A-Z_]+/.test(t)) return reply;
+  return t.trimEnd() + " " + portStLucieSizeAskMessage(lang, false);
+}
+// The line on top of the owners' WhatsApp alert when a [NOTIFY_OWNER] goes
+// out in a Port St. Lucie conversation (no accents on purpose, like the rest
+// of that message).
+export const PORT_ST_LUCIE_ALERT = "LEAD DE PORT ST. LUCIE (regra 28/10): 1000 sq ft ou mais = visita marcada pelo chat so no primeiro horario da manha ou a partir das 5pm; abaixo de 1000 o cliente foi mandado ligar pro Ozzi.";
+// The dynamic note for the current mode (null outside Port St. Lucie).
+export function portStLucieNote(history: Array<{ role: string; content: string }>): string | null {
+  const mode = portStLucieMode(history);
+  if (!mode) return null;
+  const { sqft, wholeHome } = portStLucieSize(history);
+  const head = "CRITICAL, PORT ST. LUCIE (owner rule 2026-10-28): the client is in Port St. Lucie. We DO serve Port St. Lucie, it is the ONE exception north of Jupiter: NEVER say we don't cover it and never call it outside our area. There the SIZE decides: 1,000 square feet or more = the free visit, booked by you here, only at the first time of the morning or in the late afternoon; under 1,000 = the client calls Ozzi, the owner, directly at (561) 674-8334. NEVER say that Ozzi will reach out, call or contact them.";
+  if (mode === "visit") {
+    return [
+      head,
+      "This project is " + (wholeHome ? "the whole house" : "about " + sqft + " square feet") + ", so it is a VISIT:",
+      "1. Follow your normal flow exactly as for any client in our area: the free visit, the zip code or the full address, two times, the phone, [BOOK:...]. Do NOT send the client to Ozzi's number.",
+      "2. VISIT HOURS: in Port St. Lucie the visit is ONLY at the first time of the morning or in the late afternoon (5pm or later), never in the middle of the day. The schedule lines in this context already show ONLY those times for this client: offer from them exactly as your schedule rules say. If the client asks for a midday time (11am, 1pm, 3pm...), say in a few words that in Port St. Lucie the visit is first thing in the morning or late in the afternoon, and offer the listed times.",
+      "3. Never mention the 1,000 square feet rule to the client.",
+    ].join("\n");
+  }
+  if (mode === "call_ozzi") {
+    const sent = portStLucieCallSent(history);
+    return [
+      head,
+      sqft !== null ? "This project is about " + sqft + " square feet, UNDER 1,000, so the client calls Ozzi:" : "The client did not give the size after two questions, so the client calls Ozzi:",
+      "1. " + (sent ? "You ALREADY gave Ozzi's number in this conversation, keep it short. " : "") + "Tell the client, in their language, that for this project in Port St. Lucie Ozzi, the owner, handles it directly, and ask them to call him at (561) 674-8334. One or two short sentences.",
+      "2. NEVER give a price, a total, a rate or an estimate. NEVER propose, offer or set up a visit. NEVER offer times. NEVER ask for the name, address, zip or phone. NEVER generate [BOOK:...].",
+      "3. If the client insists on doing it here or on a price, do not give in: say you are not able to set that one up through here, it has to be with Ozzi directly, and repeat the number.",
+      "4. If the same message asks something unrelated (is it waterproof, what floors we install), answer that briefly and still give Ozzi's number.",
+      "5. Only if the client corrects the size to 1,000 square feet or more, or says it is the whole house, does the visit flow return.",
+    ].join("\n");
+  }
+  return [
+    head,
+    "The client has NOT given the size yet:",
+    "1. Do NOT offer times, do NOT propose the visit yet, do NOT ask for the address or the zip code, NEVER generate [BOOK:...] and do not send them to Ozzi.",
+    "2. Answer what the client asked in one short sentence and ask, in their language, about how many square feet the project is. If they say it is the whole house, that is enough, no number needed.",
+    "3. Never mention the 1,000 square feet rule to the client.",
+  ].join("\n");
+}
 
 // ─── OUT-OF-AREA ZIP (service area gate by code, 2026-10-21) ─────────────────
 // The prompt alone was the gate and it failed twice. "We cover that area, I
@@ -3572,7 +3698,7 @@ export function stripHumanClaim(text: string, lang: "en" | "es" | "pt" = "en"): 
 // false "on" would send a 1,500 sqft lead to the phone.
 type SqSignal = { v: number; q: "exact" | "under" | "over"; dim?: boolean };
 const SQ_NUM = String.raw`\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?`;
-const SQ_UNIT = String.raw`sq\.?\s*(?:ft|feet|foot)\.?|sf\b|sqft\b|sqf\b|square\s*(?:feet|foot|ft)\b|ft2\b|ft²|pies\s*(?:cuadrados?|²|2)\b|p[eé]s\s*(?:quadrados?|²|2)\b|sqm\b|sq\.?\s*m\b|m2\b|m²|mts?2\b|metros?\s*(?:cuadrados?|quadrados?|²|2)\b|square\s*met(?:er|re)s?\b`;
+const SQ_UNIT = String.raw`sq\.?\s*(?:ft|feet|foot)\.?|sf\b|sqft\b|sqf\b|square\s*(?:feet|foot|ft)\b|ft2\b|ft²|pies\s*(?:cuadrados?|²|2)\b|p[eé]s\s*(?:quadrados?|²|2)\b|sqm\b|sq\.?\s*m\b|m2\b|m²|mts?2\b|metros?\s*(?:cuadrados?|quadrados?|²|2)\b|square\s*met(?:er|re)s?\b|s\s*\/\s*f(?:t)?\b|sg\.?\s*(?:ft|feet)\b|sq\b(?!\.?\s*m)`;
 const SQ_LESS = String.raw`under|less\s+than|below|no\s+more\s+than|max(?:imum)?(?:\s+of)?|up\s+to|menos\s+de|m[aá]ximo(?:\s+de)?|menor\s+(?:que|de)|at[eé]|hasta|no\s+m[aá]s\s+de|n[aã]o\s+mais\s+(?:que|de)`;
 const SQ_MORE = String.raw`over|more\s+than|above|at\s+least|min(?:imum)?(?:\s+of)?|m[aá]s\s+de|mais\s+de|acima\s+de|encima\s+de|por\s+lo\s+menos|pelo\s+menos|no\s+menos\s+de`;
 const SQ_APPROX = String.raw`(?:about|around|approximately|approx\.?|roughly|maybe|like|some|only|just|aprox\.?|aproximadamente|unos|unas|uns|umas|casi|quase|s[oó]lo|solo|apenas|~)\s*`;
@@ -5259,6 +5385,9 @@ export async function getAIResponse(
     // TRAILER / MOBILE HOME (owner rule 2026-09-15): a first message that names
     // one never gets a canned opener; the model declines in the client's language.
     const mobileHomeFirstMessage = isMobileHomeRequest(burst);
+    // PORT ST. LUCIE (owner rule 2026-10-28): the size decides the flow there,
+    // so a first message from Port St. Lucie never gets a canned opener.
+    const pslFirstMessage = portStLucieStanding(messages);
     // CARPET backstop (owner rule 2026-07-30): every canned opener below names
     // only tile, vinyl, and hardwood, so firing one at a lead who asked about
     // carpet reads as "we don't install carpet" — which is false and is exactly
@@ -5284,7 +5413,7 @@ export async function getAIResponse(
     // responde o botão E o que a pessoa escreveu (revisão 4 dias 31/08).
     const faqPlusTyped = faqButtonPlusTypedText(burst);
     if (faqPlusTyped) console.log("[AI] First contact: FAQ button + typed text in the same burst — routing to the model");
-    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !pslFirstMessage && !rejectionish && !needsReading) {
       const lang = openerLang(burst);
       // MULTI-TAP FIRST: the ad quick-replies are buttons and leads tap several
       // at once, so the single-topic chain below (first match wins) answered one
@@ -5356,7 +5485,7 @@ export async function getAIResponse(
     // retirar el rodapiés anterior…"; 161 of 1,227 first contacts in 14 days).
     const openerCovers = openerCoversMessage(burst);
     if (!openerCovers) console.log("[AI] First contact carries content the canned opener does not answer — the model reads it");
-    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && openerCovers && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
+    if (!largeFirstMessage && !smallFirstMessage && !bathroomFirstMessage && !mobileHomeFirstMessage && !carpetFirstMessage && !pslFirstMessage && !rejectionish && !needsReading && !faqPlusTyped && !questionBeyondOpener(burst) && openerCovers && (isBareGreeting(lastMsg.content) || isFlooringInquiry(lastMsg.content) || (adContext && !excludedTopic))) {
       const opener = openerMessage(burst);
       console.log("[AI] First contact, type unknown — asking the flooring type:", opener.slice(0, 50));
       return { text: opener, inputTokens: 0, outputTokens: 0 };
@@ -5372,20 +5501,20 @@ export async function getAIResponse(
   if (langSwitch) console.log("[AI] language switch requested: " + langSwitch.target + " (" + langSwitch.reason + ")");
   const usersLang = (): "en" | "es" | "pt" => conversationLang(messages, langSwitch?.target);
 
-  // PORT ST. LUCIE (owner rule 2026-09-26): the turn the client says they are
-  // there gets the deterministic handoff + the owner alert (both WhatsApps); a
-  // later turn that carries their phone gets the short thank-you + alert.
-  // Everything else in that flow goes to the model with the PSL note and the
-  // leak net below.
-  if (portStLucieStanding(messages)) {
-    if (!portStLucieHandoffGiven(messages)) {
-      console.log("[AI] Port St. Lucie — sending the owner handoff + owner alert");
-      return { text: portStLucieHandoffMessage(usersLang(), portStLucieAskPhone(messages)) + "[NOTIFY_OWNER]", inputTokens: 0, outputTokens: 0 };
-    }
-    if (lastClientBubbleHasPhone(messages)) {
-      console.log("[AI] Port St. Lucie — client sent the phone; thank-you + owner alert");
-      return { text: portStLucieAckMessage(usersLang()) + "[NOTIFY_OWNER]", inputTokens: 0, outputTokens: 0 };
-    }
+  // PORT ST. LUCIE (owner rule 2026-09-26, rewritten 2026-10-28): the size
+  // decides. Size unknown → the first time, the deterministic size question;
+  // under 1,000 sq ft → the first reply is Ozzi's number, the client calls him;
+  // 1,000+ → the normal flow with the PSL visit-hours note and the filtered
+  // schedule (no early return). Later turns go to the model with the mode's
+  // note and the leak net below.
+  const pslMode = portStLucieMode(messages);
+  if (pslMode === "ask_size" && !messages.some((m) => m.role === "assistant" && isSizeAsk(m.content))) {
+    console.log("[AI] Port St. Lucie, size unknown — asking the square feet");
+    return { text: portStLucieSizeAskMessage(usersLang(), !portStLucieIntroGiven(messages)), inputTokens: 0, outputTokens: 0 };
+  }
+  if (pslMode === "call_ozzi" && !portStLucieCallSent(messages)) {
+    console.log("[AI] Port St. Lucie under 1,000 sq ft (or no size after two asks) — Ozzi's number, the client calls him");
+    return { text: portStLucieReply(messages, usersLang()), inputTokens: 0, outputTokens: 0 };
   }
 
   // Check hard-coded intercepts first — bypasses AI entirely for known patterns
@@ -5399,6 +5528,8 @@ export async function getAIResponse(
     console.log("[AI] Hard-coded intercept skipped — a bathroom project stands; the model answers with the bathroom Ozzi line");
   } else if (hardcoded && mobileHomeStanding(messages)) {
     console.log("[AI] Hard-coded intercept skipped — a trailer / mobile home stands; the model declines");
+  } else if (hardcoded && portStLucieReferral(messages)) {
+    console.log("[AI] Hard-coded intercept skipped — Port St. Lucie without a visit-size project; the model answers with the PSL note");
   } else if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
     // Instagram never carries a link (owner rule 2026-10-17): the canned
@@ -5531,11 +5662,13 @@ export async function getAIResponse(
     dynamicSystem += "\n\n---\n\n" + TILE_OVER_TILE_NOTE;
   }
 
-  // PORT ST. LUCIE standing → the owner-sets-up-the-quote block (owner rule
-  // 2026-09-26): never a decline, never a slot, the owner reaches out.
-  if (portStLucieStanding(messages)) {
-    console.log("[AI] Port St. Lucie stands — injecting the owner-handles-it block");
-    dynamicSystem += "\n\n---\n\n" + PORT_ST_LUCIE_NOTE;
+  // PORT ST. LUCIE standing → the block of its mode (owner rule 2026-10-28):
+  // size unknown = ask it; under 1,000 = Ozzi's number; 1,000+ = the visit,
+  // only at the first morning time or 5pm and later. Never a decline.
+  const pslNote = portStLucieNote(messages);
+  if (pslNote) {
+    console.log("[AI] Port St. Lucie stands (" + portStLucieMode(messages) + ") — injecting its block");
+    dynamicSystem += "\n\n---\n\n" + pslNote;
   }
 
   // OUT-OF-AREA ZIP standing (2026-10-21, Davenport 33837 / Windermere 34786
@@ -5592,7 +5725,7 @@ export async function getAIResponse(
     const firstBurst = messages.filter((m) => m.role === "user").map((m) => m.content.split(/\n\n?\[SYSTEM:/)[0]).join("\n");
     if (
       clientTextOnly(firstBurst).trim() && !openerCoversMessage(firstBurst) && !mentionsRejection(firstBurst) &&
-      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null
+      !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null
     ) {
       console.log("[AI] First message says something specific — injecting the answer-it-first block");
       dynamicSystem += "\n\n---\n\n" + firstMessageContentNote(firstBurst);
@@ -5869,7 +6002,7 @@ export async function getAIResponse(
       const burst = (messages ?? []).slice(lastA + 1).filter((m) => m.role === "user").map((m) => m.content || "").join("\n");
       if (process.env.WHICH_FLOOR_BACKSTOP !== "off" && isWhichFloorQuestion(burst)) {
         const bookable = !clientAlreadyGaveZip(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages)
-          && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
+          && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
         const full = bookable && isPureWhichFloorBurst(burst) && !/\[BOOK:/i.test(cleaned);
         const fixed = fixWhichFloorReply(cleaned, usersLang(), full);
         if (fixed !== cleaned) {
@@ -5996,13 +6129,18 @@ export async function getAIResponse(
       cleaned = mobileHomeDeclineMessage(usersLang());
     }
 
-    // PORT ST. LUCIE backstop (owner rule 2026-09-26): while the client is in
-    // Port St. Lucie, a slot / visit offer, a price, a details ask, a [BOOK] or
-    // a decline is replaced by the owner handoff (no alert again: it fired on
-    // the turn the city came up).
+    // PORT ST. LUCIE backstop (owner rule 2026-10-28): size unknown → no slot,
+    // visit, address ask, [BOOK] or decline; under 1,000 → Ozzi's number and
+    // nothing else; 1,000+ → never a decline. The swap is the mode's line.
     if (portStLucieLeak(messages, cleaned)) {
-      console.warn("[AI] Port St. Lucie — model offered a visit / priced / declined; replaced with the owner handoff. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 220));
-      cleaned = portStLucieHandoffMessage(usersLang(), portStLucieAskPhone(messages));
+      console.warn("[AI] Port St. Lucie (" + portStLucieMode(messages) + ") — reply broke the flow; replaced with the mode's line. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 220));
+      cleaned = portStLucieReply(messages, usersLang());
+    } else {
+      const withSize = portStLucieEnsureSizeAsk(messages, cleaned, usersLang());
+      if (withSize !== cleaned) {
+        console.warn("[AI] Port St. Lucie, size unknown — reply asked nothing; appended the size question");
+        cleaned = withSize;
+      }
     }
 
     // OUT-OF-AREA ZIP backstop (2026-10-21): while the client's latest ZIP is
@@ -6021,7 +6159,7 @@ export async function getAIResponse(
     // "What's your number?" while a visit is being set up (Brickell, FB
     // 2026-09-14): the number alone ended the booking. Append the pending
     // question. The referral flows own their replies and are left alone.
-    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
+    if (!bookingConfirmed && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null) {
       const kept = keepBookingThreadAfterPhone(messages, cleaned, usersLang());
       if (kept !== cleaned) {
         console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
@@ -6032,7 +6170,7 @@ export async function getAIResponse(
     // "Send me your WhatsApp" / "what's your number?" and the reply came back
     // without the number (Stela Cunha, FB 2026-09-17): prepend our WhatsApp
     // line in the client's language. The referral flows own their replies.
-    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
+    if (!repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null) {
       const withNumber = ensureContactNumber(messages, cleaned, usersLang());
       if (withNumber !== cleaned) {
         console.warn("[AI] contact request — reply had no number; prepended our WhatsApp line");
@@ -6062,7 +6200,7 @@ export async function getAIResponse(
     // do not speak English (or asked for a language) and the reply is still in
     // the wrong language, or comments "Already in English": ship the
     // deterministic language-confirming line instead.
-    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieStanding(messages) && outOfAreaZipStanding(messages) === null) {
+    if (langSwitch && !repairRequestActive(messages) && !unsupportedFloorStanding(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages) && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null) {
       const inLang = enforceLanguageSwitch(messages, cleaned, langSwitch);
       if (inLang !== cleaned) {
         console.warn("[AI] language switch to " + langSwitch.target + " — reply was in the wrong language; replaced with the language-confirming line");

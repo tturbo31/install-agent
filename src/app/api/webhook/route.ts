@@ -56,7 +56,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieAskPhone, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -68,7 +68,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHandoffMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHourAllowed, portStLucieHoursMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -167,13 +167,16 @@ async function processBookingCommand(
   // TRAILER / MOBILE HOME guard (owner rule 2026-09-15): we do not work in
   // trailers, mobile homes, manufactured homes, RVs or campers. A [BOOK] while
   // the client said the property is one of those is replaced by the decline.
-  // PORT ST. LUCIE guard (owner rule 2026-09-26): we serve it, but the owner
-  // sets up the quote himself. A [BOOK] while the client is there is replaced
-  // by the owner handoff (the alert already fired on the turn the city came up).
-  if (portStLucieStanding(history)) {
-    console.warn("[IG] booking blocked — Port St. Lucie (the owner sets up the quote); sending the owner handoff");
-    return { response: portStLucieHandoffMessage(lang, portStLucieAskPhone(history)), booked: false };
+  // PORT ST. LUCIE guard (owner rule 2026-10-28): the size decides. Size
+  // unknown or under 1,000 sq ft → no [BOOK], the mode's line (the size
+  // question / Ozzi's number). 1,000+ → booked like anywhere else, but only at
+  // the first morning time or 5pm and later (pslHours, checked below).
+  const pslMode = portStLucieMode(history);
+  if (pslMode && pslMode !== "visit") {
+    console.warn("[IG] booking blocked — Port St. Lucie (" + pslMode + "); sending the mode's line");
+    return { response: portStLucieReply(history, lang), booked: false };
   }
+  const pslHours = pslMode === "visit";
   // OUT-OF-AREA ZIP guard (2026-10-21): the client's latest typed ZIP is outside
   // the service area (330xx-334xx). Davenport FL 33837 (WA, 2026-10-07) and
   // Windermere FL 34786 (FB, 2026-10-21) were booked as "we cover that area";
@@ -229,6 +232,13 @@ async function processBookingCommand(
     // confirmação de visita, só o que o cliente disse DEPOIS conta para as
     // guardas de horário. Remarcação de visita existente mantém o histórico.
     const slotHistory = isReschedule ? history : bookingEpisodeHistory(history);
+    // PORT ST. LUCIE VISIT HOURS (owner rule 2026-10-28): a Port St. Lucie
+    // visit is only at the first morning time or 5pm and later. A [BOOK] at a
+    // midday hour is blocked and the real Port St. Lucie times are offered.
+    if (pslHours && bookingData.time && !portStLucieHourAllowed(bookingData.time)) {
+      console.warn("[IG] booking blocked — Port St. Lucie visit at " + bookingData.time + " (midday); offering the morning / late-afternoon times");
+      return { response: await portStLucieHoursMessage(lang, bookingData.date, bookingData.time), booked: false };
+    }
     if (bookingData.date && bookingData.time && !clientConfirmedSlot(slotHistory)) {
       console.warn(`[IG] booking blocked — client never picked a specific slot; asking to choose`);
       return { response: needSlotConfirmationMessage(lang, slotHistory), booked: false };
@@ -241,11 +251,11 @@ async function processBookingCommand(
     // "Ok lunes" gravou 1pm. Duas horas ofertadas para o dia = a hora é do cliente.
     if (!isReschedule && bookingData.date && bookingData.time && dayOnlyPickNeedsTime(slotHistory)) {
       console.warn("[IG] booking blocked — client picked the day but that day had two or more times on offer; asking which time");
-      return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+      return { response: await needTimeChoiceMessage(lang, bookingData.date, { portStLucie: pslHours }), booked: false };
     }
     if (bookingData.date && bookingData.time && !bookedTimeSeenInConversation(slotHistory, bookingData.time)) {
       console.warn(`[IG] booking blocked — time ${bookingData.time} never appeared in the conversation; asking client to choose`);
-      return { response: await needTimeChoiceMessage(lang, bookingData.date), booked: false };
+      return { response: await needTimeChoiceMessage(lang, bookingData.date, { portStLucie: pslHours }), booked: false };
     }
 
     // PROMISE-MATCH guard: the [BOOK] must honor the LAST concrete slot promise
@@ -257,7 +267,7 @@ async function processBookingCommand(
       const pm = bookedSlotMismatchesPromise(slotHistory, bookingData.date, bookingData.time);
       if (pm.mismatch) {
         console.warn(`[IG] booking blocked — ${pm.reason}; re-offering real times`);
-        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date), booked: false };
+        return { response: await needTimeChoiceMessage(lang, pm.promisedDate ?? bookingData.date, { portStLucie: pslHours }), booked: false };
       }
     }
 
@@ -423,7 +433,7 @@ async function processBookingCommand(
       // Slot the client picked is full but OTHER slots may be open: offer the
       // soonest remaining one instead of handing off (never say it was "taken").
       // Keep the AI active so the client's next pick books normally.
-      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time);
+      const recovery = await slotConflictRecoveryMessage(lang, bookingData.date, history, bookingData.time, { portStLucie: pslHours });
       if (recovery) {
         console.warn(`[IG] Slot ${bookingData.date} ${bookingData.time} full — offering alternative slots`);
         return { response: recovery, booked: false };
@@ -1689,7 +1699,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // Only fetch availability when no booking is confirmed yet.
       // After booking, showing availability causes the AI to see the booked slot as
       // "taken" and generate "that slot just got taken" on follow-up messages.
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history });
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history, portStLucie: portStLucieStanding(history) });
       scheduleText = availability;
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       // Instagram never carries a link, financing goes to Ozzi's number (owner
@@ -1821,7 +1831,9 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
           .slice(-3)
           .map((m: { role: string; content: string }) => m.content);
         const detectedSqft = recentUserTexts.reduce<number | null>((found, t) => found ?? detectLargeLeadSqft(t), null);
-        if (detectedSqft) {
+        // Port St. Lucie under 1,000 sq ft / size unknown (owner rule 2026-10-28):
+        // no "propose the visit" alert, the PSL note owns that reply.
+        if (detectedSqft && !portStLucieReferral(history)) {
           systemParts.push(`[LARGE LEAD ALERT: Client stated ${detectedSqft} sqft which is >= 500. This is a LARGE LEAD. You MUST propose the free in-person visit. Do NOT give any price or dollar amount by DM. Do NOT calculate "$X for this project". Respond with STEP 2B only.]`);
         }
       }
@@ -2099,12 +2111,12 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       safeAiText = mobileHomeDeclineMessage(lang);
     }
 
-    // PORT ST. LUCIE backstop (owner rule 2026-09-26): a slot / visit offer, a
-    // price, a details ask, a [BOOK] or a decline while the client is there is
-    // replaced by the owner handoff.
+    // PORT ST. LUCIE backstop (owner rule 2026-10-28): size unknown → no slot,
+    // visit, address ask, [BOOK] or decline; under 1,000 → Ozzi's number only;
+    // 1,000+ → never a decline. Replaced by the mode's line.
     if (!isBookingConfirmed && portStLucieLeak(history, safeAiText)) {
-      console.warn("[IG] Port St. Lucie — model offered a visit / priced / declined; replacing with the owner handoff");
-      safeAiText = portStLucieHandoffMessage(lang, portStLucieAskPhone(history));
+      console.warn("[IG] Port St. Lucie (" + portStLucieMode(history) + ") — reply broke the flow; replacing with the mode's line");
+      safeAiText = portStLucieReply(history, lang);
     }
 
     // OUT-OF-AREA ZIP backstop (2026-10-21): while the client's latest ZIP is
@@ -2213,8 +2225,8 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // Owner rule 2026-09-14: any "Ozzi / the team will reach out" left in the
     // reply becomes his direct number. The owner alert (below) still fires.
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
-    // Port St. Lucie (owner rule 2026-09-26) is the one flow where "Ozzi will
-    // reach out" is the intended answer: no redirect to his number there.
+    // Port St. Lucie (owner rule 2026-10-28) no longer promises a callback:
+    // the redirect to his number runs there too.
     // Instagram never carries a link, and financing goes to Ozzi's number
     // (owner rule 2026-10-17, ig-link-policy.ts). The send would neutralize
     // the links anyway; doing it here keeps the duplicate check and the stored
@@ -2222,7 +2234,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // reply: the client asked about financing and the reply has no Ozzi number
     // → the financing line goes in ahead of the closing question.
     const finalResponse = ensureIgFinancingHandoff(
-      neutralizeLinks(stripForbiddenTags(portStLucieStanding(history) ? afterNotify : redirectOwnerPromiseToPhone(afterNotify, lang)), lang),
+      neutralizeLinks(stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang)), lang),
       unansweredUserBurst(messagesForAI),
       lang,
     );

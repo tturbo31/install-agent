@@ -251,7 +251,7 @@ async function main() {
   ck("system prompt: return date beyond the list is STILL BOOKABLE", /A return date beyond the 21-day list is STILL BOOKABLE/.test(sp));
   for (const [name, rel] of [["Instagram", "src/app/api/webhook/route.ts"], ["WhatsApp", "src/app/api/wa-webhook/route.ts"], ["Facebook", "src/app/api/fb-webhook/route.ts"]] as const) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
-    ck(`${name}: passes the history to getRealAvailabilityContext`, /getRealAvailabilityContext\(\{ history \}\)/.test(src), rel);
+    ck(`${name}: passes the history to getRealAvailabilityContext`, /getRealAvailabilityContext\(\{ history(?:, portStLucie: portStLucieStanding\(history\))? \}\)/.test(src), rel);
   }
 
   console.log(`\n============== FAR-DATE-BOOKING-VERIFY: ${pass} passed, ${fail} failed ==============`);

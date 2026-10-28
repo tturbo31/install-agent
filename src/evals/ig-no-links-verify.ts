@@ -130,7 +130,7 @@ async function main() {
   const wh = read("src/app/api/webhook/route.ts");
   ck("imports the policy", /import \{ IG_CHANNEL_NOTE, neutralizeLinks, ensureIgFinancingHandoff \} from "@\/lib\/ig-link-policy";/.test(wh));
   ck("IG_CHANNEL_NOTE pushed into systemParts right after date + schedule", /const systemParts: string\[\] = availability \? \[dateContext, availability\] : \[dateContext\];[\s\S]{0,400}systemParts\.push\(IG_CHANNEL_NOTE\);/.test(wh));
-  ck("finalResponse = ensureIgFinancingHandoff(neutralizeLinks(stripForbiddenTags(...), lang), unansweredUserBurst(messagesForAI), lang)", /const finalResponse = ensureIgFinancingHandoff\(\s*\n\s*neutralizeLinks\(stripForbiddenTags\(portStLucieStanding\(history\) \? afterNotify : redirectOwnerPromiseToPhone\(afterNotify, lang\)\), lang\),\s*\n\s*unansweredUserBurst\(messagesForAI\),\s*\n\s*lang,\s*\n\s*\);/.test(wh));
+  ck("finalResponse = ensureIgFinancingHandoff(neutralizeLinks(stripForbiddenTags(...), lang), unansweredUserBurst(messagesForAI), lang)", /const finalResponse = ensureIgFinancingHandoff\(\s*\n\s*neutralizeLinks\(stripForbiddenTags\(redirectOwnerPromiseToPhone\(afterNotify, lang\)\), lang\),\s*\n\s*unansweredUserBurst\(messagesForAI\),\s*\n\s*lang,\s*\n\s*\);/.test(wh));
   ck("Messenger and WhatsApp webhooks untouched (no IG note, no IG neutralizer)", !/IG_CHANNEL_NOTE|ig-link-policy/.test(read("src/app/api/fb-webhook/route.ts")) && !/IG_CHANNEL_NOTE|ig-link-policy/.test(read("src/app/api/wa-webhook/route.ts")));
 
   console.log("\n[2b] the send: every AI link neutralized, panel keeps links");
