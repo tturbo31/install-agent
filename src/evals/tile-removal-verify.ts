@@ -61,7 +61,7 @@ async function main() {
   for (const [i, o] of cases) { const r = fixTileRemovalRate(i); ck(`fix: "${i.slice(0, 50)}"`, r === o, r); }
   const mixed = fixTileRemovalRate("Tile installation is $4.50 per sqft, labor only, and demo of the old floor is an extra $1.50 per sqft.");
   ck("keeps $4.50, swaps only the removal rate", /\$4\.50/.test(mixed) && /extra \$2 per sqft/.test(mixed) && !OLD.test(mixed), mixed);
-  ck("herringbone $11.50 untouched", fixTileRemovalRate("With our material that is $11.50 per sqft, removal not included.") === "With our material that is $11.50 per sqft, removal not included.");
+  ck("herringbone $7.50 untouched", fixTileRemovalRate("Herringbone is $7.50 per sqft with our floor, the installation and the quarter round included, removal not included.") === "Herringbone is $7.50 per sqft with our floor, the installation and the quarter round included, removal not included.");
   ck("no removal context → untouched", fixTileRemovalRate("Baseboards run about $1.50 a foot.") === "Baseboards run about $1.50 a foot.");
   const tag = fixTileRemovalRate("Tile removal is $1.50 per sqft. [NOTIFY_OWNER]");
   ck("tag survives", tag === "Tile removal is $2 per sqft. [NOTIFY_OWNER]", tag);

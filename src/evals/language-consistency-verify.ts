@@ -97,7 +97,7 @@ for (const r of [
   "Yo iría con nuestro vinyl de lujo, es 100% impermeable y aguanta muy bien el tráfico pesado. How many square feet is the space?",
   "I'd go with our luxury vinyl, it's 100% waterproof, scratch resistant and holds up great to heavy traffic. Quantos pés quadrados tem o espaço?",
   "We have a mobile showroom, I bring the samples to you on the free visit. Cuál es el código postal de la propiedad?",
-  "Herringbone has its own price, it's $4 per sqft for the installation labor, and our herringbone material is $7.50 per sqft. Cuántos pies cuadrados tienes aproximadamente?",
+  "Herringbone has its own promo: $7.50 per sqft with our luxury vinyl herringbone floor, the installation and the quarter round included, or $4 per sqft labor only if you supply the material. Cuántos pies cuadrados tienes aproximadamente?",
 ]) ck(`misturada: «${r.slice(0, 70)}»`, replyMixesLanguages(r), [...replyLanguageKinds(r)].join(","));
 for (const r of [
   "Yo iría con nuestro vinyl de lujo, es 100% impermeable, resistente a rayones y aguanta muy bien el tráfico pesado. Que tan grande es el area que quieres cambiar?",
