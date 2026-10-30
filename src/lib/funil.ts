@@ -651,7 +651,41 @@ function identidade(conv: ConvFunil, msgs: MsgRow[], extraFone?: string | null):
     // TELEFONE CORRIGIDO NO CHAT (22/10/2026): vale para TODOS os canais e é o
     // ÚLTIMO número diferente que o cliente digitou — ver telefoneCorrigidoNoChat.
     telefone_conversa: telefoneCorrigidoNoChat(conv.igsid, msgs, extraFone) ?? undefined,
+    // E-MAIL DIGITADO NO CHAT (30/10/2026) — ver emailDoContato.
+    email: emailDoContato(msgs, extraFone) ?? undefined,
   };
+}
+
+// E-MAIL DIGITADO NO CHAT (30/10/2026). Caso real (Pothast, Messenger, Ad16):
+// o agente pediu o telefone e a cliente respondeu "Please email me At
+// Dana5puckett@gmail.com". O lead da conversa (com o clique) ficou sem
+// telefone e sem e-mail; 21 minutos depois o escritório marcou a visita no
+// calendário com outro telefone e ESSE e-mail, nasceu um segundo lead sem o
+// anúncio e a visita apareceu "o cliente disse: Instagram". A plataforma já une
+// a pessoa pelo e-mail (irmaosDoLead) — faltava o e-mail sair daqui. Vale o
+// ÚLTIMO e-mail que o CLIENTE escreveu (a correção ganha, como no telefone);
+// texto do sistema e endereços nossos (ozzifloors, sintético ia-*) nunca.
+const EMAIL_NO_TEXTO = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi;
+
+export function extrairEmail(texto: string): string | null {
+  let ultimo: string | null = null;
+  for (const bruto of semBlocosDoSistema(texto).match(EMAIL_NO_TEXTO) ?? []) {
+    const email = bruto.toLowerCase().replace(/^[._%+-]+/, "");
+    if (/ozzifloor|^ia-/.test(email)) continue;
+    ultimo = email;
+  }
+  return ultimo;
+}
+
+// `extra` = a mensagem que acabou de chegar (pode ainda não estar em `msgs`)
+export function emailDoContato(msgs: MsgRow[], extra?: string | null): string | null {
+  let ultimo: string | null = null;
+  for (const m of msgs) {
+    if (m.role !== "user") continue;
+    const email = extrairEmail(m.content);
+    if (email) ultimo = email;
+  }
+  return (extra ? extrairEmail(extra) : null) ?? ultimo;
 }
 
 // TELEFONE CORRIGIDO NO CHAT (22/10/2026). Caso real (Dilshad, Messenger,
@@ -1088,12 +1122,17 @@ export async function funilOnInboundMessage(
     // visita de 05/08 marcada pelo vendedor.
     // Dispara UMA vez, na mensagem em que o número aparece pela primeira vez; a
     // plataforma faz merge fill-if-empty (não duplica, não mexe em estágio).
-    if (canalDe(conv.igsid) !== "whatsapp") {
-      const telAgora = telefoneDoContato(conv.igsid, msgs, rawText);
-      const telAntes = telefoneDoContato(conv.igsid, anteriores);
-      if (telAgora && !telAntes) {
-        await enviarEventoFunil("lead_criado", { ...base, canal: canalDe(conv.igsid) });
-      }
+    // E-MAIL TARDIO (30/10/2026): mesmo elo, quando o cliente dá o e-mail no
+    // lugar do telefone (caso Pothast) — em todos os canais, e um envio só se
+    // telefone e e-mail chegarem na mesma mensagem.
+    const telNovo =
+      canalDe(conv.igsid) !== "whatsapp" &&
+      Boolean(telefoneDoContato(conv.igsid, msgs, rawText)) &&
+      !telefoneDoContato(conv.igsid, anteriores);
+    const emailAgora = emailDoContato(msgs, rawText);
+    const emailNovo = Boolean(emailAgora) && emailAgora !== emailDoContato(anteriores);
+    if (telNovo || emailNovo) {
+      await enviarEventoFunil("lead_criado", { ...base, canal: canalDe(conv.igsid) });
     }
 
     // 2) RETOMOU: estava marcado como sumido e voltou a falar. Quem deletar a
