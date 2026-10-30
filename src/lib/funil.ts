@@ -666,12 +666,26 @@ function identidade(conv: ConvFunil, msgs: MsgRow[], extraFone?: string | null):
 // ÚLTIMO e-mail que o CLIENTE escreveu (a correção ganha, como no telefone);
 // texto do sistema e endereços nossos (ozzifloors, sintético ia-*) nunca.
 const EMAIL_NO_TEXTO = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi;
+// Frase colada no e-mail, sem espaço depois do ponto (casos reais do censo de
+// 30/10): "…installation.Thanks.marcsuarez60@gmail.com", "phone
+// number.Mercedeswright@bellsouth.net", "info@305fights.comor whatsapp".
+const PALAVRA_DE_FRASE = /^(thanks|thank|thx|ty|number|phone|email|mail|me|is|at|please|installation|regards|here)$/i;
+
+export function limparEmailColado(bruto: string): string {
+  const arroba = bruto.indexOf("@");
+  const partes = bruto.slice(0, arroba).split(".");
+  let corte = -1;
+  for (let i = 0; i < partes.length - 1; i++) if (PALAVRA_DE_FRASE.test(partes[i])) corte = i;
+  const local = partes.slice(corte + 1).join(".").replace(/^[._%+-]+/, "");
+  const dominio = bruto.slice(arroba + 1).replace(/\.(com|net|org|edu|gov)(?:or|and|y|e|ou|thanks)$/i, ".$1");
+  return `${local}@${dominio}`.toLowerCase();
+}
 
 export function extrairEmail(texto: string): string | null {
   let ultimo: string | null = null;
   for (const bruto of semBlocosDoSistema(texto).match(EMAIL_NO_TEXTO) ?? []) {
-    const email = bruto.toLowerCase().replace(/^[._%+-]+/, "");
-    if (/ozzifloor|^ia-/.test(email)) continue;
+    const email = limparEmailColado(bruto);
+    if (/ozzifloor|^ia-/.test(email) || email.startsWith("@")) continue;
     ultimo = email;
   }
   return ultimo;

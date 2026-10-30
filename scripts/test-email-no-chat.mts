@@ -55,5 +55,16 @@ checar("extra que é telefone não apaga o e-mail do histórico", emailDoContato
 checar("ponto final colado", extrairEmail("email: ana@hotmail.com.") === "ana@hotmail.com", String(extrairEmail("email: ana@hotmail.com.")));
 checar("@usuario do Instagram não é e-mail", extrairEmail("follow @ozzi.floors and @maria_lopez") === null, String(extrairEmail("follow @ozzi.floors and @maria_lopez")));
 
+// 8) frase colada sem espaço (casos reais do censo de 30/10)
+const colados: [string, string][] = [
+  ["…24x24 tile installation.Thanks.marcsuarez60@gmail.com", "marcsuarez60@gmail.com"],
+  ["Please email me your website and phone number.Mercedeswright@bellsouth.net", "mercedeswright@bellsouth.net"],
+  ["Please send any comunications to \ninfo@305fights.comor whatsapp 786-344-6973", "info@305fights.com"],
+  ["Natalie.eaufitness@gmail.com", "natalie.eaufitness@gmail.com"],
+  ["john.schmidt@megatron-inc.com", "john.schmidt@megatron-inc.com"],
+  ["my email is m.concordia@verizon.net", "m.concordia@verizon.net"],
+];
+for (const [texto, esperado] of colados) checar(`colado: ${esperado}`, extrairEmail(texto) === esperado, String(extrairEmail(texto)));
+
 console.log(`\n${ok} ok · ${falhas} falha(s)`);
 if (falhas > 0) process.exit(1);
