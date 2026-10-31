@@ -2,7 +2,7 @@ import { zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, WHAT_IS_INCLUDED_TWO_TIER_ASK, WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE, INCLUSIONS_TWO_TIER_SENTENCE, AD_PRICE_TIER_NOTE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, mobileHomeDeclineMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, trailerDeclineMessage, mobileHomeOzziDirectMessage, mobileHomeOzziInsistMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
@@ -2858,8 +2858,11 @@ The client is asking to FIX or REPLACE damaged, broken, cracked, chipped or loos
 // finish vinyl or large-format tile, never a decline.
 // Only the concrete/cement words take the "look" exclusion ("concrete look",
 // "cement finish", "cement board"); "epoxy finish" / "microcement finish" IS
-// the unsupported floor.
-const UNSUPPORTED_FLOOR_TERM = /\b(?:(?:concrete|concreto|hormig[oó]n|cement(?:o|s)?|cimento)\b(?![\s-]*(?:look|looking|looks|finish|finished|style|styled|effect|colou?r|colored|tone|toned|gr[ae]y|vibe|aesthetic|pattern|design|inspired|like\b|boards?|backer))|(?:epox[yi]\w*|ep[oó]x[iy]\w*|resins?|resinas?|micro\s*-?\s*(?:cement\w*|cimento|cemento)|microtopping|micro\s*-?\s*topping|self\s*-?\s*level\w*|autonivel\w*|overlay|skim\s*-?\s*coat\w*|pavers?|adoqu[ií]n(?:es)?|adoquinado|paving\s+stones?|flagstones?|cobblestones?|terrazz?o|porcelanato\s+l[ií]quido|piso\s+3d|cimento\s+queimado)\b)/i;
+// the unsupported floor. Brick (owner rule 2026-10-31, with the outdoor areas:
+// "we do outdoor floors with porcelain tile or vinyl, not epoxy, pavers,
+// cement or brick") takes its own exclusion: "brick look" / "brick tile" /
+// "brick pattern" is a porcelain tile, and "Brickell" never matches.
+const UNSUPPORTED_FLOOR_TERM = /\b(?:(?:concrete|concreto|hormig[oó]n|cement(?:o|s)?|cimento)\b(?![\s-]*(?:look|looking|looks|finish|finished|style|styled|effect|colou?r|colored|tone|toned|gr[ae]y|vibe|aesthetic|pattern|design|inspired|like\b|boards?|backer))|(?:bricks?|ladrillos?|tijolos?)\b(?![\s-]*(?:look|looking|looks|style|styled|effect|pattern|design|inspired|like\b|tiles?|veneer|colou?r|red|finish|porcelain))|(?:epox[yi]\w*|ep[oó]x[iy]\w*|resins?|resinas?|micro\s*-?\s*(?:cement\w*|cimento|cemento)|microtopping|micro\s*-?\s*topping|self\s*-?\s*level\w*|autonivel\w*|overlay|skim\s*-?\s*coat\w*|pavers?|adoqu[ií]n(?:es)?|adoquinado|paving\s+stones?|flagstones?|cobblestones?|terrazz?o|porcelanato\s+l[ií]quido|piso\s+3d|cimento\s+queimado)\b)/i;
 const UF_TERM_SRC = UNSUPPORTED_FLOOR_TERM.source.replace(/^\\b/, "");
 const UNSUPPORTED_FLOOR_TERM_G = new RegExp(UNSUPPORTED_FLOOR_TERM.source, "gi");
 // Types we DO install (for "the client named one of ours" — mixed messages and
@@ -3091,8 +3094,15 @@ export function unsupportedFloorLeak(history: Array<{ role: string; content: str
   return /\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t);
 }
 
+// The client's space is OUTDOORS (owner rule 2026-10-31: outdoor areas are a
+// yes with porcelain tile or vinyl). Only the client's own words count.
+const OUTDOOR_AREA_RE = /(?<![a-zà-ÿ])(?:outdoors?|outside\s+(?:area|space|floor)|exterior|patios?|porch(?:es)?|lanais?|balcon(?:y|ies)|terraces?|pool\s*decks?|back\s*yard|front\s*yard|terrazas?|balc[oó]n(?:es)?|afuera|[aá]reas?\s+extern[ao]s?|varandas?|quintal|sacadas?|terra[çc]os?)(?![a-zà-ÿ])/i;
+export function clientMentionsOutdoorArea(history: Array<{ role: string; content: string }>): boolean {
+  return (history ?? []).some((m) => m.role === "user" && OUTDOOR_AREA_RE.test(clientTextOnly(m.content)));
+}
+
 export function unsupportedFloorReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
-  return unsupportedFloorStanding(history) === "image" ? unsupportedImageClarifyMessage(lang) : unsupportedFloorDeclineMessage(lang);
+  return unsupportedFloorStanding(history) === "image" ? unsupportedImageClarifyMessage(lang) : unsupportedFloorDeclineMessage(lang, clientMentionsOutdoorArea(history));
 }
 
 // The client's latest burst carries a photo the pipeline could NOT read (the
@@ -3186,8 +3196,9 @@ export function staleThreadNote(hours: number): string {
 4. Do not mention the silence, do not apologize for the gap, and do not comment on how long it has been. Just answer what they asked, warmly and in their language.`;
 }
 
-export const UNSUPPORTED_FLOOR_NOTE = `CRITICAL, FLOOR TYPE WE DO NOT DO (EPOXY / CONCRETE / CEMENT / MICROCEMENT / RESIN / PAVERS / TERRAZZO):
-The client is asking for a floor we do NOT install. We ONLY install luxury vinyl plank (wood look or stone/tile look, it goes right over existing tile), porcelain and ceramic tile, and hardwood (carpet and laminate installation too if they ask). We do NOT do epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, or terrazzo. Not even "to take a look".
+export const UNSUPPORTED_FLOOR_NOTE = `CRITICAL, FLOOR TYPE WE DO NOT DO (EPOXY / CONCRETE / CEMENT / MICROCEMENT / RESIN / PAVERS / BRICK / TERRAZZO):
+The client is asking for a floor we do NOT install. We ONLY install luxury vinyl plank (wood look or stone/tile look, it goes right over existing tile), porcelain and ceramic tile, and hardwood (carpet and laminate installation too if they ask). We do NOT do epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers, brick or any paving, or terrazzo. Not even "to take a look".
+OUTDOOR AREAS ARE NOT THE PROBLEM (owner rule 2026-10-31): we DO install in outdoor areas (patio, porch, lanai, balcony, terrace, pool deck) with porcelain tile or vinyl. If the space is outdoors, decline only the material and offer porcelain tile or vinyl for that same area. Example: "Pavers aren't something we do, but for the patio we can install porcelain tile or vinyl. Would one of those be a good fit for it?"
 1. Say so politely, in one or two short sentences and in the client's language, name what we DO install, and ask if one of those would work for them. Example: "Epoxy isn't something we do, we install luxury vinyl plank (wood or stone look, it goes right over existing tile), porcelain and ceramic tile, hardwood and carpet. Would one of those be a good fit for your space?"
 2. NEVER offer, propose or set up a visit or estimate for that floor. NEVER ask for their name, address or phone. NEVER quote a price for it. NEVER say you need to see it in person. NEVER generate [BOOK:...].
 3. If the same message also asks something unrelated, answer that part normally.
@@ -3203,57 +3214,104 @@ export const UNREADABLE_IMAGE_NOTE = `CRITICAL, THE CLIENT SENT A PHOTO YOU CANN
 The latest client message contains "[floor plan or photo]" with no analysis: the image could not be read on our side, so you have NOT seen it. NEVER pretend you saw it, never describe it, never infer the floor type, the size of the space or its condition from it, never say "for a space that size". Say briefly that the photo did not come through on your side and ask what it shows (the floor they want, or the area to be done). If the flooring type is still unknown, ask which type they have in mind (luxury vinyl, tile or hardwood) in the SAME short message; this one re-ask is allowed even if the type was asked before, because their answer was the photo you could not see, so word it differently from the opener. Do NOT propose visit slots or ask for booking details in this turn unless the flooring type is already known from the client's own words.`;
 
 
-// ─── Trailers / mobile homes: we do NOT work in them (owner rule 2026-09-15) ─
-// The owner does not install in trailers, mobile homes, manufactured homes,
-// RVs or campers, of any size and with any floor type. Three layers, mirroring
-// the no-repairs guard: (1) prompt section TRAILERS AND MOBILE HOMES, (2) the
-// CRITICAL block injected while the request stands, (3) deterministic block of
+// ─── Trailers vs mobile homes (owner rules 2026-09-15 and 2026-10-31) ───────
+// 2026-09-15: "we don't work in trailers or mobile homes", both declined.
+// 2026-10-31 (owner): "the AI says we don't install in mobile homes, but we
+// do: a mobile home goes to Ozzi directly at (561) 674-8334; we only do
+// mobile homes, not trailers". Two kinds now:
+//   - "mobile": mobile home, manufactured home, double / single / triple wide,
+//     casa móvil, casa móvel. We DO it, but like the bathrooms it is Ozzi's:
+//     yes we do it + his number, never a price, a visit, a slot or a [BOOK].
+//   - "trailer": trailer (home / park), travel trailer, RV, camper, motor
+//     home, park model, traila, casa rodante, remolque. Still declined.
+// The same bubble naming both ("mobile home in a trailer park", "single-wide
+// trailer") is a mobile home: Ozzi looks at it, a lead is never lost to a
+// word. Three layers, as before: (1) prompt section TRAILERS VS MOBILE HOMES,
+// (2) the CRITICAL block injected while it stands, (3) deterministic block of
 // [BOOK] / price / visit or slot offer / booking-details ask in getAIResponse
 // and in the three webhooks. Only the client's own words count (never the
 // bot's, never a photo analysis bubble), and our own "mobile showroom" never
-// does. A client who says it is NOT a trailer / mobile home clears the flag.
-const MOBILE_HOME_RE = /(?<![a-zà-ÿ])(?:mobile[\s-]*homes?|mobilehomes?|manufactured\s+(?:homes?|houses?|housing)|trailer\s+(?:homes?|parks?)|trailers?|trailas?|traylas?|double[\s-]*wides?|single[\s-]*wides?|park\s+models?|motor[\s-]*homes?|campers?|rvs?|casas?\s+m[oó]vil(?:es)?|casas?\s+m[oó]ve(?:l|is)|casas?\s+rodantes?|casas?\s+remolques?|remolques?)(?![a-zà-ÿ])/i;
-const MOBILE_HOME_NEGATION = /(?<![a-zà-ÿ])(?:not|isn'?t|it'?s\s+not|is\s+not|no\s+es|no\s+e|n[aã]o\s+[eé]|nem\s+[eé])\s+(?:in\s+)?(?:a\s+|an\s+|un\s+|una\s+|um\s+|uma\s+)?(?:mobile[\s-]*home|trailer|manufactured|casa\s+m[oó]vil|casa\s+m[oó]vel|casa\s+rodante)/i;
+// does. A client who says it is NOT one clears the flag ("not a trailer, it's
+// a mobile home" switches it to mobile).
+const MOBILE_HOME_RE = /(?<![a-zà-ÿ])(?:mobile[\s-]*homes?|mobilehomes?|manufactured\s+(?:homes?|houses?|housing)|(?:double|single|triple)[\s-]*wides?|casas?\s+m[oó]vil(?:es)?|casas?\s+m[oó]ve(?:l|is))(?![a-zà-ÿ])/i;
+const TRAILER_RE = /(?<![a-zà-ÿ])(?:trailer\s+(?:homes?|parks?)|trailers?|trailas?|traylas?|park\s+models?|motor[\s-]*homes?|campers?|rvs?|casas?\s+rodantes?|casas?\s+remolques?|remolques?)(?![a-zà-ÿ])/i;
+const MOBILE_HOME_NEGATION = /(?<![a-zà-ÿ])(?:not|isn'?t|it'?s\s+not|is\s+not|no\s+es|no\s+e|n[aã]o\s+[eé]|nem\s+[eé])\s+(?:in\s+)?(?:a\s+|an\s+|un\s+|una\s+|um\s+|uma\s+)?(?:mobile[\s-]*home|trailer|manufactured|casa\s+m[oó]vil|casa\s+m[oó]vel|casa\s+rodante)/gi;
 const OUR_MOBILE_SHOWROOM = /mobile\s+show\s*rooms?|show\s*rooms?\s+m[oó]v(?:il|el)/gi;
-export function isMobileHomeRequest(text: string): boolean {
-  const t = clientTextOnly(text);
-  if (!t) return false;
+export type MobileHomeKind = "mobile" | "trailer";
+// One client message: "mobile" / "trailer" when it names one, "none" when it
+// only says it is NOT one, null when it says nothing about it.
+function mobileHomeKindOf(content: string): MobileHomeKind | "none" | null {
+  const t = clientTextOnly(content);
+  if (!t) return null;
   const stripped = normalizeSmartPunct(t).replace(OUR_MOBILE_SHOWROOM, " ");
-  if (MOBILE_HOME_NEGATION.test(stripped)) return false;
-  return MOBILE_HOME_RE.test(stripped);
+  const rest = stripped.replace(MOBILE_HOME_NEGATION, " ");
+  if (MOBILE_HOME_RE.test(rest)) return "mobile";
+  if (TRAILER_RE.test(rest)) return "trailer";
+  return rest !== stripped ? "none" : null;
 }
-// Conversation-level: the trailer / mobile home stands from the client bubble
-// that named it until a client bubble says it is NOT one.
-export function mobileHomeStanding(history: Array<{ role: string; content: string }>): boolean {
-  let standing = false;
+export function isMobileHomeRequest(text: string): boolean {
+  const k = mobileHomeKindOf(text);
+  return k === "mobile" || k === "trailer";
+}
+// Conversation-level: the kind named by the newest client bubble that names
+// one, until a client bubble says it is NOT one.
+export function mobileHomeKind(history: Array<{ role: string; content: string }>): MobileHomeKind | null {
+  let kind: MobileHomeKind | null = null;
   for (const m of history ?? []) {
     if (m.role !== "user") continue;
-    const t = clientTextOnly(m.content);
-    if (!t) continue;
-    const stripped = normalizeSmartPunct(t).replace(OUR_MOBILE_SHOWROOM, " ");
-    if (MOBILE_HOME_NEGATION.test(stripped)) standing = false;
-    else if (MOBILE_HOME_RE.test(stripped)) standing = true;
+    const k = mobileHomeKindOf(m.content);
+    if (k === "none") kind = null;
+    else if (k) kind = k;
   }
-  return standing;
+  return kind;
 }
-// Post-model backstop while a trailer / mobile home stands: the model quoted
-// (any dollar figure), offered a visit or slots, asked for the booking details
-// or wrote a [BOOK]. The caller swaps the reply for mobileHomeDeclineMessage.
+// A trailer OR a mobile home stands: either way the normal flow (price,
+// visit, canned openers) steps aside.
+export function mobileHomeStanding(history: Array<{ role: string; content: string }>): boolean {
+  return mobileHomeKind(history) !== null;
+}
+// Post-model backstop: the model quoted (any dollar figure), offered a visit
+// or slots, asked for the booking details or wrote a [BOOK]; for a mobile
+// home also the first reply after it came up without Ozzi's number. The caller
+// swaps the reply for mobileHomeReply.
 export function mobileHomeLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
-  if (!mobileHomeStanding(history)) return false;
+  const kind = mobileHomeKind(history);
+  if (!kind) return false;
   const t = aiText || "";
-  return /\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t);
+  if (/\[BOOK:/i.test(t) || /\$\s?\d/.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t)) return true;
+  if (kind === "trailer") return false;
+  // A mobile home is never declined, and the first reply carries the number.
+  if (MOBILE_HOME_DECLINE_RE.test(normalizeSmartPunct(t))) return true;
+  return !smallJobReferralSent(history) && !OZZI_DIRECT_NUMBER.test(t);
 }
-export const MOBILE_HOME_NOTE = [
-  "CRITICAL, TRAILER / MOBILE HOME (WE DO NOT WORK IN THEM):",
-  "The client's property is a trailer, mobile home, manufactured home, RV or camper. Owner rule (2026-09-15): we do NOT do any work in those, of any size and with any floor type. No exceptions, not even \"just to take a look\".",
-  "1. Say so politely, in one or two short sentences and in the client's language: we don't do installations in trailers or mobile homes, so this one we can't take on, and close warmly (if they ever have a project in a house, condo or commercial space, happy to help). Example: \"Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!\"",
+const MOBILE_HOME_DECLINE_RE = /\b(?:don'?t|do\s+not|can'?t|cannot|won'?t)\s+(?:do|work|install|take)\b[^.!?\n]{0,60}\bmobile[\s-]*homes?\b|\bno\s+(?:hacemos|trabajamos|instalamos)\b[^.!?\n]{0,60}\bcasas?\s+m[oó]vil|\bn[aã]o\s+(?:fazemos|trabalhamos|instalamos)\b[^.!?\n]{0,60}\b(?:mobile[\s-]*homes?|casas?\s+m[oó]ve)/i;
+// The deterministic line: trailer → the decline; mobile home → Ozzi's number
+// (the insist line once the number already went out).
+export function mobileHomeReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
+  if (mobileHomeKind(history) === "trailer") return trailerDeclineMessage(lang);
+  return smallJobReferralSent(history) ? mobileHomeOzziInsistMessage(lang) : mobileHomeOzziDirectMessage(lang);
+}
+export const TRAILER_NOTE = [
+  "CRITICAL, TRAILER / RV / CAMPER (WE DO NOT WORK IN THEM):",
+  "The client's property is a trailer, RV, camper or motor home. Owner rule: we do NOT do any work in those, of any size and with any floor type. No exceptions, not even \"just to take a look\".",
+  "1. Say so politely, in one or two short sentences and in the client's language: we don't do installations in trailers, so this one we can't take on, and close warmly (if they ever have a project in a house, condo or commercial space, happy to help). Example: \"Unfortunately we don't do installations in trailers, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!\"",
   "2. NEVER quote a price, a rate or a total for it. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address or phone. NEVER say you need to see it in person. NEVER generate [BOOK:...].",
   "3. If the same message also asks something unrelated, answer that part briefly and still give the decline.",
-  "4. If earlier in this conversation a price was given, a visit was offered, a slot was \"held\" or booking details were collected before the trailer / mobile home came up, that was a MISTAKE: do not confirm it, do not write [BOOK:...], apologize briefly and give the decline instead.",
-  "5. Only if the client clearly says the property is NOT a trailer or mobile home (a house, condo, apartment or commercial unit) return to the normal flow.",
+  "4. If earlier in this conversation a price was given, a visit was offered, a slot was \"held\" or booking details were collected before the trailer came up, that was a MISTAKE: do not confirm it, do not write [BOOK:...], apologize briefly and give the decline instead.",
+  "5. MOBILE HOMES ARE DIFFERENT: we DO install in mobile homes and manufactured homes (Ozzi handles those directly). NEVER say we don't do mobile homes. If the client says it is actually a mobile home, that is the Ozzi line, not this decline. If they say it is a house, condo, apartment or commercial unit, return to the normal flow.",
   "6. Our \"mobile showroom\" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.",
 ].join("\n");
+export function mobileHomeNote(referralSent: boolean): string {
+  return `CRITICAL, MOBILE HOME (OZZI DIRECT: NO PRICE, NO VISIT, NO BOOKING):
+The client's property is a mobile home or manufactured home (double wide, single wide, casa móvil). Owner rule (2026-10-31, replaces the old "we don't do mobile homes"): we DO install in mobile homes, but mobile home quotes and appointments are NOT handled through this chat, Ozzi handles them personally. (Trailers, RVs and campers are still a no; a mobile home is not a trailer.)
+1. ${referralSent ? "You ALREADY gave the client Ozzi's number earlier in this conversation, so keep it short. " : ""}Tell the client, in their language, that YES we do mobile homes, that mobile home quotes and appointments are handled by Ozzi directly, and give the number (561) 674-8334. Two short sentences. Example: "Yes, we do mobile homes! Mobile home quotes and appointments are handled by Ozzi directly, he goes over the details with you himself. You can reach him at (561) 674-8334."
+2. NEVER say we don't do mobile homes or that we can't take it on. NEVER give a price, a range, a "starts at" or an estimate for it, not even approximate, not even if they insist. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address, phone or zip. NEVER generate [BOOK:...].
+3. If the client insists on a price or a visit here ("just give me a rough number", "can't you set it up here", "I don't want to call"): do NOT give in. Say you are not able to give a quote or set anything up for a mobile home through here, it really has to go through Ozzi directly, and repeat the number. Example: "I'm not able to give you a quote or set anything up for a mobile home through here, that one really has to go through Ozzi directly. Please call him at (561) 674-8334 and he'll take care of you." Never explain the internal reason, never invent a reason.
+4. If the same message also asks something unrelated (is the vinyl waterproof, do you install over tile, what floors do you have), answer that part briefly and still give the Ozzi line in the same message.
+5. If earlier in this conversation a price was given, a visit was offered, a slot was "held" or booking details were collected before the mobile home came up, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.
+6. Only if the client clearly says the property is NOT a mobile home (a house, condo, apartment or commercial unit) return to the normal flow. If they say it is actually a trailer, RV or camper, that one we don't do.
+7. Our "mobile showroom" (how we bring the samples to the client) has nothing to do with this rule, never mix the two.`;
+}
 
 // ─── PORT ST. LUCIE (owner rule 2026-09-26, rewritten 2026-10-28) ────────────
 // 2026-09-26: we started serving Port St. Lucie, but the chat never booked
@@ -3871,6 +3929,9 @@ export function smallJobStanding(history: Array<{ role: string; content: string 
       small = null;
     }
   }
+  // A trailer is declined whatever its size (owner rule 2026-10-31): Ozzi's
+  // under-400 line would read as "we do it", so the trailer decline owns it.
+  if (small !== null && mobileHomeKind(history) === "trailer") return null;
   return small;
 }
 
@@ -5382,8 +5443,9 @@ export async function getAIResponse(
     // never gets a canned opener; the model answers with the bathroom Ozzi
     // line in the client's language.
     const bathroomFirstMessage = mentionsBathroomProject(burst);
-    // TRAILER / MOBILE HOME (owner rule 2026-09-15): a first message that names
-    // one never gets a canned opener; the model declines in the client's language.
+    // TRAILER / MOBILE HOME (owner rules 2026-09-15 and 2026-10-31): a first
+    // message that names one never gets a canned opener; the model declines a
+    // trailer, or gives Ozzi's number for a mobile home, in the client's language.
     const mobileHomeFirstMessage = isMobileHomeRequest(burst);
     // PORT ST. LUCIE (owner rule 2026-10-28): the size decides the flow there,
     // so a first message from Port St. Lucie never gets a canned opener.
@@ -5527,7 +5589,7 @@ export async function getAIResponse(
   } else if (hardcoded && bathroomProjectStanding(messages)) {
     console.log("[AI] Hard-coded intercept skipped — a bathroom project stands; the model answers with the bathroom Ozzi line");
   } else if (hardcoded && mobileHomeStanding(messages)) {
-    console.log("[AI] Hard-coded intercept skipped — a trailer / mobile home stands; the model declines");
+    console.log("[AI] Hard-coded intercept skipped — a trailer / mobile home stands; the model declines the trailer / gives Ozzi's number for the mobile home");
   } else if (hardcoded && portStLucieReferral(messages)) {
     console.log("[AI] Hard-coded intercept skipped — Port St. Lucie without a visit-size project; the model answers with the PSL note");
   } else if (hardcoded) {
@@ -5599,7 +5661,7 @@ export async function getAIResponse(
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, tell them to reach Ozzi directly at (561) 674-8334 right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
 39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair. Replacing the damaged PART of a floor and MATCHING the rest ("find a match", "same floor", the client has leftover boxes of it) IS a repair even when that floor covers the whole house, and a client who already has the material for the damaged planks is STILL asking for a repair: never "Yes, we do", never a labor price, never the zip code or the square footage, never Ozzi's number for being small.
-40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers or outdoor paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).
+40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers, brick or any paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). OUTDOOR AREAS ARE A YES (owner rule 2026-10-31): patio, porch, lanai, balcony, terrace, pool deck, "área externa", "patio de afuera": we DO them with porcelain tile or vinyl, never say we only do indoor floors; decline only epoxy, pavers, cement/concrete or brick for them and offer porcelain tile or vinyl instead. When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).
 41. TILE OVER TILE (owner rule 2026-10-21): a client asking whether we install TILE over their existing tile ("tile over tile", "that tile over tile you guys do", "tile on top of the old tile", "cerámica sobre cerámica") gets YES, as long as the existing tile is in good condition: a leveling compound and a bonding primer go on first, then the new tile on top, and it is confirmed in person at the free visit. It is a TILE job ($4.50/sqft labor only, they buy the tile): NEVER answer it with our vinyl or the $5 promo even if they were looking at vinyl a minute ago, NEVER say the old tile must come out first, and never promise it works without the visit.`;
 
   // Inject booking-confirmed block directly into system prompt (highest priority — model reads it last)
@@ -5645,11 +5707,16 @@ export async function getAIResponse(
     dynamicSystem += `\n\n---\n\n${bathroomNote(smallJobReferralSent(messages))}`;
   }
 
-  // TRAILER / MOBILE HOME standing → the decline block (owner rule 2026-09-15:
-  // we do not work in trailers / mobile homes, never a price, never a visit).
-  if (mobileHomeStanding(messages)) {
-    console.log("[AI] Trailer / mobile home stands — injecting the we-do-not-work-in-them block");
-    dynamicSystem += "\n\n---\n\n" + MOBILE_HOME_NOTE;
+  // TRAILER / MOBILE HOME standing (owner rules 2026-09-15 and 2026-10-31): a
+  // trailer → the decline block; a mobile home → the Ozzi-direct block (we do
+  // them, Ozzi handles them). Never a price, never a visit, never [BOOK].
+  const mhKind = mobileHomeKind(messages);
+  if (mhKind === "trailer") {
+    console.log("[AI] Trailer stands — injecting the we-do-not-work-in-them block");
+    dynamicSystem += "\n\n---\n\n" + TRAILER_NOTE;
+  } else if (mhKind === "mobile") {
+    console.log("[AI] Mobile home stands — injecting the mobile home Ozzi-direct block");
+    dynamicSystem += "\n\n---\n\n" + mobileHomeNote(smallJobReferralSent(messages));
   }
 
   // TILE SOBRE TILE (Orlando, IG 2026-10-20): the client's current burst asks
@@ -6120,22 +6187,29 @@ export async function getAIResponse(
       cleaned = bathroomReply(messages, usersLang());
     }
 
-    // TRAILER / MOBILE HOME backstop (owner rule 2026-09-15): while the client
-    // said the property is a trailer / mobile home, any dollar figure, visit or
-    // slot offer, booking-details ask or [BOOK] is replaced by the decline.
-    // Every caller of getAIResponse gets this; the three webhooks keep a second net.
+    // TRAILER / MOBILE HOME backstop (owner rules 2026-09-15 and 2026-10-31):
+    // while the client said the property is a trailer or a mobile home, any
+    // dollar figure, visit or slot offer, booking-details ask or [BOOK] is
+    // replaced by mobileHomeReply (trailer → the decline; mobile home → Ozzi's
+    // number, also when the model declined it or left the number out on the
+    // first reply). Every caller of getAIResponse gets this; the three webhooks
+    // keep a second net.
     if (mobileHomeLeak(messages, cleaned)) {
-      console.warn("[AI] trailer / mobile home — model priced / offered a visit / asked details; replaced with the decline");
-      cleaned = mobileHomeDeclineMessage(usersLang());
+      const kind = mobileHomeKind(messages);
+      console.warn("[AI] " + kind + " — model priced / offered a visit / asked details / declined a mobile home; replaced with the " + (kind === "trailer" ? "decline" : "Ozzi line"));
+      cleaned = mobileHomeReply(messages, usersLang());
     }
 
     // PORT ST. LUCIE backstop (owner rule 2026-10-28): size unknown → no slot,
     // visit, address ask, [BOOK] or decline; under 1,000 → Ozzi's number and
     // nothing else; 1,000+ → never a decline. The swap is the mode's line.
-    if (portStLucieLeak(messages, cleaned)) {
+    // A trailer / mobile home owns the reply there too (its line has no size
+    // question on purpose), so the whole block steps aside for it.
+    const mobileHomeOwns = mobileHomeStanding(messages);
+    if (!mobileHomeOwns && portStLucieLeak(messages, cleaned)) {
       console.warn("[AI] Port St. Lucie (" + portStLucieMode(messages) + ") — reply broke the flow; replaced with the mode's line. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 220));
       cleaned = portStLucieReply(messages, usersLang());
-    } else {
+    } else if (!mobileHomeOwns) {
       const withSize = portStLucieEnsureSizeAsk(messages, cleaned, usersLang());
       if (withSize !== cleaned) {
         console.warn("[AI] Port St. Lucie, size unknown — reply asked nothing; appended the size question");

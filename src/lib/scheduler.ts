@@ -3158,16 +3158,37 @@ export function repairDeclineMessage(lang: Lang): string {
     : "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!";
 }
 
-// We do NOT work in trailers / mobile homes (owner rule 2026-09-15): sent by
+// We do NOT work in trailers / RVs / campers (owner rule 2026-09-15; since
+// 2026-10-31 mobile homes are NOT in this decline, they go to Ozzi): sent by
 // the brain and the webhooks when a [BOOK], a price, a visit offer or a
-// booking-details ask leaks through while the client said the property is one
-// (ai.mobileHomeStanding). No visit / slot words, so the leak detectors never
-// flag the line itself.
-export function mobileHomeDeclineMessage(lang: Lang): string {
-  if (lang === "pt") return "Infelizmente não fazemos instalação em trailer nem em mobile home, então esse trabalho a gente não consegue pegar. Se um dia tiver um projeto em casa, apartamento ou espaço comercial, é só me chamar!";
+// booking-details ask leaks through while the client said the property is a
+// trailer (ai.mobileHomeKind === "trailer"). Never names mobile homes. No
+// visit / slot words, so the leak detectors never flag the line itself.
+export function trailerDeclineMessage(lang: Lang): string {
+  if (lang === "pt") return "Infelizmente não fazemos instalação em trailer, então esse trabalho a gente não consegue pegar. Se um dia tiver um projeto em casa, apartamento ou espaço comercial, é só me chamar!";
   return lang === "es"
-    ? "Lamentablemente no hacemos instalaciones en trailers ni casas móviles, así que este trabajo no lo podemos tomar. Si algún día tiene un proyecto en una casa, apartamento o local comercial, con gusto le ayudo."
-    : "Unfortunately we don't do installations in trailers or mobile homes, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!";
+    ? "Lamentablemente no hacemos instalaciones en trailers, así que este trabajo no lo podemos tomar. Si algún día tiene un proyecto en una casa, apartamento o local comercial, con gusto le ayudo."
+    : "Unfortunately we don't do installations in trailers, so this one we can't take on. If you ever have a project in a house, condo or commercial space, I'm happy to help!";
+}
+
+// MOBILE HOMES (owner rule 2026-10-31): we DO install in them, but like the
+// bathrooms they are never quoted and never booked through the chat, the
+// client gets Ozzi's direct line (ai.mobileHomeKind === "mobile"). Same
+// wording constraints as the bathroom lines: no dashes except the phone one,
+// no ¿ ¡, usted register in Spanish, no "?", no visit / slot wording.
+export function mobileHomeOzziDirectMessage(lang: Lang): string {
+  if (lang === "pt") return `Sim, a gente faz mobile home! Orçamento e agendamento de mobile home é direto com o Ozzi, ele mesmo vê os detalhes com você. Você pode falar com ele no ${OZZI_DIRECT_PHONE}.`;
+  return lang === "es"
+    ? `Sí, trabajamos en casas móviles! Los presupuestos y las citas de casas móviles los maneja Ozzi directamente, él mismo revisa los detalles con usted. Puede comunicarse con él al ${OZZI_DIRECT_PHONE}.`
+    : `Yes, we do mobile homes! Mobile home quotes and appointments are handled by Ozzi directly, he goes over the details with you himself. You can reach him at ${OZZI_DIRECT_PHONE}.`;
+}
+// The client already has Ozzi's number and insists on a price or on booking
+// the mobile home here: the bot holds the line.
+export function mobileHomeOzziInsistMessage(lang: Lang): string {
+  if (lang === "pt") return `Por aqui eu não consigo passar orçamento nem marcar nada de mobile home, isso é direto com o Ozzi. Liga para ele no ${OZZI_DIRECT_PHONE} que ele te atende.`;
+  return lang === "es"
+    ? `Por aquí no puedo pasarle un presupuesto ni agendar nada de casa móvil, eso es directo con Ozzi. Llámelo al ${OZZI_DIRECT_PHONE} y él lo atiende.`
+    : `I'm not able to give you a quote or set anything up for a mobile home through here, that one really has to go through Ozzi directly. Please call him at ${OZZI_DIRECT_PHONE} and he'll take care of you.`;
 }
 
 // PORT ST. LUCIE (owner rule 2026-09-26, rewritten 2026-10-28): the size
@@ -3291,11 +3312,19 @@ export function bookingAddressOutOfArea(address?: string | null): string | null 
 // ¿ ¡, usted register in Spanish (same as repairDeclineMessage). The closing
 // question must not read as a scheduling push ("work for you" trips
 // containsSchedulingOffer and the message would flag itself as a leak).
-export function unsupportedFloorDeclineMessage(lang: Lang): string {
-  if (lang === "pt") return "Esse tipo de piso a gente não faz, não trabalhamos com epóxi, concreto, cimento, microcimento nem pavers. Instalamos piso vinílico de luxo, porcelanato e cerâmica, madeira maciça e carpete, algum desses serviria pra você?";
+// For an OUTDOOR area (owner rule 2026-10-31) only porcelain tile and vinyl
+// are offered: hardwood or carpet for a patio would be nonsense.
+export function unsupportedFloorDeclineMessage(lang: Lang, outdoor = false): string {
+  if (outdoor) {
+    if (lang === "pt") return "Esse tipo de piso a gente não faz, não trabalhamos com epóxi, concreto, cimento, pavers nem tijolo. Para área externa instalamos porcelanato ou piso vinílico, algum desses serviria pra você?";
+    return lang === "es"
+      ? "Ese tipo de piso no lo hacemos, no trabajamos con epoxy, concreto, cemento, pavers ni ladrillo. Para áreas externas instalamos porcelanato o vinyl, alguno de esos le sirve?"
+      : "That's not something we do, we don't work with epoxy, concrete, cement, pavers or brick. For outdoor areas we install porcelain tile or vinyl, would one of those be a good fit for the space?";
+  }
+  if (lang === "pt") return "Esse tipo de piso a gente não faz, não trabalhamos com epóxi, concreto, cimento, microcimento, pavers nem tijolo. Instalamos piso vinílico de luxo, porcelanato e cerâmica, madeira maciça e carpete, algum desses serviria pra você?";
   return lang === "es"
-    ? "Ese tipo de piso no lo hacemos, no trabajamos con epoxy, concreto, cemento, microcemento ni pavers. Instalamos vinyl de lujo, porcelanato y cerámica, madera natural y alfombra, alguno de esos le sirve?"
-    : "That's not something we do, we don't work with epoxy, concrete, cement, microcement or paver floors. We install luxury vinyl plank, porcelain and ceramic tile, hardwood and carpet, would one of those be a good fit for your space?";
+    ? "Ese tipo de piso no lo hacemos, no trabajamos con epoxy, concreto, cemento, microcemento, pavers ni ladrillo. Instalamos vinyl de lujo, porcelanato y cerámica, madera natural y alfombra, alguno de esos le sirve?"
+    : "That's not something we do, we don't work with epoxy, concrete, cement, microcement, pavers or brick. We install luxury vinyl plank, porcelain and ceramic tile, hardwood and carpet, would one of those be a good fit for your space?";
 }
 
 // The client's PHOTO shows a concrete / paver / epoxy-type floor and they have

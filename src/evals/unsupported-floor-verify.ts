@@ -317,7 +317,10 @@ async function main() {
   console.log("\n[2g] LIVE PT: 'Vocês fazem piso de epóxi?'");
   const r7 = await ai([u("Oi, tudo bem? Vocês fazem piso de epóxi na garagem?")]);
   console.log("   →", r7.replace(/\s+/g, " ").slice(0, 260));
-  ck("declines in Portuguese and names our floors", DECLINES_UNSUPPORTED(r7) && NAMES_OUR_FLOORS(r7), r7);
+  // A garage is outside-ish: since the outdoor rule (2026-10-31) offering just
+  // porcelain tile or vinyl for it is right, hardwood is not required there.
+  const namesGarageFloors = NAMES_OUR_FLOORS(r7) || (/\bvinyl|vinil|vin[ií]lico\b/i.test(r7) && /\b(?:tiles?|porcelain|porcelanato|cer[aâ]mica|ceramic)\b/i.test(r7));
+  ck("declines in Portuguese and names our floors", DECLINES_UNSUPPORTED(r7) && namesGarageFloors, r7);
   ck("no visit, no price, no details", !PROPOSES_VISIT(r7) && !HAS_PRICE(r7) && !ASKS_DETAILS(r7), r7);
 
   console.log("\n[2h] LIVE EN: type known, then 'actually I want microcement instead'");

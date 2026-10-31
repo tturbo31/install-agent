@@ -5,11 +5,11 @@ import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
-import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, detectAdPriceTier, adPriceTierNote, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
+import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, detectAdPriceTier, adPriceTierNote, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
 import { offerLineDeviation } from "@/lib/offer-line-guard";
 import { fetchAdCreative } from "@/lib/facebook";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, mobileHomeDeclineMessage, portStLucieHourAllowed, portStLucieHoursMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, needPhoneMessage, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, portStLucieHourAllowed, portStLucieHoursMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -92,9 +92,10 @@ async function processBookingCommand(
   // renovation, shower / tub / vanity work or "do you do bathrooms?" is never
   // booked through the chat, bathroom quotes and appointments are Ozzi's. A
   // [BOOK] while a bathroom project stands is replaced by the bathroom Ozzi line.
-  // TRAILER / MOBILE HOME guard (owner rule 2026-09-15): we do not work in
-  // trailers, mobile homes, manufactured homes, RVs or campers. A [BOOK] while
-  // the client said the property is one of those is replaced by the decline.
+  // TRAILER / MOBILE HOME guard (owner rules 2026-09-15 and 2026-10-31): we
+  // do not work in trailers, RVs or campers; mobile homes we DO, but Ozzi
+  // handles them directly. A [BOOK] while the client said the property is one
+  // of those is replaced by mobileHomeReply (the trailer decline / Ozzi's number).
   // PORT ST. LUCIE guard (owner rule 2026-10-28): the size decides. Size
   // unknown or under 1,000 sq ft → no [BOOK], the mode's line (the size
   // question / Ozzi's number). 1,000+ → booked like anywhere else, but only at
@@ -115,8 +116,8 @@ async function processBookingCommand(
     return { response: outOfAreaDeclineMessage(lang), booked: false };
   }
   if (mobileHomeStanding(history)) {
-    console.warn("[WA] booking blocked — trailer / mobile home (we do not work in them); sending the decline");
-    return { response: mobileHomeDeclineMessage(lang), booked: false };
+    console.warn("[WA] booking blocked — " + mobileHomeKind(history) + " (trailer = decline, mobile home = Ozzi direct); sending its line");
+    return { response: mobileHomeReply(history, lang), booked: false };
   }
   if (bathroomProjectStanding(history)) {
     console.warn("[WA] booking blocked — bathroom project (Ozzi direct); sending the bathroom Ozzi line");
@@ -2125,13 +2126,14 @@ async function handleWaMessage(body: Record<string, unknown>) {
       safeResponse = unsupportedFloorReply(history, lang);
     }
 
-    // TRAILER / MOBILE HOME backstop (owner rule 2026-09-15): while the client
-    // said the property is a trailer / mobile home, a price, a visit or slot
-    // offer, a booking-details ask or a [BOOK] from the model is replaced by
-    // the deterministic decline.
+    // TRAILER / MOBILE HOME backstop (owner rules 2026-09-15 and 2026-10-31):
+    // while the client said the property is a trailer / mobile home, a price,
+    // a visit or slot offer, a booking-details ask or a [BOOK] from the model
+    // (and for a mobile home also a decline, or a first reply without Ozzi's
+    // number) is replaced by mobileHomeReply.
     if (!isBookingConfirmed && mobileHomeLeak(history, safeResponse)) {
-      console.warn("[WA] trailer / mobile home — model priced / offered a visit / asked details; replacing with the decline");
-      safeResponse = mobileHomeDeclineMessage(lang);
+      console.warn("[WA] " + mobileHomeKind(history) + " — model priced / offered a visit / asked details / declined a mobile home; replacing with its line");
+      safeResponse = mobileHomeReply(history, lang);
     }
 
     // PORT ST. LUCIE backstop (owner rule 2026-10-28): size unknown → no slot,
