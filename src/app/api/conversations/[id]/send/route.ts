@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { sendInstagramMessage } from "@/lib/instagram";
-import { sendFacebookMessage } from "@/lib/facebook";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
+import { panelSend } from "@/lib/panel-send";
 
 export async function POST(
   req: NextRequest,
@@ -34,26 +32,19 @@ export async function POST(
   // Instagram: the owner typing here keeps his links (the no-link rule of
   // 2026-10-17 is about the AI), but a 508 link block still delivers a
   // link-free version (ig-link-policy.ts): the DB keeps what the client saw.
-  let storedText = body.text;
-  if (igsid.startsWith("wa_")) {
-    const waId = igsid.slice(3);
-    const waResult = await sendWhatsAppMessage(waId, body.text);
-    if (!waResult.ok) {
-      return NextResponse.json({ error: `WhatsApp send failed: ${waResult.error ?? waResult.status}` }, { status: 500 });
-    }
-  } else if (igsid.startsWith("fb_")) {
-    const psid = igsid.slice(3);
-    const fbResult = await sendFacebookMessage(psid, body.text);
-    if (!fbResult.ok) {
-      return NextResponse.json({ error: `Messenger send failed: ${fbResult.error ?? "unknown"}` }, { status: 500 });
-    }
-  } else {
-    const igResult = await sendInstagramMessage(igsid, body.text, { allowLinks: true });
-    if (!igResult.ok) {
-      return NextResponse.json({ error: `Instagram send failed: ${igResult.error ?? "unknown"}` }, { status: 500 });
-    }
-    if (igResult.sentText) storedText = igResult.sentText;
+  // 02/11/2026: Instagram/Messenger fecham a janela de resposta 24h depois da
+  // última mensagem do cliente; o painel manda com a etiqueta HUMAN_AGENT
+  // nesse caso e devolve um erro em português quando nem isso passa
+  // (panel-send.ts). O painel mostra esse erro — antes ele sumia.
+  const result = await panelSend({ conversationId: id, igsid, text: body.text });
+  if (!result.ok) {
+    console.error(`[PANEL] send failed conv=${id} ${result.channel}: ${result.rawError}`);
+    return NextResponse.json(
+      { error: result.error ?? `Falha no envio pelo ${result.channel}.`, rawError: result.rawError, channel: result.channel },
+      { status: 500 }
+    );
   }
+  const storedText = result.sentText ?? body.text;
 
   // Store in DB
   const { data: message, error: msgError } = await supabaseAdmin
@@ -70,7 +61,11 @@ export async function POST(
     .single();
 
   if (msgError) {
-    return NextResponse.json({ error: msgError.message }, { status: 500 });
+    // O cliente JÁ recebeu: avisar, sem fingir que não saiu.
+    return NextResponse.json(
+      { error: `A mensagem foi entregue ao cliente, mas não consegui gravar no painel (${msgError.message}). Ela aparece quando a conversa for reaberta ou no eco do canal.`, delivered: true },
+      { status: 500 }
+    );
   }
 
   await supabaseAdmin
@@ -78,5 +73,5 @@ export async function POST(
     .update({ updated_at: new Date().toISOString() })
     .eq("id", id);
 
-  return NextResponse.json(message);
+  return NextResponse.json({ ...message, via: result.via });
 }

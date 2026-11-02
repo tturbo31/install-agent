@@ -7,7 +7,7 @@ import { ConversationWithLastMessage, Message } from "@/lib/types";
 interface Props {
   conversation: ConversationWithLastMessage;
   messages: Message[];
-  onSendMessage: (text: string) => Promise<void>;
+  onSendMessage: (text: string) => Promise<{ ok: boolean; error?: string }>;
   isSending: boolean;
 }
 
@@ -30,6 +30,9 @@ function getInitials(name: string | null, username: string | null): string {
 
 export default function ChatPanel({ conversation, messages, onSendMessage, isSending }: Props) {
   const [input, setInput] = useState("");
+  // Falha de envio (02/11/2026): mostrada embaixo da caixa; o texto volta para
+  // a caixa para o dono corrigir ou reenviar. `warning` = entregue com aviso.
+  const [sendError, setSendError] = useState<{ text: string; warning: boolean } | null>(null);
   // Scroll the MESSAGES container directly — never scrollIntoView, which would
   // also scroll ancestor elements (and the page), hiding the headers/buttons.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -52,6 +55,7 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
   useEffect(() => {
     jumpToBottom(false);
     setAtBottom(true);
+    setSendError(null);
   }, [conversation.id]);
 
   // New messages: follow only if the owner is already reading the bottom,
@@ -64,7 +68,15 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
     const text = input.trim();
     if (!text || isSending) return;
     setInput("");
-    await onSendMessage(text);
+    setSendError(null);
+    const result = await onSendMessage(text);
+    if (!result.ok) {
+      // O cliente NÃO recebeu: devolve o texto e mostra o motivo.
+      setInput((current) => (current.trim() ? current : text));
+      setSendError({ text: result.error ?? "Falha no envio. O cliente não recebeu a mensagem.", warning: false });
+      return;
+    }
+    if (result.error) setSendError({ text: result.error, warning: true });
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -194,6 +206,30 @@ export default function ChatPanel({ conversation, messages, onSendMessage, isSen
             <span aria-hidden>⏸️</span>
             IA pausada nesta conversa — o que você digitar aqui vai direto ao cliente.
           </p>
+        )}
+        {sendError && (
+          <div
+            role="alert"
+            className={`flex items-start gap-2 mb-2 px-3 py-2 rounded-xl border text-xs leading-relaxed ${
+              sendError.warning
+                ? "bg-amber-500/10 border-amber-400/30 text-amber-200"
+                : "bg-red-500/10 border-red-400/30 text-red-200"
+            }`}
+          >
+            <span aria-hidden className="shrink-0">{sendError.warning ? "⚠️" : "❌"}</span>
+            <span className="flex-1 min-w-0 break-words">
+              {sendError.warning ? "" : <strong className="font-semibold">Mensagem NÃO enviada. </strong>}
+              {sendError.text}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSendError(null)}
+              aria-label="Fechar aviso"
+              className="shrink-0 -mr-1 px-1.5 rounded-md hover:bg-white/10 text-sm leading-none"
+            >
+              ×
+            </button>
+          </div>
         )}
         <div className="flex items-end gap-2">
           <textarea

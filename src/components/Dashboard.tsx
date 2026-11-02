@@ -205,15 +205,35 @@ export default function Dashboard() {
     setTimeout(() => setResumeMsg(null), 5000);
   }
 
-  async function handleSendMessage(text: string) {
-    if (!selectedConv) return;
+  // 02/11/2026: o painel ignorava o status do envio — o texto sumia da caixa,
+  // nenhuma bolha aparecia e o dono ficava sem saber se o cliente recebeu
+  // (caso real: Instagram fora da janela de 24h, erro 10 do Meta). Agora o
+  // resultado volta para o ChatPanel, que mostra o erro e devolve o texto.
+  async function handleSendMessage(text: string): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedConv) return { ok: false, error: "Nenhuma conversa selecionada." };
     setIsSending(true);
-    await fetch(`/api/conversations/${selectedConv.id}/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    setIsSending(false);
+    try {
+      const res = await fetch(`/api/conversations/${selectedConv.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; delivered?: boolean };
+      if (res.ok) return { ok: true };
+      // Entregue mas não gravada: não é falha de envio — avisa, sem devolver o texto.
+      if (data.delivered) {
+        setMessages((prev) => [
+          ...prev,
+          { id: `local-${Date.now()}`, conversation_id: selectedConv.id, role: "assistant", content: text, created_at: new Date().toISOString() } as Message,
+        ]);
+        return { ok: true, error: data.error };
+      }
+      return { ok: false, error: data.error ?? `Falha no envio (HTTP ${res.status}).` };
+    } catch (err) {
+      return { ok: false, error: `Sem conexão com o servidor do painel: ${String(err).slice(0, 120)}` };
+    } finally {
+      setIsSending(false);
+    }
   }
 
   const totalUnread = Object.values(unreadMap).reduce((a, b) => a + b, 0);
