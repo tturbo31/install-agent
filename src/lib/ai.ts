@@ -1441,17 +1441,23 @@ export function isPureWhichFloorBurst(text: string): boolean {
   const parts = (text || "").split(/\n/).flatMap((line) => burstSentences(line));
   return parts.length > 0 && parts.every((s) => WHICH_FLOOR.some((re) => re.test(s)) || FLOOR_FILLER.test(s));
 }
-const WHICH_FLOOR_SITE: Record<"en" | "es" | "pt", { full: string; site: string }> = {
+// `fullNoZip` is the Instagram shape (owner rule 2026-11-02: no zip code up
+// front on Instagram): same website + samples, the forward step is the
+// one-area-or-whole-house question instead of the zip code.
+const WHICH_FLOOR_SITE: Record<"en" | "es" | "pt", { full: string; fullNoZip: string; site: string }> = {
   en: {
     full: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. What's the zip code there?`,
+    fullNoZip: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. Are you planning to do just one area, or the entire house?`,
     site: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job.`,
   },
   es: {
     full: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo, y llevo las muestras a la visita gratis también. Cuál es el código postal de la propiedad?`,
+    fullNoZip: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo, y llevo las muestras a la visita gratis también. Es una sola área o toda la casa?`,
     site: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo.`,
   },
   pt: {
     full: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho, e eu levo as amostras na visita grátis também. Qual é o zip code do imóvel?`,
+    fullNoZip: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho, e eu levo as amostras na visita grátis também. É só uma área ou a casa toda?`,
     site: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho.`,
   },
 };
@@ -1462,11 +1468,37 @@ const FLOOR_DODGE = /\b(?:can'?t|cannot|unable\s+to)\s+(?:see|tell|verify|view|o
 // "See you tomorrow at 9am!" tacked on a product answer: Yamit's 09/09 visit had
 // already happened, and a "what floor is that?" never confirms a visit.
 const FLOOR_STRAY_CONFIRM = /^\s*(?:see\s+you|nos\s+vemos|hasta\s+(?:ma[nñ]ana|entonces|pronto)|at[eé]\s+(?:amanh[aã]|l[aá]|logo))(?![a-zà-ÿ])/i;
-/** Answers "what floor is that?" the owner's way: website + (full shape) samples + zip. */
-export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en", full = false): string {
+// A sentence of ours that asks the zip code ("What's the zip code there?").
+const ZIP_QUESTION_SENTENCE = /(?:\bzip\b|c[oó]digo\s+postal|\bcep\b)[^?]*\?|\?[^.!?]*(?:\bzip\b|c[oó]digo\s+postal|\bcep\b)/i;
+const AREA_QUESTION: Record<"en" | "es" | "pt", string> = {
+  en: "Are you planning to do just one area, or the entire house?",
+  es: "Es una sola área o toda la casa?",
+  pt: "É só uma área ou a casa toda?",
+};
+/**
+ * Answers "what floor is that?" the owner's way: website + (full shape) samples + zip.
+ * `noZip` (Instagram, owner rule 2026-11-02): the full shape ends with the
+ * one-area-or-whole-house question instead, and a zip question the model wrote
+ * on its own is swapped for that question too.
+ */
+export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en", full = false, opts?: { noZip?: boolean }): string {
   if (!stripProtectedTags(text || "").trim()) return text;
-  const canned = WHICH_FLOOR_SITE[lang] ?? WHICH_FLOOR_SITE.en;
-  return withTagsProtected(text, (prose) => {
+  const canned0 = WHICH_FLOOR_SITE[lang] ?? WHICH_FLOOR_SITE.en;
+  const canned = opts?.noZip ? { ...canned0, full: canned0.fullNoZip } : canned0;
+  return withTagsProtected(text, (prose0) => {
+    let prose = prose0;
+    if (opts?.noZip) {
+      // Tags ([NOTIFY_OWNER] etc.) are lifted out and re-attached at the end so
+      // the area question is the reply's closing sentence.
+      const tags = prose0.match(/\[#TAG\d+#\]/g) ?? [];
+      const bare = prose0.replace(/\[#TAG\d+#\]/g, "");
+      const sentences = normalizeSmartPunct(bare).match(PRICE_SAFE_SENTENCE) ?? [bare];
+      const zipQ = sentences.filter((s) => ZIP_QUESTION_SENTENCE.test(s));
+      if (zipQ.length > 0) {
+        const rest = sentences.filter((s) => !zipQ.includes(s)).join("").trim();
+        prose = ((rest ? rest + " " : "") + AREA_QUESTION[lang] + (tags.length ? " " + tags.join(" ") : "")).trim();
+      }
+    }
     const parts = normalizeSmartPunct(prose).match(PRICE_SAFE_SENTENCE) ?? [prose];
     const kept = parts.filter((s) => {
       const bare = s.replace(/\[#TAG\d+#\]/g, "");
@@ -3444,7 +3476,9 @@ export function portStLucieReply(history: Array<{ role: string; content: string 
   if (mode === "call_ozzi") {
     return portStLucieCallSent(history) ? portStLucieCallOzziInsistMessage(lang) : portStLucieCallOzziMessage(lang, portStLucieSize(history).sqft, intro);
   }
-  if (mode === "visit") return portStLucieVisitMessage(lang, intro, clientAlreadyGaveZip(history));
+  // Instagram (owner rule 2026-11-02) never asks the zip code up front: the
+  // visit line asks for the day instead, the zip comes with the full address.
+  if (mode === "visit") return portStLucieVisitMessage(lang, intro, clientAlreadyGaveZip(history) || isInstagramChannel(history));
   return portStLucieSizeAskMessage(lang, intro);
 }
 // Post-model backstop. Size unknown: a slot / visit offer, an address or zip
@@ -6071,10 +6105,13 @@ export async function getAIResponse(
         const bookable = !clientAlreadyGaveZip(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages)
           && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
         const full = bookable && isPureWhichFloorBurst(burst) && !/\[BOOK:/i.test(cleaned);
-        const fixed = fixWhichFloorReply(cleaned, usersLang(), full);
+        // Instagram (owner rule 2026-11-02): no zip code up front, the full
+        // shape ends with the one-area-or-whole-house question instead.
+        const noZip = isInstagramChannel(messages);
+        const fixed = fixWhichFloorReply(cleaned, usersLang(), full, { noZip });
         if (fixed !== cleaned) {
           cleaned = fixed;
-          console.log(`[AI] which-floor backstop (${full ? "website + samples + zip" : "website"}): the client asked what floor that is, no guessing`);
+          console.log(`[AI] which-floor backstop (${full ? (noZip ? "website + samples + area question (IG)" : "website + samples + zip") : "website"}): the client asked what floor that is, no guessing`);
         }
       }
       if (process.env.COLOR_SITE_BACKSTOP !== "off" && isFloorColorQuestion(burst)) {

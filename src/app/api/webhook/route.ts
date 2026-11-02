@@ -1700,12 +1700,17 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       // Only fetch availability when no booking is confirmed yet.
       // After booking, showing availability causes the AI to see the booked slot as
       // "taken" and generate "that slot just got taken" on follow-up messages.
-      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history, portStLucie: portStLucieStanding(history) });
+      // Instagram does NOT ask the zip code up front (owner rule 2026-11-02):
+      // zipFirst: false keeps the ZIP CODE FIRST note out of the schedule block,
+      // so the visit proposal offers the two times right away and the zip comes
+      // with the full address. Messenger and WhatsApp keep the old script.
+      const availability = isBookingConfirmed ? null : await getRealAvailabilityContext({ history, portStLucie: portStLucieStanding(history), zipFirst: false });
       scheduleText = availability;
       const systemParts: string[] = availability ? [dateContext, availability] : [dateContext];
       // Instagram never carries a link, financing goes to Ozzi's number (owner
       // rule 2026-10-17): the model writes the reply that way, and the send
       // neutralizes whatever link still slips through (ig-link-policy.ts).
+      // The same note tells the model not to ask the zip code up front here.
       systemParts.push(IG_CHANNEL_NOTE);
       const followerCount = (conversation as Record<string, unknown>).follower_count as number | null;
       if (isPartnershipRequest && followerCount != null) {

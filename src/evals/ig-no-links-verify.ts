@@ -210,7 +210,8 @@ async function main() {
     U("What floor is that in your post?" + NOTE),
   ], "en");
   console.log(`   which-floor raw:   ${which.raw.replace(/\s+/g, " ")}\n   which-floor final: ${which.final.replace(/\s+/g, " ")}`);
-  ck("LIVE which floor (IG): no link, bio wording, no guessed floor, zip asked", !containsLink(which.final) && mentionsBioLink(which.final) && !/stone finish|marble look|wood look|herringbone/i.test(which.final) && /zip/i.test(which.final), which.final);
+  // Owner rule 2026-11-02: Instagram never asks the zip code up front (see ig-no-zip-first-verify).
+  ck("LIVE which floor (IG): no link, bio wording, no guessed floor, NO zip asked", !containsLink(which.final) && mentionsBioLink(which.final) && !/stone finish|marble look|wood look|herringbone/i.test(which.final) && !/\bzip\b/i.test(which.final), which.final);
 
   done();
 }

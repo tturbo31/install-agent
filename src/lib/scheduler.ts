@@ -2488,7 +2488,11 @@ export function clientRequestedWindows(
   return out.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 }
 
-export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }>; portStLucie?: boolean }): Promise<string> {
+// `zipFirst: false` (Instagram, owner rule 2026-11-02): the ZIP CODE FIRST note
+// is not injected, so the visit proposal offers the two times right away and
+// the zip code is collected only with the full address. Messenger and WhatsApp
+// keep the default (note on).
+export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }>; portStLucie?: boolean; zipFirst?: boolean }): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
 
@@ -2612,7 +2616,10 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
 
     // ZIP CODE FIRST (29/09/2026): só quando o webhook passa o histórico e o
     // cliente ainda não disse onde é. A nota vai DEPOIS das regras da agenda.
-    const zipNote = zipFirstNote(opts?.history);
+    // Instagram (dono, 02/11/2026) passa zipFirst: false e NÃO recebe a nota:
+    // lá a proposta da visita já vem com os dois horários, sem pedir o ZIP de
+    // cara. Messenger e WhatsApp seguem com o script antigo.
+    const zipNote = opts?.zipFirst === false ? null : zipFirstNote(opts?.history);
     if (zipNote) lines.push("\n" + zipNote);
 
     return lines.join("\n");
