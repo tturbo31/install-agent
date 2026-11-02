@@ -110,6 +110,13 @@ async function main() {
     isAckClosingBurst([A("Ozzi will be in touch soon.\n\n[SYSTEM: FOLLOWUP_NUDGE]"), U("Ok")]));
   ck("isPureClosingBurst continua igual p/ 'thanks' depois de pedido de nome (false)",
     !isPureClosingBurst([A("What name should I put it under?"), U("It's John, thanks!")]));
+  // Erik (IG 2026-11-02 01:06): "Send me your info, thanks" era lido como despedida → silêncio no 1º contato.
+  for (const t of ["Send me your info, thanks", "Thanks, send me the prices", "Mándame información gracias", "Me manda o orçamento, obrigado", "Your website please, thank you", "More info please"]) {
+    ck(`pedido embrulhado em 'thanks' NÃO é despedida: "${t}"`, !isPureClosingBurst([U(t)]) && !isPureClosingBurst([A("Hi, which flooring are you interested in?"), U(t)]));
+  }
+  for (const t of ["Thanks!", "Ok thank you", "Thank you, I will let you know", "Gracias, te aviso", "Take care, thanks for the info"]) {
+    ck(`despedida continua despedida: "${t}"`, isPureClosingBurst([A("Our vinyl promo is $5 per sqft. One area or the whole house?"), U(t)]));
+  }
   ck("botAwaitsAnswer: pergunta", botAwaitsAnswer("Which works better, 1pm or 3pm?"));
   ck("botAwaitsAnswer: oferta de horário sem '?'", botAwaitsAnswer("I have Wednesday at 1pm or 3pm open for you."));
   ck("botAwaitsAnswer: handoff → false", !botAwaitsAnswer("Sounds good, Ozzi will be in touch with you shortly to go over everything."));

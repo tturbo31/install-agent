@@ -4880,10 +4880,16 @@ export function firstMessageNeedsReading(text: string): boolean {
   );
 }
 
+// A request wrapped in a "thanks" is a request, never a goodbye (Erik, IG
+// 2026-11-02 01:06: "Send me your info, thanks" was read as a pure closing and
+// the lead got silence). "send/give/show me…", "your info / number / website /
+// prices", "more info", "info please", Spanish / Portuguese equivalents.
+const REQUEST_SIGNALS = /\b(?:send|share|give|show|tell|text|email|mail|forward)\s+(?:me|us)\b|\b(?:send|share|forward)\s+(?:the\s+|some\s+|more\s+|your\s+)?(?:info|information|details|prices?|pricing|quotes?|pictures?|pics|photos?|samples?|catalog(?:ue)?|links?|brochure|website)\b|\b(?:your|ur)\s+(?:info|information|details|numbers?|website|links?|prices?|pricing|catalog(?:ue)?|brochure)\b|\b(?:more|some)\s+(?:info|information|details)\b|\binfo(?:rmation)?\s+(?:please|pls|plz)\b|\bprices?\s+(?:please|pls|plz)\b|(?:^|[^a-zà-ÿ])(?:m[aá]nda(?:me)?|env[ií]a(?:me)?|p[aá]sa(?:me)?|me\s+(?:manda|envia|passa)|informaci[oó]n|informa[çc][oõ]es|precios?|pre[çc]os?|cotizaci[oó]n|or[çc]amento|cat[aá]logo)(?![a-zà-ÿ])/i;
 export function isPureClosing(text: string): boolean {
   const t = normalizeSmartPunct(text).trim();
   if (!t || t.length > 80) return false;
   if (QUESTION_SIGNALS.test(t)) return false;
+  if (REQUEST_SIGNALS.test(t)) return false;
   if (BOOKING_INFO_SIGNALS.test(t)) return false;
   // "Thank you! Either vinyl or laminate" answers our question — never silence it.
   if (SUBSTANTIVE_CONTENT.test(t)) return false;
