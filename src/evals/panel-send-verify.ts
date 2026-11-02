@@ -37,6 +37,9 @@ ck("janela IG: explica as 24h", /Instagram só deixa a página responder pela AP
 ck("janela IG: diz há quantos dias o cliente escreveu", /há 3 dias/.test(mWin), mWin);
 ck("janela IG: manda responder pelo app", /Responda pelo app do Instagram/.test(mWin), mWin);
 ck("janela IG: traz o erro bruto", /Erro da Meta: 10:/.test(mWin), mWin);
+const mReview = panelErrorMessage("instagram", "10: This message is sent outside of allowed window. / HUMAN_AGENT: 10: To use 'Human Agent', your use of this endpoint must be reviewed and approved by Facebook.", threeDays);
+ck("etiqueta sem App Review: explica a permissão 'Human Agent' (prod 02/11)", /permissão "Human Agent" aprovada na App Review/.test(mReview), mReview);
+ck("etiqueta recusada por outro motivo: frase genérica", /A Meta também recusou a etiqueta/.test(mWin) && !/App Review/.test(mWin), mWin);
 const mFb = panelErrorMessage("facebook", "(#10) This message is sent outside of allowed window.", new Date(Date.now() - 30 * 3600e3));
 ck("janela Messenger: rótulo Messenger + horas", /Messenger só deixa/.test(mFb) && /há 30h/.test(mFb), mFb);
 const mTok = panelErrorMessage("instagram", "190: Error validating access token", new Date());

@@ -111,7 +111,14 @@ export function panelErrorMessage(channel: PanelChannel, rawError: string, lastC
   if (channel !== "whatsapp" && isMetaWindowError(rawError)) {
     const ageH = lastClientAt ? Math.round((Date.now() - lastClientAt.getTime()) / 3_600_000) : null;
     const since = ageH == null ? "" : ageH >= 48 ? ` (a última mensagem dele foi há ${Math.round(ageH / 24)} dias)` : ` (a última mensagem dele foi há ${ageH}h)`;
-    return `O ${label} só deixa a página responder pela API até 24h depois da última mensagem do cliente${since}, e a Meta também recusou a etiqueta de atendimento humano. Responda pelo app do ${label}. Erro da Meta: ${rawError}`;
+    // Validado em produção 02/11/2026: a etiqueta HUMAN_AGENT (7 dias) só
+    // funciona depois que a Meta aprova a permissão "Human Agent" na revisão
+    // do app (developers.facebook.com > App Review). Até lá, só pelo app.
+    const needsReview = /reviewed and approved|Human Agent/i.test(rawError);
+    const tagNote = needsReview
+      ? ` A etiqueta de atendimento humano (que daria 7 dias) ainda não está liberada: o app precisa da permissão "Human Agent" aprovada na App Review da Meta.`
+      : ` A Meta também recusou a etiqueta de atendimento humano.`;
+    return `O ${label} só deixa a página responder pela API até 24h depois da última mensagem do cliente${since}.${tagNote} Responda pelo app do ${label}. Erro da Meta: ${rawError}`;
   }
   return `Não consegui enviar pelo ${label}. O cliente NÃO recebeu nada. Erro: ${rawError}`;
 }
