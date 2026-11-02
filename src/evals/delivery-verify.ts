@@ -108,9 +108,11 @@ function main() {
   // ── 5. Panel manual send + follow-up sweep can't lie either ──────────────
   console.log("\n[5] other senders");
   const manual = read("src/app/api/conversations/[id]/send/route.ts");
-  ck("manual panel send: IG failure returns 500 (nothing stored)", /!igResult\.ok/.test(manual));
-  ck("manual panel send: FB failure returns 500 (nothing stored)", /!fbResult\.ok/.test(manual));
-  ck("manual panel send: WA failure returns 500 (nothing stored)", /!waResult\.ok/.test(manual));
+  // panel-send.ts (02/11/2026): one result for the three channels; a failed
+  // send returns 500 and stores nothing.
+  ck("manual panel send: failure returns 500 (nothing stored)", /if \(!result\.ok\) \{[\s\S]{0,300}status: 500/.test(manual) && /const storedText = result\.sentText \?\? body\.text;/.test(manual));
+  const panelLib = read("src/lib/panel-send.ts");
+  ck("panel-send: IG / FB / WA all go through it, a failed send reports ok=false", /sendInstagramMessage\(recipientId, text, \{ allowLinks: true \}\)/.test(panelLib) && /sendFacebookMessage\(/.test(panelLib) && /sendWhatsAppMessage\(/.test(panelLib) && /ok: false/.test(panelLib));
   const fup = read("src/lib/followup.ts");
   ck("follow-up sweep checks FB + IG send results", /sendFacebookMessage\(conv\.igsid\.slice\(3\), text\);\s*if \(!r\.ok\)/.test(fup) && /sendInstagramMessage\(conv\.igsid, text\);\s*if \(!r\.ok\)/.test(fup));
 

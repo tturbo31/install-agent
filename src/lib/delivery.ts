@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase";
 import { sendWhatsAppMessage, CLIENT_ATTENTION_PHONES } from "@/lib/whatsapp";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { LEGACY_ADMIN_SECRET } from "@/lib/admin-auth";
+import { isPureClosing, isJobSeeker, isFirstContactRejection, isHostileRejection } from "@/lib/ai";
 import {
   buildMessengerWebhookBody,
   pickLostInbounds,
@@ -542,6 +543,43 @@ export function pickLostReplyCandidates(rows: LostReplyRow[], nowMs: number): Lo
   return rows.filter((r) => isUnansweredForAWhile(r, nowMs) && r.totalTurns > r.assistantReplies);
 }
 
+// ─── Unprocessed turn (Mercy Hernandez, fb_28627844636843945, 2026-11-01) ───
+// The client answered our zip question ("33143") 27 s after it; no reply was
+// ever stored, no SEND_FAILED row, and conversation_metrics.total_turns stayed
+// where the previous reply left it: the handler died BEFORE the model was
+// called (no log survives to say why). The lost-reply detector above requires
+// a counted turn, so it never looked at her, and she sat unanswered past the
+// 24h window. This second class catches exactly that: the newest message is
+// the client's, 3 min to 6 h old, mode=agent, NO turn counted for it, and the
+// text is not one of the deterministic silences (closing, "ok", rejection,
+// "STOP", job seeker, bare ad placeholder). It is replayed through the live
+// webhook only when the Meta thread CONFIRMS the page never replied
+// (state "missing"); an unknown thread state is recorded and left alone, with
+// no owner alert, because a human may have answered from the app.
+const SILENT_BY_DESIGN_PLACEHOLDER = /^\s*\[(?:Client (?:shared|replied)[^\]]*|Image|Photo|Attachment|Sticker|Video|Audio)[^\]]*\]\s*$/i;
+export function isSilentByDesignText(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  if (t.length < 2) return true;
+  if (SILENT_BY_DESIGN_PLACEHOLDER.test(t)) return true;
+  if (/^\s*(?:stop|unsubscribe|remove me|no|nope|nah|ok(?:ay)?|k|kk|perfect|great|got it|sounds good|will do|noted|gracias|thanks?|thank you|ty|tks|obrigad[oa])\s*[.!]*\s*$/i.test(t)) return true;
+  // Emoji / punctuation only ("👍", "🙏", "...") and self-advertising installers.
+  if (!/[\p{L}\p{N}]/u.test(t)) return true;
+  if (/\b(?:i|we)\s+(?:also\s+)?install\b|\binstaller\b|\bsoy\s+instalador\b|\binstalador(?:a|es)?\b|\bi\s+(?:do|offer)\s+installations?\b/i.test(t)) return true;
+  try {
+    return isPureClosing(t) || isFirstContactRejection(t) || isHostileRejection(t) || isJobSeeker(t);
+  } catch {
+    return false;
+  }
+}
+export function isUnprocessedTurn(row: LostReplyRow, nowMs: number): boolean {
+  if (!isUnansweredForAWhile(row, nowMs)) return false;
+  if (row.totalTurns > row.assistantReplies) return false; // the lost-reply class above owns it
+  return !isSilentByDesignText(row.newest?.content ?? "");
+}
+export function pickUnprocessedCandidates(rows: LostReplyRow[], nowMs: number): LostReplyRow[] {
+  return rows.filter((r) => isUnprocessedTurn(r, nowMs));
+}
+
 async function claimLostReply(messageId: string): Promise<boolean> {
   const { error } = await supabaseAdmin
     .from("platform_settings")
@@ -715,7 +753,12 @@ export async function recoverLostReplies(): Promise<void> {
         .eq("role", "assistant");
       r.assistantReplies = error || count === null ? Number.MAX_SAFE_INTEGER : count;
     }
-    const candidates = pickLostReplyCandidates(waiting, now);
+    const lost = pickLostReplyCandidates(waiting, now);
+    // Unprocessed turns (no counted turn, see isUnprocessedTurn) come after the
+    // lost replies: same claim, same thread check, replay only on a confirmed
+    // "missing", never an owner alert on an unknown thread.
+    const unprocessed = pickUnprocessedCandidates(waiting, now).filter((u) => !lost.includes(u));
+    const candidates = [...lost, ...unprocessed];
     if (!candidates.length) return;
     const report: string[] = [];
     for (const r of candidates.slice(0, LOST_REPLY_MAX_PER_SWEEP)) {
@@ -724,6 +767,34 @@ export async function recoverLostReplies(): Promise<void> {
       if (!(await claimLostReply(newest.id))) continue; // handled by an earlier sweep
       const channel = channelOf(r.igsid);
       const preview = newest.content.split(/\n\n?\[SYSTEM:/)[0].replace(/\s+/g, " ").trim().slice(0, 60);
+      const isUnprocessed = unprocessed.includes(r);
+      if (isUnprocessed && channel === "whatsapp") {
+        // No replay path on WhatsApp and no thread to check: only a note.
+        console.warn(`[DELIVERY] unprocessed turn on WhatsApp ${r.igsid} ("${preview}") — owner note`);
+        report.push(`- WhatsApp ${r.igsid.slice(3)}: "${preview}" — sem resposta (turno nao processado), responda pelo app`);
+        await recordLostReplyOutcome(newest.id, "unprocessed-wa-alert");
+        continue;
+      }
+      if (isUnprocessed) {
+        if (channel === "whatsapp") continue; // handled above (narrows the type)
+        const thread = await pageRepliedAfter(channel, r.igsid, Date.parse(newest.created_at));
+        if (thread.state === "delivered") {
+          await supabaseAdmin.from("instagram_messages").insert({ conversation_id: r.conversationId, role: "assistant", content: thread.text });
+          console.warn(`[DELIVERY] unprocessed turn on ${channel} ${r.igsid}: the page already replied — history repaired`);
+          await recordLostReplyOutcome(newest.id, "unprocessed-delivered-repaired");
+          continue;
+        }
+        if (thread.state === "unknown") {
+          console.warn(`[DELIVERY] unprocessed turn on ${channel} ${r.igsid} ("${preview}") — thread check failed, left alone`);
+          await recordLostReplyOutcome(newest.id, "unprocessed-thread-unknown");
+          continue;
+        }
+        const ok = await replayInbound(channel, r);
+        console.warn(`[DELIVERY] unprocessed turn on ${channel} ${r.igsid} ("${preview}") — replay ${ok ? "requested" : "FAILED"}`);
+        await recordLostReplyOutcome(newest.id, ok ? "unprocessed-replayed" : `unprocessed-replay-failed@${selfBaseUrl()}`);
+        report.push(`- ${CHANNEL_LABEL[channel]} ${r.igsid}: "${preview}" — ${ok ? "mensagem nao processada, reenviada ao fluxo automaticamente" : "reenvio falhou, responda pelo app"}`);
+        continue;
+      }
       if (channel === "whatsapp") {
         console.warn(`[DELIVERY] lost reply on WhatsApp ${r.igsid} ("${preview}") — owner alert`);
         report.push(`- WhatsApp ${r.igsid.slice(3)}: "${preview}" — sem resposta, responda pelo app`);
@@ -754,7 +825,7 @@ export async function recoverLostReplies(): Promise<void> {
       const msg = [
         `⚠️ OzziFloors - resposta perdida detectada`,
         ``,
-        `O bot gerou a resposta mas ela nunca saiu (nem ficou no historico):`,
+        `O bot gerou a resposta mas ela nunca saiu (nem ficou no historico), ou a mensagem do cliente nao chegou a ser processada:`,
         ...report,
         ``,
         `Reenvio automatico = a mensagem do cliente foi reprocessada e respondida pelo fluxo normal.`,

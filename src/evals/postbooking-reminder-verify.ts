@@ -233,6 +233,28 @@ async function main() {
   ck("isUnansweredForAWhile ignora contagem", isUnansweredForAWhile(mk({ totalTurns: 0 }), now));
   ck("sem newest NÃO", pickLostReplyCandidates([mk({ newest: null })], now).length === 0);
 
+  console.log(c.bold("\n[7b] turno NÃO processado (Mercy, fb_28627844636843945, 01/11/2026: '33143' sem turno contado)"));
+  const { pickUnprocessedCandidates, isUnprocessedTurn, isSilentByDesignText } = await import("../lib/delivery");
+  const mercy = mk({ totalTurns: 3, assistantReplies: 3, newestAt: "2026-08-26T21:03:00Z" });
+  mercy.newest = { ...mercy.newest!, content: "33143" };
+  ck("Mercy (3 turnos, 3 respostas, '33143' há 7 min) É candidata da classe nova", pickUnprocessedCandidates([mercy], now).length === 1 && isUnprocessedTurn(mercy, now));
+  ck("…e NÃO da classe antiga (turno não contado)", pickLostReplyCandidates([mercy], now).length === 0);
+  ck("Wilmar (turno contado) fica na classe antiga, não na nova", pickUnprocessedCandidates([wilmar], now).length === 0);
+  for (const t of ["Thanks!", "ok", "STOP", "Not interested", "No thank you", "[Client replied to our ad]", "Leave me alone", "Soy instalador de piso", "I install for 1 $ sq ft", "👍"]) {
+    const row = mk({ totalTurns: 0, assistantReplies: 0 }); row.newest = { ...row.newest!, content: t };
+    ck(`silêncio por design não é reprocessado: "${t}"`, isSilentByDesignText(t) && pickUnprocessedCandidates([row], now).length === 0);
+  }
+  for (const t of ["33143", "Do you offer any discounts for larger spaces?", "What is the installation process?", "800 pies cuadrados? How much wood?", "Hello I would like to get a quote", "33143\n\n[SYSTEM: TODAY x]"]) {
+    const row = mk({ totalTurns: 0, assistantReplies: 0 }); row.newest = { ...row.newest!, content: t };
+    ck(`mensagem real sem turno É reprocessada: "${t.split("\n")[0]}"`, !isSilentByDesignText(t) && pickUnprocessedCandidates([row], now).length === 1);
+  }
+  const humanRow = mk({ totalTurns: 0, assistantReplies: 0, mode: "human" }); humanRow.newest = { ...humanRow.newest!, content: "33143" };
+  ck("mode=human NÃO", pickUnprocessedCandidates([humanRow], now).length === 0);
+  const freshRow = mk({ totalTurns: 0, assistantReplies: 0, newestAt: "2026-08-26T21:10:00Z" }); freshRow.newest = { ...freshRow.newest!, content: "33143" };
+  ck("em processamento (1 min) NÃO", pickUnprocessedCandidates([freshRow], now).length === 0);
+  const src = readFileSync(join(process.cwd(), "src/lib/delivery.ts"), "utf-8");
+  ck("sweep: classe nova só reprocessa com thread 'missing', nunca alerta em 'unknown'", /if \(isUnprocessed\) \{[\s\S]{0,900}thread\.state === "unknown"[\s\S]{0,200}unprocessed-thread-unknown[\s\S]{0,400}await replayInbound\(channel, r\)/.test(src) && !/unprocessed-thread-unknown[\s\S]{0,120}report\.push/.test(src));
+
   // ── 8. Wiring in the three webhooks + delivery ────────────────────────────
   console.log(c.bold("\n[8] Fiação nos 3 webhooks"));
   const files = {
