@@ -120,10 +120,11 @@ async function main() {
   ck("EN/ES/PT bio wording detected", mentionsBioLink("the link is in our bio") && mentionsBioLink("el link está en nuestra bio") && mentionsBioLink("o link está na nossa bio") && mentionsBioLink("our website (link in our bio)"));
   ck("URL / 'biology' are not bio wording", !mentionsBioLink("see https://ozzifloors.company") && !mentionsBioLink("a link to biology"));
   const igColor = "You can see all our floor colors on our website, the link is in our bio, and I bring the samples to the free visit. Is it one area or the whole house?";
-  ck("withSiteForColor leaves the Instagram reply alone (no URL sentence added next to the bio line)", withSiteForColor(igColor, "en") === igColor, withSiteForColor(igColor, "en"));
-  const igWhich = "Check out our floors on our website, the link is in our bio, that floor is there with all the details, and I bring samples to the free visit too. What's the zip code there?";
-  ck("fixWhichFloorReply leaves the Instagram reply alone", fixWhichFloorReply(igWhich, "en", true) === igWhich, fixWhichFloorReply(igWhich, "en", true));
-  ck("withSiteForColor still adds the URL off Instagram", /ozzifloors\.company/.test(withSiteForColor("We have many colors. Is it one area or the whole house?", "en")));
+  ck("withSiteForColor leaves the Instagram reply alone (no URL sentence added next to the bio line)", withSiteForColor(igColor, "en", { ig: true }) === igColor, withSiteForColor(igColor, "en", { ig: true }));
+  const igWhich = "Check out our floors on our website, the link is in our bio, that floor is there with all the details, and I bring samples to the free visit too. Is it one area or the whole house?";
+  ck("fixWhichFloorReply leaves the Instagram reply alone", fixWhichFloorReply(igWhich, "en", true, { ig: true }) === igWhich, fixWhichFloorReply(igWhich, "en", true, { ig: true }));
+  const offIg = withSiteForColor("We have many colors. Is it one area or the whole house?", "en");
+  ck("withSiteForColor off Instagram adds the samples + Ozzi line, never a URL (owner rule 2026-11-02)", OZZI_NUMBER_RE.test(offIg) && !containsLink(offIg), offIg);
 
   // ── 2. estático ───────────────────────────────────────────────────────────
   console.log("\n[2a] IG webhook: note in, neutralize + financing backstop out");
@@ -131,7 +132,7 @@ async function main() {
   ck("imports the policy", /import \{ IG_CHANNEL_NOTE, neutralizeLinks, ensureIgFinancingHandoff \} from "@\/lib\/ig-link-policy";/.test(wh));
   ck("IG_CHANNEL_NOTE pushed into systemParts right after date + schedule", /const systemParts: string\[\] = availability \? \[dateContext, availability\] : \[dateContext\];[\s\S]{0,400}systemParts\.push\(IG_CHANNEL_NOTE\);/.test(wh));
   ck("finalResponse = ensureIgFinancingHandoff(neutralizeLinks(stripForbiddenTags(...), lang), unansweredUserBurst(messagesForAI), lang)", /const finalResponse = ensureIgFinancingHandoff\(\s*\n\s*neutralizeLinks\(stripForbiddenTags\(redirectOwnerPromiseToPhone\(afterNotify, lang\)\), lang\),\s*\n\s*unansweredUserBurst\(messagesForAI\),\s*\n\s*lang,\s*\n\s*\);/.test(wh));
-  ck("Messenger and WhatsApp webhooks untouched (no IG note, no IG neutralizer)", !/IG_CHANNEL_NOTE|ig-link-policy/.test(read("src/app/api/fb-webhook/route.ts")) && !/IG_CHANNEL_NOTE|ig-link-policy/.test(read("src/app/api/wa-webhook/route.ts")));
+  ck("Messenger and WhatsApp never see the IG note (since 2026-11-02 they neutralize with their own wording)", !/IG_CHANNEL_NOTE/.test(read("src/app/api/fb-webhook/route.ts")) && !/IG_CHANNEL_NOTE/.test(read("src/app/api/wa-webhook/route.ts")) && /channel: "messenger"/.test(read("src/app/api/fb-webhook/route.ts")) && /channel: "whatsapp"/.test(read("src/app/api/wa-webhook/route.ts")));
 
   console.log("\n[2b] the send: every AI link neutralized, panel keeps links");
   const ig = read("src/lib/instagram.ts");
@@ -139,8 +140,8 @@ async function main() {
   ck("hasLink && !opts.allowLinks → neutralizeLinks, no marker gate", /if \(hasLink && !opts\.allowLinks\) \{\s*\n\s*outText = neutralizeLinks\(text\);\s*\n\s*linkFree = true;/.test(ig) && !/igLinkBlockActive|clearIgLinkBlock/.test(ig));
   ck("sentText still returned when the text changed", /linkFree \? \{ ok: true, via: "instagram", sentText: outText \} : \{ ok: true, via: "instagram" \}/.test(ig));
   ck("508 fallback kept for the panel path", /isIgLinkBlockError\(body\.error\?\.code\) && containsLink\(outText\)/.test(ig) && /await markIgLinkBlock\(\);/.test(ig));
-  const panel = read("src/app/api/conversations/[id]/send/route.ts");
-  ck("panel passes allowLinks: true (the owner typing is not the AI)", /sendInstagramMessage\(igsid, body\.text, \{ allowLinks: true \}\)/.test(panel) && /if \(igResult\.sentText\) storedText = igResult\.sentText;/.test(panel));
+  const panel = read("src/lib/panel-send.ts");
+  ck("panel passes allowLinks: true (the owner typing is not the AI; panel-send.ts since 2026-11-02)", /sendInstagramMessage\(recipientId, text, \{ allowLinks: true \}\)/.test(panel) && /sentText: r\.sentText/.test(panel));
   for (const [file, re] of [
     ["src/lib/followup.ts", /sendInstagramMessage\(conv\.igsid, text\)/],
     ["src/lib/delivery.ts", /sendInstagramMessage\(conv\.igsid, text\)/],
@@ -148,22 +149,22 @@ async function main() {
   ck("no AI producer passes allowLinks: true", !/allowLinks: true/.test(wh) && !/allowLinks: true/.test(read("src/lib/followup.ts")) && !/allowLinks: true/.test(read("src/lib/delivery.ts")));
 
   console.log("\n[2c] prompt: the Instagram exceptions");
-  ck("STEP 2: INSTAGRAM, NO LINKS block keyed on [INSTAGRAM CHANNEL]", /INSTAGRAM, NO LINKS \(owner rule 2026-10-17\): when an \[INSTAGRAM CHANNEL\] note is present in context, NEVER write any link or URL/.test(SYSTEM_PROMPT));
+  ck("STEP 2: NO LINKS ON ANY CHANNEL block, Instagram bio wording keyed on [INSTAGRAM CHANNEL]", /NO LINKS ON ANY CHANNEL \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\): NEVER write any link or URL in your reply, on any channel/.test(SYSTEM_PROMPT) && /when an \[INSTAGRAM CHANNEL\] note is present in context, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("…with the bio wording in EN/ES/PT", /the link is in our bio/.test(SYSTEM_PROMPT) && /el link está en nuestra bio/.test(SYSTEM_PROMPT) && /o link está na nossa bio/.test(SYSTEM_PROMPT));
-  ck("…color question still gets the website (bio), never the phone", /a color question still gets the website \(link in our bio\), never Ozzi's phone/.test(SYSTEM_PROMPT));
-  ck("FINANCING: INSTAGRAM EXCEPTION → Ozzi's number, no link, no application details", /INSTAGRAM EXCEPTION \(owner rule 2026-10-17\): when an \[INSTAGRAM CHANNEL\] note is present in context, NEVER send the financing link and NEVER explain the application[\s\S]{0,300}\(561\) 674-8334/.test(SYSTEM_PROMPT));
-  ck("Instagram examples carry no URL", !containsLink((SYSTEM_PROMPT.match(/INSTAGRAM, NO LINKS[\s\S]*?Financing on Instagram follows/) ?? [""])[0]) && !containsLink((SYSTEM_PROMPT.match(/INSTAGRAM EXCEPTION \(owner rule 2026-10-17\)[\s\S]*?casa toda\?"/) ?? [""])[0]));
-  ck("off Instagram the website rule is unchanged (2a still sends https://ozzifloors.company)", /\(2a\) SEND \/ SHOW REMOTELY → send our website[\s\S]{0,400}https:\/\/ozzifloors\.company/.test(SYSTEM_PROMPT));
+  ck("…color question on Instagram still gets the website (bio)", /on Instagram say all our colors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
+  ck("FINANCING: every channel → Ozzi's number, no link, no application details", /EVERY CHANNEL, SAME ANSWER \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\)[\s\S]{0,300}\(561\) 674-8334/.test(SYSTEM_PROMPT) && !/gethearth/.test(SYSTEM_PROMPT));
+  ck("the whole prompt carries no URL", !containsLink(SYSTEM_PROMPT));
+  ck("(2a) off Instagram: samples at the free visit + Ozzi's number, never a link (owner rule 2026-11-02)", /\(2a\) SEND \/ SHOW REMOTELY → the samples at the free visit \+ Ozzi's number, NEVER a link/.test(SYSTEM_PROMPT));
   ck("no inverted punctuation in the new Spanish examples", !/[¿¡]/.test(SYSTEM_PROMPT));
 
   console.log("\n[2c2] getAIResponse itself leaves Instagram link-free (canned intercepts + post-model backstops)");
   const aiSrc = read("src/lib/ai.ts");
-  ck("hard-coded intercept neutralized on Instagram", /return \{ text: isInstagramChannel\(messages\) \? neutralizeInstagramLinks\(hardcoded, usersLang\(\)\) : hardcoded, inputTokens: 0, outputTokens: 0 \};/.test(aiSrc));
-  ck("final post-processing neutralized on Instagram, after stripInvertedPunctuation", /cleaned = stripInvertedPunctuation\(cleaned\);[\s\S]{0,700}if \(isInstagramChannel\(messages\)\) cleaned = neutralizeInstagramLinks\(cleaned, usersLang\(\)\);/.test(aiSrc));
+  ck("hard-coded intercept neutralized on every channel (Instagram wording when the IG note is there)", /return \{ text: neutralizeInstagramLinks\(hardcoded, usersLang\(\), \{ channel: dmChannelOf\(messages\) \}\), inputTokens: 0, outputTokens: 0 \};/.test(aiSrc));
+  ck("final post-processing neutralized on every channel, after stripInvertedPunctuation", /cleaned = stripInvertedPunctuation\(cleaned\);[\s\S]{0,900}cleaned = neutralizeInstagramLinks\(cleaned, usersLang\(\), \{ channel: dmChannelOf\(messages\) \}\);/.test(aiSrc));
 
   console.log("\n[2d] Dreaming never learns against the rule");
   const dr = read("src/lib/dreaming.ts");
-  ck("rule 13: Instagram exception, link in bio + Ozzi's number are the rule, not an error", /INSTAGRAM IS THE EXCEPTION \(owner rule 2026-10-17\)[\s\S]{0,600}never write a learning that tells the agent to send a link on Instagram/.test(dr));
+  ck("rule 13: no link on any channel, link in bio + Ozzi's number are the rule, not an error", /13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL[\s\S]{0,900}never write a learning that tells the agent to send a link anywhere/.test(dr) && /never flag a reply for saying "link in our bio"/.test(dr));
 
   // ── 3. ao vivo ────────────────────────────────────────────────────────────
   const live = process.env.DET_ONLY !== "1" && process.env.ANTHROPIC_API_KEY !== "unused-pure-eval";
@@ -186,7 +187,8 @@ async function main() {
   console.log(`   colors raw:   ${colors.raw.replace(/\s+/g, " ")}\n   colors final: ${colors.final.replace(/\s+/g, " ")}`);
   ck("LIVE colors (IG): the model itself wrote no URL", !containsLink(colors.raw), colors.raw);
   ck("LIVE colors (IG): final reply has no link and points to the bio", !containsLink(colors.final) && mentionsBioLink(colors.final), colors.final);
-  ck("LIVE colors (IG): no 'reach Ozzi' instead of the website", !OZZI_NUMBER_RE.test(colors.final), colors.final);
+  // Since 2026-11-02 a samples / link request may also carry Ozzi's number (owner rule); the bio wording must still be there.
+  ck("LIVE colors (IG): the website (bio) is not dropped for a bare 'reach Ozzi'", mentionsBioLink(colors.final), colors.final);
 
   const fin = await pipeline([
     U("Hi, I'm interested in vinyl flooring for my house"),

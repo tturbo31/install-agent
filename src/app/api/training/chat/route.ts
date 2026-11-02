@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
-import { getAIResponse, analyzeImageFromBase64, canonicalizeSiteLink, SITE_URL } from "@/lib/ai";
+import { getAIResponse, analyzeImageFromBase64, canonicalizeSiteLink } from "@/lib/ai";
+import { neutralizeLinks, SAMPLES_HANDOFF_LINE, OZZI_NUMBER_RE } from "@/lib/ig-link-policy";
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 
@@ -140,10 +141,13 @@ export async function POST(req: NextRequest) {
     aiResponse = canonicalizeSiteLink(aiResponse);
     if (/\[SEND_IMAGES[^\]]*\]/i.test(aiResponse)) {
       aiResponse = aiResponse.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-      if (!aiResponse.includes("ozzifloors.company")) {
-        aiResponse += "\n\nVeja todas as nossas opções em " + SITE_URL + " e no Instagram @ozzi.floors.";
+      if (!OZZI_NUMBER_RE.test(aiResponse)) {
+        aiResponse += "\n\n" + SAMPLES_HANDOFF_LINE.pt;
       }
     }
+    // Nenhum link em canal nenhum (dono, 02/11/2026): o treino mostra o que o
+    // cliente veria num direct do Messenger / WhatsApp.
+    aiResponse = neutralizeLinks(aiResponse, undefined, { channel: "other" });
 
     // Persist the AI response
     const { data: aiMsg, error: aiMsgError } = await supabaseAdmin

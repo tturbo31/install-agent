@@ -45,11 +45,11 @@ async function run() {
   ck("sem nota ROUTE PRIORITY", !/ROUTE PRIORITY/.test(avail));
   ck("sem histórico → sem nota ZIP CODE FIRST", !/ZIP CODE FIRST/.test(avail));
   const availZip = await getRealAvailabilityContext({ history: [{ role: "user", content: "Hi, I want luxury vinyl for my whole house, about 1200 sqft." }] });
-  ck("histórico sem localização → nota ZIP CODE FIRST presente (29/09)", /ZIP CODE FIRST: the client's zip code or city is not known yet/.test(availZip));
+  ck("histórico sem localização → SEM nota ZIP CODE FIRST (regra do dono 02/11/2026: nenhum ZIP de cara)", !/ZIP CODE FIRST/.test(availZip));
   const availKnown = await getRealAvailabilityContext({ history: [{ role: "user", content: "Hi, I want vinyl, I'm in Homestead 33032" }] });
   ck("cliente já disse o ZIP → sem nota", !/ZIP CODE FIRST/.test(availKnown));
   const availAsked = await getRealAvailabilityContext({ history: [{ role: "user", content: "vinyl 1200 sqft" }, { role: "assistant", content: "For that size I need to measure in person, it's free. What's the zip code of the property?" }, { role: "user", content: "is it waterproof?" }] });
-  ck("ZIP já pedido e não respondido → nota 'não pergunte de novo'", /you already asked for the zip code once/.test(availAsked));
+  ck("ZIP já pedido e não respondido → também sem nota (02/11/2026; só zipFirst: true a gera)", !/ZIP CODE FIRST/.test(availAsked) && /you already asked for the zip code once/.test(await getRealAvailabilityContext({ zipFirst: true, history: [{ role: "user", content: "vinyl 1200 sqft" }, { role: "assistant", content: "What's the zip code of the property?" }, { role: "user", content: "is it waterproof?" }] })));
   ck("sem PRIORITY DAY / fill rate / preferred seller", !/PRIORITY DAY|fill rate|preferred seller|% booked|offer first/i.test(avail));
   ck("regra SOONEST DAY FIRST continua (dia mais próximo + mais cedo e mais tarde do dia, 15/10)", /SOONEST DAY FIRST/.test(avail) && /EARLIEST and its LATEST open time/.test(avail));
   ck("hierarquia de vendedores fora da oferta (dono 30/09): nenhum horário em parêntese, nenhum bullet de 'one team member'", !/open only if the client asks/.test(avail) && !/ONE TEAM MEMBER'S DAY FILLS/.test(avail));
@@ -90,8 +90,10 @@ async function run() {
     { role: "user", content: `The whole house, around 1200 sqft.${sys(availZip)}` },
   ]);
   console.log("   C0 →", t0.replace(/\s+/g, " ").slice(0, 320));
-  ck("C0: proposta da visita PEDE o ZIP", ZIP_ASK.test(t0) && /\?/.test(t0), t0);
-  ck("C0: sem horários antes do ZIP", clockTimes(t0).length === 0, t0);
+  // Regra do dono 02/11/2026: a proposta já traz os horários e NÃO pergunta o ZIP.
+  const ZIP_Q = /(?:\bzip\b|c[oó]digo postal)[^.!?]*\?/i;
+  ck("C0: proposta da visita NÃO pede o ZIP (02/11/2026)", !ZIP_Q.test(t0), t0);
+  ck("C0: já traz horários (clock times)", clockTimes(t0).length >= 1, t0);
   ck("C0: fala da visita gratuita", /free|gratis/i.test(t0), t0);
   ck("C0: nenhum vazamento", !LEAK.test(t0) && !/ZIP CODE FIRST/i.test(t0), t0);
 
@@ -103,7 +105,7 @@ async function run() {
   ]);
   console.log("   C1 →", t1.replace(/\s+/g, " ").slice(0, 320));
   const c1 = clockTimes(t1);
-  ck("C1: não re-pede o ZIP", !ZIP_ASK.test(t1), t1);
+  ck("C1: não re-pede o ZIP", !ZIP_Q.test(t1), t1);
   ck("C1: oferece horários (clock times)", c1.length >= 1, t1);
   ck("C1: exatamente DOIS horários distintos", new Set(c1).size === 2, `${c1.join(",")} | ${t1}`);
   ck(`C1: os dois são o MAIS CEDO e o MAIS TARDE do dia mais próximo com vaga (${first2.join(", ")})`, c1.length === 2 && c1.every((t) => first2.includes(t)), `${c1.join(",")} | ${t1}`);

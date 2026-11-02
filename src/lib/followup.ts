@@ -319,6 +319,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { supabaseAdmin } from "@/lib/supabase";
 import { sendFacebookMessage } from "@/lib/facebook";
 import { sendInstagramMessage } from "@/lib/instagram";
+import { neutralizeLinks } from "@/lib/ig-link-policy";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { removeDashes, removeEmojis, stripWrappingQuotes, isHostileRejection, replyStillLeaks } from "@/lib/ai";
@@ -518,6 +519,9 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       console.warn(`[FOLLOWUP] composed nudge came out in Portuguese for a ${decision.lang} conversation — using the template instead`);
       text = decision.financing ? financingTemplate(decision.lang) : followupTemplate(decision.lang);
     }
+    // No link on any channel (owner rule 2026-11-02): the nudge prompt already
+    // says "no links", this is the backstop with the channel's wording.
+    text = neutralizeLinks(text, decision.lang, { channel: channel === "whatsapp" ? "whatsapp" : channel === "facebook" ? "messenger" : "instagram" });
     try {
       if (channel === "whatsapp") {
         const r = await sendWhatsAppMessage(conv.igsid.slice(3), text);

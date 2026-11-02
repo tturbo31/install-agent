@@ -2488,10 +2488,12 @@ export function clientRequestedWindows(
   return out.sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
 }
 
-// `zipFirst: false` (Instagram, owner rule 2026-11-02): the ZIP CODE FIRST note
-// is not injected, so the visit proposal offers the two times right away and
-// the zip code is collected only with the full address. Messenger and WhatsApp
-// keep the default (note on).
+// ZIP CODE FIRST is OFF on every channel (owner rule 2026-11-02, "no direct
+// você não pode pedir o zip code logo de cara"): the visit proposal offers the
+// two times right away and the zip code is collected only with the full
+// address and the phone. `zipFirst: true` is the only way to get the old note
+// (kept for the evals that document the retired script); the default and
+// `zipFirst: false` both leave it out.
 export async function getRealAvailabilityContext(opts?: { history?: Array<{ role: string; content: string }>; portStLucie?: boolean; zipFirst?: boolean }): Promise<string> {
   try {
     const db = await getAuthenticatedClient();
@@ -2614,12 +2616,11 @@ export async function getRealAvailabilityContext(opts?: { history?: Array<{ role
         "\n- In the [BOOK:...] tag, copy the date as the exact [YYYY-MM-DD] from the line whose weekday matches what you told the client. If 'Friday' is [2026-06-05] above, the booking date is 2026-06-05, never 2026-06-06."
     );
 
-    // ZIP CODE FIRST (29/09/2026): só quando o webhook passa o histórico e o
-    // cliente ainda não disse onde é. A nota vai DEPOIS das regras da agenda.
-    // Instagram (dono, 02/11/2026) passa zipFirst: false e NÃO recebe a nota:
-    // lá a proposta da visita já vem com os dois horários, sem pedir o ZIP de
-    // cara. Messenger e WhatsApp seguem com o script antigo.
-    const zipNote = opts?.zipFirst === false ? null : zipFirstNote(opts?.history);
+    // ZIP CODE FIRST (29/09/2026 → 02/11/2026): DESLIGADO em todos os canais
+    // (regra do dono, 02/11/2026: nenhum direct pede o ZIP de cara). A proposta
+    // da visita já vem com os dois horários; o ZIP só vem com o endereço
+    // completo e o telefone. Só zipFirst: true explícito ainda gera a nota.
+    const zipNote = opts?.zipFirst === true ? zipFirstNote(opts?.history) : null;
     if (zipNote) lines.push("\n" + zipNote);
 
     return lines.join("\n");
@@ -3237,11 +3238,14 @@ export function portStLucieCallOzziInsistMessage(lang: Lang): string {
   if (lang === "es") return "Ese no lo puedo coordinar por aquí, en Port St. Lucie tiene que ser directo con Ozzi. Llámelo al (561) 674-8334.";
   return "I'm not able to set that one up through here, in Port St. Lucie it has to be with Ozzi directly. Please call him at (561) 674-8334.";
 }
-export function portStLucieVisitMessage(lang: Lang, intro = true, zipKnown = false): string {
+// No zip code up front on any channel (owner rule 2026-11-02): the visit line
+// always asks for the day; the zip comes with the full address. `_zipKnown`
+// is kept for the callers' signature and no longer changes the text.
+export function portStLucieVisitMessage(lang: Lang, intro = true, _zipKnown = true): string {
   const i = intro ? PSL_INTRO[lang] : "";
-  if (lang === "pt") return i + "Para esse tamanho eu meço aí e passo o preço exato, a visita é grátis. " + (zipKnown ? "Qual dia fica melhor para você?" : "Qual é o zip code do imóvel?");
-  if (lang === "es") return i + "Para ese tamaño mido en persona y le doy el precio exacto, la visita es gratis. " + (zipKnown ? "Qué día le queda mejor?" : "Cuál es el código postal de la propiedad?");
-  return i + "For that size I measure in person and give you the exact price, the visit is free. " + (zipKnown ? "What day works best for you?" : "What's the zip code of the property?");
+  if (lang === "pt") return i + "Para esse tamanho eu meço aí e passo o preço exato, a visita é grátis. Qual dia fica melhor para você?";
+  if (lang === "es") return i + "Para ese tamaño mido en persona y le doy el precio exacto, la visita es gratis. Qué día le queda mejor?";
+  return i + "For that size I measure in person and give you the exact price, the visit is free. What day works best for you?";
 }
 // A midday hour was picked / booked for a Port St. Lucie visit: say when the
 // visits there are and offer the real Port St. Lucie times, that same day

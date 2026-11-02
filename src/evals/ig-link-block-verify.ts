@@ -112,12 +112,12 @@ function main() {
   const fu = read("src/lib/followup.ts");
   ck("followup nudge stores sentText", /if \(r\.sentText\) text = r\.sentText;/.test(fu));
   const panel = read("src/app/api/conversations/[id]/send/route.ts");
-  ck("panel send stores sentText", /let storedText = body\.text;/.test(panel) && /if \(igResult\.sentText\) storedText = igResult\.sentText;/.test(panel) && /content: stripInvertedPunctuation\(storedText\)/.test(panel));
+  ck("panel send stores sentText (panel-send.ts since 2026-11-02)", /const storedText = result\.sentText \?\? body\.text;/.test(panel) && /sentText: r\.sentText/.test(read("src/lib/panel-send.ts")));
 
   // ── 4. Dreaming never learns the fallback wording ─────────────────────────
   console.log("\n[4] Dreaming");
   const dr = read("src/lib/dreaming.ts");
-  ck("rule 13: 'link in our bio' is the Instagram rule, the 2026-10-14 'blocking links' wording stays a non-pattern", /INSTAGRAM IS THE EXCEPTION \(owner rule 2026-10-17\)/.test(dr) && /Instagram is blocking links on my end[\s\S]{0,120}never record it as a pattern/.test(dr));
+  ck("rule 13: 'link in our bio' is the Instagram rule, the 2026-10-14 'blocking links' wording stays a non-pattern", /13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL/.test(dr) && /never flag a reply for saying "link in our bio"/.test(dr) && /Instagram is blocking links on my end[\s\S]{0,120}never record it as a pattern/.test(dr));
 
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1); }

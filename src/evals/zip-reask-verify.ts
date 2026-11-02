@@ -77,12 +77,12 @@ console.log("\n━━ 4. prompt ━━");
 const prompt = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
 ck("regra ZIP ALREADY GIVEN no prompt", /ZIP ALREADY GIVEN: if the client ALREADY typed their zip code earlier/.test(prompt));
 ck("Step 3 / pedido único intactos (sem o nome desde 16/09)", /Ask for the full address with the ZIP CODE and the phone \(never the name\) ONLY after/.test(prompt) && /the FULL address WITH THE ZIP CODE AND the phone together in ONE message/.test(prompt));
-ck("prompt pede o ZIP com a proposta da visita, antes dos horários (fluxo restaurado 29/09/2026, sem rota)", /ZIP CODE FIRST: the visit proposal ends with the zip code question/.test(prompt) && /send me the zip and I'll check the schedule/.test(prompt) && !/ROUTE PRIORITY|route optimi/i.test(prompt));
+ck("prompt NÃO pede mais o ZIP com a proposta da visita (regra do dono 02/11/2026): horários na proposta, ZIP só com o endereço", !/ZIP CODE FIRST/.test(prompt) && /NO ZIP CODE UP FRONT \(owner rule 2026-11-02/.test(prompt) && !/ROUTE PRIORITY|route optimi/i.test(prompt));
 // Dreaming (memória noturna): em 16/09 o learnings.md ainda ensinava "zip primeiro, depois dois horários"
 // e o bot respondeu "Where r u located" pedindo o ZIP com a frase exata da memória. A análise noturna
 // precisa da trava para não reaprender o padrão das conversas anteriores a 16/09.
 const dreaming = readFileSync(join(process.cwd(), "src/lib/dreaming.ts"), "utf-8");
-ck("Dreaming: trava 7 = ZIP com a proposta, antes dos horários (fluxo restaurado 29/09)", /7\. THE ZIP CODE IS ASKED WITH THE VISIT PROPOSAL, BEFORE THE TIMES \(flow restored 2026-09-29/.test(dreaming) && /NEVER recommend offering the times before the zip question/.test(dreaming));
+ck("Dreaming: trava 7 = ZIP nunca de cara (regra do dono 02/11/2026)", /7\. THE ZIP CODE IS NEVER ASKED UP FRONT \(owner rule 2026-11-02/.test(dreaming) && /NEVER recommend asking the zip code before the times/.test(dreaming));
 
 console.log("\n━━ 5. zipsInText ━━");
 ck("ZIP sozinho", zipsInText("33130").join() === "33130");

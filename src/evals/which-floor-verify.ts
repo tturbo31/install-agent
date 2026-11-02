@@ -83,22 +83,33 @@ async function main() {
   ck("NOT pure: + price question", !isPureWhichFloorBurst("What floor is that? how much per sqft?"));
 
   console.log("\n[2b] Fix");
+  // Owner rule 2026-11-02: no link and no zip code up front on any channel.
+  // Messenger / WhatsApp: samples at the free visit + Ozzi's number; Instagram:
+  // "our website, the link is in our bio". The forward step is the area question.
+  const NUM = /674[\s.-]?8334/;
+  const AREA_Q = /one area, or the entire house\?/;
   const full = fixWhichFloorReply(YAMIT_BAD, "en", true);
-  ck("full: exact owner shape (site + samples + zip), no guess", full === "Check out our floors at https://ozzifloors.company, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. What's the zip code there?", full);
+  ck("full (Messenger/WA): exact owner shape (samples + Ozzi's number + area question), no guess, no link, no zip", full === "I bring all the samples to the free visit so you can see that floor and all the others in person, and if you want to see the options before that, just text Ozzi at (561) 674-8334. Are you planning to do just one area, or the entire house?", full);
+  const fullIg = fixWhichFloorReply(YAMIT_BAD, "en", true, { ig: true });
+  ck("full (Instagram): bio + samples + area question, no link, no zip, no guess", /link is in our bio/.test(fullIg) && AREA_Q.test(fullIg) && !SITE.test(fullIg) && !ZIP_ASK.test(fullIg) && !GUESS.test(fullIg), fullIg);
   const ins = fixWhichFloorReply(YAMIT_BAD, "en", false);
-  ck("zip known: guess dropped, site in, visit question kept", SITE.test(ins) && !GUESS.test(ins) && /free visit so you can see the samples in person\?$/.test(ins), ins);
+  ck("partial: guess dropped, Ozzi line in, visit question kept, no link", NUM.test(ins) && !SITE.test(ins) && !GUESS.test(ins) && /free visit so you can see the samples in person\?$/.test(ins), ins);
   console.log("     → " + ins);
   const dodge = fixWhichFloorReply("I can't see which ad you came from on my side, but the floors we sell are luxury vinyl. Which one are you interested in?", "en", true);
-  ck("dodge reply → full shape", SITE.test(dodge) && ZIP_ASK.test(dodge) && !/can'?t see/i.test(dodge), dodge);
+  ck("dodge reply → full shape (no zip, no link)", NUM.test(dodge) && AREA_Q.test(dodge) && !ZIP_ASK.test(dodge) && !SITE.test(dodge) && !/can'?t see/i.test(dodge), dodge);
   const es = fixWhichFloorReply("Ese es nuestro vinyl de lujo con acabado de piedra. Quieres agendar la visita?", "es", true);
-  ck("ES full", /Mira nuestros pisos en https:\/\/ozzifloors\.company/.test(es) && /código postal/.test(es) && !/piedra/.test(es), es);
-  const good = "Check out our floors at https://ozzifloors.company, I bring samples to the free visit too. What's the zip code there?";
+  ck("ES full", /Llevo todas las muestras a la visita gratis/.test(es) && NUM.test(es) && !/código postal/.test(es) && !/piedra/.test(es) && !/[¿¡]/.test(es), es);
+  const good = "I bring all the samples to the free visit, and to see the options before that just text Ozzi at (561) 674-8334. Is it one area or the whole house?";
   ck("already right → untouched", fixWhichFloorReply(good, "en", true) === good);
+  const goodIg = "Check out our floors on our website, the link is in our bio, and I bring samples to the free visit too. Is it one area or the whole house?";
+  ck("already right (Instagram) → untouched", fixWhichFloorReply(goodIg, "en", true, { ig: true }) === goodIg);
+  const oldZip = fixWhichFloorReply("Check out our floors at https://ozzifloors.company, I bring samples to the free visit too. What's the zip code there?", "en", true);
+  ck("the old URL + zip shape → no zip question left, area question instead", !ZIP_ASK.test(oldZip) && AREA_Q.test(oldZip), oldZip);
   const tag = fixWhichFloorReply("That's our luxury vinyl with a stone finish. [NOTIFY_OWNER]", "en", true);
-  ck("tag survives at the end", /zip code there\? \[NOTIFY_OWNER\]$/.test(tag), tag);
-  const stray = fixWhichFloorReply("Check out our floors at https://ozzifloors.company, that floor is there so you can see all the details, and I bring the physical samples to the visit too. See you tomorrow at 9am!", "en", false);
-  ck("stray \"See you tomorrow at 9am!\" dropped (past visit)", SITE.test(stray) && !/see you/i.test(stray), stray);
-  const booked = fixWhichFloorReply("Check out our floors at https://ozzifloors.company. See you tomorrow at 9am! [BOOK:{\"date\":\"2026-10-04\"}]", "en", false);
+  ck("tag survives at the end", /entire house\? \[NOTIFY_OWNER\]$/.test(tag), tag);
+  const stray = fixWhichFloorReply("I bring all the physical samples to the visit too, and to see the options before that just text Ozzi at (561) 674-8334. See you tomorrow at 9am!", "en", false);
+  ck("stray \"See you tomorrow at 9am!\" dropped (past visit)", NUM.test(stray) && !/see you/i.test(stray), stray);
+  const booked = fixWhichFloorReply("Text Ozzi at (561) 674-8334 for the options. See you tomorrow at 9am! [BOOK:{\"date\":\"2026-10-04\"}]", "en", false);
   ck("with a [BOOK] the confirmation stays", /See you tomorrow/.test(booked), booked);
   ck("[REACT_ONLY] untouched", fixWhichFloorReply("[REACT_ONLY]", "en", true) === "[REACT_ONLY]");
 
@@ -114,10 +125,10 @@ async function main() {
       console.log("     → " + r.replace(/\s+/g, " "));
     }
   };
-  await live("Yamit replay → website, no guess, never \"see you tomorrow\" for the past visit", YAMIT, (r) => SITE.test(r) && !GUESS.test(r) && !/see you (?:tomorrow|wednesday|then)/i.test(r));
-  await live("fresh ad lead 'What floor is that?' → website + samples + zip", [U("[Client replied to our ad]"), U("What floor is that?")], (r) => SITE.test(r) && ZIP_ASK.test(r) && /sample/i.test(r) && !GUESS.test(r));
-  await live("fresh 'Love it! What's that floor called?'", [U("Love it!"), U("What's that floor called?")], (r) => SITE.test(r) && ZIP_ASK.test(r) && !GUESS.test(r));
-  await live("ES 'qué piso es ese?'", [U("[Client replied to our ad]"), U("Hola, qué piso es ese?")], (r) => SITE.test(r) && /código postal/i.test(r) && !/piedra|m[aá]rmol/i.test(r) && !/[¿¡]/.test(r));
+  await live("Yamit replay → no link, no guess, never \"see you tomorrow\" for the past visit", YAMIT, (r) => !SITE.test(r) && (NUM.test(r) || /link is in our bio/.test(r)) && !GUESS.test(r) && !/see you (?:tomorrow|wednesday|then)/i.test(r));
+  await live("fresh ad lead 'What floor is that?' → samples + Ozzi's number, no link, no zip", [U("[Client replied to our ad]"), U("What floor is that?")], (r) => !SITE.test(r) && !ZIP_ASK.test(r) && NUM.test(r) && /sample/i.test(r) && !GUESS.test(r));
+  await live("fresh 'Love it! What's that floor called?'", [U("Love it!"), U("What's that floor called?")], (r) => !SITE.test(r) && !ZIP_ASK.test(r) && NUM.test(r) && !GUESS.test(r));
+  await live("ES 'qué piso es ese?'", [U("[Client replied to our ad]"), U("Hola, qué piso es ese?")], (r) => !SITE.test(r) && !/código postal/i.test(r) && NUM.test(r) && !/piedra|m[aá]rmol/i.test(r) && !/[¿¡]/.test(r));
   await live("REGRESSION cement talk → still the vinyl correction", [U("[Client replied to our ad]"), U("Is that floor epoxy? the cement you pour over the tile?")], (r) => /vinyl/i.test(r) && !/we don'?t (?:do|install)|isn'?t something we/i.test(r));
 }
 

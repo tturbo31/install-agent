@@ -112,9 +112,9 @@ async function main() {
   console.log("\n[E] Photo/samples request → link do site (regra do dono 27/07), nunca redirect de WhatsApp");
   const waNote = "\n\n[SYSTEM: TODAY: Wednesday, July 15, 2026 [2026-07-15].\n\n[WHATSAPP CHANNEL: You already have the client's phone number (13055551234). Ask ONLY for the client's name and the property address. Generate [BOOK:...] using \"13055551234\" as the phone.]]";
   const waPhotos = await getAIResponse([U("Can you send me photos of your floors?" + waNote)], null, null, null, false);
-  ck("WA photo request → link ozzifloors.com, sem redirect de WhatsApp", /ozzifloors\.com/i.test(waPhotos.text) && !/message our team directly on whatsapp/i.test(waPhotos.text), waPhotos.text);
+  ck("WA photo request → amostras + número do Ozzi, sem link (02/11/2026), sem redirect de WhatsApp", !/ozzifloors\.com/i.test(waPhotos.text) && /674[-\s]?8334/.test(waPhotos.text) && !/message our team directly on whatsapp/i.test(waPhotos.text), waPhotos.text);
   const igPhotos = await getAIResponse([U("Can you send me photos of your floors?" + NOTE)], null, null, null, false);
-  ck("IG/FB photo request → link ozzifloors.com, sem redirect de WhatsApp", /ozzifloors\.com/i.test(igPhotos.text) && !/message our team directly on whatsapp/i.test(igPhotos.text), igPhotos.text);
+  ck("IG/FB photo request → amostras + número do Ozzi, sem link (02/11/2026), sem redirect de WhatsApp", !/ozzifloors\.com/i.test(igPhotos.text) && /674[-\s]?8334/.test(igPhotos.text) && !/message our team directly on whatsapp/i.test(igPhotos.text), igPhotos.text);
 
   console.log(`\n========== REVIEW-FIXES-VERIFY: ${passed} passed, ${failed} failed ==========`);
   if (fails.length) for (const f of fails) console.log(`  ✗ ${f}`);

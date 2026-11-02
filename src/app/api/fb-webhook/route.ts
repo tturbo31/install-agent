@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendFacebookMessage, fetchFacebookProfile, downloadFacebookAttachment, fetchAdCreative } from "@/lib/facebook";
+import { neutralizeLinks, ensureFinancingHandoff } from "@/lib/ig-link-policy";
 import { notifyOwners } from "@/lib/whatsapp";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { isCommentChatNotice, isCommentChatCreatedNotice, commentChatAwaitingFirstReply, COMMENT_CHAT_MARKER } from "@/lib/post-comment-policy";
@@ -1933,7 +1934,15 @@ async function handleFbMessage(body: Record<string, unknown>, opts?: { replay?: 
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
     // Port St. Lucie (owner rule 2026-10-28) no longer promises a callback:
     // the redirect to his number runs there too.
-    const finalResponse = stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang));
+    // No link on Messenger either (owner rule 2026-11-02, ig-link-policy.ts):
+    // a website link leaves as the samples + Ozzi's number line, a financing
+    // link as Ozzi's number, any other link is dropped with the owner line;
+    // and a client who asked about financing always gets Ozzi's number.
+    const finalResponse = ensureFinancingHandoff(
+      neutralizeLinks(stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang)), lang, { channel: "messenger" }),
+      unansweredUserBurst(messagesForAI),
+      lang,
+    );
 
     // Never send an empty message: a tag-only reply (bare [NOTIFY_OWNER], etc.)
     // strips to "" and the Graph API send silently fails, leaving the client with

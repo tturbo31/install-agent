@@ -35,6 +35,19 @@
 //     "text Ozzi at (561) 674-8334 and he'll send it to you".
 //   • the panel (the owner typing by hand) may keep its links: the rule is
 //     about the AI, and the 508 fallback still covers that path.
+//
+// OWNER RULE 2026-11-02 — NO LINK IN ANY DIRECT (Instagram, Messenger AND
+// WhatsApp): "não pode mandar link nem no Instagram, nem no Messenger, nem no
+// WhatsApp. Nenhum link pode ser enviado no direct." The AI never writes a URL
+// on any channel. On Instagram the website is still "the link is in our bio"
+// (the one place a link may live). On Messenger and WhatsApp there is no bio
+// to point at, so a request to SEE the floors (samples, photos, colors, the
+// floor in a post, our website) is answered with the samples at the free visit
+// plus Ozzi's number, (561) 674-8334, to see them before that ("caso o cliente
+// peça para ver o sample, peça para ele entrar em contato diretamente com o
+// número final 34"). Financing is Ozzi's number everywhere, never the
+// application link. `neutralizeLinks(text, lang, { channel })` applies the
+// channel's wording; the Instagram default is unchanged.
 
 export const IG_LINK_BLOCK_CODE = 508;
 
@@ -43,10 +56,18 @@ export const IG_LINK_BLOCK_CODE = 508;
 // INSTAGRAM exceptions (STEP 2 and FINANCING) keyed on this exact tag.
 export const IG_CHANNEL_TAG = "[INSTAGRAM CHANNEL";
 export const IG_CHANNEL_NOTE =
-  "[INSTAGRAM CHANNEL: You are chatting on Instagram Direct. NEVER write any link or URL here, not our website address, not the financing application, nothing (owner rule 2026-10-17). When the client asks about the floors we have, our colors, styles, samples, photos, a catalog or our website, tell them our floors are on our website and the link is in our bio, in their language, and keep the rest of the normal answer (samples at the free visit, the next step). When the client asks about financing, payment plans or paying monthly, say we do offer financing through our partner and that for the financing they should call or text Ozzi directly at (561) 674-8334, never explain the application and never send a link, then continue the normal flow in the same message. NO ZIP CODE UP FRONT ON INSTAGRAM (owner rule 2026-11-02): here the ZIP CODE FIRST rule does NOT apply and neither does the zip code ending of the AD FLOOR QUESTIONS rule. Never ask for the zip code as a question of its own early in the conversation: when you propose the free visit (or the client asks about availability, days or times), offer the two real times from the schedule right away, exactly as the schedule rules say (for example \"For that size I measure in person and give you the best price, it's free and I bring the samples. I can come Tuesday at 9am or 7pm, which works?\"). When you cannot see the floor the client asks about, end with the one-area-or-whole-house question if you do not know the size yet, otherwise with the two times. The zip code is collected ONLY together with the full address and the phone, after the client picked a time, as usual. The service area is still checked from the address they send.]";
+  "[INSTAGRAM CHANNEL: You are chatting on Instagram Direct. NEVER write any link or URL here, not our website address, not the financing application, nothing (owner rule 2026-10-17). When the client asks about the floors we have, our colors, styles, samples, photos, a catalog or our website, tell them our floors are on our website and the link is in our bio, in their language, and keep the rest of the normal answer (samples at the free visit, the next step). When the client asks about financing, payment plans or paying monthly, say we do offer financing through our partner and that for the financing they should call or text Ozzi directly at (561) 674-8334, never explain the application and never send a link, then continue the normal flow in the same message. NO ZIP CODE UP FRONT ON INSTAGRAM (owner rule 2026-11-02): here the ZIP CODE FIRST rule does NOT apply and neither does the zip code ending of the AD FLOOR QUESTIONS rule. Never ask for the zip code as a question of its own early in the conversation: when you propose the free visit (or the client asks about availability, days or times), offer the two real times from the schedule right away, exactly as the schedule rules say (for example \"For that size I measure in person and give you the best price, it's free and I bring the samples. I can come [soonest day] at [its earliest time] or [its latest time], which works?\"). When you cannot see the floor the client asks about, end with the one-area-or-whole-house question if you do not know the size yet, otherwise with the two times. The zip code is collected ONLY together with the full address and the phone, after the client picked a time, as usual. The service area is still checked from the address they send.]";
 
 export function isInstagramChannel(messages: Array<{ role: string; content: string }>): boolean {
   return (messages ?? []).some((m) => m.role === "user" && (m.content || "").includes(IG_CHANNEL_TAG));
+}
+
+// The direct-message channel a reply goes out on. "instagram" keeps the bio
+// wording; every other value gets the Messenger / WhatsApp wording (samples at
+// the free visit + Ozzi's number instead of the website link).
+export type DmChannel = "instagram" | "messenger" | "whatsapp" | "other";
+export function dmChannelOf(messages: Array<{ role: string; content: string }>): DmChannel {
+  return isInstagramChannel(messages) ? "instagram" : "other";
 }
 
 export type ReplyLang = "en" | "es" | "pt";
@@ -132,6 +153,15 @@ const OTHER_FALLBACK: Record<ReplyLang, string> = {
   es: "Escríbele a Ozzi al (561) 674-8334 y él te lo manda.",
   pt: "Manda mensagem pro Ozzi no (561) 674-8334 que ele te envia.",
 };
+// Samples / photos / colors / our website on Messenger and WhatsApp (owner
+// rule 2026-11-02): the samples come to the free visit, and to see them before
+// that the client texts Ozzi. Same number as every other handoff.
+export const SAMPLES_HANDOFF_LINE: Record<ReplyLang, string> = {
+  en: "I bring all the samples to the free visit, and if you want to see them before that, just text Ozzi at (561) 674-8334.",
+  es: "Llevo todas las muestras a la visita gratis, y si quieres verlas antes, escríbele a Ozzi al (561) 674-8334.",
+  pt: "Eu levo todas as amostras na visita grátis, e se quiser ver antes, é só mandar mensagem pro Ozzi no (561) 674-8334.",
+};
+const SITE_DROP_TOKEN = "\u0001SITEX\u0001";
 
 function tidy(text: string): string {
   return text
@@ -149,12 +179,17 @@ function endsSentence(text: string): string {
   return /[.!?)]$/.test(t) ? t : `${t}.`;
 }
 
-// The same reply with every link neutralized so Instagram will deliver it.
-// Returns the input unchanged when it carries no link.
-export function neutralizeLinks(text: string, lang?: ReplyLang): string {
+// The same reply with every link neutralized. Returns the input unchanged
+// when it carries no link. Default (and `channel: "instagram"`): the Instagram
+// wording (site → "link in our bio"). Any other channel (owner rule
+// 2026-11-02, Messenger / WhatsApp): the sentence that carried the site link
+// goes and the reply gets the samples + Ozzi's number line ahead of its
+// closing question; financing and other links behave the same on every channel.
+export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel?: DmChannel }): string {
   const original = text || "";
   if (!containsLink(original)) return original;
   const L = lang ?? replyLang(original);
+  const offInstagram = !!opts?.channel && opts.channel !== "instagram";
 
   // Protect emails, tokenize links (trailing punctuation stays in the sentence).
   const emails: string[] = [];
@@ -164,9 +199,14 @@ export function neutralizeLinks(text: string, lang?: ReplyLang): string {
   });
   let other = 0;
   let financing = 0;
+  let siteDropped = 0;
   t = t.replace(URL_RE, (m) => {
     const core = m.replace(/[.,;:!?]+$/, "");
     const tail = m.slice(core.length);
+    if (SITE_RE.test(core) && offInstagram) {
+      siteDropped++;
+      return SITE_DROP_TOKEN + tail;
+    }
     if (SITE_RE.test(core)) return SITE_TOKEN + tail;
     if (FINANCING_LINK_RE.test(core)) {
       financing++;
@@ -181,6 +221,12 @@ export function neutralizeLinks(text: string, lang?: ReplyLang): string {
   // with Ozzi's number for the financing (owner rule 2026-10-17).
   if (financing > 0) {
     t = t.replace(/[^.!?\n]*\u0001FIN\u0001[^.!?\n]*[.!?]*[ \t]*/g, " ");
+  }
+  // ── Our site off Instagram (owner rule 2026-11-02): no bio to point at, so
+  // the sentence that pitched the website goes and the samples + Ozzi line
+  // comes in below, ahead of the closing question.
+  if (siteDropped > 0) {
+    t = t.replace(/[^.!?\n]*\u0001SITEX\u0001[^.!?\n]*[.!?]*[ \t]*/g, " ");
   }
 
   // ── Our site: "website at URL" → "website (link in our bio)", "at URL" →
@@ -209,6 +255,9 @@ export function neutralizeLinks(text: string, lang?: ReplyLang): string {
   }
   if (financing > 0 && !OZZI_NUMBER_RE.test(t)) {
     t = withLineBeforeClosingQuestion(tidy(t), IG_FINANCING_LINE[L]);
+  }
+  if (siteDropped > 0 && !OZZI_NUMBER_RE.test(t)) {
+    t = withLineBeforeClosingQuestion(tidy(t), SAMPLES_HANDOFF_LINE[L]);
   }
 
   t = tidy(t).replace(/\u0002(\d+)\u0002/g, (_, i) => emails[Number(i)] ?? "");
@@ -262,6 +311,8 @@ export function asksAboutFinancing(clientText: string): boolean {
 // [SYSTEM:] notes already split off). Returns the reply unchanged when the client did not ask about financing or
 // the reply already carries Ozzi's number. Trailing tags ([NOTIFY_OWNER],
 // [BOOK:...]) stay last; a tag-only reply (deliberate silence) is untouched.
+// Same backstop on every channel since 2026-11-02 (no financing link anywhere).
+export const ensureFinancingHandoff = (reply: string, clientText: string, lang: ReplyLang): string => ensureIgFinancingHandoff(reply, clientText, lang);
 export function ensureIgFinancingHandoff(reply: string, clientText: string, lang: ReplyLang): string {
   const original = reply || "";
   if (!asksAboutFinancing(clientText)) return original;

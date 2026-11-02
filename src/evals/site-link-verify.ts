@@ -87,7 +87,7 @@ async function main() {
 
   console.log("\n━━ 3. stripForbiddenTags (portão final dos webhooks) ━━");
   const s1 = stripForbiddenTags("Hi![SEND_IMAGES: a.jpg]");
-  ck("[SEND_IMAGES] removido e link NOVO anexado", !/SEND_IMAGES/.test(s1) && NEW_LINK.test(s1) && !OLD_LINK.test(s1), s1);
+  ck("[SEND_IMAGES] removido, linha das amostras + número do Ozzi, nenhum link (regra do dono 02/11/2026)", !/SEND_IMAGES/.test(s1) && !NEW_LINK.test(s1) && !OLD_LINK.test(s1) && /674[-\s]?8334/.test(s1), s1);
   const s2 = stripForbiddenTags("See https://www.ozzifloors.com [SEND_IMAGES: a.jpg]");
   ck("link antigo + tag → UM link novo, nenhum antigo", (s2.match(/ozzifloors\.company/g) ?? []).length === 1 && !OLD_LINK.test(s2), s2);
   const s3 = stripForbiddenTags("You can see our floors at https://www.ozzifloors.com, and I bring the samples.");
@@ -97,23 +97,23 @@ async function main() {
   console.log("\n━━ 4. smallJobPhotosMessage (menos de 400 sqft) ━━");
   for (const l of ["en", "es", "pt"] as const) {
     const m = smallJobPhotosMessage(l);
-    ck(`${l}: link novo + número do Ozzi, sem link antigo`, NEW_LINK.test(m) && /674[-\s]?8334/.test(m) && !OLD_LINK.test(m), m);
+    ck(`${l}: número do Ozzi, nenhum link (regra do dono 02/11/2026)`, !NEW_LINK.test(m) && /674[-\s]?8334/.test(m) && !OLD_LINK.test(m), m);
   }
 
   console.log("\n━━ 5. SYSTEM_PROMPT ━━");
-  ck("ensina o link novo", (SYSTEM_PROMPT.match(new RegExp(SITE_URL.replace(/[.\/]/g, "\\$&"), "g")) ?? []).length >= 3);
+  ck("não ensina link nenhum (regra do dono 02/11/2026: nenhum link em canal nenhum)", (SYSTEM_PROMPT.match(new RegExp(SITE_URL.replace(/[.\/]/g, "\\$&"), "g")) ?? []).length === 0);
   ck("nenhum link antigo (www.ozzifloors.com / https://ozzifloors.com)", !OLD_LINK.test(SYSTEM_PROMPT));
-  ck("proíbe o antigo explicitamente", /old ozzifloors\.com no longer exists/.test(SYSTEM_PROMPT));
+  ck("proíbe link em qualquer canal explicitamente", /NO LINKS ON ANY CHANNEL/.test(SYSTEM_PROMPT));
 
   console.log("\n━━ 6. respostas prontas (puro, 0 tokens) ━━");
   const origLog = console.log;
   const ask = async (msgs: ChatMessage[]) => { console.log = () => {}; try { return await getAIResponse(msgs, null, null, null, false); } finally { console.log = origLog; } };
   const en = await ask([U("Can you send me photos of your floors?" + NOTE)]);
-  ck("EN 'send me photos' → link novo, 0 tokens", NEW_LINK.test(en.text) && !OLD_LINK.test(en.text) && en.inputTokens === 0, en.text);
+  ck("EN 'send me photos' → sem link, número do Ozzi, 0 tokens", !NEW_LINK.test(en.text) && !OLD_LINK.test(en.text) && /674[-\s]?8334/.test(en.text) && en.inputTokens === 0, en.text);
   const en2 = await ask([U("Hi, I'm interested in vinyl"), A("Our vinyl promo is $5 per sqft and that already includes the floor, the installation and the quarter round. Is it one area or the whole house?"), U("what colors do you have?" + NOTE)]);
-  ck("EN 'what colors do you have' → link novo, 0 tokens", NEW_LINK.test(en2.text) && !OLD_LINK.test(en2.text) && en2.inputTokens === 0, en2.text);
+  ck("EN 'what colors do you have' → sem link, número do Ozzi, 0 tokens", !NEW_LINK.test(en2.text) && !OLD_LINK.test(en2.text) && /674[-\s]?8334/.test(en2.text) && en2.inputTokens === 0, en2.text);
   const pt = await ask([U("Oi, quero vinyl"), A("Nossa promo de vinyl é $5 por pé quadrado e já inclui o piso, a instalação e o quarter round. É só uma área ou a casa toda?"), U("me manda fotos dos pisos?" + NOTE)]);
-  ck("PT 'me manda fotos dos pisos' → link novo, 0 tokens", NEW_LINK.test(pt.text) && !OLD_LINK.test(pt.text) && pt.inputTokens === 0, pt.text);
+  ck("PT 'me manda fotos dos pisos' → sem link, número do Ozzi, 0 tokens", !NEW_LINK.test(pt.text) && !OLD_LINK.test(pt.text) && /674[-\s]?8334/.test(pt.text) && pt.inputTokens === 0, pt.text);
 
   const live = process.env.DET_ONLY !== "1" && process.env.ANTHROPIC_API_KEY !== "unused-pure-eval";
   if (!live) { console.log("\n━━ 7. AO VIVO: pulado (DET_ONLY=1 ou sem ANTHROPIC_API_KEY) ━━"); return done(); }
@@ -129,7 +129,7 @@ async function main() {
   for (let i = 1; i <= 3; i++) {
     const r = await ask(histOld);
     console.log(`   [${i}] →`, r.text.replace(/\s+/g, " ").slice(0, 220));
-    ck(`histórico com link antigo, pediu de novo → NOVO e nenhum antigo (${i}/3)`, NEW_LINK.test(r.text) && !OLD_LINK.test(r.text) && r.inputTokens > 0, r.text);
+    ck(`histórico com link antigo, pediu de novo → NENHUM link, número do Ozzi (${i}/3)`, !NEW_LINK.test(r.text) && !OLD_LINK.test(r.text) && /674[-\s]?8334/.test(r.text) && r.inputTokens > 0, r.text);
   }
   const histSite: ChatMessage[] = [
     U("Hi, do you install hardwood?"),
@@ -139,7 +139,7 @@ async function main() {
   for (let i = 1; i <= 3; i++) {
     const r = await ask(histSite);
     console.log(`   [${i}] →`, r.text.replace(/\s+/g, " ").slice(0, 220));
-    ck(`"what's your website?" → link NOVO, nenhum antigo (${i}/3)`, NEW_LINK.test(r.text) && !OLD_LINK.test(r.text), r.text);
+    ck(`"what's your website?" → NENHUM link (número do Ozzi ou "link na bio") (${i}/3)`, !NEW_LINK.test(r.text) && !OLD_LINK.test(r.text) && (/674[-\s]?8334/.test(r.text) || /\bbio\b/i.test(r.text)), r.text);
   }
   done();
 }

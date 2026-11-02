@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, WHAT_IS_INCLUDED_TWO_TIER_ASK, WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE, INCLUSIONS_TWO_TIER_SENTENCE, AD_PRICE_TIER_NOTE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
 import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, trailerDeclineMessage, mobileHomeOzziDirectMessage, mobileHomeOzziInsistMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
-import { mentionsBioLink, isInstagramChannel, neutralizeLinks as neutralizeInstagramLinks } from "@/lib/ig-link-policy";
+import { mentionsBioLink, isInstagramChannel, dmChannelOf, neutralizeLinks as neutralizeInstagramLinks, OZZI_NUMBER_RE as OZZI_HANDOFF_NUMBER_RE, SAMPLES_HANDOFF_LINE } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
 import { monologueSignal, salvageFromLeak, splitSentences, hasRedraftedOffer, mentionsThirdParty, CLEAN_REPLY_NOTE, type LeakOptions } from "@/lib/reasoning-leak";
 import { withRequestedTimesNote } from "@/lib/requested-slots";
@@ -58,7 +58,9 @@ export type ChatMessage = { role: "user" | "assistant"; content: string; at?: st
 // These override the AI completely because the model cannot be reliably
 // instructed to omit pricing from "what's included" type questions.
 
-const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: string; skipIfSubstantive?: boolean }> = [
+// `responseIg`: the Instagram wording of the same canned reply (owner rule
+// 2026-10-17: on Instagram the website is "the link is in our bio").
+const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: string; responseIg?: string; skipIfSubstantive?: boolean }> = [
   {
     // PRICE NEGOTIATION / COMPETITOR QUOTE — owner rule (2026-07-08): the bot
     // must NEVER commit to beating or matching a price (it once wrote "I can
@@ -123,9 +125,11 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /(foto|imagem|amostra|cat[aá]logo)\s+dos?\s+(pisos?|chão|ch[aã]o|op[cç])/i,
     ],
     id: "see_options_pt",
-    // Regra do dono (2026-07-27): pedido de amostras/fotos → manda o LINK DO
-    // SITE direto (antes era redirect pro WhatsApp da equipe).
-    response: "Claro, você pode ver nossos pisos em https://ozzifloors.company, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?",
+    // Regra do dono (2026-11-02): nenhum link em canal nenhum; pedido de
+    // amostras/fotos = amostras na visita grátis + número do Ozzi para ver
+    // antes (de 27/07 a 02/11 ia o link do site).
+    response: "Claro! Eu levo todas as amostras na visita grátis, e se quiser ver antes, é só mandar mensagem pro Ozzi no (561) 674-8334. É só uma área ou a casa toda?",
+    responseIg: "Claro! Nossos pisos estão no nosso site, o link está na nossa bio, e eu levo todas as amostras na visita grátis, ou manda mensagem pro Ozzi no (561) 674-8334 pra ver antes. É só uma área ou a casa toda?",
     skipIfSubstantive: true,
   },
   {
@@ -155,9 +159,11 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
       /what\s+(?:do\s+you\s+(?:have|carry|sell|offer|got)|(?:kinds?|types?|colou?rs?|styles?|options?|designs?|finishes?)\s+(?:do\s+you|are\s+(?:available|there)))/i,
     ],
     id: "see_options_en",
-    // Owner rule (2026-07-27): samples/photos requests get the WEBSITE link
-    // directly (was: redirect to the team's WhatsApp).
-    response: "Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?",
+    // Owner rule (2026-11-02): no link on any channel; a samples / photos /
+    // colors request gets the samples at the free visit + Ozzi's number to see
+    // them before (2026-07-27 to 2026-11-02 it was the website link).
+    response: "Sure! I bring all the samples to the free visit, and if you want to see them before that, just text Ozzi at (561) 674-8334. Is it just one area or the whole house?",
+    responseIg: "Sure! Our floors are on our website, the link is in our bio, and I bring all the samples to the free visit, or text Ozzi at (561) 674-8334 to see them before. Is it just one area or the whole house?",
     skipIfSubstantive: true,
   },
   {
@@ -347,8 +353,9 @@ function checkHardcodedResponse(messages: ChatMessage[]): string | null {
       // "can you send me pictures of the colors?") the canned line asked it
       // again, 6 runs in 6 (2026-09-21): the robot signature rule 5 forbids.
       // The scope is known: the link and the samples go, the question does not.
-      if (rule.id?.startsWith("see_options") && scopeAlreadyStated(messages)) return rule.response.replace(/\s*[^.!?]*\?\s*$/, "");
-      return rule.response;
+      const response = rule.responseIg && isInstagramChannel(messages) ? rule.responseIg : rule.response;
+      if (rule.id?.startsWith("see_options") && scopeAlreadyStated(messages)) return response.replace(/\s*[^.!?]*\?\s*$/, "");
+      return response;
     }
   }
   return null;
@@ -552,8 +559,10 @@ export function stripForbiddenTags(text: string): string {
   text = canonicalizeSiteLink(text);
   if (!/\[SEND_IMAGES/i.test(text)) return text;
   let cleaned = text.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-  if (!cleaned.includes("ozzifloors.company")) {
-    cleaned += "\n\nYou can browse all our options at " + SITE_URL + " and on our Instagram @ozzi.floors.";
+  // No link on any channel (owner rule 2026-11-02): the samples + Ozzi line
+  // replaces the old website plug.
+  if (!OZZI_HANDOFF_NUMBER_RE.test(cleaned) && !mentionsBioLink(cleaned)) {
+    cleaned += "\n\n" + SAMPLES_HANDOFF_LINE.en;
   }
   console.log("[AI] [SEND_IMAGES] tag stripped at safety layer");
   return cleaned;
@@ -1352,10 +1361,13 @@ export function isFloorColorQuestion(text: string): boolean {
   }
   return false;
 }
+// Instagram: the website is "the link in our bio" (owner rule 2026-10-17).
+// Messenger / WhatsApp: no link at all (owner rule 2026-11-02), the colors are
+// seen at the free visit or by texting Ozzi (SAMPLES_HANDOFF_LINE).
 const COLOR_SITE: Record<"en" | "es" | "pt", string> = {
-  en: `You can see all our floor colors on our website, ${SITE_URL}, take a look there.`,
-  es: `Puedes ver todos los colores de nuestros pisos en nuestra página, ${SITE_URL}, échale un vistazo ahí.`,
-  pt: `Você pode ver todas as cores dos nossos pisos no nosso site, ${SITE_URL}, dá uma olhada lá.`,
+  en: "You can see all our floor colors on our website, the link is in our bio.",
+  es: "Puedes ver todos los colores de nuestros pisos en nuestra página web, el link está en nuestra bio.",
+  pt: "Você pode ver todas as cores dos nossos pisos no nosso site, o link está na nossa bio.",
 };
 // "For samples and color options, the best is to reach Ozzi directly at (561)
 // 674-8334": a color question sent to the phone instead of the website.
@@ -1365,16 +1377,29 @@ export function isColorPhoneHandoffOnly(text: string): boolean {
   const prose = normalizeSmartPunct(stripProtectedTags(text)).trim();
   return !!prose && !prose.replace(COLOR_TO_PHONE, "").trim();
 }
-/** Makes sure a reply to a floor-color question carries the website. */
-export function withSiteForColor(text: string, lang: "en" | "es" | "pt" = "en"): string {
-  // On Instagram the website is "the link in our bio" (owner rule 2026-10-17):
-  // that reply already has the website, no URL sentence gets added to it.
-  if (/ozzifloors\.company/i.test(text || "") || mentionsBioLink(text)) return text;
+/**
+ * Makes sure a reply to a floor-color question carries a way to see the colors,
+ * never a link (owner rule 2026-11-02). `ig` (Instagram): "our website, the
+ * link is in our bio", and a color-to-phone sentence is swapped for it (owner
+ * rule 2026-10-17). Off Instagram (Messenger / WhatsApp): the samples at the
+ * free visit + Ozzi's number, which IS the answer there; a reply that already
+ * has Ozzi's number is left alone.
+ */
+export function withSiteForColor(text: string, lang: "en" | "es" | "pt" = "en", opts?: { ig?: boolean }): string {
   // A tag-only reply ([REACT_ONLY], a lone [NOTIFY_OWNER]) is a deliberate
   // silence, never a place to add a sentence.
   if (!stripProtectedTags(text || "").trim()) return text;
-  const site = COLOR_SITE[lang] ?? COLOR_SITE.en;
-  return withTagsProtected(text, (prose) => placeSiteSentence(normalizeSmartPunct(prose).replace(COLOR_TO_PHONE, ""), site));
+  if (opts?.ig) {
+    if (/ozzifloors\.company/i.test(text || "") || mentionsBioLink(text)) return text;
+    const site = COLOR_SITE[lang] ?? COLOR_SITE.en;
+    return withTagsProtected(text, (prose) => placeSiteSentence(normalizeSmartPunct(prose).replace(COLOR_TO_PHONE, ""), site));
+  }
+  if (OZZI_HANDOFF_NUMBER_RE.test(text || "")) return text;
+  // A website URL the model still wrote is neutralized downstream (the
+  // sentence goes and this same line comes in), nothing to add here.
+  if (/ozzifloors\.company/i.test(text || "")) return text;
+  const line = SAMPLES_HANDOFF_LINE[lang] ?? SAMPLES_HANDOFF_LINE.en;
+  return withTagsProtected(text, (prose) => placeSiteSentence(normalizeSmartPunct(prose), line));
 }
 // Puts the website sentence into a (tag-masked) reply: ahead of the closing
 // question, so the reply still ends asking it; trailing tags stay last.
@@ -1441,24 +1466,42 @@ export function isPureWhichFloorBurst(text: string): boolean {
   const parts = (text || "").split(/\n/).flatMap((line) => burstSentences(line));
   return parts.length > 0 && parts.every((s) => WHICH_FLOOR.some((re) => re.test(s)) || FLOOR_FILLER.test(s));
 }
-// `fullNoZip` is the Instagram shape (owner rule 2026-11-02: no zip code up
-// front on Instagram): same website + samples, the forward step is the
-// one-area-or-whole-house question instead of the zip code.
-const WHICH_FLOOR_SITE: Record<"en" | "es" | "pt", { full: string; fullNoZip: string; site: string }> = {
+// No link and no zip code up front on ANY channel (owner rule 2026-11-02).
+// `ig` (Instagram): our website, the link is in our bio (owner rule
+// 2026-10-17). `other` (Messenger / WhatsApp): the samples at the free visit
+// + Ozzi's number. The forward step of the full shape is the
+// one-area-or-whole-house question (the zip code comes with the address).
+type WhichFloorShape = { full: string; site: string };
+const WHICH_FLOOR_SITE: Record<"en" | "es" | "pt", { ig: WhichFloorShape; other: WhichFloorShape }> = {
   en: {
-    full: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. What's the zip code there?`,
-    fullNoZip: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. Are you planning to do just one area, or the entire house?`,
-    site: `Check out our floors at ${SITE_URL}, that floor is there so you can see all the details of the job.`,
+    ig: {
+      full: "Check out our floors on our website, the link is in our bio, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. Are you planning to do just one area, or the entire house?",
+      site: "Check out our floors on our website, the link is in our bio, that floor is there so you can see all the details of the job.",
+    },
+    other: {
+      full: "I bring all the samples to the free visit so you can see that floor and all the others in person, and if you want to see the options before that, just text Ozzi at (561) 674-8334. Are you planning to do just one area, or the entire house?",
+      site: "I bring all the samples to the free visit so you can see that floor and all the others in person, and if you want to see the options before that, just text Ozzi at (561) 674-8334.",
+    },
   },
   es: {
-    full: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo, y llevo las muestras a la visita gratis también. Cuál es el código postal de la propiedad?`,
-    fullNoZip: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo, y llevo las muestras a la visita gratis también. Es una sola área o toda la casa?`,
-    site: `Mira nuestros pisos en ${SITE_URL}, ese piso está ahí para que veas todos los detalles del trabajo.`,
+    ig: {
+      full: "Mira nuestros pisos en nuestra página web, el link está en nuestra bio, ese piso está ahí para que veas todos los detalles del trabajo, y llevo las muestras a la visita gratis también. Es una sola área o toda la casa?",
+      site: "Mira nuestros pisos en nuestra página web, el link está en nuestra bio, ese piso está ahí para que veas todos los detalles del trabajo.",
+    },
+    other: {
+      full: "Llevo todas las muestras a la visita gratis para que veas ese piso y todos los demás en persona, y si quieres ver las opciones antes, escríbele a Ozzi al (561) 674-8334. Es una sola área o toda la casa?",
+      site: "Llevo todas las muestras a la visita gratis para que veas ese piso y todos los demás en persona, y si quieres ver las opciones antes, escríbele a Ozzi al (561) 674-8334.",
+    },
   },
   pt: {
-    full: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho, e eu levo as amostras na visita grátis também. Qual é o zip code do imóvel?`,
-    fullNoZip: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho, e eu levo as amostras na visita grátis também. É só uma área ou a casa toda?`,
-    site: `Dá uma olhada nos nossos pisos em ${SITE_URL}, esse piso está lá para você ver todos os detalhes do trabalho.`,
+    ig: {
+      full: "Dá uma olhada nos nossos pisos no nosso site, o link está na nossa bio, esse piso está lá para você ver todos os detalhes do trabalho, e eu levo as amostras na visita grátis também. É só uma área ou a casa toda?",
+      site: "Dá uma olhada nos nossos pisos no nosso site, o link está na nossa bio, esse piso está lá para você ver todos os detalhes do trabalho.",
+    },
+    other: {
+      full: "Eu levo todas as amostras na visita grátis para você ver esse piso e todos os outros pessoalmente, e se quiser ver as opções antes, é só mandar mensagem pro Ozzi no (561) 674-8334. É só uma área ou a casa toda?",
+      site: "Eu levo todas as amostras na visita grátis para você ver esse piso e todos os outros pessoalmente, e se quiser ver as opções antes, é só mandar mensagem pro Ozzi no (561) 674-8334.",
+    },
   },
 };
 // A sentence that names the floor we cannot see ("That's our luxury vinyl with
@@ -1467,7 +1510,7 @@ const FLOOR_GUESS = /^\s*(?:(?:yes|yeah|yep|oh|great\s+question|good\s+question|
 const FLOOR_DODGE = /\b(?:can'?t|cannot|unable\s+to)\s+(?:see|tell|verify|view|open)\b|\bdidn'?t\s+come\s+through\b|\bno\s+(?:puedo|alcanzo\s+a)\s+ver\b|\bn[aã]o\s+(?:consigo|d[aá]\s+(?:pra|para))\s+ver\b/i;
 // "See you tomorrow at 9am!" tacked on a product answer: Yamit's 09/09 visit had
 // already happened, and a "what floor is that?" never confirms a visit.
-const FLOOR_STRAY_CONFIRM = /^\s*(?:see\s+you|nos\s+vemos|hasta\s+(?:ma[nñ]ana|entonces|pronto)|at[eé]\s+(?:amanh[aã]|l[aá]|logo))(?![a-zà-ÿ])/i;
+const FLOOR_STRAY_CONFIRM = /^\s*(?:(?:i'?ll|we'?ll)\s+)?(?:see\s+you|nos\s+vemos|hasta\s+(?:ma[nñ]ana|entonces|pronto)|at[eé]\s+(?:amanh[aã]|l[aá]|logo))(?![a-zà-ÿ])/i;
 // A sentence of ours that asks the zip code ("What's the zip code there?").
 const ZIP_QUESTION_SENTENCE = /(?:\bzip\b|c[oó]digo\s+postal|\bcep\b)[^?]*\?|\?[^.!?]*(?:\bzip\b|c[oó]digo\s+postal|\bcep\b)/i;
 const AREA_QUESTION: Record<"en" | "es" | "pt", string> = {
@@ -1476,18 +1519,26 @@ const AREA_QUESTION: Record<"en" | "es" | "pt", string> = {
   pt: "É só uma área ou a casa toda?",
 };
 /**
- * Answers "what floor is that?" the owner's way: website + (full shape) samples + zip.
- * `noZip` (Instagram, owner rule 2026-11-02): the full shape ends with the
- * one-area-or-whole-house question instead, and a zip question the model wrote
- * on its own is swapped for that question too.
+ * Answers "what floor is that?" the owner's way, with no link and no zip code
+ * (owner rule 2026-11-02, every channel): a zip question the model wrote on its
+ * own is swapped for the one-area-or-whole-house question, a guessed floor or a
+ * dodge is dropped, and the reply gets the channel's way to see the floors:
+ * `ig` (Instagram) "our website, the link is in our bio"; otherwise the samples
+ * at the free visit + Ozzi's number. The full shape (pure burst) is the canned
+ * line of that channel. `noZip` is kept for callers and is always on now.
  */
-export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en", full = false, opts?: { noZip?: boolean }): string {
+export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en", full = false, opts?: { noZip?: boolean; ig?: boolean }): string {
   if (!stripProtectedTags(text || "").trim()) return text;
-  const canned0 = WHICH_FLOOR_SITE[lang] ?? WHICH_FLOOR_SITE.en;
-  const canned = opts?.noZip ? { ...canned0, full: canned0.fullNoZip } : canned0;
+  const ig = !!opts?.ig;
+  const shapes = WHICH_FLOOR_SITE[lang] ?? WHICH_FLOOR_SITE.en;
+  const canned = ig ? shapes.ig : shapes.other;
+  // Instagram: the bio wording (or a URL, neutralized downstream) already is the
+  // website. Off Instagram: only Ozzi's number counts (a URL the model wrote is
+  // dropped downstream, so the samples line must be here).
+  const hasWay = (s: string) => (ig ? /ozzifloors\.company/i.test(s) || mentionsBioLink(s) : OZZI_HANDOFF_NUMBER_RE.test(s));
   return withTagsProtected(text, (prose0) => {
     let prose = prose0;
-    if (opts?.noZip) {
+    {
       // Tags ([NOTIFY_OWNER] etc.) are lifted out and re-attached at the end so
       // the area question is the reply's closing sentence.
       const tags = prose0.match(/\[#TAG\d+#\]/g) ?? [];
@@ -1504,12 +1555,10 @@ export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en"
       const bare = s.replace(/\[#TAG\d+#\]/g, "");
       return !(FLOOR_GUESS.test(bare) || FLOOR_DODGE.test(bare) || (FLOOR_STRAY_CONFIRM.test(bare) && !/\[BOOK:/i.test(text)));
     }).join("");
-    // "the link is in our bio" counts as the website (Instagram, owner rule
-    // 2026-10-17): no URL sentence is added next to it.
-    if (kept === parts.join("") && (/ozzifloors\.company/i.test(prose) || mentionsBioLink(prose))) return prose;
+    if (kept === parts.join("") && hasWay(prose)) return prose;
     const tags = (prose.match(/\[#TAG\d+#\]/g) ?? []).filter((t) => !kept.includes(t));
     const rest = (kept + (tags.length ? " " + tags.join(" ") : "")).trim();
-    if (/ozzifloors\.company/i.test(rest) || mentionsBioLink(rest)) return rest;
+    if (hasWay(rest)) return rest;
     if (full) {
       const tail = (rest.match(/\[#TAG\d+#\]/g) ?? []).join(" ");
       return (canned.full + (tail ? " " + tail : "")).trim();
@@ -3476,9 +3525,9 @@ export function portStLucieReply(history: Array<{ role: string; content: string 
   if (mode === "call_ozzi") {
     return portStLucieCallSent(history) ? portStLucieCallOzziInsistMessage(lang) : portStLucieCallOzziMessage(lang, portStLucieSize(history).sqft, intro);
   }
-  // Instagram (owner rule 2026-11-02) never asks the zip code up front: the
-  // visit line asks for the day instead, the zip comes with the full address.
-  if (mode === "visit") return portStLucieVisitMessage(lang, intro, clientAlreadyGaveZip(history) || isInstagramChannel(history));
+  // No zip code up front on any channel (owner rule 2026-11-02): the visit
+  // line asks for the day, the zip comes with the full address.
+  if (mode === "visit") return portStLucieVisitMessage(lang, intro, true);
   return portStLucieSizeAskMessage(lang, intro);
 }
 // Post-model backstop. Size unknown: a slot / visit offer, an address or zip
@@ -3999,10 +4048,12 @@ export function smallJobLeak(history: Array<{ role: string; content: string }>, 
 }
 
 const SMALL_JOB_INSIST_RE = /not able to give you a quote|no puedo pasarle un presupuesto|não consigo passar o orçamento/i;
+// No link on any channel (owner rule 2026-11-02): the samples come with Ozzi,
+// and he sends the options himself.
 export function smallJobPhotosMessage(lang: ReturnType<typeof detectLang>): string {
-  if (lang === "pt") return "Você pode ver nossos pisos em https://ozzifloors.company, e o Ozzi leva todas as amostras quando se encontra com você. Pode falar com ele no (561) 674-8334.";
-  if (lang === "es") return "Puedes ver nuestros pisos en https://ozzifloors.company, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.";
-  return "You can see our floors at https://ozzifloors.company, and Ozzi brings all the samples himself when he meets with you. You can reach him at (561) 674-8334.";
+  if (lang === "pt") return "O Ozzi leva todas as amostras quando se encontra com você, e ele também te manda as opções. Pode falar com ele no (561) 674-8334.";
+  if (lang === "es") return "Ozzi lleva todas las muestras cuando se reúne contigo, y él mismo te manda las opciones. Puedes contactarlo al (561) 674-8334.";
+  return "Ozzi brings all the samples himself when he meets with you, and he can send you the options too. You can reach him at (561) 674-8334.";
 }
 export function smallJobReply(history: Array<{ role: string; content: string }>, lang: ReturnType<typeof detectLang>): string {
   return smallJobReferralSent(history) ? smallJobOzziInsistMessage(lang) : smallJobOzziDirectMessage(lang);
@@ -4014,7 +4065,7 @@ The client stated a project size under 400 square feet (about ${sqft} sqft). Own
 1. ${referralSent ? "You ALREADY gave the client Ozzi's number earlier in this conversation, so keep it short. " : ""}Tell the client, in their language, that for a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives them the quote himself, and give the number (561) 674-8334. Two short sentences. Example: "For a project under 400 square feet, the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at (561) 674-8334."
 2. NEVER give a price, a total, a per square foot rate, a range, a "starts at" or an estimate for this project, not even "approximate", not even if they insist, not even if they only ask for the rate. NEVER propose, offer or set up a visit, an estimate or a measure. NEVER offer time slots. NEVER ask for their name, address, phone or zip. NEVER generate [BOOK:...]. NEVER say we don't take the job, that it is too small or that we only do bigger projects: we do it, Ozzi just handles it directly.
 3. If the client insists on getting the number here ("just tell me the price", "a rough idea is fine", "can't you tell me here", "why can't you tell me", "I don't want to call", "no me puedes dar el precio", "me passa o valor aqui"): do NOT give in. Say you are not able to give a quote for that size through here, it really has to come from Ozzi directly, and repeat the number. Example: "I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at (561) 674-8334 and he'll check it and give you the number." Never explain the internal reason, never apologize twice, never invent a reason.
-4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have, can you send photos or samples), answer that part briefly and still give the Ozzi line in the same message. A request for photos, samples, colors, styles or the website is NEVER an insistence on the price: answer it (our floors are at https://ozzifloors.company, and Ozzi shows the samples himself) and NEVER use the "not able to give you a quote" line for it.
+4. If the same message also asks something unrelated (is it waterproof, do you install over tile, what floors do you have, can you send photos or samples), answer that part briefly and still give the Ozzi line in the same message. A request for photos, samples, colors, styles or the website is NEVER an insistence on the price: answer it (Ozzi shows the samples himself and sends the options, never a link, owner rule 2026-11-02) and NEVER use the "not able to give you a quote" line for it.
 5. Only if the client states a size of 400 square feet or more, or says it is the whole house or several rooms, return to the normal flow (400 to 499 sqft: quote by DM; 500 or more: the free visit).
 6. If earlier in this conversation a price was given, a visit was offered, a slot was "held" or booking details were collected for this project, that was a MISTAKE: do not confirm it, do not write [BOOK:...], just give the Ozzi line above.`;
 }
@@ -5270,6 +5321,21 @@ export function scrubForeignPhones(text: string, allowedDigits: string[] = []): 
 }
 
 // ─── Main AI response via Claude claude-sonnet-4-6 ───────────────────────────────
+// The Dreaming learnings (/learnings.md, injected into every conversation)
+// are rewritten from their own previous content, so a retired script survives
+// there for a while: on 2026-11-02 the file still taught "Zip-first, then two
+// times" and a photos FAQ with the website link, against the owner's rule of
+// that day (no link on any channel, no zip code up front). Any line that
+// teaches a link or the zip-first script is dropped before injection; the
+// Dreaming rules 7 and 13 stop it from being written back.
+const LEARNING_AGAINST_OWNER_RULES = /https?:\/\/|ozzifloors\.co|gethearth|zip[- ]first|zip question|end(?:s|ing)? with the zip|before offering times|zip.{0,30}before.{0,30}times|ask(?:s|ing)? (?:for )?the zip (?:code )?(?:first|before)/i;
+export function scrubLearnings(text: string | null | undefined): string {
+  const lines = (text || "").split("\n");
+  const kept = lines.filter((l) => !LEARNING_AGAINST_OWNER_RULES.test(l));
+  if (kept.length !== lines.length) console.log(`[AI] learnings: ${lines.length - kept.length} line(s) teaching a link or the zip-first script dropped before injection (owner rule 2026-11-02)`);
+  return kept.join("\n");
+}
+
 export async function getAIResponse(
   messages: ChatMessage[],
   memoryContext?: string | null,
@@ -5628,9 +5694,10 @@ export async function getAIResponse(
     console.log("[AI] Hard-coded intercept skipped — Port St. Lucie without a visit-size project; the model answers with the PSL note");
   } else if (hardcoded) {
     console.log("[AI] Hard-coded intercept triggered:", hardcoded.slice(0, 60));
-    // Instagram never carries a link (owner rule 2026-10-17): the canned
-    // see_options replies name the website, on Instagram that is "link in our bio".
-    return { text: isInstagramChannel(messages) ? neutralizeInstagramLinks(hardcoded, usersLang()) : hardcoded, inputTokens: 0, outputTokens: 0 };
+    // No link on any channel (owner rule 2026-11-02): a canned reply that still
+    // carries one leaves with the channel's wording (bio on Instagram, samples
+    // + Ozzi's number elsewhere).
+    return { text: neutralizeInstagramLinks(hardcoded, usersLang(), { channel: dmChannelOf(messages) }), inputTokens: 0, outputTokens: 0 };
   }
 
   // REQUESTED TIMES (Julie, WA 2026-09-21): when the client names a time or a
@@ -5655,7 +5722,7 @@ export async function getAIResponse(
   let stableSystem = SYSTEM_PROMPT;
 
   if (systemMemory) {
-    stableSystem += `\n\n---\n\n## AGENT LEARNINGS (from Dreaming analysis)\nUse these patterns to improve responses. Don't mention them explicitly.\n${systemMemory}`;
+    stableSystem += `\n\n---\n\n## AGENT LEARNINGS (from Dreaming analysis)\nUse these patterns to improve responses. Don't mention them explicitly.\n${scrubLearnings(systemMemory)}`;
   }
 
   let dynamicSystem = "";
@@ -6105,20 +6172,21 @@ export async function getAIResponse(
         const bookable = !clientAlreadyGaveZip(messages) && smallJobStanding(messages) === null && !bathroomProjectStanding(messages)
           && !mobileHomeStanding(messages) && !portStLucieReferral(messages) && outOfAreaZipStanding(messages) === null && !repairRequestActive(messages) && !unsupportedFloorStanding(messages);
         const full = bookable && isPureWhichFloorBurst(burst) && !/\[BOOK:/i.test(cleaned);
-        // Instagram (owner rule 2026-11-02): no zip code up front, the full
-        // shape ends with the one-area-or-whole-house question instead.
-        const noZip = isInstagramChannel(messages);
-        const fixed = fixWhichFloorReply(cleaned, usersLang(), full, { noZip });
+        // No link and no zip code up front on any channel (owner rule
+        // 2026-11-02): Instagram gets the bio wording, Messenger / WhatsApp the
+        // samples + Ozzi's number; the full shape ends with the area question.
+        const ig = isInstagramChannel(messages);
+        const fixed = fixWhichFloorReply(cleaned, usersLang(), full, { noZip: true, ig });
         if (fixed !== cleaned) {
           cleaned = fixed;
-          console.log(`[AI] which-floor backstop (${full ? (noZip ? "website + samples + area question (IG)" : "website + samples + zip") : "website"}): the client asked what floor that is, no guessing`);
+          console.log(`[AI] which-floor backstop (${full ? (ig ? "bio + samples + area question (IG)" : "samples + Ozzi's number + area question") : ig ? "bio" : "samples + Ozzi's number"}): the client asked what floor that is, no guessing`);
         }
       }
       if (process.env.COLOR_SITE_BACKSTOP !== "off" && isFloorColorQuestion(burst)) {
-        const fixed = withSiteForColor(cleaned, usersLang());
+        const fixed = withSiteForColor(cleaned, usersLang(), { ig: isInstagramChannel(messages) });
         if (fixed !== cleaned) {
           cleaned = fixed;
-          console.log("[AI] color site backstop: the client asked about floor colors and the reply had no website link, added it");
+          console.log("[AI] color backstop: the client asked about floor colors and the reply had no way to see them (bio on IG, Ozzi's number elsewhere), added it");
         }
       }
     }
@@ -6126,9 +6194,10 @@ export async function getAIResponse(
     // Strip any [SEND_IMAGES: ...] tags the AI may still generate
     if (/\[SEND_IMAGES[^\]]*\]/i.test(cleaned)) {
       cleaned = cleaned.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-      // Ensure the links are present if not already
-      if (!cleaned.includes("ozzifloors.company")) {
-        cleaned += "\n\nYou can browse all our options at " + SITE_URL + " and on our Instagram @ozzi.floors.";
+      // No link on any channel (owner rule 2026-11-02): the samples + Ozzi
+      // line stands in for the images.
+      if (!OZZI_HANDOFF_NUMBER_RE.test(cleaned) && !mentionsBioLink(cleaned)) {
+        cleaned += "\n\n" + (SAMPLES_HANDOFF_LINE[usersLang()] ?? SAMPLES_HANDOFF_LINE.en);
       }
       console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
     }
@@ -6322,12 +6391,14 @@ export async function getAIResponse(
     // Regra do dono (28/08/2026): nada de ¿ / ¡ em espanhol — só ? e ! no final.
     cleaned = stripInvertedPunctuation(cleaned);
 
-    // Instagram never carries a link (owner rule 2026-10-17, ig-link-policy.ts):
-    // whatever the backstops above added (the color / which-floor website
-    // sentence, [SEND_IMAGES], the under-400 photos line) leaves here as
-    // "our website (link in our bio)" / Ozzi's number. The IG webhook and the
-    // send apply the same function again, idempotently.
-    if (isInstagramChannel(messages)) cleaned = neutralizeInstagramLinks(cleaned, usersLang());
+    // No link on any channel (owner rule 2026-10-17 for Instagram, every
+    // channel since 2026-11-02, ig-link-policy.ts): whatever link the model or
+    // a backstop still wrote leaves here as "our website (link in our bio)" on
+    // Instagram, or as the samples + Ozzi's number line on Messenger /
+    // WhatsApp; a financing link becomes Ozzi's number everywhere. The
+    // webhooks and the Instagram send apply the same function again,
+    // idempotently.
+    cleaned = neutralizeInstagramLinks(cleaned, usersLang(), { channel: dmChannelOf(messages) });
 
     // With prompt caching on, usage.input_tokens counts ONLY the uncached
     // remainder — the true prompt size is the sum of the three fields. Report

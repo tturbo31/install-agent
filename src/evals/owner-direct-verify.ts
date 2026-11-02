@@ -169,7 +169,7 @@ console.log("\n[4] bookingDataLooksComplete / forcedBookRetryReason (casos reais
 console.log("\n[4b] fotos/amostras com <400 sqft: resposta fixa em vez da linha de insistência");
 {
   const hist: ChatMessage[] = [U("Hi, I need vinyl for my bedroom, about 300 sqft. How much?"), A("For a project under 400 square feet, the best is to speak with Ozzi directly at (561) 674-8334."), U("Can you send me some photos of your floors?")];
-  for (const l of ["en", "es", "pt"] as const) ck(`smallJobPhotosMessage ${l}: site + número, não dispara o leak`, /ozzifloors\.com/.test(smallJobPhotosMessage(l)) && NUM.test(smallJobPhotosMessage(l)) && !smallJobLeak(hist, smallJobPhotosMessage(l)), smallJobPhotosMessage(l));
+  for (const l of ["en", "es", "pt"] as const) ck(`smallJobPhotosMessage ${l}: número sem link (regra 02/11/2026), não dispara o leak`, !/ozzifloors\.com/i.test(smallJobPhotosMessage(l)) && NUM.test(smallJobPhotosMessage(l)) && !smallJobLeak(hist, smallJobPhotosMessage(l)), smallJobPhotosMessage(l));
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf8");
   ck("getAIResponse: backstop da foto ligado após o smallJobLeak", /SMALL_JOB_INSIST_RE\.test\(cleaned\)/.test(aiSrc) && aiSrc.indexOf("SMALL_JOB_INSIST_RE.test(cleaned)") > aiSrc.indexOf("if (smallJobLeak(messages, cleaned)) {"));
 }

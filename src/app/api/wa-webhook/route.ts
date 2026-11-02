@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { supabaseAdmin } from "@/lib/supabase";
 import { withEarlierBookingFacts } from "@/lib/booking-facts";
 import { sendWhatsAppMessage, sendWhatsAppReaction, downloadZApiImage, downloadZApiAudio, notifyOwners, notifyOwnersReviewPhoto } from "@/lib/whatsapp";
+import { neutralizeLinks, ensureFinancingHandoff } from "@/lib/ig-link-policy";
 import { alertPausedBacklog, reportSendFailure, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { isBarePreBookingText, softenPrematureLockIn, getAIResponse, analyzeImageFromBase64, transcribeAudioFromBuffer, stripForbiddenTags, detectLargeLeadSqft, detectAdPriceTier, adPriceTierNote, isPureClosing, isPureClosingBurst, acceptsOpenSlotOffer, isAckOnlyBurst, isAckClosingBurst, isRescheduleRequest, isConditionalEarlierRequest, stripConditionalEarlier, questionSwallowedByBooking, isCancelRequest, containsSchedulingOffer, isOpenSlotOffer, isReminderRequest, isJobSeeker, isLowCreditError, CREDIT_ALERT, containsBookingInfo, isAskingForBookingInfo, detectAdFlooringType, adFlooringTypeNote, classifyAdCreativeType, isConsecutiveDuplicate, slotApologyAlreadyGivenNote, addressAlreadyTypedNote, stripRepeatedSlotApology, recapForDuplicateReply, promisesOwnerContact, forcedBookRetryReason, retryForBookTag, clientAlreadyGaveZip, rewriteBookingDataAsk, softenVisitClaim, redirectOwnerPromiseToPhone, unansweredUserBurst, isVisitDetailQuestion, pastVisitSystemNote, assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak, hasInstallationConfirmation, isHostileRejection, isFirstContactRejection, retryForOfferLine, type AdFlooringType } from "@/lib/ai";
@@ -2244,7 +2245,15 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
     // Port St. Lucie (owner rule 2026-10-28) no longer promises a callback:
     // the redirect to his number runs there too.
-    const finalResponse = stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang));
+    // No link on WhatsApp either (owner rule 2026-11-02, ig-link-policy.ts):
+    // a website link leaves as the samples + Ozzi's number line, a financing
+    // link as Ozzi's number, any other link is dropped with the owner line;
+    // and a client who asked about financing always gets Ozzi's number.
+    const finalResponse = ensureFinancingHandoff(
+      neutralizeLinks(stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang)), lang, { channel: "whatsapp" }),
+      unansweredUserBurst(messagesForAI),
+      lang,
+    );
 
     // Never send an empty message: a tag-only reply (bare [NOTIFY_OWNER], etc.)
     // strips to "" and the Z-API send silently fails, leaving the client with no
