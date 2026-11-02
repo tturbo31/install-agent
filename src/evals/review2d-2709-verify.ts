@@ -15,7 +15,7 @@ import {
 } from "@/lib/ai";
 import { bookingEpisodeHistory, dayOnlyPickNeedsTime, clientConfirmedSlot, bookedTimeSeenInConversation, bookedSlotMismatchesPromise, unsupportedFloorDeclineMessage } from "@/lib/scheduler";
 import { isInstallAck, installHandoffMessage } from "@/lib/instalacao";
-import { decideFollowup, followupTemplate, ghostTemplate, financingTemplate, lastTouchTemplate, FOLLOWUP_MARKER, isClientDeferral, FOLLOWUP_DELAY_H, MAX_NUDGES_PER_CONVERSATION, type FollowupMsg } from "@/lib/followup";
+import { decideFollowup, followupTemplate, ghostTemplate, lastTouchTemplate, FOLLOWUP_MARKER, isClientDeferral, FOLLOWUP_DELAY_H, MAX_NUDGES_PER_CONVERSATION, type FollowupMsg } from "@/lib/followup";
 import { WHAT_IS_INCLUDED_ASK_TYPE, composeAdFaqOpener } from "@/lib/system-prompt";
 import { REPLY_TARGET_CHARS, REPLY_TIGHTEN_OVER, needsTightening, sentenceCount } from "@/lib/reply-length";
 
@@ -183,7 +183,7 @@ d = decideFollowup("wa_15551234567", [...engaged(100).slice(0, 3), m("user", "No
 check("'None' como última fala do cliente = recusa, sem nudge", !d.eligible && d.reason === "client-deferred", d.reason);
 check("isClientDeferral('No')", isClientDeferral("No") && isClientDeferral("None") && isClientDeferral("no thanks") && !isClientDeferral("No, the whole house"));
 for (const lang of ["en", "es", "pt"] as const) {
-  for (const [nome, t] of [["classic", followupTemplate(lang)], ["ghost", ghostTemplate(lang)], ["financing", financingTemplate(lang)], ["last", lastTouchTemplate(lang)]] as const) {
+  for (const [nome, t] of [["classic", followupTemplate(lang)], ["ghost", ghostTemplate(lang)], ["last", lastTouchTemplate(lang)]] as const) {
     check(`${nome}/${lang}: marcador, sem traço/emoji, ≤ 2 frases, ≤ 170c, sem dia/hora`, FOLLOWUP_MARKER.test(t) && !/[-–—]/.test(t) && sentenceCount(t) <= 2 && t.length <= 170 && !/\b\d{1,2}\s*(?:am|pm)\b|\b(?:monday|lunes|segunda|this week|esta semana)\b/i.test(t), `${t.length}c: ${t}`);
   }
 }

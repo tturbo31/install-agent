@@ -50,7 +50,7 @@ export function followupTemplate(lang: Lang): string {
 export function lastTouchTemplate(lang: Lang): string {
   if (lang === "pt") return "Oi, só um último toque. Se o piso novo ainda está nos planos, estou aqui quando quiser a visita gratuita.";
   if (lang === "es") return "Hola, un último mensaje. Si el piso nuevo sigue en sus planes, aquí estoy cuando quiera la visita gratis.";
-  return "Hi, just one last check in. If new floors are still on your list, I'm here whenever you're ready for the free visit.";
+  return "Hi, one last message from me. If new floors are still on your list, I'm here when you want the free visit.";
 }
 
 // ─── FANTASMA DO BOTÃO (17/09/2026, pedido do dono) ─────────────────────────
@@ -65,20 +65,28 @@ export function ghostTemplate(lang: Lang): string {
   return "Hi, still looking into new floors? I can set up a free estimate visit whenever you want, just let me know.";
 }
 
-// ─── SUMIU DEPOIS DO PREÇO (17/09/2026, pedido do dono) ─────────────────────
-// 94 conversas em duas semanas morreram logo depois de o bot dizer o valor.
-// A nudge de quem já ouviu o preço traz a linha do FINANCIAMENTO (pagar por
-// mês, pelo parceiro), sem prometer aprovação nem citar taxas ou parcelas.
-export function financingTemplate(lang: Lang): string {
-  if (lang === "pt") return "Oi, ficou alguma dúvida sobre o piso? Também temos financiamento pelo nosso parceiro para pagar por mês, e a visita de orçamento é gratuita se quiser marcar.";
-  if (lang === "es") return "Hola, quedó alguna duda sobre el piso? También tenemos financiamiento con nuestro socio para pagar mensual, y la visita del estimado es gratis si quiere agendar.";
-  return "Hi, any questions about the floors? We also offer financing through our partner to pay monthly, and the estimate visit is free if you want to set one up.";
+// ─── SUMIU DEPOIS DO PREÇO (17/09/2026) ─────────────────────────────────────
+// A nudge de quem já ouviu o preço trazia a linha do FINANCIAMENTO ("We also
+// offer financing through our partner so you can pay monthly"). RETIRADA EM
+// TODOS OS CANAIS pelo dono em 02/11/2026: "parece mensagem de golpe". Oferta
+// de dinheiro/parcela que o cliente não pediu, colada em "just checking in" e
+// "we'd love to...!", é o formato clássico de spam de empréstimo; 94 nudges
+// assim em 14 dias, 23% de resposta contra 19% sem a linha (sem ganho real).
+// Financiamento agora só quando o CLIENTE pergunta (regra FINANCING do prompt).
+// Os textos antigos continuam no FOLLOWUP_MARKER para o dedup do histórico.
+
+// Formato de spam/golpe (dono, 02/11/2026): bordões de disparo em massa,
+// oferta de dinheiro não pedida e entusiasmo de vendedor. A nudge escrita pela
+// IA que bater aqui é descartada e sai o template fixo.
+const SPAM_TONE = /!|\bjust (?:checking|wanted to check|touching base)\b|\bchecking in\b|\bcheck(?:ing)? in on\b|\btouch(?:ing)? base\b|\bwe(?:'d| would) love\b|\blet us know\b|\block (?:it |that |this |your |in\b)|\bon (?:our|my) radar\b|\bstill stands\b|\bwhenever you(?:'re| are) ready\b|\bdon'?t miss\b|\blimited\b|\bspecial (?:offer|deal|price)\b|\bact (?:now|fast)\b|financ|\bpay(?:ing)? (?:it )?monthly\b|\bmonthly (?:payments?|plan)\b|\bpayment plans?\b|\bpartner\b|\bcredit\b|\bapprov|nos encantar[ií]a|solo (?:pasaba|quer[ií]a)|pasando a|pago(?:s)? mensual|mensualidad|\bsocio\b|cr[eé]dito|s[oó] passando|adorar[ií]amos|parceiro|pagar por m[eê]s|mensalmente|parcela/i;
+export function soundsLikeSpam(text: string): boolean {
+  return SPAM_TONE.test(text || "");
 }
 
 // Detects a follow-up we already sent (any language, old and new wording).
 // A nudge escrita pela IA é gravada no banco com o sufixo [SYSTEM: FOLLOWUP_NUDGE]
 // (nunca enviado ao cliente), então o marcador também o reconhece.
-export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar|want me to check a time this week|quieres que busque un horario|quer que eu veja um hor[aá]rio|just checking if you had any questions|solo para saber si qued|passando para saber se ficou|still thinking about the floors\?|sigue pensando en el piso\?|ainda pensando no piso\?|still looking into new floors|sigue buscando piso nuevo|ainda procurando piso novo|any questions about the floors\? we also|qued[oó] alguna duda sobre el piso\? tambi|ficou alguma d[uú]vida sobre o piso\? tamb|just one last check in|un [uú]ltimo mensaje|s[oó] um [uú]ltimo toque|\[SYSTEM: FOLLOWUP_NUDGE\]/i;
+export const FOLLOWUP_MARKER = /just checking in, want me to get your free estimate|solo para dar seguimiento|passando s[oó] para saber se quer agendar|want me to check a time this week|quieres que busque un horario|quer que eu veja um hor[aá]rio|just checking if you had any questions|solo para saber si qued|passando para saber se ficou|still thinking about the floors\?|sigue pensando en el piso\?|ainda pensando no piso\?|still looking into new floors|sigue buscando piso nuevo|ainda procurando piso novo|any questions about the floors\? we also|qued[oó] alguna duda sobre el piso\? tambi|ficou alguma d[uú]vida sobre o piso\? tamb|just one last check in|one last message from me|un [uú]ltimo mensaje|s[oó] um [uú]ltimo toque|\[SYSTEM: FOLLOWUP_NUDGE\]/i;
 export const FOLLOWUP_DB_SUFFIX = "\n\n[SYSTEM: FOLLOWUP_NUDGE]";
 
 // Meta ad FAQ quick-reply buttons — a tap is NOT genuine engagement. A lead
@@ -211,12 +219,11 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
     messages.filter((m) => m.role === "user").map((m) => strip(m.content)),
     lastBot?.content
   );
-  // RETIRADO PELO DONO (19/10/2026): no WhatsApp a cutucada nunca mais cita
-  // financiamento. A linha do parceiro (regra de 17/09) fica so para Instagram
-  // e Messenger; o alvo "sumiu depois do preco" (after_price), que existe para
-  // oferecer financiamento, deixa de existir no WhatsApp (ver abaixo).
+  // RETIRADO PELO DONO: no WhatsApp em 19/10/2026 (e o alvo after_price some
+  // de lá, ver abaixo); em Instagram e Messenger em 02/11/2026 ("parece
+  // mensagem de golpe"). Nenhuma cutucada cita financiamento.
   const channel = channelOfIgsid(igsid);
-  const financing = priceWasStated(messages) && channel !== "whatsapp";
+  const financing = false;
   const no = (reason: string): FollowupDecision => ({ eligible: false, reason, lang, kind: "engaged", financing });
 
   if (!messages.length) return no("empty");
@@ -255,7 +262,7 @@ export function decideFollowup(igsid: string, messages: FollowupMsg[], nowMs: nu
   // Qual dos três alvos é esta conversa (17/09/2026):
   //   fantasma do botão → texto fixo da visita gratuita;
   //   sumiu logo depois do preço (a ÚLTIMA fala nossa traz o valor e não é
-  //   oferta de horário) → nudge com financiamento;
+  //   oferta de horário) → nudge da visita (sem financiamento desde 02/11);
   //   o alvo original: nossa última fala é uma oferta/pergunta de agendamento.
   let kind: FollowupKind = "engaged";
   if (isFaqGhost(messages)) kind = "faq_ghost";
@@ -335,17 +342,15 @@ import { promisesDiscount } from "@/lib/quote-followup";
 const NUDGE_SYSTEM = `You are Ozzi's assistant for Ozzi Floors (flooring installation, South Florida). A potential client was mid-conversation about their floors, we offered to schedule the free in-person estimate visit, and they went quiet TWO DAYS AGO or more. Write ONE short re-engagement message.
 
 Write ONLY the message text. Rules:
-1. Write in the language you are told. 1 or 2 short sentences, under 140 characters in total (owner rule: clients stop reading a long text), like a real person texting a friend. No emoji, no dashes (use commas or periods), no links, no markdown, no bracket tags, no "Still thinking about" opener.
-2. START from what THEY left hanging: their last question, the floor type or area they mentioned, the thing they were deciding. Reference it naturally so it feels personal, never generic.
-3. END by warmly inviting them to schedule the free estimate visit. Two days have passed: NEVER name any day, date, or time (any slot we offered is gone), never say "today", "tomorrow", "yesterday" or "earlier".
-4. NEVER mention, offer, or hint at a discount, deal, or better price. NEVER invent prices, sizes, or facts not present in the conversation. You may repeat a price WE already stated there.
-5. No pressure, one gentle nudge.`;
+1. Write in the language you are told. 1 or 2 short sentences, under 140 characters in total (owner rule: clients stop reading a long text), like a real person texting a friend. No emoji, no exclamation marks, no dashes (use commas or periods), no links, no markdown, no bracket tags, no "Still thinking about" opener.
+2. It must NOT read like a marketing blast or a scam text (owner rule 2026-11-02). Talk as one person, in the first person ("I"), never "we", "us" or "our team". Never use these mass-text phrases or their Spanish/Portuguese versions: "just checking in", "checking in on", "touching base", "we'd love to", "let us know", "lock in", "on our radar", "still stands", "whenever you're ready", "don't miss", "special offer", "limited".
+3. START from what THEY left hanging: their last question, the floor type or area they mentioned, the thing they were deciding. Reference it naturally so it feels personal, never generic. Never ask for their ZIP code.
+4. END with ONE simple question about setting up the free estimate visit. That visit is the ONLY thing you offer, never stack a second offer on top of it. Two days have passed: NEVER name any day, date, or time (any slot we offered is gone), never say "today", "tomorrow", "yesterday" or "earlier".
+5. NEVER mention financing, payment plans, paying monthly, partners, credit, approval, discounts, deals, or a better price: an unrequested money offer is exactly what makes a text look like a scam. NEVER invent prices, sizes, or facts not present in the conversation. You may repeat a price WE already stated there.
+6. No pressure, one gentle nudge.
 
-// Quem já ouviu o preço recebe a linha do financiamento (17/09/2026): é a
-// objeção mais comum de quem some depois do valor, e o dono quer que a
-// retomada a responda antes de o cliente perguntar.
-const NUDGE_FINANCING_RULE = `
-6. The client already heard our price in this conversation. Add ONE short sentence saying we offer financing through our partner so they can pay monthly. NEVER promise approval, NEVER quote interest rates, terms, credit requirements, or monthly amounts. Financing goes alongside the free estimate visit, never instead of it.`;
+Good: "Hi Maria, did you decide between the vinyl and the tile for the living room? I can set up the free estimate visit if you want."
+Bad (reads like spam): "Hey, just checking in on your vinyl project. We also offer financing through our partner so you can pay monthly, and we'd love to set up your free estimate whenever you're ready!"`;
 
 let _nudgeAnthropic: Anthropic | null = null;
 function nudgeClient(): Anthropic {
@@ -366,7 +371,7 @@ function sanitizeNudge(text: string): string {
 
 // Escreve a nudge personalizada; devolve null quando o texto não passa nos
 // guardas (aí o chamador usa o template fixo comprovado).
-export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, financing = false): Promise<string | null> {
+export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang): Promise<string | null> {
   try {
     const tail = messages
       .slice(-10)
@@ -375,7 +380,7 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, 
     const res = await nudgeClient().messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 200,
-      system: financing ? NUDGE_SYSTEM + NUDGE_FINANCING_RULE : NUDGE_SYSTEM,
+      system: NUDGE_SYSTEM,
       messages: [
         {
           role: "user" as const,
@@ -395,13 +400,9 @@ export async function composeColdLeadNudge(messages: FollowupMsg[], lang: Lang, 
     if (replyStillLeaks(text)) return null;
     if (promisesDiscount(text)) return null;
     if (/https?:\/\//i.test(text)) return null;
-    // financiamento: nunca taxa, parcela ou aprovação (o modelo não sabe)
-    if (financing && /\b\d+(?:[.,]\d+)?\s?%|\bapproved?\b|\baprovad|\bmonthly payment of|\bpor m[eê]s de|\bmensual de\b|\bcuota de\b/i.test(text)) return null;
-    // financiamento pedido e não mencionado: o template garante a linha
-    if (financing && !/financ/i.test(text)) return null;
-    // financiamento NAO pedido (WhatsApp desde 19/10/2026, regra do dono) e o
-    // modelo citou mesmo assim: texto fora, template sem financiamento.
-    if (!financing && /financ/i.test(text)) return null;
+    // Formato de golpe/spam (dono, 02/11/2026): financiamento, "just checking
+    // in", "we'd love to", exclamação... texto fora, sai o template fixo.
+    if (soundsLikeSpam(text)) return null;
     return text;
   } catch (err) {
     console.error("[FOLLOWUP] nudge AI failed, using template:", err);
@@ -503,21 +504,18 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       continue;
     }
     // Fantasma do botão: texto fixo (sem IA, sem contexto para personalizar).
-    // Os outros: IA personaliza a partir da conversa, com a linha do
-    // financiamento quando o preço já foi dito; template comprovado é o fallback.
+    // Os outros: IA personaliza a partir da conversa (nunca com financiamento,
+    // dono 02/11/2026); template comprovado é o fallback.
     let text: string;
     if (decision.kind === "last_touch") text = lastTouchTemplate(decision.lang);
     else if (decision.kind === "faq_ghost") text = ghostTemplate(decision.lang);
-    else
-      text =
-        (await composeColdLeadNudge(messages, decision.lang, decision.financing)) ??
-        (decision.financing ? financingTemplate(decision.lang) : followupTemplate(decision.lang));
+    else text = (await composeColdLeadNudge(messages, decision.lang)) ?? followupTemplate(decision.lang);
     // O modelo já escreveu o nudge em PORTUGUÊS para uma cliente de espanhol
     // (Alicia, WA 27/08/2026: "Ficou com dúvida sobre instalar por cima da
     // losa…"). Idioma errado = template comprovado no idioma certo.
     if (decision.lang !== "pt" && PT_SIGNALS.test(text)) {
       console.warn(`[FOLLOWUP] composed nudge came out in Portuguese for a ${decision.lang} conversation — using the template instead`);
-      text = decision.financing ? financingTemplate(decision.lang) : followupTemplate(decision.lang);
+      text = followupTemplate(decision.lang);
     }
     // No link on any channel (owner rule 2026-11-02): the nudge prompt already
     // says "no links", this is the backstop with the channel's wording.
@@ -546,7 +544,7 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       await supabaseAdmin.from("instagram_messages").insert({ conversation_id: conv.id, role: "assistant", content: stripInvertedPunctuation(text) + FOLLOWUP_DB_SUFFIX });
       await supabaseAdmin.from("instagram_conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, kind: decision.kind, ok: true });
-      console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}/${decision.kind}${decision.financing ? "+financing" : ""}) to ${name}`);
+      console.log(`[FOLLOWUP] sent (${channel}/${decision.lang}/${decision.kind}) to ${name}`);
     } catch (err) {
       result.sent.push({ igsid: conv.igsid, channel, name, lang: decision.lang, ok: false, error: String(err).slice(0, 200) });
       console.error(`[FOLLOWUP] send failed for ${conv.igsid}:`, err);

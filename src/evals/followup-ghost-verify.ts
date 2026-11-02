@@ -1,12 +1,12 @@
-// Follow-up de 17/09/2026 (fantasma do botão, sumiu depois do preço com
-// financiamento), com a cadência do dono de 27/09/2026: só depois de 2 dias de
+// Follow-up de 17/09/2026 (fantasma do botão, sumiu depois do preço; a linha
+// de financiamento foi retirada em 02/11/2026, "parece golpe"), com a cadência do dono de 27/09/2026: só depois de 2 dias de
 // silêncio, só WhatsApp (a janela da Meta fecha antes), 2ª e última nudge 2 dias
 // depois. Só funções puras: zero API, zero envio.
 // Run: npx tsx src/evals/followup-ghost-verify.ts
 import {
   decideFollowup,
   ghostTemplate,
-  financingTemplate,
+  soundsLikeSpam,
   followupTemplate,
   lastTouchTemplate,
   FOLLOWUP_MARKER,
@@ -15,6 +15,7 @@ import {
   type FollowupMsg,
   type Lang,
 } from "@/lib/followup";
+import { readFileSync } from "fs";
 
 let passed = 0;
 let failed = 0;
@@ -56,7 +57,7 @@ check("cliente com a última palavra não recebe nudge", !d.eligible && d.reason
 check("dois toques de botão continuam fantasma", isFaqGhost([m("user", FAQ_TAP, 3), m("assistant", FAQ_ANSWER, 2.9), m("user", "Is installation cost included in the price?", 2), m("assistant", FAQ_ANSWER, 1.9)]));
 check("texto digitado NÃO é fantasma", !isFaqGhost([m("user", FAQ_TAP, 3), m("assistant", FAQ_ANSWER, 2.9), m("user", "vinyl for the living room", 2), m("assistant", PRICE_ANSWER, 1.9)]));
 
-console.log("\n── 2. Sumiu depois do preço → after_price com financiamento (2 dias) ──");
+console.log("\n── 2. Sumiu depois do preço → after_price SEM financiamento (dono, 02/11/2026) ──");
 const afterPrice = (h: number) => [m("user", "How much for vinyl?", h + 0.5), m("assistant", "Which one are you interested in, tile, vinyl, or hardwood?", h + 0.4), m("user", "Vinyl", h), m("assistant", PRICE_ANSWER, h - 0.05)];
 check("priceWasStated vê o $5", priceWasStated(afterPrice(50)));
 // Dono, 19/10/2026: "retire o follow-up no WhatsApp indicando o financiamento".
@@ -68,7 +69,7 @@ check("WhatsApp: after_price RETIRADO (sem follow-up de financiamento)", !d.elig
 check("WhatsApp: nunca marca financiamento", d.financing === false);
 d = decideFollowup(IG, afterPrice(5), NOW);
 check("Instagram: after_price continua elegível", d.eligible && d.kind === "after_price", JSON.stringify(d));
-check("Instagram: com financiamento", d.financing === true);
+check("Instagram: SEM financiamento (dono, 02/11/2026: parece golpe)", d.financing === false, JSON.stringify(d));
 d = decideFollowup(IG, afterPrice(2), NOW);
 check("2h depois do preço: cedo demais", !d.eligible && /too-fresh/.test(d.reason), d.reason);
 d = decideFollowup(WA, [...afterPrice(60), m("user", "I'll think about it and let you know", 55), m("assistant", "No problem, reach out whenever you are ready.", 54.9)], NOW);
@@ -76,12 +77,12 @@ check("cliente que adiou continua protegido", !d.eligible, d.reason);
 d = decideFollowup(IG, [m("user", "Hi", 10), m("assistant", "Which one are you interested in, tile, vinyl, or hardwood?", 9.9), m("user", "get away from me", 5), m("assistant", PRICE_ANSWER, 4.9)], NOW);
 check("rejeição hostil continua bloqueando", !d.eligible && d.reason === "client-rejected", d.reason);
 
-console.log("\n── 3. Alvo original (oferta de visita) com preço já dito → engaged + financiamento ──");
+console.log("\n── 3. Alvo original (oferta de visita) com preço já dito → engaged, sem financiamento ──");
 d = decideFollowup(WA, [...afterPrice(60), m("user", "whole house", 55), m("assistant", VISIT_OFFER, 54.9)], NOW);
 check("engaged", d.eligible && d.kind === "engaged", JSON.stringify(d));
 check("WhatsApp: SEM financiamento mesmo com preço dito (dono, 19/10/2026)", d.financing === false, JSON.stringify(d));
 d = decideFollowup(IG, [...afterPrice(6), m("user", "whole house", 5.5), m("assistant", VISIT_OFFER, 5.4)], NOW);
-check("Instagram: engaged com preço dito leva financiamento", d.eligible && d.kind === "engaged" && d.financing === true, JSON.stringify(d));
+check("Instagram: engaged com preço dito NÃO leva financiamento (02/11/2026)", d.eligible && d.kind === "engaged" && d.financing === false, JSON.stringify(d));
 d = decideFollowup(WA, [m("user", "Hi", 60), m("assistant", "Which one?", 59.9), m("user", "Vinyl whole house", 55), m("assistant", VISIT_OFFER, 54.9)], NOW);
 check("engaged SEM preço dito → sem financiamento", d.eligible && d.kind === "engaged" && d.financing === false, JSON.stringify(d));
 d = decideFollowup(WA, [m("user", "Hi", 60), m("assistant", "Which one?", 59.9), m("user", "Vinyl whole house", 55), m("assistant", "Great choice, vinyl is very popular in South Florida.", 54.9)], NOW);
@@ -89,15 +90,36 @@ check("última fala sem oferta e sem preço: fora", !d.eligible && d.reason === 
 
 console.log("\n── 4. Textos: regras do dono (sem traço, sem emoji, curtos), marcador de dedup ──");
 for (const lang of ["en", "es", "pt"] as Lang[]) {
-  for (const [nome, t] of [["ghost", ghostTemplate(lang)], ["financing", financingTemplate(lang)], ["classic", followupTemplate(lang)], ["last", lastTouchTemplate(lang)]] as const) {
+  for (const [nome, t] of [["ghost", ghostTemplate(lang)], ["classic", followupTemplate(lang)], ["last", lastTouchTemplate(lang)]] as const) {
     check(`${nome}/${lang} sem traço e sem emoji`, !/[-–—]/.test(t) && !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(t));
     check(`${nome}/${lang} é reconhecido pelo FOLLOWUP_MARKER`, FOLLOWUP_MARKER.test(t));
     check(`${nome}/${lang} tem no máximo 2 frases e até 170 caracteres`, (t.match(/[.!?](\s|$)/g) ?? []).length <= 2 && t.length <= 170, `${t.length}c: ${t}`);
     check(`${nome}/${lang} não promete "esta semana" nem nomeia dia/hora`, !/this week|esta semana|\b\d{1,2}\s*(?:am|pm)\b/i.test(t));
   }
-  check(`financing/${lang} fala de financiamento`, /financ/i.test(financingTemplate(lang)));
-  check(`financing/${lang} não promete taxa, parcela ou aprovação`, !/%|aprov|approv|\d/.test(financingTemplate(lang)));
+  for (const t of [ghostTemplate(lang), followupTemplate(lang), lastTouchTemplate(lang)]) {
+    check(`template/${lang} sem formato de golpe (sem financiamento, sem bordão de disparo)`, !soundsLikeSpam(t), t);
+  }
 }
+
+console.log("\n── 5. Formato de golpe (dono, 02/11/2026): nudge da IA que soa spam cai no template ──");
+for (const spam of [
+  "Hey, just checking in on your vinyl project. We also offer financing through our partner so you can pay monthly, and we'd love to set up your free estimate whenever you're ready!",
+  "Your tile project in Fort Lauderdale is still on our radar, we also offer financing through our partner so you can pay monthly. Want to lock in your free estimate visit?",
+  "That vinyl quote we put together for your space still stands, and we'd love to set up your free estimate visit.",
+  "Still thinking about that 1,500 sqft project? Let us know when you are ready to schedule your free estimate visit.",
+  "La madera que mencionaste sigue en pie, también trabajamos con financiamiento para que puedas pagar mensual.",
+  "Ainda pensando no vinil pra sua casa? Também temos financiamento pelo nosso parceiro pra pagar mensalmente.",
+]) check(`spam detectado: "${spam.slice(0, 50)}..."`, soundsLikeSpam(spam));
+for (const ok of [
+  "Hi Maria, did you decide between the vinyl and the tile for the living room? I can set up the free estimate visit if you want.",
+  "Did you get a chance to measure the bedrooms? I can come out for the free estimate and measure everything for you.",
+  "Hola, pudiste decidir entre el vinil y la cerámica? Si quiere le agendo la visita gratis del estimado.",
+  "Oi, conseguiu decidir o piso da sala? Posso marcar a visita gratuita de orçamento se quiser.",
+]) check(`texto humano passa: "${ok.slice(0, 50)}..."`, !soundsLikeSpam(ok));
+const fuSrc = readFileSync("src/lib/followup.ts", "utf8");
+check("financingTemplate não existe mais", !/financingTemplate/.test(fuSrc));
+check("prompt da nudge sem a regra de financiamento", !/NUDGE_FINANCING_RULE/.test(fuSrc));
+check("composeColdLeadNudge reprova spam", /if \(soundsLikeSpam\(text\)\) return null/.test(fuSrc));
 check("marcadores antigos (nudges já gravadas) continuam reconhecidos", FOLLOWUP_MARKER.test("Hi, want me to check a time this week for your free estimate visit? I bring all the samples and you get the exact price on the spot.") && FOLLOWUP_MARKER.test("Hi, just checking in, want me to get your free estimate visit scheduled?"));
 
 console.log(`\n${failed === 0 ? `✅ ${passed} checks passed` : `❌ ${failed} failed, ${passed} passed`}`);
