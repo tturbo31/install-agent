@@ -2245,9 +2245,9 @@ async function handleWaMessage(body: Record<string, unknown>) {
     const promisedOwnerContact = promisesOwnerContact(afterNotify);
     // Port St. Lucie (owner rule 2026-10-28) no longer promises a callback:
     // the redirect to his number runs there too.
-    // No link on WhatsApp either (owner rule 2026-11-02, ig-link-policy.ts):
-    // a website link leaves as the samples + Ozzi's number line, a financing
-    // link as Ozzi's number, any other link is dropped with the owner line;
+    // Links on WhatsApp (ig-link-policy.ts): our website link goes out as
+    // written (owner rule 2026-11-03), a financing link becomes Ozzi's number,
+    // any other link is dropped with the owner line;
     // and a client who asked about financing always gets Ozzi's number.
     const finalResponse = ensureFinancingHandoff(
       neutralizeLinks(stripForbiddenTags(redirectOwnerPromiseToPhone(afterNotify, lang)), lang, { channel: "whatsapp" }),

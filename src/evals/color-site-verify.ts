@@ -8,6 +8,10 @@
 // [1] static prompts. [2] deterministic detection + fix. [3] live: main brain
 // and the quote follow-up brain (Ariadna's real messages).
 // Run: npx tsx src/evals/color-site-verify.ts   (LIVE=0 skips [3])
+// 2026-11-03 (owner): the website link is back on Messenger and WhatsApp (the
+// default here, no channel note) and Instagram still never carries a link
+// (bio wording). From 2026-11-02 to 2026-11-03 the off-Instagram answer was
+// the samples + Ozzi's number.
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, isFloorColorQuestion, withSiteForColor, isColorPhoneHandoffOnly, type ChatMessage } from "../lib/ai";
@@ -44,7 +48,7 @@ async function main() {
   ck("system prompt (2d) color → website", /\(2d\) ANY QUESTION ABOUT THE COLOR OF THE FLOOR/.test(sp));
   ck("AD FLOOR QUESTIONS points color to (2d)", /its COLOR, follow \(2d\)/.test(sp));
   const qr = readFileSync(join(process.cwd(), "src/lib/quote-reply.ts"), "utf-8");
-  ck("quote brain rule 18 (colors → a way to see them, never a link; owner rule 2026-11-02)", /18\. COLORS AND SAMPLES, NEVER A LINK/.test(qr));
+  ck("quote brain rule 18 (WhatsApp: colors → the website, owner rule 2026-11-03)", /18\. COLORS ALWAYS GET OUR WEBSITE/.test(qr));
   ck("quote brain rule 11 no longer sends colors to Ozzi", /product details other than colors/.test(qr));
 
   // ── 2. DETERMINISTIC ──────────────────────────────────────────────────────
@@ -76,25 +80,25 @@ async function main() {
   console.log("\n[2b] Fix");
   const handoff = "For samples and color options, the best is to reach Ozzi directly at (561) 674-8334 and he can walk you through everything available.";
   ck("Ariadna's reply is a color-only phone handoff", isColorPhoneHandoffOnly(handoff));
-  // Owner rule 2026-11-02: no link on any channel. Off Instagram the samples at
-  // the free visit + Ozzi's number ARE the way to see the colors; on Instagram
-  // it is "our website, the link is in our bio" (owner rule 2026-10-17).
+  // Owner rule 2026-11-03: off Instagram (Messenger / WhatsApp) the color
+  // answer is the website link; on Instagram "our website, the link is in our
+  // bio" (owner rule 2026-10-17), never a URL.
   const f1 = withSiteForColor(handoff, "en");
-  ck("Messenger/WA: a handoff with Ozzi's number is left alone, no URL", f1 === handoff && !SITE.test(f1), f1);
+  ck("Messenger/WA: handoff → website, no phone", SITE.test(f1) && !PHONE.test(f1), f1);
   const f1ig = withSiteForColor(handoff, "en", { ig: true });
   ck("Instagram: handoff → bio wording, no phone, no URL", /link is in our bio/.test(f1ig) && !PHONE.test(f1ig) && !SITE.test(f1ig), f1ig);
   console.log("     → " + f1ig);
   const f2 = withSiteForColor("I can't see which ad you came from on my side, but the floors we sell are luxury vinyl. Which one are you interested in?", "en");
-  ck("samples + Ozzi line goes before the closing question, no URL", PHONE.test(f2) && !SITE.test(f2) && /Which one are you interested in\?$/.test(f2), f2);
+  ck("Messenger/WA: website sentence goes before the closing question", SITE.test(f2) && /Which one are you interested in\?$/.test(f2), f2);
   console.log("     → " + f2);
   const f3 = withSiteForColor("Claro, lo vemos en la visita. [NOTIFY_OWNER]", "es");
-  ck("ES + tag kept", PHONE.test(f3) && /muestras/.test(f3) && !SITE.test(f3) && /\[NOTIFY_OWNER\]$/.test(f3), f3);
+  ck("ES + tag kept", SITE.test(f3) && /colores/.test(f3) && /\[NOTIFY_OWNER\]$/.test(f3), f3);
   ck("[REACT_ONLY] stays untouched", withSiteForColor("[REACT_ONLY]", "en") === "[REACT_ONLY]");
-  ck("reply with a URL is left to the link neutralizer (nothing added here)", withSiteForColor("See them at https://ozzifloors.company. One area or the whole house?") === "See them at https://ozzifloors.company. One area or the whole house?");
+  ck("reply that already has the website is untouched", withSiteForColor("See them at https://ozzifloors.company. One area or the whole house?") === "See them at https://ozzifloors.company. One area or the whole house?");
   const mixed = "Your quote total is $5,700. For samples and color options, the best is to reach Ozzi directly at (561) 674-8334.";
   ck("mixed reply is NOT color-only", !isColorPhoneHandoffOnly(mixed));
   const f4 = withSiteForColor(mixed, "en");
-  ck("mixed: keeps the quote and Ozzi's number, no URL", /\$5,700/.test(f4) && PHONE.test(f4) && !SITE.test(f4), f4);
+  ck("mixed: keeps the quote, the color handoff becomes the website", /\$5,700/.test(f4) && SITE.test(f4), f4);
 
   if (process.env.LIVE === "0") return;
 
@@ -115,17 +119,17 @@ async function main() {
     U("Hi, I'm interested in vinyl"),
     A("Our vinyl promo is $5 per sqft and that already includes the floor, the installation and the quarter round. Is it one area or the whole house?"),
     U("what colors do you have?"),
-  ]), (r) => PHONE.test(r) && !SITE.test(r));
+  ]), (r) => SITE.test(r));
   await live("main: 'what color is the floor from your page?'", () => ai([
     U("Hi"),
     A("Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?"),
     U("I saw a floor on your Instagram page, what color is that one?"),
-  ]), (r) => PHONE.test(r) && !SITE.test(r));
+  ]), (r) => SITE.test(r));
   await live("main ES: 'qué colores tienen?'", () => ai([
     U("Hola, me interesa el vinyl"),
     A("Nuestra promo de vinyl es $5 por sqft e incluye el piso, la instalación y el quarter round. Es un área o toda la casa?"),
     U("qué colores tienen?"),
-  ]), (r) => PHONE.test(r) && !SITE.test(r) && !/[¿¡]/.test(r));
+  ]), (r) => SITE.test(r) && !/[¿¡]/.test(r));
 
   // Quote follow-up brain, Ariadna's real messages.
   const marker = buildQuoteCtxMarker({ valor: 5700, parcela: 158, idioma: "en", url: "https://app.gethearth.com/partners/ozzifloors" });
@@ -135,15 +139,15 @@ async function main() {
     { role: "assistant", content: "As soon as your application is approved, call or text Ozzi directly at (561) 674-8334 to finalize everything." },
   ];
   const q1 = "Would you be able to send me sample of the vinyl flooring so I can see all the Colors you offer";
-  await live("quote: Ariadna asks for the colors → samples + Ozzi's number, no link, no owner alert", async () => {
+  await live("quote: Ariadna asks for the colors → the website (WhatsApp), no owner alert", async () => {
     const r = await composeQuoteReply({ ctx, history: [...hist, { role: "user", content: q1 }], clientText: q1 });
     return `${r.text} {notify=${r.notifyOwner}}`;
-  }, (r) => PHONE.test(r) && !SITE.test(r) && /notify=false/.test(r));
+  }, (r) => SITE.test(r) && /notify=false/.test(r));
   const q2 = "Hi good afternoon I wanted to see if these both are the same ?\nDo they look different color because of the lighting?\nI got these both from your Facebook";
-  await live("quote: 'same color? from your Facebook' → Ozzi's number, no link", async () => {
+  await live("quote: 'same color? from your Facebook' → the website (WhatsApp)", async () => {
     const r = await composeQuoteReply({ ctx, history: [...hist, { role: "user", content: q2 }], clientText: q2 });
     return `${r.text} {notify=${r.notifyOwner}}`;
-  }, (r) => PHONE.test(r) && !SITE.test(r));
+  }, (r) => SITE.test(r));
   const q3 = "Can you lower the price to $5,000?";
   await live("quote REGRESSION: negotiation still goes to Ozzi (no site)", async () => {
     const r = await composeQuoteReply({ ctx, history: [...hist, { role: "user", content: q3 }], clientText: q3 });

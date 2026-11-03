@@ -517,8 +517,9 @@ export async function runFollowupSweep(opts: { dry: boolean; now?: number }): Pr
       console.warn(`[FOLLOWUP] composed nudge came out in Portuguese for a ${decision.lang} conversation — using the template instead`);
       text = followupTemplate(decision.lang);
     }
-    // No link on any channel (owner rule 2026-11-02): the nudge prompt already
-    // says "no links", this is the backstop with the channel's wording.
+    // The nudge prompt says "no links"; this backstop applies the channel's
+    // link policy (Instagram: none at all; Messenger / WhatsApp: only our
+    // website, owner rule 2026-11-03).
     text = neutralizeLinks(text, decision.lang, { channel: channel === "whatsapp" ? "whatsapp" : channel === "facebook" ? "messenger" : "instagram" });
     try {
       if (channel === "whatsapp") {

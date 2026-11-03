@@ -124,7 +124,7 @@ async function main() {
   const igWhich = "Check out our floors on our website, the link is in our bio, that floor is there with all the details, and I bring samples to the free visit too. Is it one area or the whole house?";
   ck("fixWhichFloorReply leaves the Instagram reply alone", fixWhichFloorReply(igWhich, "en", true, { ig: true }) === igWhich, fixWhichFloorReply(igWhich, "en", true, { ig: true }));
   const offIg = withSiteForColor("We have many colors. Is it one area or the whole house?", "en");
-  ck("withSiteForColor off Instagram adds the samples + Ozzi line, never a URL (owner rule 2026-11-02)", OZZI_NUMBER_RE.test(offIg) && !containsLink(offIg), offIg);
+  ck("withSiteForColor off Instagram adds the website link (Messenger / WhatsApp, owner rule 2026-11-03)", /https:\/\/ozzifloors\.company/.test(offIg), offIg);
 
   // ── 2. estático ───────────────────────────────────────────────────────────
   console.log("\n[2a] IG webhook: note in, neutralize + financing backstop out");
@@ -149,12 +149,12 @@ async function main() {
   ck("no AI producer passes allowLinks: true", !/allowLinks: true/.test(wh) && !/allowLinks: true/.test(read("src/lib/followup.ts")) && !/allowLinks: true/.test(read("src/lib/delivery.ts")));
 
   console.log("\n[2c] prompt: the Instagram exceptions");
-  ck("STEP 2: NO LINKS ON ANY CHANNEL block, Instagram bio wording keyed on [INSTAGRAM CHANNEL]", /NO LINKS ON ANY CHANNEL \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\): NEVER write any link or URL in your reply, on any channel/.test(SYSTEM_PROMPT) && /when an \[INSTAGRAM CHANNEL\] note is present in context, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
+  ck("STEP 2: LINKS BY CHANNEL block, Instagram NO LINKS + bio wording keyed on [INSTAGRAM CHANNEL]", /LINKS BY CHANNEL \(owner rule 2026-11-03/.test(SYSTEM_PROMPT) && /INSTAGRAM, NO LINKS: when an \[INSTAGRAM CHANNEL\] note is present in context, NEVER write any link or URL in your reply/.test(SYSTEM_PROMPT) && /There, everywhere the rules above say to send our website, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("…with the bio wording in EN/ES/PT", /the link is in our bio/.test(SYSTEM_PROMPT) && /el link está en nuestra bio/.test(SYSTEM_PROMPT) && /o link está na nossa bio/.test(SYSTEM_PROMPT));
-  ck("…color question on Instagram still gets the website (bio)", /on Instagram say all our colors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
+  ck("…color question on Instagram still gets the website (bio), never a link", /on Instagram NEVER write a link, say all our colors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("FINANCING: every channel → Ozzi's number, no link, no application details", /EVERY CHANNEL, SAME ANSWER \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\)[\s\S]{0,300}\(561\) 674-8334/.test(SYSTEM_PROMPT) && !/gethearth/.test(SYSTEM_PROMPT));
-  ck("the whole prompt carries no URL", !containsLink(SYSTEM_PROMPT));
-  ck("(2a) off Instagram: samples at the free visit + Ozzi's number, never a link (owner rule 2026-11-02)", /\(2a\) SEND \/ SHOW REMOTELY → the samples at the free visit \+ Ozzi's number, NEVER a link/.test(SYSTEM_PROMPT));
+  ck("the only URL in the prompt is our website (for Messenger / WhatsApp)", (SYSTEM_PROMPT.match(/https?:\/\/[^\s"'()]+/g) ?? []).every((u) => /^https:\/\/ozzifloors\.company[.,;:]?$/.test(u)) && !/gethearth/i.test(SYSTEM_PROMPT));
+  ck("(2a) Messenger / WhatsApp: the website link; Instagram: never a link (owner rule 2026-11-03)", /\(2a\) SEND \/ SHOW REMOTELY → our website \+ the samples at the free visit \(links by channel, owner rule 2026-11-03\)/.test(SYSTEM_PROMPT) && /on Instagram NEVER write a link, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("no inverted punctuation in the new Spanish examples", !/[¿¡]/.test(SYSTEM_PROMPT));
 
   console.log("\n[2c2] getAIResponse itself leaves Instagram link-free (canned intercepts + post-model backstops)");
@@ -164,7 +164,7 @@ async function main() {
 
   console.log("\n[2d] Dreaming never learns against the rule");
   const dr = read("src/lib/dreaming.ts");
-  ck("rule 13: no link on any channel, link in bio + Ozzi's number are the rule, not an error", /13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL[\s\S]{0,900}never write a learning that tells the agent to send a link anywhere/.test(dr) && /never flag a reply for saying "link in our bio"/.test(dr));
+  ck("rule 13: links by channel, Instagram never a link (bio is the rule, not an error)", /13\. LINKS DEPEND ON THE CHANNEL \(owner rule 2026-11-03\)/.test(dr) && /NEVER write a learning that tells the agent to send a link on Instagram/.test(dr) && /Never flag an Instagram reply for saying "link in our bio"/.test(dr));
 
   // ── 3. ao vivo ────────────────────────────────────────────────────────────
   const live = process.env.DET_ONLY !== "1" && process.env.ANTHROPIC_API_KEY !== "unused-pure-eval";

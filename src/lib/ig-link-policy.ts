@@ -48,6 +48,15 @@
 // número final 34"). Financing is Ozzi's number everywhere, never the
 // application link. `neutralizeLinks(text, lang, { channel })` applies the
 // channel's wording; the Instagram default is unchanged.
+//
+// OWNER RULE 2026-11-03 — THE WEBSITE LINK IS BACK ON MESSENGER AND WHATSAPP,
+// INSTAGRAM STILL NEVER CARRIES A LINK: "no Messenger e no WhatsApp você está
+// liberado para enviar o link do site [...] no Instagram é PROIBIDO o envio de
+// link". Off Instagram our site (https://ozzifloors.company) goes out as
+// written again (floors, photos, colors, the floor in a post, our website);
+// a samples request still also gets Ozzi's number (rule of 2026-11-02, not
+// revoked) and financing is still Ozzi's number with no application link on
+// every channel. Instagram is unchanged: bio wording, no URL of any kind.
 
 export const IG_LINK_BLOCK_CODE = 508;
 
@@ -63,8 +72,8 @@ export function isInstagramChannel(messages: Array<{ role: string; content: stri
 }
 
 // The direct-message channel a reply goes out on. "instagram" keeps the bio
-// wording; every other value gets the Messenger / WhatsApp wording (samples at
-// the free visit + Ozzi's number instead of the website link).
+// wording (no URL ever); every other value is Messenger / WhatsApp, where our
+// website link goes out as written (owner rule 2026-11-03).
 export type DmChannel = "instagram" | "messenger" | "whatsapp" | "other";
 export function dmChannelOf(messages: Array<{ role: string; content: string }>): DmChannel {
   return isInstagramChannel(messages) ? "instagram" : "other";
@@ -153,15 +162,22 @@ const OTHER_FALLBACK: Record<ReplyLang, string> = {
   es: "Escríbele a Ozzi al (561) 674-8334 y él te lo manda.",
   pt: "Manda mensagem pro Ozzi no (561) 674-8334 que ele te envia.",
 };
-// Samples / photos / colors / our website on Messenger and WhatsApp (owner
-// rule 2026-11-02): the samples come to the free visit, and to see them before
-// that the client texts Ozzi. Same number as every other handoff.
+// A request to SEE samples (owner rule 2026-11-02, every channel): the samples
+// come to the free visit, and to see them before that the client texts Ozzi.
+// Same number as every other handoff. On Messenger / WhatsApp the website link
+// goes with it again since 2026-11-03 (SITE_LINE_OFF_IG).
 export const SAMPLES_HANDOFF_LINE: Record<ReplyLang, string> = {
   en: "I bring all the samples to the free visit, and if you want to see them before that, just text Ozzi at (561) 674-8334.",
   es: "Llevo todas las muestras a la visita gratis, y si quieres verlas antes, escríbele a Ozzi al (561) 674-8334.",
   pt: "Eu levo todas as amostras na visita grátis, e se quiser ver antes, é só mandar mensagem pro Ozzi no (561) 674-8334.",
 };
-const SITE_DROP_TOKEN = "\u0001SITEX\u0001";
+// Our website on Messenger / WhatsApp (owner rule 2026-11-03: the link is
+// allowed again there, never on Instagram).
+export const SITE_LINE_OFF_IG: Record<ReplyLang, string> = {
+  en: "You can see all our floors at https://ozzifloors.company.",
+  es: "Puedes ver todos nuestros pisos en https://ozzifloors.company.",
+  pt: "Você pode ver todos os nossos pisos em https://ozzifloors.company.",
+};
 
 function tidy(text: string): string {
   return text
@@ -181,15 +197,19 @@ function endsSentence(text: string): string {
 
 // The same reply with every link neutralized. Returns the input unchanged
 // when it carries no link. Default (and `channel: "instagram"`): the Instagram
-// wording (site → "link in our bio"). Any other channel (owner rule
-// 2026-11-02, Messenger / WhatsApp): the sentence that carried the site link
-// goes and the reply gets the samples + Ozzi's number line ahead of its
-// closing question; financing and other links behave the same on every channel.
+// wording (site → "link in our bio"). Any other channel (Messenger /
+// WhatsApp): our website link STAYS as written (owner rule 2026-11-03; from
+// 2026-11-02 to 2026-11-03 it was dropped); financing and other links behave
+// the same on every channel (Ozzi's number).
 export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel?: DmChannel }): string {
-  const original = text || "";
+  const offInstagram = !!opts?.channel && opts.channel !== "instagram";
+  // Messenger / WhatsApp: there is no bio to point at, so the Instagram wording
+  // ("the link is in our bio") becomes the website link itself (owner rule
+  // 2026-11-03; on 2026-11-03 a Messenger client who mentioned our Instagram
+  // page got "the link is in our bio" and no link).
+  const original = offInstagram ? bioToSiteLink(text || "") : text || "";
   if (!containsLink(original)) return original;
   const L = lang ?? replyLang(original);
-  const offInstagram = !!opts?.channel && opts.channel !== "instagram";
 
   // Protect emails, tokenize links (trailing punctuation stays in the sentence).
   const emails: string[] = [];
@@ -199,13 +219,14 @@ export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel
   });
   let other = 0;
   let financing = 0;
-  let siteDropped = 0;
+  const keptSite: string[] = [];
   t = t.replace(URL_RE, (m) => {
     const core = m.replace(/[.,;:!?]+$/, "");
     const tail = m.slice(core.length);
+    // Messenger / WhatsApp: our site goes out as written (owner rule 2026-11-03).
     if (SITE_RE.test(core) && offInstagram) {
-      siteDropped++;
-      return SITE_DROP_TOKEN + tail;
+      keptSite.push(core);
+      return `\u0003${keptSite.length - 1}\u0003` + tail;
     }
     if (SITE_RE.test(core)) return SITE_TOKEN + tail;
     if (FINANCING_LINK_RE.test(core)) {
@@ -215,18 +236,14 @@ export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel
     other++;
     return OTHER_TOKEN + tail;
   });
+  // Only our site, kept off Instagram: nothing to change, the input as is.
+  if (other === 0 && financing === 0 && !t.includes(SITE_TOKEN)) return original;
 
   // ── Financing link: the whole sentence that carried it goes ("You can apply
   // for financing here: URL" says nothing without the link) and the reply ends
   // with Ozzi's number for the financing (owner rule 2026-10-17).
   if (financing > 0) {
     t = t.replace(/[^.!?\n]*\u0001FIN\u0001[^.!?\n]*[.!?]*[ \t]*/g, " ");
-  }
-  // ── Our site off Instagram (owner rule 2026-11-02): no bio to point at, so
-  // the sentence that pitched the website goes and the samples + Ozzi line
-  // comes in below, ahead of the closing question.
-  if (siteDropped > 0) {
-    t = t.replace(/[^.!?\n]*\u0001SITEX\u0001[^.!?\n]*[.!?]*[ \t]*/g, " ");
   }
 
   // ── Our site: "website at URL" → "website (link in our bio)", "at URL" →
@@ -256,12 +273,29 @@ export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel
   if (financing > 0 && !OZZI_NUMBER_RE.test(t)) {
     t = withLineBeforeClosingQuestion(tidy(t), IG_FINANCING_LINE[L]);
   }
-  if (siteDropped > 0 && !OZZI_NUMBER_RE.test(t)) {
-    t = withLineBeforeClosingQuestion(tidy(t), SAMPLES_HANDOFF_LINE[L]);
-  }
-
-  t = tidy(t).replace(/\u0002(\d+)\u0002/g, (_, i) => emails[Number(i)] ?? "");
+  t = tidy(t)
+    .replace(/\u0002(\d+)\u0002/g, (_, i) => emails[Number(i)] ?? "")
+    .replace(/\u0003(\d+)\u0003/g, (_, i) => keptSite[Number(i)] ?? "");
   return t;
+}
+
+// The Instagram "link in our bio" wording, rewritten to the website link for
+// Messenger / WhatsApp (owner rule 2026-11-03). Text without it is returned
+// as is.
+const SITE_LINK = "https://ozzifloors.company";
+const BIO_PAREN_RE = /\(\s*(?:the\s+|el\s+|o\s+)?(?:link|enlace)\s+(?:is\s+|est[aá]\s+)?(?:in|en|na)\s+(?:our|the|nuestra|la|nossa|a)?\s*bio\s*\)/gi;
+const BIO_CLAUSE_RE = /(?:,\s*)?(?:(?<![a-zà-ÿ])(?:and|y|e)\s+)?(?:(?<![a-zà-ÿ])(?:the|el|o)\s+)?(?<![a-zà-ÿ])(?:link|enlace)\s+(?:is\s+|est[aá]\s+|fica\s+)?(?:in|en|na|no)\s+(?:our|the|nuestra|la|nossa|a)?\s*bio(?![a-zà-ÿ])/gi;
+export function bioToSiteLink(text: string): string {
+  const t = text || "";
+  if (!mentionsBioLink(t)) return t;
+  return t
+    .replace(BIO_PAREN_RE, `(${SITE_LINK})`)
+    .replace(BIO_CLAUSE_RE, `, ${SITE_LINK}`)
+    .replace(/^\s*,\s*/, "")
+    .replace(/([.!?]\s+),\s*/g, "$1")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/[ \t]{2,}/g, " ");
 }
 
 // Puts `line` ahead of the closing question (even when the question is all

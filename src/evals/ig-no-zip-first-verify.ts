@@ -86,7 +86,7 @@ async function main() {
     const ig = fixWhichFloorReply(guess, lang, true, { noZip: true, ig: true });
     const other = fixWhichFloorReply(guess, lang, true);
     ck(`${lang} IG full shape: bio + samples + one-area-or-whole-house, no zip, no link`, mentionsBioLink(ig) && !containsLink(ig) && !ZIP_WORD.test(ig) && /(?:one area, or the entire house|una sola área o toda la casa|só uma área ou a casa toda)\?$/.test(ig), ig);
-    ck(`${lang} Messenger/WhatsApp full shape: samples + Ozzi's number + the same question, no zip, no link (every channel since 2026-11-02)`, /674[\s.-]?8334/.test(other) && !containsLink(other) && !ZIP_WORD.test(other) && /\?$/.test(other), other);
+    ck(`${lang} Messenger/WhatsApp full shape: the website + the same question, no zip (website back on Messenger / WhatsApp since 2026-11-03)`, /https:\/\/ozzifloors\.company/.test(other) && !ZIP_WORD.test(other) && /\?$/.test(other), other);
     const neut = neutralizeLinks(ig, lang);
     ck(`${lang} IG full shape after the link neutralizer: unchanged (bio wording, no zip)`, neut === ig && mentionsBioLink(neut) && !containsLink(neut) && !ZIP_WORD.test(neut), neut);
   }

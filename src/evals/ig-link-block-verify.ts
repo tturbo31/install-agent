@@ -117,7 +117,7 @@ function main() {
   // ── 4. Dreaming never learns the fallback wording ─────────────────────────
   console.log("\n[4] Dreaming");
   const dr = read("src/lib/dreaming.ts");
-  ck("rule 13: 'link in our bio' is the Instagram rule, the 2026-10-14 'blocking links' wording stays a non-pattern", /13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL/.test(dr) && /never flag a reply for saying "link in our bio"/.test(dr) && /Instagram is blocking links on my end[\s\S]{0,120}never record it as a pattern/.test(dr));
+  ck("rule 13: 'link in our bio' is the Instagram rule, the 2026-10-14 'blocking links' wording stays a non-pattern", /13\. LINKS DEPEND ON THE CHANNEL \(owner rule 2026-11-03\)/.test(dr) && /Never flag an Instagram reply for saying "link in our bio"/.test(dr) && /Instagram is blocking links on my end[\s\S]{0,120}never record it as a pattern/.test(dr));
 
   console.log(`\n===================== RESULT: ${pass} passed, ${fail} failed =====================`);
   if (fail) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1); }

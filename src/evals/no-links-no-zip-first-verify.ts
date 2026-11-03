@@ -31,6 +31,14 @@
  * (LIVE=1): Messenger/WhatsApp sem link, sem ZIP de cara, amostras = número;
  * Instagram igual ao de antes (bio, sem ZIP).
  * Run: npx tsx src/evals/no-links-no-zip-first-verify.ts   (LIVE=1 para [3]+[4])
+ *
+ * ATUALIZADO 03/11/2026 (regra do dono): "no Messenger e no WhatsApp você está
+ * liberado para enviar o link do site [...] no Instagram é PROIBIDO o envio de
+ * link". Os itens de LINK fora do Instagram agora exigem o site
+ * https://ozzifloors.company (neutralizeLinks mantém o link do site no
+ * Messenger/WhatsApp; enlatadas, cor e "que piso é esse" mandam o site). O
+ * Instagram continua sem link nenhum. ZIP de cara e amostra = número do Ozzi
+ * (02/11) seguem valendo; financiamento continua = número do Ozzi, sem link.
  */
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -83,25 +91,29 @@ async function main() {
   ck("dmChannelOf: IG note → instagram, otherwise other", dmChannelOf([U("hi" + IG_SYS)]) === "instagram" && dmChannelOf([U("hi" + OTHER_SYS)]) === "other" && dmChannelOf([U("hi" + WA_SYS())]) === "other");
   ck("IG note unchanged: tag, no link, no zip up front, bio wording", IG_CHANNEL_NOTE.startsWith(IG_CHANNEL_TAG) && /NO ZIP CODE UP FRONT ON INSTAGRAM/.test(IG_CHANNEL_NOTE) && /link is in our bio/.test(IG_CHANNEL_NOTE) && !containsLink(IG_CHANNEL_NOTE));
 
-  console.log("\n[1b] neutralizeLinks off Instagram (Messenger / WhatsApp wording)");
-  const siteWa = neutralizeLinks("Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?", "en", { channel: "whatsapp" });
-  ck("WA site link → sentence gone, samples + Ozzi line, closing question kept", siteWa === `${SAMPLES_HANDOFF_LINE.en} Is it just one area or the whole house?`, siteWa);
-  const siteFb = neutralizeLinks("You can see all our floor colors at https://ozzifloors.company. Is it one area or the whole house?", "en", { channel: "messenger" });
-  ck("Messenger site link → same shape", siteFb === `${SAMPLES_HANDOFF_LINE.en} Is it one area or the whole house?`, siteFb);
-  const siteEs = neutralizeLinks("Claro, puedes ver nuestros pisos en https://ozzifloors.company y llevo las muestras. Es una sola área o toda la casa?", "es", { channel: "whatsapp" });
-  ck("ES: Spanish line, no ¿", siteEs === `${SAMPLES_HANDOFF_LINE.es} Es una sola área o toda la casa?` && !/[¿¡]/.test(siteEs), siteEs);
-  const sitePt = neutralizeLinks("Você pode ver nossos pisos em https://ozzifloors.company. É só uma área ou a casa toda?", "pt", { channel: "whatsapp" });
-  ck("PT: Portuguese line", sitePt === `${SAMPLES_HANDOFF_LINE.pt} É só uma área ou a casa toda?`, sitePt);
-  const bare = neutralizeLinks("Check ozzifloors.company for the colors. One area or whole house?", "en", { channel: "other" });
-  ck("bare domain counts as a link off Instagram too", !containsLink(bare) && OZZI_NUMBER_RE.test(bare) && /One area or whole house\?$/.test(bare), bare);
+  console.log("\n[1b] neutralizeLinks off Instagram (Messenger / WhatsApp: the website link stays, owner rule 2026-11-03)");
+  const siteWaIn = "Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?";
+  const siteWa = neutralizeLinks(siteWaIn, "en", { channel: "whatsapp" });
+  ck("WA site link → kept exactly as written", siteWa === siteWaIn, siteWa);
+  const siteFbIn = "You can see all our floor colors at https://ozzifloors.company. Is it one area or the whole house?";
+  const siteFb = neutralizeLinks(siteFbIn, "en", { channel: "messenger" });
+  ck("Messenger site link → kept exactly as written", siteFb === siteFbIn, siteFb);
+  const siteEsIn = "Claro, puedes ver nuestros pisos en https://ozzifloors.company y llevo las muestras. Es una sola área o toda la casa?";
+  ck("ES: site link kept", neutralizeLinks(siteEsIn, "es", { channel: "whatsapp" }) === siteEsIn);
+  const sitePtIn = "Você pode ver nossos pisos em https://ozzifloors.company. É só uma área ou a casa toda?";
+  ck("PT: site link kept", neutralizeLinks(sitePtIn, "pt", { channel: "whatsapp" }) === sitePtIn);
+  const bareIn = "Check ozzifloors.company for the colors. One area or whole house?";
+  ck("bare domain off Instagram is kept too", neutralizeLinks(bareIn, "en", { channel: "other" }) === bareIn);
+  const bareIg = neutralizeLinks(bareIn, "en", { channel: "instagram" });
+  ck("bare domain on Instagram → bio wording, no link", !containsLink(bareIg) && mentionsBioLink(bareIg), bareIg);
   const finWa = neutralizeLinks("Yes, we offer financing. You can apply here: https://app.gethearth.com/partners/ozzifloors, it takes 2 minutes. Is it one area or the whole house?", "en", { channel: "whatsapp" });
   ck("WA financing link → Ozzi's financing line (same as Instagram)", finWa === "Yes, we offer financing. For financing, just call or text Ozzi at (561) 674-8334. Is it one area or the whole house?", finWa);
   const otherWa = neutralizeLinks("Here is your contract: https://ozzifloors.app/sign/abc. Let me know.", "en", { channel: "whatsapp" });
   ck("WA other link → dropped + owner line", otherWa === "Here is your contract. Let me know. Text Ozzi at (561) 674-8334 and he'll send it to you.", otherWa);
   const both = neutralizeLinks("See our floors at https://ozzifloors.company. For financing apply at https://app.gethearth.com/partners/ozzifloors. One area or whole house?", "en", { channel: "whatsapp" });
-  ck("site + financing off IG → one Ozzi number, no link, question kept", !containsLink(both) && (both.match(/8334/g) ?? []).length === 1 && /One area or whole house\?$/.test(both), both);
-  const already = neutralizeLinks("You can see our floors at https://ozzifloors.company or text Ozzi at (561) 674-8334. One area or whole house?", "en", { channel: "whatsapp" });
-  ck("number already in the reply → still exactly one number after the drop", !containsLink(already) && (already.match(/8334/g) ?? []).length === 1, already);
+  ck("site + financing off IG → site kept, financing link gone, one Ozzi number, question kept", /https:\/\/ozzifloors\.company/.test(both) && !/gethearth/.test(both) && (both.match(/8334/g) ?? []).length === 1 && /One area or whole house\?$/.test(both), both);
+  const alreadyIn = "You can see our floors at https://ozzifloors.company or text Ozzi at (561) 674-8334. One area or whole house?";
+  ck("site + number off IG → untouched", neutralizeLinks(alreadyIn, "en", { channel: "whatsapp" }) === alreadyIn);
   ck("idempotent off IG", neutralizeLinks(siteWa, "en", { channel: "whatsapp" }) === siteWa);
   ck("plain reply untouched off IG", neutralizeLinks("Our vinyl promo is $5 per sqft. One area or whole house?", "en", { channel: "whatsapp" }) === "Our vinyl promo is $5 per sqft. One area or whole house?");
   ck("email untouched off IG", neutralizeLinks("Send the plans to ozzifloors@gmail.com please.", "en", { channel: "whatsapp" }) === "Send the plans to ozzifloors@gmail.com please.");
@@ -110,35 +122,36 @@ async function main() {
   ck("default (no channel) = Instagram wording, as the IG send uses it", neutralizeLinks("See https://ozzifloors.company today.") === siteIgDefault("See https://ozzifloors.company today."));
   ck("ensureFinancingHandoff is the same backstop as the IG one", ensureFinancingHandoff("Yes, we offer financing. Is it one area or the whole house?", "Do you offer financing?", "en") === ensureIgFinancingHandoff("Yes, we offer financing. Is it one area or the whole house?", "Do you offer financing?", "en") && OZZI_NUMBER_RE.test(ensureFinancingHandoff("Yes, we offer financing. Is it one area or the whole house?", "Do you offer financing?", "en")));
 
-  console.log("\n[1c] fixWhichFloorReply: no link, no zip, channel wording");
+  console.log("\n[1c] fixWhichFloorReply: no zip, channel wording (IG bio, Messenger / WhatsApp website)");
   const guess = "That's our luxury vinyl with a stone finish! Want me to set up a visit?";
   for (const lang of ["en", "es", "pt"] as const) {
     const ig = fixWhichFloorReply(guess, lang, true, { ig: true });
     const other = fixWhichFloorReply(guess, lang, true);
     ck(`${lang} IG full shape: bio + samples + area question, no link, no zip`, mentionsBioLink(ig) && !containsLink(ig) && !ZIP_WORD.test(ig) && /(?:one area, or the entire house|una sola área o toda la casa|só uma área ou a casa toda)\?$/.test(ig), ig);
-    ck(`${lang} Messenger/WA full shape: samples + Ozzi's number + area question, no link, no zip, no bio`, OZZI_NUMBER_RE.test(other) && !containsLink(other) && !ZIP_WORD.test(other) && !mentionsBioLink(other) && /(?:one area, or the entire house|una sola área o toda la casa|só uma área ou a casa toda)\?$/.test(other), other);
+    ck(`${lang} Messenger/WA full shape: website + samples + area question, no zip, no bio`, /https:\/\/ozzifloors\.company/.test(other) && /visit|visita/.test(other) && !ZIP_WORD.test(other) && !mentionsBioLink(other) && /(?:one area, or the entire house|una sola área o toda la casa|só uma área ou a casa toda)\?$/.test(other), other);
     ck(`${lang} neither shape guesses the floor`, !/stone finish|marble|herringbone|wood look/i.test(ig + other));
   }
   const modelZipOther = "Check out our floors at https://ozzifloors.company, that floor is there with all the details, and I bring samples to the free visit too. What's the zip code there?";
   const swappedOther = fixWhichFloorReply(modelZipOther, "en", true);
-  ck("Messenger/WA: the URL + zip shape the model may still write → canned Ozzi shape, no link, no zip", swappedOther === fixWhichFloorReply(guess, "en", true), swappedOther);
+  ck("Messenger/WA: the URL + zip shape the model may still write → zip swapped for the area question, website kept", !ZIP_WORD.test(swappedOther) && /https:\/\/ozzifloors\.company/.test(swappedOther) && /one area, or the entire house\?$/.test(swappedOther), swappedOther);
   const modelZipIg = "Our floors are on our website, the link is in our bio, that floor is there with all the details, and I bring samples to the free visit too. What's the zip code there?";
   const swappedIg = fixWhichFloorReply(modelZipIg, "en", true, { ig: true });
   ck("IG: a zip question is swapped for the area question, bio kept", !ZIP_WORD.test(swappedIg) && mentionsBioLink(swappedIg) && /one area, or the entire house\?$/.test(swappedIg), swappedIg);
   const partial = fixWhichFloorReply("Great choice! Is it one area or the whole house?", "en", false);
-  ck("Messenger/WA partial shape: the Ozzi sentence goes in ahead of the closing question", OZZI_NUMBER_RE.test(partial) && /Is it one area or the whole house\?$/.test(partial) && !containsLink(partial), partial);
-  const okOther = "I bring all the samples to the free visit, and to see the options before that just text Ozzi at (561) 674-8334. Is it one area or the whole house?";
-  ck("Messenger/WA reply that already has the number is untouched", fixWhichFloorReply(okOther, "en", true) === okOther);
+  ck("Messenger/WA partial shape: the website sentence goes in ahead of the closing question", /https:\/\/ozzifloors\.company/.test(partial) && /Is it one area or the whole house\?$/.test(partial), partial);
+  const okOther = "Check out our floors at https://ozzifloors.company, that floor is there, and I bring samples to the free visit too. Is it one area or the whole house?";
+  ck("Messenger/WA reply that already has the website is untouched", fixWhichFloorReply(okOther, "en", true) === okOther);
   const withTag = fixWhichFloorReply(modelZipIg + "[NOTIFY_OWNER]", "en", true, { ig: true });
   ck("trailing tag survives", /\[NOTIFY_OWNER\]$/.test(withTag) && !ZIP_WORD.test(withTag), withTag);
 
-  console.log("\n[1d] withSiteForColor: bio on IG, samples + Ozzi off IG, never a URL");
+  console.log("\n[1d] withSiteForColor: bio on IG (never a URL), the website off IG");
   const colorIg = withSiteForColor("We have many colors. Is it one area or the whole house?", "en", { ig: true });
   ck("IG: bio sentence added, no URL", mentionsBioLink(colorIg) && !containsLink(colorIg) && /whole house\?$/.test(colorIg), colorIg);
   const colorWa = withSiteForColor("We have many colors. Is it one area or the whole house?", "en");
-  ck("Messenger/WA: samples + Ozzi line added ahead of the question, no URL", colorWa === `We have many colors. ${SAMPLES_HANDOFF_LINE.en} Is it one area or the whole house?`, colorWa);
+  ck("Messenger/WA: website sentence added ahead of the question", /https:\/\/ozzifloors\.company/.test(colorWa) && /^We have many colors\./.test(colorWa) && /Is it one area or the whole house\?$/.test(colorWa), colorWa);
   const colorPhone = "For the colors, just text Ozzi at (561) 674-8334. One area or whole house?";
-  ck("Messenger/WA: a color-to-phone reply is the right answer now, untouched", withSiteForColor(colorPhone, "en") === colorPhone);
+  const colorPhoneWa = withSiteForColor(colorPhone, "en");
+  ck("Messenger/WA: a color-to-phone reply becomes the website (owner rule 2026-10-03)", /https:\/\/ozzifloors\.company/.test(colorPhoneWa) && !OZZI_NUMBER_RE.test(colorPhoneWa), colorPhoneWa);
   ck("IG: a color-to-phone reply still becomes the bio sentence", mentionsBioLink(withSiteForColor(colorPhone, "en", { ig: true })) && !OZZI_NUMBER_RE.test(withSiteForColor(colorPhone, "en", { ig: true })), withSiteForColor(colorPhone, "en", { ig: true }));
   ck("tag-only reply untouched", withSiteForColor("[REACT_ONLY]", "en") === "[REACT_ONLY]" && withSiteForColor("[REACT_ONLY]", "en", { ig: true }) === "[REACT_ONLY]");
   for (const l of ["en", "es", "pt"] as const) ck(`${l} smallJobPhotosMessage: Ozzi's number, no link`, OZZI_NUMBER_RE.test(smallJobPhotosMessage(l)) && !containsLink(smallJobPhotosMessage(l)), smallJobPhotosMessage(l));
@@ -157,32 +170,36 @@ async function main() {
     const OPENER = "Hi, we work with luxury vinyl, tile, and hardwood flooring, and we have a promotion on each. Which one are you interested in?";
     const PROMO = "Our vinyl promo is $5 per sqft and it includes the floor, the installation and the quarter round. I offer a free quote, are you planning to do just one area, or the entire house?";
     const cannedWa = (await getAIResponse([A(OPENER), U("Vinyl"), A(PROMO), U("Can you send me some samples or photos?" + WA_SYS())], null, null, null, false)).text;
-    ck("WA 'can you send me samples?' → canned: samples at the visit + Ozzi's number, no link, scope question", OZZI_NUMBER_RE.test(cannedWa) && !containsLink(cannedWa) && /one area or the whole house\?$/i.test(cannedWa), cannedWa);
+    ck("WA 'can you send me samples?' → canned: website + samples at the visit + Ozzi's number, scope question", OZZI_NUMBER_RE.test(cannedWa) && /https:\/\/ozzifloors\.company/.test(cannedWa) && /one area or the whole house\?$/i.test(cannedWa), cannedWa);
     const cannedIg = (await getAIResponse([A(OPENER), U("Vinyl"), A(PROMO), U("Can you send me some samples or photos?" + IG_SYS)], null, null, null, false)).text;
     ck("IG same ask → same canned (owner: samples = Ozzi's number, every channel), no link", OZZI_NUMBER_RE.test(cannedIg) && !containsLink(cannedIg), cannedIg);
     const cannedPt = (await getAIResponse([A(OPENER), U("Vinil"), A(PROMO), U("Me manda fotos dos pisos?" + WA_SYS())], null, null, null, false)).text;
-    ck("PT 'me manda fotos' → canned PT with Ozzi's number, no link", OZZI_NUMBER_RE.test(cannedPt) && !containsLink(cannedPt) && /casa toda\?$/.test(cannedPt), cannedPt);
+    ck("PT 'me manda fotos' → canned PT with the website + Ozzi's number", OZZI_NUMBER_RE.test(cannedPt) && /https:\/\/ozzifloors\.company/.test(cannedPt) && /casa toda\?$/.test(cannedPt), cannedPt);
   } catch (e) { ck("canned intercept reachable without the model", false, String(e)); }
 
   console.log("\n[1g] scrubLearnings: the Dreaming learnings never re-teach a link or the zip-first script");
   const learn = "1. **Zip-first, then two times.** Every booking followed the same flow.\n2. Short pivot on epoxy.\nCheck our floors at https://ozzifloors.company. What's the zip code?\n3. Owning a filled slot and offering the next.";
   const scrubbed = scrubLearnings(learn);
   ck("lines teaching zip-first or a link are dropped, the others stay", !/Zip-first/.test(scrubbed) && !containsLink(scrubbed) && /Short pivot on epoxy/.test(scrubbed) && /Owning a filled slot/.test(scrubbed), scrubbed);
+  const stale = "1. No links on any channel, samples go to Ozzi.\n2. On WhatsApp never send a link, give Ozzi's number.\n3. Own the filled slot.";
+  const staleOut = scrubLearnings(stale);
+  ck("2026-11-02 learnings that forbid links on Messenger/WhatsApp are dropped (owner rule 2026-11-03)", !/No links on any channel/.test(staleOut) && !/never send a link/.test(staleOut) && /Own the filled slot/.test(staleOut), staleOut);
   const cleanLearn = "1. Own the filled slot.\n2. Ask the address with the zip code and the phone together.";
   ck("a clean learnings file is untouched", scrubLearnings(cleanLearn) === cleanLearn);
   ck("getAIResponse injects the scrubbed learnings", /\$\{scrubLearnings\(systemMemory\)\}/.test(read("src/lib/ai.ts")));
 
   // ── 2. estático ───────────────────────────────────────────────────────────
-  console.log("\n[2a] the shared prompt: no URL, no ZIP CODE FIRST, samples → Ozzi");
-  ck("SYSTEM_PROMPT carries no link at all", !containsLink(SYSTEM_PROMPT) && !/gethearth|ozzifloors\.com/i.test(SYSTEM_PROMPT), (SYSTEM_PROMPT.match(/[^\n]*(?:https?:\/\/|ozzifloors\.com)[^\n]*/) ?? [""])[0]);
+  console.log("\n[2a] the shared prompt: only our website as a link, no ZIP CODE FIRST, samples → Ozzi");
+  const promptLinks = (SYSTEM_PROMPT.match(/https?:\/\/[^\s"'()]+/g) ?? []).map((u) => u.replace(/[.,;:!?]+$/, ""));
+  ck("SYSTEM_PROMPT: the only URL is https://ozzifloors.company, no financing link, no dead domain", promptLinks.length > 0 && promptLinks.every((u) => u === "https://ozzifloors.company") && !/gethearth|www\.ozzifloors\.com|https?:\/\/ozzifloors\.com(?!pany)/i.test(SYSTEM_PROMPT), promptLinks.join(" "));
   ck("no 'ZIP CODE FIRST' and no visit proposal ending with the zip question", !/ZIP CODE FIRST/.test(SYSTEM_PROMPT) && !/What's the zip code of the property\?"/.test(SYSTEM_PROMPT), (SYSTEM_PROMPT.match(/[^\n]*zip code of the property[^\n]*/) ?? [""])[0]);
   ck("STEP 2B: NO ZIP CODE UP FRONT (owner rule 2026-11-02, every channel), two times in the same message", /NO ZIP CODE UP FRONT \(owner rule 2026-11-02, every channel: Instagram, Messenger and WhatsApp\)/.test(SYSTEM_PROMPT) && /collected ONLY together with the full address and the phone, after the client chose a time/.test(SYSTEM_PROMPT));
   ck("VISIT CONFIRMATION SEQUENCE step 1 offers the two times and never ends with a zip question", /Step 1: Propose the visit in ONE short sentence[^\n]*offer exactly TWO specific time slots[^\n]*NEVER end the proposal with a zip code question/.test(SYSTEM_PROMPT));
-  ck("(2a) samples / photos / colors / website → samples at the visit + text Ozzi, never a link", /\(2a\) SEND \/ SHOW REMOTELY → the samples at the free visit \+ Ozzi's number, NEVER a link \(owner rule 2026-11-02\)/.test(SYSTEM_PROMPT) && /text Ozzi directly at \(561\) 674-8334\. NEVER write a website address or any URL/.test(SYSTEM_PROMPT));
-  ck("(2d) colors: bio on Instagram, Ozzi's number on Messenger / WhatsApp, never a URL", /\(2d\) ANY QUESTION ABOUT THE COLOR OF THE FLOOR → A WAY TO SEE THE COLORS, ALWAYS, NEVER A LINK/.test(SYSTEM_PROMPT) && /on Messenger and WhatsApp say you bring all the physical samples to the free visit and that to see the colors before that they can text Ozzi at \(561\) 674-8334/.test(SYSTEM_PROMPT));
-  ck("AD FLOOR QUESTIONS: no link, no zip, area question or two times", /Answer EXACTLY in this shape, with NO link \(owner rule 2026-11-02\)/.test(SYSTEM_PROMPT) && /move toward the visit WITHOUT asking the zip code/.test(SYSTEM_PROMPT));
-  ck("NO LINKS ON ANY CHANNEL block, Instagram keeps the bio wording", /NO LINKS ON ANY CHANNEL \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\)/.test(SYSTEM_PROMPT) && /the link is in our bio/.test(SYSTEM_PROMPT) && /el link está en nuestra bio/.test(SYSTEM_PROMPT) && /o link está na nossa bio/.test(SYSTEM_PROMPT));
-  ck("FINANCING: Ozzi's number on every channel, no link, no application details", /NEVER send a financing link or any link \(owner rule 2026-11-02: no link on any channel/.test(SYSTEM_PROMPT) && /EVERY CHANNEL, SAME ANSWER/.test(SYSTEM_PROMPT) && !/takes about 2 minutes/.test(SYSTEM_PROMPT));
+  ck("(2a) photos / catalog / website → website on Messenger / WhatsApp, bio on Instagram, samples → Ozzi too", /\(2a\) SEND \/ SHOW REMOTELY → our website \+ the samples at the free visit \(links by channel, owner rule 2026-11-03\)/.test(SYSTEM_PROMPT) && /on Messenger and WhatsApp \(no \[INSTAGRAM CHANNEL\] note\) send our website link https:\/\/ozzifloors\.company/.test(SYSTEM_PROMPT) && /on Instagram NEVER write a link, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT) && /When the client asks to see SAMPLES, also say[^\n]*text Ozzi directly at \(561\) 674-8334/.test(SYSTEM_PROMPT));
+  ck("(2d) colors: website on Messenger / WhatsApp, bio on Instagram", /\(2d\) ANY QUESTION ABOUT THE COLOR OF THE FLOOR → THE WEBSITE, ALWAYS/.test(SYSTEM_PROMPT) && /on Messenger and WhatsApp send https:\/\/ozzifloors\.company so they can check all our colors there; on Instagram NEVER write a link/.test(SYSTEM_PROMPT));
+  ck("AD FLOOR QUESTIONS: website off Instagram, bio on Instagram, no zip", /Answer EXACTLY in this shape \(links by channel, owner rule 2026-11-03\): on Messenger and WhatsApp, send our website https:\/\/ozzifloors\.company/.test(SYSTEM_PROMPT) && /on Instagram, NEVER a link/.test(SYSTEM_PROMPT) && /move toward the visit WITHOUT asking the zip code/.test(SYSTEM_PROMPT));
+  ck("LINKS BY CHANNEL block: Instagram no link (bio wording), Messenger / WhatsApp only the website", /LINKS BY CHANNEL \(owner rule 2026-11-03/.test(SYSTEM_PROMPT) && /INSTAGRAM, NO LINKS: when an \[INSTAGRAM CHANNEL\] note is present in context, NEVER write any link or URL/.test(SYSTEM_PROMPT) && /MESSENGER AND WHATSAPP \(no \[INSTAGRAM CHANNEL\] note\): our website link https:\/\/ozzifloors\.company IS allowed/.test(SYSTEM_PROMPT) && /the link is in our bio/.test(SYSTEM_PROMPT) && /el link está en nuestra bio/.test(SYSTEM_PROMPT) && /o link está na nossa bio/.test(SYSTEM_PROMPT) && !/NO LINKS ON ANY CHANNEL/.test(SYSTEM_PROMPT));
+  ck("FINANCING: Ozzi's number on every channel, no link, no application details", /NEVER send a financing link on any channel \(owner rule 2026-11-02/.test(SYSTEM_PROMPT) && /EVERY CHANNEL, SAME ANSWER/.test(SYSTEM_PROMPT) && !/takes about 2 minutes/.test(SYSTEM_PROMPT));
   ck("ZIP ALREADY GIVEN / ADDRESS MUST BE COMPLETE still there (the zip is still required to book)", /ZIP ALREADY GIVEN:/.test(SYSTEM_PROMPT) && /ADDRESS MUST BE COMPLETE, WITH THE ZIP CODE/.test(SYSTEM_PROMPT) && /NEVER guess, infer, or fill the ZIP CODE yourself/.test(SYSTEM_PROMPT));
   ck("no inverted punctuation", !/[¿¡]/.test(SYSTEM_PROMPT));
 
@@ -210,19 +227,21 @@ async function main() {
   ck("which-floor backstop: noZip always, ig flag", /const fixed = fixWhichFloorReply\(cleaned, usersLang\(\), full, \{ noZip: true, ig \}\);/.test(ai));
   ck("color backstop passes the channel", /withSiteForColor\(cleaned, usersLang\(\), \{ ig: isInstagramChannel\(messages\) \}\)/.test(ai));
   ck("PSL visit line never asks the zip", /if \(mode === "visit"\) return portStLucieVisitMessage\(lang, intro, true\);/.test(ai));
-  const canned = ai.match(/response: "[^"]*"/g) ?? [];
-  ck("no canned response in ai.ts carries a URL", canned.every((c) => !containsLink(c)), canned.filter((c) => containsLink(c)).join(" | "));
-  ck("see_options canned replies (EN/PT) give Ozzi's number", /id: "see_options_en",[\s\S]{0,400}response: "Sure! I bring all the samples to the free visit, and if you want to see them before that, just text Ozzi at \(561\) 674-8334\./.test(ai) && /id: "see_options_pt",[\s\S]{0,400}response: "Claro! Eu levo todas as amostras na visita grátis, e se quiser ver antes, é só mandar mensagem pro Ozzi no \(561\) 674-8334\./.test(ai));
+  const cannedIgOnly = ai.match(/responseIg: "[^"]*"/g) ?? [];
+  ck("no Instagram canned response (responseIg) carries a URL", cannedIgOnly.length >= 2 && cannedIgOnly.every((c) => !containsLink(c)), cannedIgOnly.filter((c) => containsLink(c)).join(" | "));
+  const canned = (ai.match(/(?<!Ig)response: "[^"]*"/g) ?? []).filter((c) => containsLink(c));
+  ck("the only URL in the other canned responses is our website", canned.every((c) => (c.match(/https?:\/\/[^\s"()]+/g) ?? []).every((u) => /^https:\/\/ozzifloors\.company[.,]?$/.test(u))), canned.join(" | "));
+  ck("see_options canned replies (EN/PT): website + samples + Ozzi's number", /id: "see_options_en",[\s\S]{0,500}response: "Sure! You can see all our floors at https:\/\/ozzifloors\.company, and I bring all the samples to the free visit \(if you want to see them before that, just text Ozzi at \(561\) 674-8334\)\./.test(ai) && /id: "see_options_pt",[\s\S]{0,500}response: "Claro! Você pode ver todos os nossos pisos em https:\/\/ozzifloors\.company, e eu levo todas as amostras na visita grátis \(se quiser ver antes, é só mandar mensagem pro Ozzi no \(561\) 674-8334\)\./.test(ai));
 
   console.log("\n[2e] other producers: follow-up, quote replies, Dreaming, training panel");
   const fu = read("src/lib/followup.ts");
   ck("follow-up nudge neutralized per channel before the send", /text = neutralizeLinks\(text, decision\.lang, \{ channel: channel === "whatsapp" \? "whatsapp" : channel === "facebook" \? "messenger" : "instagram" \}\);/.test(fu));
   const qr = read("src/lib/quote-reply.ts");
-  ck("quote replies: no link rule, financing → Ozzi, colors → Ozzi, output neutralized", /6\. NEVER write a link or URL of any kind \(owner rule 2026-11-02/.test(qr) && /18\. COLORS AND SAMPLES, NEVER A LINK/.test(qr) && /const noLinks = neutralizeLinks\(text, lang, \{ channel: "whatsapp" \}\);/.test(qr) && !/https:\/\/ozzifloors\.company/.test(qr) && !/Financing application link: \$\{ctx\.url\}/.test(qr));
+  ck("quote replies (WhatsApp): only the website link, financing → Ozzi, colors → website, output neutralized", /6\. The ONLY link you may ever write is our website https:\/\/ozzifloors\.company/.test(qr) && /18\. COLORS ALWAYS GET OUR WEBSITE/.test(qr) && /const noLinks = neutralizeLinks\(text, lang, \{ channel: "whatsapp" \}\);/.test(qr) && !/Financing application link: \$\{ctx\.url\}/.test(qr));
   const dr = read("src/lib/dreaming.ts");
-  ck("Dreaming rule 7: the zip is never asked up front; rule 13: no link on any channel", /7\. THE ZIP CODE IS NEVER ASKED UP FRONT \(owner rule 2026-11-02, every channel/.test(dr) && /13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL/.test(dr) && !/where the website is sent as https:\/\/ozzifloors\.company/.test(dr));
+  ck("Dreaming rule 7: the zip is never asked up front; rule 13: links by channel (IG none, Messenger / WhatsApp the website)", /7\. THE ZIP CODE IS NEVER ASKED UP FRONT \(owner rule 2026-11-02, every channel/.test(dr) && /13\. LINKS DEPEND ON THE CHANNEL \(owner rule 2026-11-03\)/.test(dr) && /on INSTAGRAM the agent NEVER sends a link of any kind/.test(dr) && /On MESSENGER and WHATSAPP the website link is allowed again/.test(dr) && !/13\. THE AGENT NEVER SENDS A LINK, ON ANY CHANNEL/.test(dr));
   const tr = read("src/app/api/training/chat/route.ts");
-  ck("training panel: no URL plug, output neutralized", /aiResponse = neutralizeLinks\(aiResponse, undefined, \{ channel: "other" \}\);/.test(tr) && !/SITE_URL/.test(tr));
+  ck("training panel (Messenger / WhatsApp view): website fallback, output neutralized", /aiResponse = neutralizeLinks\(aiResponse, undefined, \{ channel: "other" \}\);/.test(tr) && /SITE_LINE_OFF_IG\.pt/.test(tr));
 
   // ── 3. agenda real (SÓ LEITURA) ───────────────────────────────────────────
   const sched = process.env.SCHED === "1" || process.env.LIVE === "1";
@@ -270,16 +289,19 @@ async function main() {
 
     const colorsFb = await pipeline([U("Hi, I'm interested in vinyl flooring"), A(PROMO), U("What colors do you have? Can you send me the link to see them?" + OTHER_SYS)], "messenger", "en");
     console.log(`   Messenger colors raw: ${colorsFb.raw.replace(/\s+/g, " ")}\n   Messenger colors final: ${colorsFb.final.replace(/\s+/g, " ")}`);
-    ck("LIVE Messenger colors + link ask: the model wrote no URL", !containsLink(colorsFb.raw), colorsFb.raw);
-    ck("LIVE Messenger colors: final has Ozzi's number, no link, no bio, no zip", OZZI_NUMBER_RE.test(colorsFb.final) && !containsLink(colorsFb.final) && !mentionsBioLink(colorsFb.final) && !ZIP_WORD.test(colorsFb.final), colorsFb.final);
+    ck("LIVE Messenger colors + link ask: the website link goes out (owner rule 2026-11-03), no bio, no zip", /https:\/\/ozzifloors\.company/.test(colorsFb.final) && !mentionsBioLink(colorsFb.final) && !ZIP_WORD.test(colorsFb.final), colorsFb.final);
 
     const samplesWa = await pipeline([A(OPENER), U("vinyl for the living room and the kitchen"), A(PROMO), U("Do you have samples I could see first?" + WA_SYS())], "whatsapp", "en");
     console.log(`   WhatsApp samples: ${samplesWa.final.replace(/\s+/g, " ")}`);
-    ck("LIVE WhatsApp 'samples I could see first': Ozzi's number, no link", OZZI_NUMBER_RE.test(samplesWa.final) && !containsLink(samplesWa.final), samplesWa.final);
+    ck("LIVE WhatsApp 'samples I could see first': Ozzi's number or the website, no other link", (OZZI_NUMBER_RE.test(samplesWa.final) || /https:\/\/ozzifloors\.company/.test(samplesWa.final)) && (samplesWa.final.match(/https?:\/\/[^\s]+/g) ?? []).every((u) => /ozzifloors\.company/.test(u)), samplesWa.final);
 
     const whichFb = await pipeline([U("What floor is that in your ad?" + OTHER_SYS)], "messenger", "en");
     console.log(`   Messenger which-floor raw: ${whichFb.raw.replace(/\s+/g, " ")}\n   Messenger which-floor final: ${whichFb.final.replace(/\s+/g, " ")}`);
-    ck("LIVE Messenger 'what floor is that': no link, no guess, no zip, Ozzi's number, forward step", !containsLink(whichFb.final) && !/stone finish|marble look|wood look|herringbone/i.test(whichFb.final) && !ZIP_WORD.test(whichFb.final) && OZZI_NUMBER_RE.test(whichFb.final) && /\?/.test(whichFb.final), whichFb.final);
+    ck("LIVE Messenger 'what floor is that': the website, no guess, no zip, forward step", /https:\/\/ozzifloors\.company/.test(whichFb.final) && !/stone finish|marble look|wood look|herringbone/i.test(whichFb.final) && !ZIP_WORD.test(whichFb.final) && /\?/.test(whichFb.final), whichFb.final);
+
+    const colorsIgLink = await pipeline([U("Hi, I'm interested in vinyl flooring"), A(PROMO), U("What colors do you have? Can you send me the link to your website?" + IG_SYS)], "instagram", "en");
+    console.log(`   IG link ask raw: ${colorsIgLink.raw.replace(/\s+/g, " ")}\n   IG link ask final: ${colorsIgLink.final.replace(/\s+/g, " ")}`);
+    ck("LIVE IG 'send me the link': NO link at all (owner rule 2026-11-03: Instagram is PROHIBITED), bio wording", !containsLink(colorsIgLink.final) && mentionsBioLink(colorsIgLink.final), colorsIgLink.final);
 
     const finWa = await pipeline([U("Hi, I'm interested in vinyl flooring for my house"), A(PROMO), U("Do you offer financing?" + WA_SYS())], "whatsapp", "en");
     console.log(`   WhatsApp financing raw: ${finWa.raw.replace(/\s+/g, " ")}\n   WhatsApp financing final: ${finWa.final.replace(/\s+/g, " ")}`);

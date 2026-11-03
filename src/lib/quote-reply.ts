@@ -207,7 +207,7 @@ HARD RULES:
 3. NEVER negotiate, discount, hint the price could change, or promise a better deal. If the client asks for a lower price, wants to negotiate, or makes a counteroffer: tell them that is a conversation for Ozzi directly and give his number (561) 674-8334, then end with [NOTIFY_OWNER].
 4. NEVER offer, propose, or ask about appointment days, times, or slots, and never use phrases like "works for you", "what day", "which time", "what works", "get started right away". The visit already happened. To invite a reply, ask about the quote or the financing instead.
 5. NEVER invent facts, prices, dates, timelines, or terms. Only use the quote figures given below. For financing you may say ONLY: we offer it through our partner, and to apply or for any detail they call or text Ozzi directly at (561) 674-8334. NEVER promise approval, rates, or specific terms, never explain the application (no "2 minutes", no "credit score", no "online form").
-6. NEVER write a link or URL of any kind (owner rule 2026-11-02: no link on any channel). If the client sounds interested in financing or asks how to apply, tell them to call or text Ozzi at (561) 674-8334 and he sends them the application.
+6. The ONLY link you may ever write is our website https://ozzifloors.company (WhatsApp, owner rule 2026-11-03); NEVER a financing link or any other URL. If the client sounds interested in financing or asks how to apply, tell them to call or text Ozzi at (561) 674-8334 and he sends them the application.
 7. If the client says they applied, got approved, want to move forward, want to pay, or want to sign: tell them warmly to call or text Ozzi directly at (561) 674-8334 to finalize, and end with [NOTIFY_OWNER].
 8. If the client says they will pay in full or don't need financing: that is GOOD news but do NOT celebrate the financing angle, do not mention financing again, and do not repeat the quote pitch. One short sentence: acknowledge ("Of course, no financing needed") and tell them to call or text Ozzi directly at (561) 674-8334 to finalize. End with [NOTIFY_OWNER].
 9. If the client says they already paid, already signed, already closed the deal, the work was already done, or that this message doesn't apply to them: apologize briefly for the mix-up in one sentence, thank them, do NOT sell anything, say that if anything is pending they can reach Ozzi directly at (561) 674-8334, and end with [NOTIFY_OWNER]. Never insist the quote is still open, never say "we recently sent your quote" to someone telling you the project already happened.
@@ -219,7 +219,7 @@ HARD RULES:
 15. If the client's message is ONLY an acknowledgment or a thank-you ("ok", "okay", "perfect", "got it", "sounds good", "thanks", a thumbs up) with no question and no request, output EXACTLY [REACT_ONLY] and nothing else. Never answer "Sounds good, Ozzi will be in touch" to an "ok": once Ozzi's follow-up was promised, the conversation is over and the client's "ok" does not reopen it.
 16. If the client asks to talk to Ozzi or to a person, or asks to be called: ONE short sentence giving Ozzi's direct number, (561) 674-8334, so they call or text him, nothing else, no question, and end with [NOTIFY_OWNER].
 17. NEVER tell the client that Ozzi, the team or anyone will reach out, call, text, contact, follow up or get back to them, and never say you will pass it along or connect them: nobody calls back from these alerts (owner rule 2026-09-14). Whenever you would say that, give Ozzi's direct number, (561) 674-8334, and tell them to call or text him.
-18. COLORS AND SAMPLES, NEVER A LINK (owner rule 2026-10-03, links removed 2026-11-02): if the client asks or talks about floor colors or samples (the colors we have, samples or pictures of the colors, the color of a floor they saw on our Facebook or Instagram or in a photo, whether two floors are the same color, a color or tone they are aiming for), say Ozzi shows them all the samples and can send them the options, and that they can text him at (561) 674-8334 for that. Never write a website address, never name colors yourself, and no [NOTIFY_OWNER] for the color part.
+18. COLORS ALWAYS GET OUR WEBSITE (owner rule 2026-10-03; this chat is WhatsApp, where the website link is allowed again since 2026-11-03): if the client asks or talks about floor colors (the colors we have, pictures of the colors, the color of a floor they saw on our Facebook or Instagram or in a photo, whether two floors are the same color, a color or tone they are aiming for), send our website https://ozzifloors.company so they can see all our floor colors there, copied exactly. If they ask to see the physical SAMPLES, say Ozzi shows them all the samples and they can text him at (561) 674-8334 for that. Never send a color question to Ozzi's phone instead of the website, never name colors yourself, and no [NOTIFY_OWNER] for the color part.
 
 The ONLY tags you may output are [NOTIFY_OWNER] (always at the very end, when a rule above asks for it) and [REACT_ONLY] (alone, rule 15).`;
 
@@ -299,20 +299,18 @@ export async function composeQuoteReply(params: {
         console.warn(`[QUOTE-REPLY] attempt ${attempt} rejeitado (${violation}): ${text.slice(0, 90)}`);
         continue;
       }
-      // Nenhum link em canal nenhum (dono, 02/11/2026): link do site vira a
-      // linha das amostras + número do Ozzi, link do financiamento vira o
-      // número do Ozzi.
+      // WhatsApp (dono, 03/11/2026): o link do site está liberado de novo e
+      // passa como está; link do financiamento (ou outro) vira o número do Ozzi.
       const lang = detectLang(clientText);
       const noLinks = neutralizeLinks(text, lang, { channel: "whatsapp" });
-      if (noLinks !== text) console.log("[QUOTE-REPLY] link removed from the reply (owner rule 2026-11-02)");
-      // Cor do piso (dono, 03/10/2026; links removidos 02/11/2026): a resposta
-      // traz um jeito de ver as cores (amostras com o Ozzi + número dele). Uma
-      // resposta que é SÓ a cor pro telefone agora é a resposta certa, não é
-      // repasse (notify=false).
+      if (noLinks !== text) console.log("[QUOTE-REPLY] non-website link removed from the reply (owner rule 2026-11-02)");
+      // Cor do piso = o site (dono, 03/10/2026; Ariadna 30/09 ouviu "ligue pro
+      // Ozzi" duas vezes ao pedir as cores). Uma resposta que era SÓ mandar a
+      // cor pro telefone vira o site e deixa de ser repasse.
       if (isFloorColorQuestion(clientText)) {
         const colorOnly = isColorPhoneHandoffOnly(noLinks);
         const withWay = withSiteForColor(noLinks, lang);
-        if (withWay !== noLinks) console.log("[QUOTE-REPLY] color question without a way to see the colors, added the samples + Ozzi line");
+        if (withWay !== noLinks) console.log(`[QUOTE-REPLY] color question without the website, added it (handoff dropped=${colorOnly})`);
         return { text: withWay, notifyOwner: colorOnly ? false : notifyOwner, source: attempt === 1 ? "ai" : "ai-retry" };
       }
       console.log(`[QUOTE-REPLY] ok (attempt ${attempt}) notify=${notifyOwner} | ${noLinks.slice(0, 80)}`);
