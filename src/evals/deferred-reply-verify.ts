@@ -9,8 +9,8 @@
 // Run: npx tsx src/evals/deferred-reply-verify.ts   (LIVE=0 skips [2])
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getAIResponse, fixDeferredReply, type ChatMessage } from "../lib/ai";
-import { isDeferredReply, acceptedOfferSlot, acceptedSlotGone } from "../lib/scheduler";
+import { getAIResponse, fixDeferredReply, addressAlreadyTypedNote, type ChatMessage } from "../lib/ai";
+import { isDeferredReply, acceptedOfferSlot, acceptedSlotGone, getRealAvailabilityContext, getEasternDateContext, easternTodayStr } from "../lib/scheduler";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -61,6 +61,28 @@ const SUNDAY_LINE = "• Sunday, October 4, 2026 [2026-10-04]: 3pm, 5pm\n• Mon
 const TODAY = "2026-10-02";
 const SLOT_TALK = /filled up|isn'?t open|not open|no longer open|is taken|holding/i;
 
+// Junior Elie, FB, verbatim (02/11/2026, a Monday; "Wednesday" is 04/11). He
+// picked 8pm, typed the address with the ZIP, then "I'll call you after work my
+// number 954.558.3108" read as a deferral: no visit, "just message me then".
+const JR: ChatMessage[] = [
+  U("What is the installation process?", "2026-11-02T13:54"),
+  A("Hi, we move the furniture, install the floor and leave everything clean, usually in 2 to 3 days. Are you thinking tile, vinyl, or hardwood?", "2026-11-02T13:54"),
+  U("Tile", "2026-11-02T13:55"),
+  A("Tile is $4.50 per sqft for the installation labor, you supply the tile material. Is it one area or the whole house?", "2026-11-02T13:55"),
+  U("Whole house", "2026-11-02T13:56"),
+  A("For a whole house I need to measure in person to give you the best number, the visit is free and I bring tile samples. I can come Tuesday at 3pm or 4pm, which works?", "2026-11-02T13:57"),
+  U("I don't finish work until 4.30pm", "2026-11-02T14:00"),
+  A("No problem, Wednesday I have 5pm or 8pm, which works better?", "2026-11-02T14:01"),
+  U("8pm", "2026-11-02T14:01"),
+  A("Perfect, I'm holding that Wednesday at 8pm for you! Can I get the full property address with the zip code and the best phone number?", "2026-11-02T14:01"),
+  U("What's the number", "2026-11-02T14:02"),
+  A("You can call or text us at (561) 674-8334, that's our phone and WhatsApp. And to lock in that Wednesday 8pm, can I get the property address with the zip code and the best phone number?", "2026-11-02T14:02"),
+  U("7476 NW 18th Dr Pembroke pines fl 33024", "2026-11-02T14:03"),
+  A("Still need the best phone number to lock that in!", "2026-11-02T14:04"),
+  U("I'll call you after work my number 954.558.3108", "2026-11-02T14:04"),
+];
+const JR_TODAY = "2026-11-02";
+
 async function main() {
   console.log("\n[1] Detection");
   const yes = [
@@ -93,6 +115,11 @@ async function main() {
     "i will call you back sir",
     "Ok 6 will work",
     "Ok I will let you know later\nOk 6 will work",
+    // Booking data in the bubble = answering the details ask (Junior Elie, FB 02/11).
+    "I'll call you after work my number 954.558.3108",
+    "I'll call you after work, my number is (954) 558-3108",
+    "te llamo después del trabajo, mi número 9545583108",
+    "I'll text you later, 7476 NW 18th Dr Pembroke pines fl 33024",
   ];
   for (const t of no) ck(`NOT deferral: "${t}"`, !isDeferredReply(t));
 
@@ -105,6 +132,9 @@ async function main() {
   ck("'1pm works' after the same message → Sunday 1pm (real offer still read)", !!one && one.label === "1pm" && one.date === "2026-10-04", JSON.stringify(one));
   const gone = acceptedSlotGone(afterDenial("1pm works"), SUNDAY_LINE, "en", TODAY);
   ck("…and 1pm gone from the line → the gone note still fires (feature kept)", !!gone && gone.slot.label === "1pm", JSON.stringify(gone?.slot));
+
+  const jr = acceptedOfferSlot(JR, JR_TODAY);
+  ck("Junior: the Wednesday 8pm pick survives the phone bubble", !!jr && jr.label === "8pm" && jr.date === "2026-11-04", JSON.stringify(jr));
 
   console.log("\n[1c] Backstop");
   const bad = "Sorry, that 10am on Sunday filled up since I mentioned it. I still have 3pm or 5pm that day, which works?";
@@ -135,6 +165,30 @@ async function main() {
     A("Para 900 sqft necesito medir en persona, la visita es gratis. Tengo el domingo a la 1pm o a las 3pm, cuál te queda mejor?"),
     U("no se todavia, te aviso el domingo como a las 10"),
   ], (r) => ack(r) && !/[¿¡]/.test(r));
+  // Junior Elie: slot + address with ZIP + phone → the visit is booked on Wednesday 04/11 at 8pm.
+  // Same notes as the Messenger webhook (today's date + the real schedule + typed address).
+  // Only meaningful before that Wednesday. Ozzi booked Junior by hand on 04/11
+  // 20:00 (Diego) half an hour later, so the line is put back as it stood at
+  // 14:04, when the 8pm was still open.
+  {
+    let avail = await getRealAvailabilityContext({ history: JR });
+    const wedLine = avail.split("\n").find((l) => l.includes("[2026-11-04]")) ?? "";
+    if (easternTodayStr() > "2026-11-03" || !wedLine) {
+      console.log(`  ⚠️ Junior LIVE skipped (today ${easternTodayStr()}, Wednesday line: ${wedLine || "absent"})`);
+    } else {
+      if (!/\b8pm\b/.test(wedLine)) avail = avail.replace(wedLine, wedLine.replace(/: fully booked$/, ":").replace(/:?\s*$/, (m) => (m.startsWith(":") ? ": 8pm" : ", 8pm")));
+      const typed = addressAlreadyTypedNote(JR);
+      const parts = [getEasternDateContext(), avail, ...(typed ? [typed] : [])];
+      const msgs = JR.map((m) => ({ ...m }));
+      msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: `${msgs[msgs.length - 1].content}\n\n[SYSTEM: ${parts.join("\n\n")}]` };
+      await live("Junior ('I'll call you after work my number 954.558.3108') → [BOOK] Wed 04/11 20:00", msgs, (r) => {
+        const tag = r.match(/\[BOOK:(\{[\s\S]*?\})\]/);
+        let d: { date?: string; time?: string; phone?: string; address?: string } | null = null;
+        try { d = tag ? JSON.parse(tag[1]) : null; } catch { d = null; }
+        return !!d && d.date === "2026-11-04" && d.time === "20:00" && /9545583108|954.?558.?3108/.test(d.phone ?? "") && /33024/.test(d.address ?? "") && !/message me then/i.test(r);
+      });
+    }
+  }
   // Regressions: a real pick still moves to the details ask, a counter still gets the real times.
   await live("REGRESSION real pick '1pm works' → asks for address/phone", [...GIO_BASE, U("1pm works", "2026-10-02T15:14")], (r) => /address|phone/i.test(r) && !/message me then/i.test(r));
   await live("REGRESSION counter '10am Sunday is possible?' → real times, not the deferral ack", [...GIO_BASE, U("10am Sunday is possible?", "2026-10-02T15:14")], (r) => /\d\s*(?:am|pm)/i.test(r) && !/message me then/i.test(r));

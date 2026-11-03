@@ -3761,6 +3761,138 @@ export function keepBookingThreadAfterPhone(history: Array<{ role: string; conte
   return text.replace(/\s+$/, "") + " " + tail;
 }
 
+// ─── A bathroom question must not end the FLOORING visit (2026-11-03) ───────
+// Lauren Ashley (IG 2026-11-03 11:09-11:13 ET): engineered wood, "Whole
+// house", we offered "today at 4pm or Wednesday at 5pm, which works?", then
+// "Ok. Do you also do tile in bathroom?" → "Yes we do bathrooms, those go
+// through Ozzi directly at (561) 674-8334." → "Do you do bathroom Reno's or
+// just flooring?" → the same Ozzi line → "Ok I'll text him. Thank you" →
+// silence. The whole-house floor visit was dropped on the floor. Owner rule:
+// the bathroom part goes to Ozzi's number, the FLOORING visit stays ours and
+// the conversation goes on until it is booked. Three things killed it: the
+// bathroom section says "two sentences, then stop", the anti-pressure strip
+// removes a second slot offer after an info question, and the client's
+// "ok, I'll text him, thanks" to a message of ours that asked nothing is a
+// closing (owner rule 26/08). This reads the conversation once for all three.
+//
+// The floor visit in progress: walking back over OUR messages, skipping the
+// bathroom asides (Ozzi's number, no slot, no details ask), the first one is an
+// open slot offer and/or a booking-details ask, no booking restatement, and the
+// client has not turned the visit down since.
+// Built on first use: BATH_WORD_SRC is declared further down this module.
+let bathMentionRe: RegExp | null = null;
+const BATH_MENTION = { test: (s: string) => (bathMentionRe ??= new RegExp(BATH_WORD_SRC, "i")).test(s) };
+const FLOOR_VISIT_DECLINED = /\b(?:not\s+interested|no\s+thanks?|no\s+thank\s+you|never\s*mind|nevermind|just\s+(?:the|my|a)\s+bath|only\s+(?:the|my|a)\s+bath|cancel|don'?t\s+(?:need|want)\s+(?:the|a|any)\s+(?:visit|floors?|flooring))\b|(?<![a-zà-ÿ])(?:no\s+me\s+interesa|ya\s+no|n[aã]o\s+(?:tenho\s+)?interesse|n[aã]o\s+quero|s[oó]\s+o\s+banheiro|solo\s+el\s+ba[ñn]o)(?![a-zà-ÿ])/i;
+const FLOOR_VISIT_TAIL_MARK = /for the floors|para los pisos|pros pisos|para os pisos/i;
+function isBathroomAside(text: string): boolean {
+  const t = (text || "").split(/\n\n?\[SYSTEM:/)[0];
+  return OZZI_DIRECT_NUMBER.test(t) && !containsSchedulingOffer(t) && !isAskingForBookingInfo(t) && !FLOOR_VISIT_TAIL_MARK.test(t);
+}
+export type FloorVisitAside = { mode: "question" | "ack"; slots: boolean; details: boolean };
+export function bathroomAsideInFloorBooking(history: Array<{ role: string; content: string }>): FloorVisitAside | null {
+  const h = history ?? [];
+  const last = h[h.length - 1];
+  if (!last || last.role !== "user") return null;
+  // A flooring job of its own stands (the bathroom standing is off) and no
+  // other referral / decline flow owns the conversation.
+  if (bathroomProjectStanding(h) || repairRequestActive(h) || unsupportedFloorStanding(h) || smallJobStanding(h) !== null || mobileHomeStanding(h) || portStLucieReferral(h) || outOfAreaZipStanding(h) !== null) return null;
+  const strip = (c: string) => normalizeSmartPunct(c ?? "").split(/\n\n?\[SYSTEM:/)[0].trim();
+  // The current, un-answered burst.
+  let i = h.length - 1;
+  const burst: string[] = [];
+  for (; i >= 0 && h[i].role !== "assistant"; i--) if (h[i].role === "user") burst.unshift(strip(h[i].content));
+  if (i < 0) return null;
+  const burstText = burst.join("\n");
+  const asksBathroom = BATH_MENTION.test(clientTextOnly(burstText)) || bathroomProjectSignal(burstText);
+  const ackOnly = !asksBathroom && burst.length > 0 && burst.every((b) => !b || isBareAck(b) || isPureClosing(b));
+  if (!asksBathroom && !ackOnly) return null;
+  // Walk back over our messages: skip the bathroom asides (each must answer a
+  // burst that mentioned the bathroom), stop on the floor visit message.
+  let asides = 0;
+  let pendingIdx = -1;
+  for (let j = i; j >= 0; j--) {
+    if (h[j].role !== "assistant") continue;
+    const a = strip(h[j].content);
+    if (isBookingRestatement(a) || CANNED_VISIT_LINE.test(a)) return null;
+    if (isBathroomAside(a)) {
+      let k = j - 1;
+      const answered: string[] = [];
+      for (; k >= 0 && h[k].role !== "assistant"; k--) if (h[k].role === "user") answered.push(strip(h[k].content));
+      const joined = answered.join("\n");
+      if (!(BATH_MENTION.test(clientTextOnly(joined)) || bathroomProjectSignal(joined))) return null;
+      if (++asides > 3) return null;
+      continue;
+    }
+    if (containsSchedulingOffer(a) || isAskingForBookingInfo(a)) { pendingIdx = j; break; }
+    return null;
+  }
+  if (pendingIdx < 0) return null;
+  // An "ok" only re-opens the visit right after the bathroom aside; an "ok"
+  // straight to the offer is the normal slot flow (acceptsOpenSlotOffer, …).
+  if (ackOnly && asides === 0) return null;
+  for (let j = pendingIdx + 1; j < h.length; j++) {
+    if (h[j].role === "user" && FLOOR_VISIT_DECLINED.test(strip(h[j].content))) return null;
+  }
+  const pending = strip(h[pendingIdx].content);
+  const slots = containsSchedulingOffer(pending);
+  const details = isAskingForBookingInfo(pending) || PENDING_DETAILS_WORDS.test(pending);
+  return { mode: asksBathroom ? "question" : "ack", slots, details };
+}
+
+export function floorVisitAfterBathroomNote(ctx: FloorVisitAside): string {
+  const what = ctx.slots && ctx.details
+    ? "re-offer the visit times for the floors and ask again for what is still missing to lock it in (the full address with the zip code and the best phone)"
+    : ctx.slots
+      ? "re-offer the visit times for the floors (the same times you offered if they are still open on the schedule, otherwise the soonest real ones from the schedule) and ask which one works"
+      : "ask again for what is still missing to lock in the floor visit (the full address with the zip code and the best phone)";
+  const first = ctx.mode === "question"
+    ? "1. Answer the bathroom part in ONE short sentence, in the client's language: yes, we do it, and bathroom quotes and appointments go through Ozzi directly at (561) 674-8334. Never a price, a visit, a time or [BOOK:...] for the bathroom itself."
+    : "1. The client already has Ozzi's number for the bathroom and just said ok / thanks / they will text him. Do NOT output [REACT_ONLY], do NOT repeat Ozzi's number, do NOT say goodbye. Start with one short friendly clause (\"Sounds good!\").";
+  return `CRITICAL, BATHROOM SIDE QUESTION WHILE THE FLOOR VISIT IS BEING SET UP (owner rule 2026-11-03):
+The client has a FLOORING project of their own in this conversation (the floors you were already setting up the free visit for). The bathroom goes to Ozzi directly, but the floor visit is still yours to book: the bathroom answer must NEVER end the conversation. This overrides "two short sentences, then stop" of the bathroom section, the pure closing rule and the do-not-push-twice rule for this message.
+${first}
+2. Then, in the SAME message, bring the floor visit back: ${what}. Name the project the way the client did (the whole house, the floors, the engineered wood).
+Example (bathroom question): "Yes, we do full bathroom remodels too, for that text Ozzi directly at (561) 674-8334. And for the whole house floors, I can still come today at 4pm or Wednesday at 5pm, which works?"
+Example (after "ok, I'll text him, thanks"): "Sounds good! And for the whole house floors, does Wednesday at 5pm still work for the free measure?"
+3. Two short sentences, the times only from the schedule, never a time that is not on it.`;
+}
+
+// Post-model net for the same moment: the reply carries no slot offer and no
+// details ask (or is [REACT_ONLY]) → the pending floor-visit question is
+// appended in the client's language. A [BOOK] is never touched.
+export function keepFloorVisitAfterBathroomAside(history: Array<{ role: string; content: string }>, text: string, lang: "en" | "es" | "pt"): string {
+  const ctx = bathroomAsideInFloorBooking(history);
+  if (!ctx) return text;
+  const t = text || "";
+  if (/\[BOOK:|\[NOTIFY_OWNER\]|\[CANCEL_BOOKING\]/i.test(t)) return t;
+  const reactOnly = !t.replace(/\[REACT_ONLY\]/gi, "").trim() || /\[REACT_ONLY\]/i.test(t);
+  if (!reactOnly && (containsSchedulingOffer(t) || isAskingForBookingInfo(t))) return t;
+  let tail: string;
+  if (ctx.slots && ctx.details) {
+    tail = lang === "pt" ? "E pros pisos, qual dos horários que te passei funciona melhor, e me passa o endereço completo com o zip code e o melhor telefone?"
+      : lang === "es" ? "Y para los pisos, cuál de los horarios que te pasé te queda mejor, y me pasas la dirección completa con el código postal y tu teléfono?"
+      : "And for the floors, which of the times I sent works best, and can I get the full address with the zip code and the best phone number?";
+  } else if (ctx.slots) {
+    tail = lang === "pt" ? "E pros pisos, ainda posso ir medir de graça, qual dos horários que te passei funciona melhor pra você?"
+      : lang === "es" ? "Y para los pisos, igual puedo ir a medir gratis, cuál de los horarios que te pasé te queda mejor?"
+      : "And for the floors, I can still come measure for free, which of the times I sent works best for you?";
+  } else {
+    tail = lang === "pt" ? "E pros pisos, pra deixar a visita marcada, me passa o endereço completo com o zip code e o melhor telefone?"
+      : lang === "es" ? "Y para los pisos, para dejar la visita lista, me pasas la dirección completa con el código postal y tu teléfono?"
+      : "And for the floors, to get the visit set, can I get the full address with the zip code and the best phone number?";
+  }
+  if (reactOnly) {
+    if (ctx.mode === "ack") {
+      const ok = lang === "pt" ? "Combinado!" : lang === "es" ? "Perfecto!" : "Sounds good!";
+      return ok + " " + tail;
+    }
+    return bathroomOzziDirectMessage(lang) + " " + tail;
+  }
+  let body = t.replace(/\s+$/, "");
+  if (ctx.mode === "question" && !OZZI_DIRECT_NUMBER.test(body)) body = bathroomOzziDirectMessage(lang) + " " + body;
+  return body + " " + tail;
+}
+
 // ─── Never CLAIM to be a human (2026-09-21) ─────────────────────────────────
 // The owner's tone rule says the client is told they are texting with the
 // OzziFloors team, and that is all it says. Asked "are you a real person or a
@@ -4957,6 +5089,9 @@ export function isPureClosingBurst(history: Array<{ role: string; content: strin
   // (name required since 2026-07-27).
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
   if (lastAssistant && isAskingForBookingInfo(lastAssistant.content)) return false;
+  // "Ok I'll text him. Thank you" to our bathroom line while the floor visit is
+  // still open (Lauren Ashley, IG 2026-11-03): the floor visit gets re-offered.
+  if (bathroomAsideInFloorBooking(history)?.mode === "ack") return false;
   // OUR last message offered clock times and the burst takes one ("6 works
   // perfect, thank you") → the answer to the offer, never a goodbye.
   if (lastAssistant) {
@@ -5068,6 +5203,9 @@ export function isAckClosingBurst(history: Array<{ role: string; content: string
     if (history[i].role === "assistant") { lastAsst = i; break; }
   }
   if (lastAsst === -1) return false;
+  // The ack to our bathroom line while the floor visit is still open is not
+  // the end (Lauren Ashley, IG 2026-11-03): the floor visit gets re-offered.
+  if (bathroomAsideInFloorBooking(history)?.mode === "ack") return false;
   if (!botAwaitsAnswer(history[lastAsst].content)) return true;
   // The client turn our last message answered: also a bare ack → stop the loop.
   let prevAcks = 0;
@@ -5206,6 +5344,11 @@ const REASONING_LEAK_SENTENCE = new RegExp(
     // "Today is Saturday August 29." é narração interna; "today, Monday, I have
     // 6pm open" é fala de cliente — o lookahead poupa a frase que oferece algo.
     /\btoday\s+is\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?![^.!?\n]*\b(?:open|available|have|works?|tengo|disponible|livre)\b)/.source,
+    // The CLIENT WILL ANSWER LATER note echoed back (deferred-reply-verify LIVE
+    // 02/11/2026): "That day and time is when THEY will message you, it is NOT a
+    // visit time they are asking for.] Of course, no problem, message me Sunday…".
+    /\bis\s+when\s+they\s+will\s+(?:message|answer|get\s+back|text|write|reply)\b/.source,
+    /\bit\s+is\s+not\s+a\s+visit\s+time\b|\bnot\s+a\s+visit\s+time\s+they\b/.source,
   ].join("|"),
   "i"
 );
@@ -5814,6 +5957,16 @@ export async function getAIResponse(
     dynamicSystem += `\n\n---\n\n${bathroomNote(smallJobReferralSent(messages))}`;
   }
 
+  // BATHROOM SIDE QUESTION while a FLOOR visit is being set up (Lauren Ashley,
+  // IG 2026-11-03): the bathroom goes to Ozzi's number, the floor visit stays
+  // on the table (re-offered in the same message, or after the client's "ok,
+  // I'll text him").
+  const floorVisitAside = bookingConfirmed ? null : bathroomAsideInFloorBooking(messages);
+  if (floorVisitAside) {
+    console.log(`[AI] bathroom side question (${floorVisitAside.mode}) while the floor visit is being set up — injecting the keep-the-visit block`);
+    dynamicSystem += `\n\n---\n\n${floorVisitAfterBathroomNote(floorVisitAside)}`;
+  }
+
   // TRAILER / MOBILE HOME standing (owner rules 2026-09-15 and 2026-10-31): a
   // trailer → the decline block; a mobile home → the Ozzi-direct block (we do
   // them, Ozzi handles them). Never a price, never a visit, never [BOOK].
@@ -6227,7 +6380,9 @@ export async function getAIResponse(
     // still strip the time ("a las 3pm"), leaving a dangling fragment like
     // "cuál te queda mejor?". So skip the whole mechanism for Spanish replies.
     const looksSpanish = /[ñáéíóú¿¡]|\b(?:tengo|mañana|hoy|hora|funciona|queda|puedo|disponible|sábado|domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|gracias|para|esta|este|qu[eé]|cu[aá]l|cu[aá]ndo|d[ií]a|cita|piso|precio)\b/i.test(cleaned);
-    if (!looksSpanish && !/\[BOOK:/i.test(cleaned) && antiPressureShouldFire(messages)) {
+    // A bathroom side question while the floor visit is being set up is the
+    // exception: re-offering the floor visit there IS the flow (2026-11-03).
+    if (!looksSpanish && !/\[BOOK:/i.test(cleaned) && !floorVisitAside && antiPressureShouldFire(messages)) {
       const stripped = stripSchedulingPush(cleaned);
       // Only apply the strip when something SUBSTANTIVE remains (>= 40 chars
       // of real text). If the whole reply was a scheduling push, KEEP the
@@ -6283,7 +6438,10 @@ export async function getAIResponse(
     // replays, 2026-09-14). The canned see-options intercept was skipped on
     // purpose (it pitches the free visit), so answer the ask here: website,
     // samples with Ozzi, and his number.
-    if (hardcoded && /ozzifloors\.company/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
+    // The see-options line lost the website link on 2026-11-02 (no links on any
+    // channel) and now carries the samples + Ozzi's number: keyed on either,
+    // or this net went dead (small-job-ozzi-verify [5j], 2026-11-03).
+    if (hardcoded && /ozzifloors\.company|\bsamples?\b|muestras|amostras/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
       console.warn("[AI] project under 400 sqft — photos/samples ask answered with the price-insist line; replaced with the website + samples line");
       cleaned = smallJobPhotosMessage(usersLang());
     }
@@ -6349,6 +6507,17 @@ export async function getAIResponse(
       const kept = keepBookingThreadAfterPhone(messages, cleaned, usersLang());
       if (kept !== cleaned) {
         console.warn("[AI] number-only reply while a visit is being set up — appended the pending booking question");
+        cleaned = kept;
+      }
+    }
+
+    // Bathroom side question / "ok, I'll text him" while the floor visit is
+    // being set up (Lauren Ashley, IG 2026-11-03): a reply without the floor
+    // visit (or a [REACT_ONLY]) gets the pending visit question.
+    if (floorVisitAside) {
+      const kept = keepFloorVisitAfterBathroomAside(messages, cleaned, usersLang());
+      if (kept !== cleaned) {
+        console.warn("[AI] bathroom side question dropped the floor visit — appended the pending visit question. Was: " + cleaned.replace(/\s+/g, " ").slice(0, 200));
         cleaned = kept;
       }
     }

@@ -2043,9 +2043,21 @@ const DEFER_VERB_PT = String.raw`te\s+(?:aviso|falo|digo|respondo|retorno|mando\
 const DEFER_WHEN = String.raw`(?:today|tonight|tomorrow|later|morning|afternoon|evening|weekend|week|sun|mon|tue|wed|thu|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday|around|by|at|before|after|\d{1,2}(?::\d{2})?\s*(?:am|pm)|hoy|manana|domingo|lunes|martes|miercoles|jueves|viernes|sabado|tarde|noche|luego|despues|amanha|hoje|segunda|terca|quarta|quinta|sexta|depois|mais\s+tarde|las?\s+\d|as\s+\d|como\s+a|tipo|por\s+volta)`;
 const DEFERRED_REPLY = new RegExp(String.raw`(?:${DEFER_VERB}|${DEFER_VERB_ES}|${DEFER_VERB_PT})(?![a-z])[^.!?\n]{0,30}?(?<![a-z])${DEFER_WHEN}(?![a-z])`, "i");
 const ACCEPTS_A_TIME = /(?<![a-z])(?:works?\s+(?:for\s+me|great|fine|perfect)|(?:that|it|this)\s+works|(?:will|would|should)\s+work|\d{1,2}\s*(?:am|pm)?\s+(?:works|is\s+(?:ok|okay|good|fine|perfect|great))|perfect|sounds\s+good|book\s+(?:it|me)|let'?s\s+do|i'?ll\s+take|that'?s\s+fine|is\s+fine|me\s+sirve|me\s+funciona|perfecto|dale|pode\s+ser|fechado|combinado|esta\s+bien)(?![a-z])/i;
+// "I'll call you after work my number 954.558.3108" (Junior Elie, FB 02/11/2026):
+// he had picked Wednesday 8pm and typed the address with the ZIP; the bubble
+// with the phone read as "I'll get back to you later", the visit was never
+// booked and he got "Of course, no problem, just message me then". A bubble that
+// hands over booking data (a phone number, or a street address with its ZIP) is
+// answering our details ask, whatever else it says: never a deferral.
+const PHONE_IN_TEXT = /(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)/;
+function carriesBookingData(raw: string): boolean {
+  if (PHONE_IN_TEXT.test(raw)) return true;
+  return !!extractZip(raw) && addressHasStreetNumber(raw);
+}
 export function isDeferredReply(text: string): boolean {
-  const t = deaccentLowerText(stripSystemNote(text || ""));
-  return DEFERRED_REPLY.test(t) && !ACCEPTS_A_TIME.test(t);
+  const raw = stripSystemNote(text || "");
+  const t = deaccentLowerText(raw);
+  return DEFERRED_REPLY.test(t) && !ACCEPTS_A_TIME.test(t) && !carriesBookingData(raw);
 }
 // The hours a bot message really puts on the table: a time it says is NOT
 // open ("10am on Sunday isn't open, but I have 1pm or 3pm") is not offered.
