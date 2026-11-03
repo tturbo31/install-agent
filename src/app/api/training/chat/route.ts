@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
     aiResponse = canonicalizeSiteLink(aiResponse);
     if (/\[SEND_IMAGES[^\]]*\]/i.test(aiResponse)) {
       aiResponse = aiResponse.replace(/\[SEND_IMAGES[^\]]*\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
-      if (!/ozzifloors\.company/i.test(aiResponse) && !OZZI_NUMBER_RE.test(aiResponse)) {
+      if (!/ozzifloors\.com/i.test(aiResponse) && !OZZI_NUMBER_RE.test(aiResponse)) {
         aiResponse += "\n\n" + SITE_LINE_OFF_IG.pt;
       }
     }

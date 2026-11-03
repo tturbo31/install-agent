@@ -5,7 +5,7 @@
  * está no link da nossa bio; e caso ele queira falar de financiamento, ele deve
  * entrar em contato com o Ozzi no número (561) 674-8334."
  *
- * Messenger e WhatsApp seguem iguais (site https://ozzifloors.company, link do
+ * Messenger e WhatsApp seguem iguais (site https://www.ozzifloors.com, link do
  * financiamento pela plataforma). Só o Instagram muda, em três camadas:
  *  1. PROMPT: o webhook do IG põe [INSTAGRAM CHANNEL: ...] na nota [SYSTEM:] da
  *     última bolha; o prompt fixo tem a exceção do Instagram no STEP 2 ("our
@@ -73,7 +73,7 @@ async function main() {
   ck("isInstagramChannel reads the note off a user turn", isInstagramChannel([{ role: "user", content: `hi\n\n[SYSTEM: TODAY x\n\n${IG_CHANNEL_NOTE}]` }]) && !isInstagramChannel([{ role: "user", content: "hi\n\n[SYSTEM: TODAY x]" }]));
 
   console.log("\n[1b] every link neutralized, per kind and language");
-  const site = neutralizeLinks("Sure, you can see all our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?");
+  const site = neutralizeLinks("Sure, you can see all our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit. Is it just one area or the whole house?");
   ck("site → 'on our website (link in our bio)'", site === "Sure, you can see all our floors on our website (link in our bio), and I bring all the samples to the free visit. Is it just one area or the whole house?", site);
   const finMid = neutralizeLinks("Yes, we offer financing. You can apply here: https://app.gethearth.com/partners/ozzifloors, it takes 2 minutes. Is it one area or the whole house?");
   ck("financing link: its sentence goes, Ozzi's line goes in before the closing question", finMid === "Yes, we offer financing. For financing, just call or text Ozzi at (561) 674-8334. Is it one area or the whole house?", finMid);
@@ -85,7 +85,7 @@ async function main() {
   ck("PT financing link (one sentence with the link) → the sentence goes, PT line before the closing question", finPt === "Para o financiamento, é só ligar ou mandar mensagem pro Ozzi no (561) 674-8334. É só uma área ou a casa toda?", finPt);
   const misspelt = neutralizeLinks("Apply at https://app.gerhearth.com/partners/ozzifloors today.");
   ck("misspelt hearth link is still the financing link", misspelt === IG_FINANCING_LINE.en, misspelt);
-  const both = neutralizeLinks("See our floors at https://ozzifloors.company. For financing apply at https://app.gethearth.com/partners/ozzifloors. One area or whole house?");
+  const both = neutralizeLinks("See our floors at https://www.ozzifloors.com. For financing apply at https://app.gethearth.com/partners/ozzifloors. One area or whole house?");
   ck("site + financing in one reply", both === "See our floors on our website (link in our bio). For financing, just call or text Ozzi at (561) 674-8334. One area or whole house?", both);
   const other = neutralizeLinks("Here is your contract to sign: https://ozzifloors.app/sign/3f43d3d2348e705ec21c77def0843c4d1f93ce77ee729a6b. Let me know once it's done.");
   ck("other link → dropped + 'Text Ozzi … he'll send it to you' (no 'Instagram is blocking' excuse)", other === "Here is your contract to sign. Let me know once it's done. Text Ozzi at (561) 674-8334 and he'll send it to you." && !/blocking/i.test(other), other);
@@ -118,13 +118,13 @@ async function main() {
 
   console.log("\n[1e] mentionsBioLink + the ai.ts site backstops accept it");
   ck("EN/ES/PT bio wording detected", mentionsBioLink("the link is in our bio") && mentionsBioLink("el link está en nuestra bio") && mentionsBioLink("o link está na nossa bio") && mentionsBioLink("our website (link in our bio)"));
-  ck("URL / 'biology' are not bio wording", !mentionsBioLink("see https://ozzifloors.company") && !mentionsBioLink("a link to biology"));
+  ck("URL / 'biology' are not bio wording", !mentionsBioLink("see https://www.ozzifloors.com") && !mentionsBioLink("a link to biology"));
   const igColor = "You can see all our floor colors on our website, the link is in our bio, and I bring the samples to the free visit. Is it one area or the whole house?";
   ck("withSiteForColor leaves the Instagram reply alone (no URL sentence added next to the bio line)", withSiteForColor(igColor, "en", { ig: true }) === igColor, withSiteForColor(igColor, "en", { ig: true }));
   const igWhich = "Check out our floors on our website, the link is in our bio, that floor is there with all the details, and I bring samples to the free visit too. Is it one area or the whole house?";
   ck("fixWhichFloorReply leaves the Instagram reply alone", fixWhichFloorReply(igWhich, "en", true, { ig: true }) === igWhich, fixWhichFloorReply(igWhich, "en", true, { ig: true }));
   const offIg = withSiteForColor("We have many colors. Is it one area or the whole house?", "en");
-  ck("withSiteForColor off Instagram adds the website link (Messenger / WhatsApp, owner rule 2026-11-03)", /https:\/\/ozzifloors\.company/.test(offIg), offIg);
+  ck("withSiteForColor off Instagram adds the website link (Messenger / WhatsApp, owner rule 2026-11-03)", /https:\/\/www\.ozzifloors\.com/.test(offIg), offIg);
 
   // ── 2. estático ───────────────────────────────────────────────────────────
   console.log("\n[2a] IG webhook: note in, neutralize + financing backstop out");
@@ -153,7 +153,7 @@ async function main() {
   ck("…with the bio wording in EN/ES/PT", /the link is in our bio/.test(SYSTEM_PROMPT) && /el link está en nuestra bio/.test(SYSTEM_PROMPT) && /o link está na nossa bio/.test(SYSTEM_PROMPT));
   ck("…color question on Instagram still gets the website (bio), never a link", /on Instagram NEVER write a link, say all our colors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("FINANCING: every channel → Ozzi's number, no link, no application details", /EVERY CHANNEL, SAME ANSWER \(owner rule 2026-10-17 for Instagram, extended to Messenger and WhatsApp on 2026-11-02\)[\s\S]{0,300}\(561\) 674-8334/.test(SYSTEM_PROMPT) && !/gethearth/.test(SYSTEM_PROMPT));
-  ck("the only URL in the prompt is our website (for Messenger / WhatsApp)", (SYSTEM_PROMPT.match(/https?:\/\/[^\s"'()]+/g) ?? []).every((u) => /^https:\/\/ozzifloors\.company[.,;:]?$/.test(u)) && !/gethearth/i.test(SYSTEM_PROMPT));
+  ck("the only URL in the prompt is our website (for Messenger / WhatsApp)", (SYSTEM_PROMPT.match(/https?:\/\/[^\s"'()]+/g) ?? []).every((u) => /^https:\/\/www\.ozzifloors\.com[.,;:]?$/.test(u)) && !/gethearth/i.test(SYSTEM_PROMPT));
   ck("(2a) Messenger / WhatsApp: the website link; Instagram: never a link (owner rule 2026-11-03)", /\(2a\) SEND \/ SHOW REMOTELY → our website \+ the samples at the free visit \(links by channel, owner rule 2026-11-03\)/.test(SYSTEM_PROMPT) && /on Instagram NEVER write a link, say our floors are on our website and the link is in our bio/.test(SYSTEM_PROMPT));
   ck("no inverted punctuation in the new Spanish examples", !/[¿¡]/.test(SYSTEM_PROMPT));
 

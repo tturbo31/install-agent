@@ -128,7 +128,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     // Regra do dono (2026-11-03): Messenger e WhatsApp voltam a mandar o link
     // do site; pedido de amostras continua com o número do Ozzi para ver antes
     // (02/11). Instagram (responseIg) segue SEM link nenhum.
-    response: "Claro! Você pode ver todos os nossos pisos em https://ozzifloors.company, e eu levo todas as amostras na visita grátis (se quiser ver antes, é só mandar mensagem pro Ozzi no (561) 674-8334). É só uma área ou a casa toda?",
+    response: "Claro! Você pode ver todos os nossos pisos em https://www.ozzifloors.com, e eu levo todas as amostras na visita grátis (se quiser ver antes, é só mandar mensagem pro Ozzi no (561) 674-8334). É só uma área ou a casa toda?",
     responseIg: "Claro! Nossos pisos estão no nosso site, o link está na nossa bio, e eu levo todas as amostras na visita grátis, ou manda mensagem pro Ozzi no (561) 674-8334 pra ver antes. É só uma área ou a casa toda?",
     skipIfSubstantive: true,
   },
@@ -163,7 +163,7 @@ const HARDCODED_RESPONSES: Array<{ id?: string; patterns: RegExp[]; response: st
     // again (it was off from 2026-11-02 to 2026-11-03); a samples request still
     // gets Ozzi's number to see them before (2026-11-02). Instagram
     // (responseIg) still never carries a link.
-    response: "Sure! You can see all our floors at https://ozzifloors.company, and I bring all the samples to the free visit (if you want to see them before that, just text Ozzi at (561) 674-8334). Is it just one area or the whole house?",
+    response: "Sure! You can see all our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit (if you want to see them before that, just text Ozzi at (561) 674-8334). Is it just one area or the whole house?",
     responseIg: "Sure! Our floors are on our website, the link is in our bio, and I bring all the samples to the free visit, or text Ozzi at (561) 674-8334 to see them before. Is it just one area or the whole house?",
     skipIfSubstantive: true,
   },
@@ -537,20 +537,22 @@ export async function classifyAdCreativeType(imageUrl: string): Promise<AdFloori
   }
 }
 
-// Our website (owner, 2026-09-22): the site moved from www.ozzifloors.com to
-// ozzifloors.company. Older assistant turns of ongoing conversations still
-// carry the old address, and the model tends to copy what it sees, so every
-// spelling of the old link (with or without https://, www., a trailing slash)
-// is rewritten to the canonical one before the reply ships. Emails
+// Our website: https://www.ozzifloors.com (owner, 2026-11-03: "voltamos a usar
+// o ozzifloors.com"; from 2026-09-22 to 2026-11-03 it was the .company domain,
+// which now redirects to www.ozzifloors.com). Older assistant turns of ongoing
+// conversations still carry the .company address, and the model tends to copy
+// what it sees, so every spelling of either domain (with or without https://,
+// www., a trailing slash) is rewritten to the canonical one before the reply
+// ships. Emails
 // (ozzifloors@gmail.com, ia@ozzifloors.com) and other subdomains
 // (go.ozzifloors.com, instagram.ozzifloors.com) are left untouched.
-export const SITE_URL = "https://ozzifloors.company";
+export const SITE_URL = "https://www.ozzifloors.com";
 const SITE_LINK_ANY_RE = /(?<![\w.@-])(?:https?:\/\/)?(?:www\.)?ozzifloors\.com(?:pany)?(?![\w-])/gi;
 export function canonicalizeSiteLink(text: string): string {
   if (!text || !/ozzifloors\.com/i.test(text)) return text;
   // Domain first (any scheme, www., old or new TLD), then drop a bare trailing
-  // slash ("…company/," → "…company,") while a real path stays untouched.
-  return text.replace(SITE_LINK_ANY_RE, SITE_URL).replace(/https:\/\/ozzifloors\.company\/(?![\w#?%-])/g, SITE_URL);
+  // slash ("…com/," → "…com,") while a real path stays untouched.
+  return text.replace(SITE_LINK_ANY_RE, SITE_URL).replace(/https:\/\/www\.ozzifloors\.com\/(?![\w#?%-])/g, SITE_URL);
 }
 
 // Final safety net: strip [SEND_IMAGES] tags even if the AI generates them
@@ -563,7 +565,7 @@ export function stripForbiddenTags(text: string): string {
   // The channel is unknown here (Instagram never carries a link): the samples
   // + Ozzi line is safe everywhere. getAIResponse already put the website in
   // on Messenger / WhatsApp (owner rule 2026-11-03).
-  if (!/ozzifloors\.company/i.test(cleaned) && !OZZI_HANDOFF_NUMBER_RE.test(cleaned) && !mentionsBioLink(cleaned)) {
+  if (!/ozzifloors\.com/i.test(cleaned) && !OZZI_HANDOFF_NUMBER_RE.test(cleaned) && !mentionsBioLink(cleaned)) {
     cleaned += "\n\n" + SAMPLES_HANDOFF_LINE.en;
   }
   console.log("[AI] [SEND_IMAGES] tag stripped at safety layer");
@@ -1347,7 +1349,7 @@ export function fixDeferredReply(text: string, lang: "en" | "es" | "pt" = "en"):
 // perguntando se eram a mesma cor; o cérebro do follow-up de orçamento tratava
 // cor como "detalhe de produto" e respondeu as duas vezes "ligue pro Ozzi".
 // Regra do dono: pergunta sobre a cor do piso SEMPRE recebe o site
-// https://ozzifloors.company para o cliente conferir lá. isFloorColorQuestion
+// https://www.ozzifloors.com para o cliente conferir lá. isFloorColorQuestion
 // detecta (EN/ES/PT, frase a frase: palavra de cor + "?" ou pedido; rejunte,
 // parede, pintura, rodapé e piso existente ficam de fora) e withSiteForColor
 // garante o link: a frase que mandava a cor pro telefone do Ozzi sai e a frase
@@ -1389,13 +1391,13 @@ export function isColorPhoneHandoffOnly(text: string): boolean {
  * 2026-10-03), and a color-to-phone sentence is swapped for it. `ig`
  * (Instagram): "our website, the link is in our bio", never a URL (owner rule
  * 2026-10-17, reaffirmed 2026-11-03). Off Instagram (Messenger / WhatsApp):
- * https://ozzifloors.company (owner rule 2026-11-03).
+ * https://www.ozzifloors.com (owner rule 2026-11-03).
  */
 export function withSiteForColor(text: string, lang: "en" | "es" | "pt" = "en", opts?: { ig?: boolean }): string {
   // A tag-only reply ([REACT_ONLY], a lone [NOTIFY_OWNER]) is a deliberate
   // silence, never a place to add a sentence.
   if (!stripProtectedTags(text || "").trim()) return text;
-  if (/ozzifloors\.company/i.test(text || "") || mentionsBioLink(text)) return text;
+  if (/ozzifloors\.com/i.test(text || "") || mentionsBioLink(text)) return text;
   const site = opts?.ig ? (COLOR_SITE[lang] ?? COLOR_SITE.en) : (COLOR_SITE_LINK[lang] ?? COLOR_SITE_LINK.en);
   return withTagsProtected(text, (prose) => placeSiteSentence(normalizeSmartPunct(prose).replace(COLOR_TO_PHONE, ""), site));
 }
@@ -1467,7 +1469,7 @@ export function isPureWhichFloorBurst(text: string): boolean {
 // No zip code up front on ANY channel (owner rule 2026-11-02).
 // `ig` (Instagram): our website, the link is in our bio, NEVER a URL (owner
 // rule 2026-10-17, reaffirmed 2026-11-03). `other` (Messenger / WhatsApp): the
-// website link https://ozzifloors.company again (owner rule 2026-11-03). The
+// website link https://www.ozzifloors.com again (owner rule 2026-11-03). The
 // forward step of the full shape is the one-area-or-whole-house question (the
 // zip code comes with the address).
 type WhichFloorShape = { full: string; site: string };
@@ -1523,7 +1525,7 @@ const AREA_QUESTION: Record<"en" | "es" | "pt", string> = {
  * swapped for the one-area-or-whole-house question, a guessed floor or a dodge
  * is dropped, and the reply gets the channel's way to see the floors: `ig`
  * (Instagram) "our website, the link is in our bio", never a URL; otherwise
- * (Messenger / WhatsApp) https://ozzifloors.company (owner rule 2026-11-03). The full shape (pure burst) is the canned
+ * (Messenger / WhatsApp) https://www.ozzifloors.com (owner rule 2026-11-03). The full shape (pure burst) is the canned
  * line of that channel. `noZip` is kept for callers and is always on now.
  */
 export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en", full = false, opts?: { noZip?: boolean; ig?: boolean }): string {
@@ -1534,7 +1536,7 @@ export function fixWhichFloorReply(text: string, lang: "en" | "es" | "pt" = "en"
   // Instagram: the bio wording (or a URL, neutralized downstream) already is the
   // website. Off Instagram: the website URL (owner rule 2026-11-03); a bio
   // wording there becomes the URL in neutralizeLinks (bioToSiteLink).
-  const hasWay = (s: string) => /ozzifloors\.company/i.test(s) || mentionsBioLink(s);
+  const hasWay = (s: string) => /ozzifloors\.com/i.test(s) || mentionsBioLink(s);
   return withTagsProtected(text, (prose0) => {
     let prose = prose0;
     {
@@ -6321,7 +6323,7 @@ export async function getAIResponse(
 
     // Website link (owner, 2026-09-22): any spelling of the old
     // www.ozzifloors.com the model copied from older turns becomes the
-    // canonical https://ozzifloors.company before anything else looks at it.
+    // canonical https://www.ozzifloors.com before anything else looks at it.
     cleaned = canonicalizeSiteLink(cleaned);
 
     // "What floor is that?" (dono, 03/10/2026): nunca chutar o piso; o site (o
@@ -6365,7 +6367,7 @@ export async function getAIResponse(
         if (!OZZI_HANDOFF_NUMBER_RE.test(cleaned) && !mentionsBioLink(cleaned)) {
           cleaned += "\n\n" + (SAMPLES_HANDOFF_LINE[usersLang()] ?? SAMPLES_HANDOFF_LINE.en);
         }
-      } else if (!/ozzifloors\.company/i.test(cleaned)) {
+      } else if (!/ozzifloors\.com/i.test(cleaned)) {
         cleaned += "\n\n" + (SITE_LINE_OFF_IG[usersLang()] ?? SITE_LINE_OFF_IG.en);
       }
       console.log("[AI v4] [SEND_IMAGES] tag stripped from response");
@@ -6451,7 +6453,7 @@ export async function getAIResponse(
     // The see-options line lost the website link on 2026-11-02 (no links on any
     // channel) and now carries the samples + Ozzi's number: keyed on either,
     // or this net went dead (small-job-ozzi-verify [5j], 2026-11-03).
-    if (hardcoded && /ozzifloors\.company|\bsamples?\b|muestras|amostras/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
+    if (hardcoded && /ozzifloors\.com|\bsamples?\b|muestras|amostras/i.test(hardcoded) && smallJobStanding(messages) !== null && SMALL_JOB_INSIST_RE.test(cleaned)) {
       console.warn("[AI] project under 400 sqft — photos/samples ask answered with the price-insist line; replaced with the website + samples line");
       cleaned = smallJobPhotosMessage(usersLang());
     }

@@ -194,7 +194,7 @@ function section5() {
   ck("a product link spells its flooring words out for the caption regex", !!hd && FLOORING_CAPTION_RE.test(hd.title), hd?.title ?? "");
   const fbRedirect = linkShareOf("https://l.facebook.com/l.php?u=https%3A%2F%2Fyoutube.com%2Flive%2FsjxNu&h=AT0")!;
   ck("Facebook redirect: the target URL's words are read", !!fbRedirect && /youtube com live/.test(fbRedirect.title), fbRedirect?.title ?? "");
-  ck("our own site pasted back → title carries 'Ozzi' (ad-reply path)", OUR_AD_CAPTION_RE.test(linkShareOf("https://ozzifloors.company")!.title));
+  ck("our own site pasted back → title carries 'Ozzi' (ad-reply path)", OUR_AD_CAPTION_RE.test(linkShareOf("https://www.ozzifloors.com")!.title));
   ck("linkShareOf(words) → null", linkShareOf("") === null && linkShareOf("how much?") === null);
 }
 
@@ -228,7 +228,7 @@ async function section7() {
   ck("bare Instagram reel link as text → unrelated (silence)", v1.kind === "unrelated" && v1.share.type === "link", JSON.stringify(v1));
   const v2 = await classifyFeedShare(T("https://youtube.com/watch?v=1TsVjvEkc4s&si=Y2kSNwio5kXH6O6x"), { ...ctxText, hasReferral: true }, platformSaysNo);
   ck("YouTube link + the thread's stale ad referral → still unrelated (a link is never an ad click)", v2.kind === "unrelated");
-  const v3 = await classifyFeedShare(T("https://ozzifloors.company"), ctxText, platformSaysNo);
+  const v3 = await classifyFeedShare(T("https://www.ozzifloors.com"), ctxText, platformSaysNo);
   ck("our site pasted back → ours (ad-reply path)", v3.kind === "ours" && v3.via === "caption");
   const v4 = await classifyFeedShare(T("https://www.homedepot.com/p/Lifeproof-Sterling-Oak-Luxury-Vinyl-Plank-Flooring/1234"), ctxText, platformSaysNo);
   ck("product link with flooring words → flooring note", v4.kind === "flooring" && isFlooringShareNote(v4.note));

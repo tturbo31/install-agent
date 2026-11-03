@@ -1,6 +1,6 @@
 // ─── Instagram link-sharing restriction (Graph error 508) ───────────────────
 // 2026-10-14 23:00 UTC: the reply "We actually do have a website at
-// https://ozzifloors.company, but thanks for reaching out" came back from
+// <our site at the time, the .company domain>, but thanks for reaching out" came back from
 // graph.instagram.com/me/messages as {code: 508, message: "Invalid message id"}
 // (subcode 2534122). In the same 48h, 215 link-free Instagram replies delivered
 // normally, two replies WITH the link delivered on 10/13, and the token checked
@@ -52,7 +52,7 @@
 // OWNER RULE 2026-11-03 — THE WEBSITE LINK IS BACK ON MESSENGER AND WHATSAPP,
 // INSTAGRAM STILL NEVER CARRIES A LINK: "no Messenger e no WhatsApp você está
 // liberado para enviar o link do site [...] no Instagram é PROIBIDO o envio de
-// link". Off Instagram our site (https://ozzifloors.company) goes out as
+// link". Off Instagram our site (https://www.ozzifloors.com) goes out as
 // written again (floors, photos, colors, the floor in a post, our website);
 // a samples request still also gets Ozzi's number (rule of 2026-11-02, not
 // revoked) and financing is still Ozzi's number with no application link on
@@ -91,7 +91,7 @@ export function isIgLinkBlockError(code: number | undefined | null): boolean {
 // Emails must never be read as links ("ozzifloors@gmail.com" ends in a domain).
 const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
 // Explicit URLs, plus bare domains on the TLDs we actually send (Instagram
-// linkifies "ozzifloors.company" on its own, so a bare domain is a link too).
+// linkifies "www.ozzifloors.com" on its own, so a bare domain is a link too).
 // The lookbehind keeps "@gmail.com" tails and path fragments out.
 const URL_RE =
   /(?:https?:\/\/|www\.)[^\s<>"'()]+|(?<![\w@./-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|company|net|org|app|co|io|us|info|biz|site|online|shop)(?:\/[^\s<>"'()]*)?(?![\w@])/gi;
@@ -174,9 +174,9 @@ export const SAMPLES_HANDOFF_LINE: Record<ReplyLang, string> = {
 // Our website on Messenger / WhatsApp (owner rule 2026-11-03: the link is
 // allowed again there, never on Instagram).
 export const SITE_LINE_OFF_IG: Record<ReplyLang, string> = {
-  en: "You can see all our floors at https://ozzifloors.company.",
-  es: "Puedes ver todos nuestros pisos en https://ozzifloors.company.",
-  pt: "Você pode ver todos os nossos pisos em https://ozzifloors.company.",
+  en: "You can see all our floors at https://www.ozzifloors.com.",
+  es: "Puedes ver todos nuestros pisos en https://www.ozzifloors.com.",
+  pt: "Você pode ver todos os nossos pisos em https://www.ozzifloors.com.",
 };
 
 function tidy(text: string): string {
@@ -282,7 +282,7 @@ export function neutralizeLinks(text: string, lang?: ReplyLang, opts?: { channel
 // The Instagram "link in our bio" wording, rewritten to the website link for
 // Messenger / WhatsApp (owner rule 2026-11-03). Text without it is returned
 // as is.
-const SITE_LINK = "https://ozzifloors.company";
+const SITE_LINK = "https://www.ozzifloors.com";
 const BIO_PAREN_RE = /\(\s*(?:the\s+|el\s+|o\s+)?(?:link|enlace)\s+(?:is\s+|est[aá]\s+)?(?:in|en|na)\s+(?:our|the|nuestra|la|nossa|a)?\s*bio\s*\)/gi;
 const BIO_CLAUSE_RE = /(?:,\s*)?(?:(?<![a-zà-ÿ])(?:and|y|e)\s+)?(?:(?<![a-zà-ÿ])(?:the|el|o)\s+)?(?<![a-zà-ÿ])(?:link|enlace)\s+(?:is\s+|est[aá]\s+|fica\s+)?(?:in|en|na|no)\s+(?:our|the|nuestra|la|nossa|a)?\s*bio(?![a-zà-ÿ])/gi;
 export function bioToSiteLink(text: string): string {

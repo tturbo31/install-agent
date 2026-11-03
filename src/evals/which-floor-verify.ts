@@ -1,7 +1,7 @@
 // "What floor is that?" (owner rule 2026-10-03): never guess a floor we cannot
 // see. The answer is the website (that floor is there with all the details of
 // the job), the samples at the free visit, and the zip code to move toward the
-// visit: "Check out our floors at https://ozzifloors.company, I bring samples to
+// visit: "Check out our floors at https://www.ozzifloors.com, I bring samples to
 // the free visit too. What's the zip code there?" (Sasha, IG 03/10, booked).
 // History: Yamit (IG 02/10) asked "What floor is that?" about a post (the
 // herringbone luxury vinyl Tuscany Oak, our best seller) and got "That's our
@@ -37,7 +37,7 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 const U = (content: string): ChatMessage => ({ role: "user", content });
 const A = (content: string): ChatMessage => ({ role: "assistant", content });
-const SITE = /https:\/\/ozzifloors\.company/;
+const SITE = /https:\/\/www\.ozzifloors\.com/;
 const GUESS = /stone finish|marble finish|stone look|marble look|that'?s our (?:luxury )?vinyl|wood finish/i;
 const ZIP_ASK = /zip code|c[oó]digo postal/i;
 
@@ -94,7 +94,7 @@ async function main() {
   const NUM = /674[\s.-]?8334/;
   const AREA_Q = /one area, or the entire house\?/;
   const full = fixWhichFloorReply(YAMIT_BAD, "en", true);
-  ck("full (Messenger/WA): exact owner shape (website + samples + area question), no guess, no zip", full === "Check out our floors at https://ozzifloors.company, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. Are you planning to do just one area, or the entire house?", full);
+  ck("full (Messenger/WA): exact owner shape (website + samples + area question), no guess, no zip", full === "Check out our floors at https://www.ozzifloors.com, that floor is there so you can see all the details of the job, and I bring samples to the free visit too. Are you planning to do just one area, or the entire house?", full);
   const fullIg = fixWhichFloorReply(YAMIT_BAD, "en", true, { ig: true });
   ck("full (Instagram): bio + samples + area question, no link, no zip, no guess", /link is in our bio/.test(fullIg) && AREA_Q.test(fullIg) && !SITE.test(fullIg) && !ZIP_ASK.test(fullIg) && !GUESS.test(fullIg), fullIg);
   const ins = fixWhichFloorReply(YAMIT_BAD, "en", false);
@@ -103,18 +103,18 @@ async function main() {
   const dodge = fixWhichFloorReply("I can't see which ad you came from on my side, but the floors we sell are luxury vinyl. Which one are you interested in?", "en", true);
   ck("dodge reply → full shape (website, no zip)", SITE.test(dodge) && AREA_Q.test(dodge) && !ZIP_ASK.test(dodge) && !/can'?t see/i.test(dodge), dodge);
   const es = fixWhichFloorReply("Ese es nuestro vinyl de lujo con acabado de piedra. Quieres agendar la visita?", "es", true);
-  ck("ES full", /Mira nuestros pisos en https:\/\/ozzifloors\.company/.test(es) && /muestras a la visita gratis/.test(es) && !/código postal/.test(es) && !/piedra/.test(es) && !/[¿¡]/.test(es), es);
-  const good = "Check out our floors at https://ozzifloors.company, and I bring samples to the free visit too. Is it one area or the whole house?";
+  ck("ES full", /Mira nuestros pisos en https:\/\/www\.ozzifloors\.com/.test(es) && /muestras a la visita gratis/.test(es) && !/código postal/.test(es) && !/piedra/.test(es) && !/[¿¡]/.test(es), es);
+  const good = "Check out our floors at https://www.ozzifloors.com, and I bring samples to the free visit too. Is it one area or the whole house?";
   ck("already right → untouched", fixWhichFloorReply(good, "en", true) === good);
   const goodIg = "Check out our floors on our website, the link is in our bio, and I bring samples to the free visit too. Is it one area or the whole house?";
   ck("already right (Instagram) → untouched", fixWhichFloorReply(goodIg, "en", true, { ig: true }) === goodIg);
-  const oldZip = fixWhichFloorReply("Check out our floors at https://ozzifloors.company, I bring samples to the free visit too. What's the zip code there?", "en", true);
+  const oldZip = fixWhichFloorReply("Check out our floors at https://www.ozzifloors.com, I bring samples to the free visit too. What's the zip code there?", "en", true);
   ck("the old URL + zip shape → no zip question left, area question instead", !ZIP_ASK.test(oldZip) && AREA_Q.test(oldZip), oldZip);
   const tag = fixWhichFloorReply("That's our luxury vinyl with a stone finish. [NOTIFY_OWNER]", "en", true);
   ck("tag survives at the end", /entire house\? \[NOTIFY_OWNER\]$/.test(tag), tag);
-  const stray = fixWhichFloorReply("Check out our floors at https://ozzifloors.company, I bring all the physical samples to the visit too. See you tomorrow at 9am!", "en", false);
+  const stray = fixWhichFloorReply("Check out our floors at https://www.ozzifloors.com, I bring all the physical samples to the visit too. See you tomorrow at 9am!", "en", false);
   ck("stray \"See you tomorrow at 9am!\" dropped (past visit)", SITE.test(stray) && !/see you/i.test(stray), stray);
-  const booked = fixWhichFloorReply("See our floors at https://ozzifloors.company. See you tomorrow at 9am! [BOOK:{\"date\":\"2026-10-04\"}]", "en", false);
+  const booked = fixWhichFloorReply("See our floors at https://www.ozzifloors.com. See you tomorrow at 9am! [BOOK:{\"date\":\"2026-10-04\"}]", "en", false);
   ck("with a [BOOK] the confirmation stays", /See you tomorrow/.test(booked), booked);
   ck("[REACT_ONLY] untouched", fixWhichFloorReply("[REACT_ONLY]", "en", true) === "[REACT_ONLY]");
 

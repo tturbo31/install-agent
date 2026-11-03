@@ -245,7 +245,7 @@ export async function reportIgLinkBlock(clientId: string, errorMsg: string): Pro
       `O que o bot faz sozinho: reenvia a mesma resposta sem o link. O site vira "nosso site (o link esta na bio)", financiamento vira "liga ou manda mensagem pro Ozzi no (561) 674-8334" e contrato vira "manda mensagem pro Ozzi no (561) 674-8334 que ele te envia".`,
       ``,
       `O que so voce pode fazer:`,
-      `1. Coloque https://ozzifloors.company como site na bio do @ozzi.floors (hoje a bio aponta para o ozzifloors.com antigo, que nao e mais nosso). O bot esta mandando os clientes para o link da bio.`,
+      `1. Confira se a bio do @ozzi.floors aponta para https://www.ozzifloors.com (o site voltou a ser o ozzifloors.com em 03/11/2026). O bot esta mandando os clientes para o link da bio.`,
       `2. No app do Instagram: Configuracoes > Status da conta > Recursos que voce nao pode usar. Se aparecer restricao de links, siga o que o Instagram pedir (costuma liberar em 1 a 3 dias).`,
       ``,
       `Cliente que recebeu a versao sem link: ${clientId}`,

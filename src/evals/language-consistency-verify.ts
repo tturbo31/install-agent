@@ -105,7 +105,7 @@ for (const r of [
   "I'd go with our luxury vinyl, it's 100% waterproof, scratch resistant and holds up great to heavy traffic. How many square feet is the space?",
   "Perfect, see you then! [BOOK:{\"name\":\"\",\"phone\":\"7865233118\",\"address\":\"1910 E Sunrise Blvd, Fort Lauderdale 33304\",\"date\":\"2026-10-16\",\"time\":\"1pm\"}]",
   "La promo de vinyl es $5 per sqft con el piso, la instalación y el quarter round incluidos. Es una sola área o toda la casa?",
-  "Puedes ver todos los colores en https://ozzifloors.company y en nuestro Instagram @ozzi.floors. Cuál es el zip code de la propiedad?",
+  "Puedes ver todos los colores en https://www.ozzifloors.com y en nuestro Instagram @ozzi.floors. Cuál es el zip code de la propiedad?",
   "Claro, puedes hablar con Ozzi directo al (561) 674-8334, él te confirma todo. [NOTIFY_OWNER]",
   OPENER_PT,
   OPENER_LANG_ES,

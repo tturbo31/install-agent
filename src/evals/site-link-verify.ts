@@ -20,6 +20,12 @@
  * 03/11/2026 (dono): Messenger e WhatsApp voltam a mandar o link do site
  * (de 02/11 a 03/11 não mandavam); no Instagram continua PROIBIDO (bio). As
  * conversas daqui não têm nota de canal = Messenger/WhatsApp → link NOVO.
+ *
+ * 03/11/2026, mais tarde (dono): "voltamos a usar o ozzifloors.com". O site
+ * oficial é https://www.ozzifloors.com (200; ozzifloors.com e o .company
+ * redirecionam para ele). Agora o NOVO é o www.ozzifloors.com e o APOSENTADO é
+ * o ozzifloors.company: toda grafia do .company (e do .com sem www) vira o
+ * https://www.ozzifloors.com.
  */
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
@@ -44,8 +50,8 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 const U = (c: string): ChatMessage => ({ role: "user", content: c });
 const A = (c: string): ChatMessage => ({ role: "assistant", content: c });
-const OLD_LINK = /https?:\/\/(?:www\.)?ozzifloors\.com(?!pany)|www\.ozzifloors\.com/i;
-const NEW_LINK = /https:\/\/ozzifloors\.company(?![\w-])/;
+const OLD_LINK = /ozzifloors\.company/i;
+const NEW_LINK = /https:\/\/www\.ozzifloors\.com(?![\w-])/;
 const NOTE = "\n\n[SYSTEM: TODAY: Tuesday, September 22, 2026 [2026-09-22].]";
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -58,7 +64,7 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 async function main() {
-  console.log("\n━━ 1. fonte: nenhum link antigo em texto que vai ao cliente (src/lib, src/app) ━━");
+  console.log("\n━━ 1. fonte: nenhum ozzifloors.company em texto que vai ao cliente (src/lib, src/app) ━━");
   const hits: string[] = [];
   for (const f of [...walk("src/lib"), ...walk("src/app")]) {
     const lines = readFileSync(f, "utf-8").split(/\r?\n/);
@@ -67,19 +73,21 @@ async function main() {
       if (OLD_LINK.test(l)) hits.push(`${f}:${i + 1}: ${l.trim().slice(0, 120)}`);
     });
   }
-  ck("zero ocorrências de www.ozzifloors.com / https://ozzifloors.com fora de comentários", hits.length === 0, hits.join(" | "));
-  ck("SITE_URL é exatamente https://ozzifloors.company", SITE_URL === "https://ozzifloors.company");
+  ck("zero ocorrências de ozzifloors.company fora de comentários", hits.length === 0, hits.join(" | "));
+  ck("SITE_URL é exatamente https://www.ozzifloors.com", SITE_URL === "https://www.ozzifloors.com");
 
   console.log("\n━━ 2. canonicalizeSiteLink ━━");
   const c = canonicalizeSiteLink;
-  ck("https://www.ozzifloors.com → novo", c("https://www.ozzifloors.com") === SITE_URL, c("https://www.ozzifloors.com"));
-  ck("com barra final e vírgula: '…ozzifloors.com/,' → '…company,'", c("See https://www.ozzifloors.com/, and I bring samples.") === `See ${SITE_URL}, and I bring samples.`, c("See https://www.ozzifloors.com/, and I bring samples."));
+  ck("https://ozzifloors.company → novo (www.ozzifloors.com)", c("https://ozzifloors.company") === SITE_URL, c("https://ozzifloors.company"));
+  ck("com barra final e vírgula: '…company/,' → '…com,'", c("See https://ozzifloors.company/, and I bring samples.") === `See ${SITE_URL}, and I bring samples.`, c("See https://ozzifloors.company/, and I bring samples."));
+  ck("sem esquema: 'at ozzifloors.company and' → link completo", c("Browse at ozzifloors.company and on Instagram") === `Browse at ${SITE_URL} and on Instagram`, c("Browse at ozzifloors.company and on Instagram"));
+  ck("sem www: 'https://ozzifloors.com' → com www", c("https://ozzifloors.com") === SITE_URL, c("https://ozzifloors.com"));
   ck("sem esquema: 'at ozzifloors.com and' → link completo", c("Browse at ozzifloors.com and on Instagram") === `Browse at ${SITE_URL} and on Instagram`, c("Browse at ozzifloors.com and on Instagram"));
-  ck("http:// e www: 'http://www.ozzifloors.com.' → novo + ponto", c("Site: http://www.ozzifloors.com.") === `Site: ${SITE_URL}.`, c("Site: http://www.ozzifloors.com."));
+  ck("http:// e www: 'http://www.ozzifloors.com.' → https + ponto", c("Site: http://www.ozzifloors.com.") === `Site: ${SITE_URL}.`, c("Site: http://www.ozzifloors.com."));
   ck("maiúsculas: 'OzziFloors.com' → novo", c("Go to OzziFloors.com") === `Go to ${SITE_URL}`, c("Go to OzziFloors.com"));
   ck("novo com barra final solta → sem barra", c(`${SITE_URL}/ ok`) === `${SITE_URL} ok`, c(`${SITE_URL}/ ok`));
   ck("novo já canônico fica igual", c(`See ${SITE_URL}, thanks`) === `See ${SITE_URL}, thanks`);
-  ck("caminho real preservado: …company/gallery", c("https://www.ozzifloors.com/gallery") === `${SITE_URL}/gallery`, c("https://www.ozzifloors.com/gallery"));
+  ck("caminho real preservado: …company/gallery → www…com/gallery", c("https://ozzifloors.company/gallery") === `${SITE_URL}/gallery`, c("https://ozzifloors.company/gallery"));
   ck("e-mail da empresa intacto (ozzifloors@gmail.com)", c("Email us at ozzifloors@gmail.com") === "Email us at ozzifloors@gmail.com");
   ck("e-mail do bot intacto (ia@ozzifloors.com)", c("ia@ozzifloors.com") === "ia@ozzifloors.com");
   ck("subdomínio da agenda intacto (ia-1@instagram.ozzifloors.com)", c("ia-1@instagram.ozzifloors.com") === "ia-1@instagram.ozzifloors.com");
@@ -92,9 +100,9 @@ async function main() {
   console.log("\n━━ 3. stripForbiddenTags (portão final dos webhooks) ━━");
   const s1 = stripForbiddenTags("Hi![SEND_IMAGES: a.jpg]");
   ck("[SEND_IMAGES] removido, linha das amostras + número do Ozzi, nenhum link (regra do dono 02/11/2026)", !/SEND_IMAGES/.test(s1) && !NEW_LINK.test(s1) && !OLD_LINK.test(s1) && /674[-\s]?8334/.test(s1), s1);
-  const s2 = stripForbiddenTags("See https://www.ozzifloors.com [SEND_IMAGES: a.jpg]");
-  ck("link antigo + tag → UM link novo, nenhum antigo", (s2.match(/ozzifloors\.company/g) ?? []).length === 1 && !OLD_LINK.test(s2), s2);
-  const s3 = stripForbiddenTags("You can see our floors at https://www.ozzifloors.com, and I bring the samples.");
+  const s2 = stripForbiddenTags("See https://ozzifloors.company [SEND_IMAGES: a.jpg]");
+  ck("link aposentado + tag → UM link novo, nenhum .company", (s2.match(/www\.ozzifloors\.com/g) ?? []).length === 1 && !OLD_LINK.test(s2), s2);
+  const s3 = stripForbiddenTags("You can see our floors at https://ozzifloors.company, and I bring the samples.");
   ck("sem tag: ainda canonicaliza o link antigo", s3 === `You can see our floors at ${SITE_URL}, and I bring the samples.`, s3);
   ck("texto comum sem link: identidade", stripForbiddenTags("Monday at 9am or 11am?") === "Monday at 9am or 11am?");
 
@@ -106,7 +114,7 @@ async function main() {
 
   console.log("\n━━ 5. SYSTEM_PROMPT ━━");
   ck("ensina o link novo (Messenger/WhatsApp, regra do dono 03/11/2026)", (SYSTEM_PROMPT.match(new RegExp(SITE_URL.replace(/[.\/]/g, "\\$&"), "g")) ?? []).length >= 3);
-  ck("nenhum link antigo (www.ozzifloors.com / https://ozzifloors.com)", !OLD_LINK.test(SYSTEM_PROMPT));
+  ck("nenhum ozzifloors.company no prompt", !OLD_LINK.test(SYSTEM_PROMPT));
   ck("links por canal: Instagram proibido, Messenger/WhatsApp só o site", /LINKS BY CHANNEL \(owner rule 2026-11-03/.test(SYSTEM_PROMPT) && /INSTAGRAM, NO LINKS/.test(SYSTEM_PROMPT) && !/NO LINKS ON ANY CHANNEL/.test(SYSTEM_PROMPT));
 
   console.log("\n━━ 6. respostas prontas (puro, 0 tokens) ━━");
@@ -127,7 +135,7 @@ async function main() {
     U("Hi, I'm interested in vinyl flooring for my living room"),
     A("Great, our vinyl promo is $5 per sqft and that already includes the floor, the installation and the quarter round. Is it just one area or the whole house?"),
     U("just the living room, around 450 sqft. can you send me pictures?"),
-    A("Sure, you can see our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit. For 450 sqft that comes to about $2,250 all included. Want me to set up the free visit?"),
+    A("Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. For 450 sqft that comes to about $2,250 all included. Want me to set up the free visit?"),
     U("that link doesn't open for me, can you send it again?" + NOTE),
   ];
   for (let i = 1; i <= 3; i++) {

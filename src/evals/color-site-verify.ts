@@ -1,5 +1,5 @@
 // Floor color = the website (owner rule 2026-10-03): whenever the client asks
-// about the color of the floor, the reply carries https://ozzifloors.company so
+// about the color of the floor, the reply carries https://www.ozzifloors.com so
 // they can check the colors there.
 // History: Ariadna (WA 30/09, quote of $5,700 already given) asked to see the
 // vinyl colors and sent photos from our Facebook asking whether they were the
@@ -38,7 +38,7 @@ function ck(name: string, cond: boolean, detail = "") {
 }
 const U = (content: string): ChatMessage => ({ role: "user", content });
 const A = (content: string): ChatMessage => ({ role: "assistant", content });
-const SITE = /https:\/\/ozzifloors\.company/;
+const SITE = /https:\/\/www\.ozzifloors\.com/;
 const PHONE = /674.?8334/;
 
 async function main() {
@@ -94,7 +94,7 @@ async function main() {
   const f3 = withSiteForColor("Claro, lo vemos en la visita. [NOTIFY_OWNER]", "es");
   ck("ES + tag kept", SITE.test(f3) && /colores/.test(f3) && /\[NOTIFY_OWNER\]$/.test(f3), f3);
   ck("[REACT_ONLY] stays untouched", withSiteForColor("[REACT_ONLY]", "en") === "[REACT_ONLY]");
-  ck("reply that already has the website is untouched", withSiteForColor("See them at https://ozzifloors.company. One area or the whole house?") === "See them at https://ozzifloors.company. One area or the whole house?");
+  ck("reply that already has the website is untouched", withSiteForColor("See them at https://www.ozzifloors.com. One area or the whole house?") === "See them at https://www.ozzifloors.com. One area or the whole house?");
   const mixed = "Your quote total is $5,700. For samples and color options, the best is to reach Ozzi directly at (561) 674-8334.";
   ck("mixed reply is NOT color-only", !isColorPhoneHandoffOnly(mixed));
   const f4 = withSiteForColor(mixed, "en");

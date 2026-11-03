@@ -1,6 +1,6 @@
 // Verifies the Instagram link-block handling (Graph 508 "Invalid message id",
 // 2026-10-14): the reply "We actually do have a website at
-// https://ozzifloors.company, …" was refused by Instagram while 215 link-free
+// https://www.ozzifloors.com, …" was refused by Instagram while 215 link-free
 // replies delivered the same day and the token was valid. The siren told the
 // owner to mint a new token; he did; nothing changed. Pins:
 //   1. the text policy: links detected, neutralized per language, emails and
@@ -31,7 +31,7 @@ function main() {
   console.log("\n[1] link detection");
   ck("508 is the link-block code", isIgLinkBlockError(508) && IG_LINK_BLOCK_CODE === 508);
   ck("190 / 10 / 551 are not", !isIgLinkBlockError(190) && !isIgLinkBlockError(10) && !isIgLinkBlockError(551) && !isIgLinkBlockError(undefined));
-  ck("https link detected", containsLink("See https://ozzifloors.company for colors"));
+  ck("https link detected", containsLink("See https://www.ozzifloors.com for colors"));
   ck("www link detected", containsLink("Our site is www.ozzifloors.com"));
   ck("bare domain detected (Instagram linkifies it)", containsLink("Check ozzifloors.company for colors"));
   ck("financing link detected", containsLink("Apply here: https://app.gethearth.com/partners/ozzifloors"));
@@ -40,27 +40,27 @@ function main() {
   ck("plain reply unchanged", neutralizeLinks("Hi, our vinyl promo includes the floor, the installation and the quarter round.") === "Hi, our vinyl promo includes the floor, the installation and the quarter round.");
 
   console.log("\n[1b] language of the reply");
-  ck("EN", replyLang("Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit.") === "en");
-  ck("ES", replyLang("Puedes ver nuestros pisos en https://ozzifloors.company, y Ozzi lleva todas las muestras cuando se reúne contigo.") === "es");
-  ck("PT", replyLang("Claro, você pode ver nossos pisos em https://ozzifloors.company, e eu levo todas as amostras na visita grátis.") === "pt");
+  ck("EN", replyLang("Sure, you can see our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit.") === "en");
+  ck("ES", replyLang("Puedes ver nuestros pisos en https://www.ozzifloors.com, y Ozzi lleva todas las muestras cuando se reúne contigo.") === "es");
+  ck("PT", replyLang("Claro, você pode ver nossos pisos em https://www.ozzifloors.com, e eu levo todas as amostras na visita grátis.") === "pt");
 
   console.log("\n[1c] our site → link in our bio (same sentence, same language)");
-  const en1 = neutralizeLinks("Sure, you can see our floors at https://ozzifloors.company, and I bring all the samples to the free visit. Is it just one area or the whole house?");
+  const en1 = neutralizeLinks("Sure, you can see our floors at https://www.ozzifloors.com, and I bring all the samples to the free visit. Is it just one area or the whole house?");
   ck("EN 'at URL' → 'on our website (link in our bio)'", en1 === "Sure, you can see our floors on our website (link in our bio), and I bring all the samples to the free visit. Is it just one area or the whole house?", en1);
-  const en2 = neutralizeLinks("We actually do have a website at https://ozzifloors.company, but thanks for reaching out.");
+  const en2 = neutralizeLinks("We actually do have a website at https://www.ozzifloors.com, but thanks for reaching out.");
   ck("EN 'website at URL' → 'website (link in our bio)' (the 2026-10-14 reply)", en2 === "We actually do have a website (link in our bio), but thanks for reaching out.", en2);
-  const en3 = neutralizeLinks("You can see all our colors here: https://ozzifloors.company/gallery");
+  const en3 = neutralizeLinks("You can see all our colors here: https://www.ozzifloors.com/gallery");
   ck("EN 'here: URL/path' → 'on our website (link in our bio)'", en3 === "You can see all our colors on our website (link in our bio)", en3);
   const en4 = neutralizeLinks("Check out ozzifloors.company for all the colors, and text me at (561) 674-8334.");
   ck("EN bare domain", en4 === "Check out our website (link in our bio) for all the colors, and text me at (561) 674-8334.", en4);
-  const es1 = neutralizeLinks("Puedes ver nuestros pisos en https://ozzifloors.company, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.");
+  const es1 = neutralizeLinks("Puedes ver nuestros pisos en https://www.ozzifloors.com, y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.");
   ck("ES 'en URL' → 'en nuestra página web (el link está en nuestra bio)'", es1 === "Puedes ver nuestros pisos en nuestra página web (el link está en nuestra bio), y Ozzi lleva todas las muestras cuando se reúne contigo. Puedes contactarlo al (561) 674-8334.", es1);
-  const es2 = neutralizeLinks("Nuestra página web es https://ozzifloors.company, ahí están todos los colores.");
+  const es2 = neutralizeLinks("Nuestra página web es https://www.ozzifloors.com, ahí están todos los colores.");
   ck("ES 'página web es URL'", es2 === "Nuestra página web (el link está en nuestra bio), ahí están todos los colores.", es2);
-  const pt1 = neutralizeLinks("Claro, você pode ver nossos pisos em https://ozzifloors.company, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?");
+  const pt1 = neutralizeLinks("Claro, você pode ver nossos pisos em https://www.ozzifloors.com, e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?");
   ck("PT 'em URL' → 'no nosso site (o link está na nossa bio)'", pt1 === "Claro, você pode ver nossos pisos no nosso site (o link está na nossa bio), e eu levo todas as amostras na visita grátis. É só uma área ou a casa toda?", pt1);
   ck("old www.ozzifloors.com is our site too", neutralizeLinks("Our website is www.ozzifloors.com and the samples come to the visit.") === "Our website (link in our bio) and the samples come to the visit.");
-  ck("URL-only reply", neutralizeLinks("https://ozzifloors.company") === "our website (link in our bio)");
+  ck("URL-only reply", neutralizeLinks("https://www.ozzifloors.com") === "our website (link in our bio)");
   for (const out of [en1, en2, en3, en4, es1, es2, pt1]) ck("result carries no link", !containsLink(out), out);
   ck("no inverted punctuation in the Spanish fallbacks", !/[¿¡]/.test(es1 + es2 + neutralizeLinks("Aplica aquí: https://app.gethearth.com/partners/ozzifloors")));
 
@@ -71,7 +71,7 @@ function main() {
   ck("ES financing link → Ozzi's number", /escríbele a Ozzi al \(561\) 674-8334/.test(finEs) && !containsLink(finEs), finEs);
   const contract = neutralizeLinks("Here is your contract to sign: https://ozzifloors.app/sign/3f43d3d2348e705ec21c77def0843c4d1f93ce77ee729a6b. Let me know once it's done.");
   ck("EN contract link → owner line, rest of the reply kept", contract === "Here is your contract to sign. Let me know once it's done. Text Ozzi at (561) 674-8334 and he'll send it to you.", contract);
-  const withEmail = neutralizeLinks("Send the plans to ozzifloors@gmail.com and see the colors at https://ozzifloors.company");
+  const withEmail = neutralizeLinks("Send the plans to ozzifloors@gmail.com and see the colors at https://www.ozzifloors.com");
   ck("email survives the rewrite", withEmail.includes("ozzifloors@gmail.com") && !containsLink(withEmail), withEmail);
 
   // ── 2. the send ───────────────────────────────────────────────────────────
