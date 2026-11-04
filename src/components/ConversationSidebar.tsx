@@ -13,6 +13,7 @@ import {
   waPhoneDigits,
   formatPhone,
   type Channel,
+  type ListTab,
 } from "@/lib/channel";
 import {
   parseSearchQuery,
@@ -164,6 +165,14 @@ interface Props {
   selectedId: string | null;
   onSelect: (conv: ConversationWithLastMessage) => void;
   unreadMap?: Record<string, number>;
+  /** Aba atual: um canal ou "paused" (a lista vem do servidor, uma página por vez). */
+  tab: ListTab;
+  onTabChange: (tab: ListTab) => void;
+  /** Total REAL de cada aba no banco (não só o que já foi carregado). */
+  counts: Partial<Record<ListTab, number | null>>;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }
 
 type Row = { conv: ConversationWithLastMessage; matches: SearchMatch[]; score: number };
@@ -175,21 +184,24 @@ export default function ConversationSidebar({
   selectedId,
   onSelect,
   unreadMap = {},
+  tab,
+  onTabChange,
+  counts,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: Props) {
-  const [tab, setTab] = useState<Channel>("instagram");
   const [query, setQuery] = useState("");
 
   const parsed = parseSearchQuery(query);
   const searching = parsed.mode !== "none";
   const server = useConversationSearch(query);
   const loaded = conversations ?? [];
-
-  const counts: Record<Channel, number> = { instagram: 0, facebook: 0, whatsapp: 0 };
-  for (const c of loaded) counts[getChannel(c.igsid)]++;
+  const pausedCount = counts.paused ?? null;
 
   let rows: Row[];
   if (!searching) {
-    rows = loaded.filter((c) => getChannel(c.igsid) === tab).map((conv) => ({ conv, matches: [], score: 0 }));
+    rows = loaded.map((conv) => ({ conv, matches: [], score: 0 }));
   } else {
     const map = new Map<string, Row>();
     for (const conv of loaded) {
@@ -271,18 +283,21 @@ export default function ConversationSidebar({
         )}
       </div>
 
-      {/* Abas por canal — somem na busca, que cobre todos os canais */}
+      {/* Abas por canal + "Pausadas" — somem na busca, que cobre todos os canais.
+          Os números são o total no banco (antes contavam só o que tinha
+          carregado, e a lista parava em 1.000 conversas). */}
       {!searching && (
         <div role="tablist" aria-label="Canal" className="flex shrink-0 gap-1 px-3 pb-2">
           {CHANNELS.map((ch) => {
             const active = tab === ch;
+            const n = counts[ch];
             return (
               <button
                 key={ch}
                 role="tab"
                 aria-selected={active}
-                title={CHANNEL_LABEL[ch]}
-                onClick={() => setTab(ch)}
+                title={typeof n === "number" ? `${CHANNEL_LABEL[ch]}: ${n.toLocaleString("pt-BR")} conversas` : CHANNEL_LABEL[ch]}
+                onClick={() => onTabChange(ch)}
                 className={`flex-1 min-w-0 h-9 flex items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
                   active
                     ? "bg-accent/[.08] text-ink ring-1 ring-inset ring-accent/20"
@@ -290,13 +305,32 @@ export default function ConversationSidebar({
                 }`}
               >
                 <ChannelIcon channel={ch} className={`w-4 h-4 shrink-0 ${active ? CHANNEL_TINT[ch].text : ""}`} />
-                <span className="hidden sm:inline lg:hidden xl:inline truncate">{CHANNEL_LABEL[ch]}</span>
-                {counts[ch] > 0 && (
-                  <span className={`tabular-nums text-[11px] leading-none ${active ? "text-ink-2" : "text-muted"}`}>{counts[ch]}</span>
+                {/* With the real totals (4.272, 8.818…) and the Pausadas tab, the
+                    names only fit when the list is full width (sm to lg); in the side column the icon + title say it. */}
+                <span className="hidden sm:inline lg:hidden truncate">{CHANNEL_LABEL[ch]}</span>
+                {typeof n === "number" && n > 0 && (
+                  <span className={`tabular-nums text-[11px] leading-none ${active ? "text-ink-2" : "text-muted"}`}>{n.toLocaleString("pt-BR")}</span>
                 )}
               </button>
             );
           })}
+          <button
+            role="tab"
+            aria-selected={tab === "paused"}
+            title="Conversas com a IA pausada (atendimento manual), de qualquer data"
+            onClick={() => onTabChange("paused")}
+            className={`shrink-0 h-9 px-2.5 flex items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+              tab === "paused"
+                ? "bg-warn/10 text-warn ring-1 ring-inset ring-warn/25"
+                : "text-muted hover:bg-soft hover:text-ink-2"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0" aria-hidden />
+            <span className="hidden sm:inline lg:hidden xl:inline">Pausadas</span>
+            {typeof pausedCount === "number" && (
+              <span className="tabular-nums text-[11px] leading-none">{pausedCount}</span>
+            )}
+          </button>
         </div>
       )}
 
@@ -316,19 +350,25 @@ export default function ConversationSidebar({
         {conversations !== null && rows.length === 0 && (
           <div className="px-6 py-12 text-center">
             <p className="text-ink-2 text-[14px] font-medium">
-              {searching ? `Nenhum cliente com “${parsed.raw}”` : `Nenhuma conversa no ${CHANNEL_LABEL[tab]} ainda`}
+              {searching
+                ? `Nenhum cliente com “${parsed.raw}”`
+                : tab === "paused"
+                  ? "Nenhuma conversa com a IA pausada"
+                  : `Nenhuma conversa no ${CHANNEL_LABEL[tab]} ainda`}
             </p>
             <p className="text-muted text-[13px] mt-1.5 leading-relaxed">
               {searching
                 ? server.status === "loading"
                   ? "Conferindo o histórico de mensagens e a agenda…"
                   : "Tente só os 4 últimos dígitos do telefone, o número da casa ou o @ do perfil."
-                : "As conversas aparecem aqui assim que um cliente mandar mensagem."}
+                : tab === "paused"
+                  ? "A IA está respondendo em todas as conversas."
+                  : "As conversas aparecem aqui assim que um cliente mandar mensagem."}
             </p>
           </div>
         )}
 
-        <ul data-list="conversations" aria-label={searching ? "Resultados da busca" : `Conversas no ${CHANNEL_LABEL[tab]}`} className="space-y-px">
+        <ul data-list="conversations" aria-label={searching ? "Resultados da busca" : tab === "paused" ? "Conversas com a IA pausada" : `Conversas no ${CHANNEL_LABEL[tab]}`} className="space-y-px">
         {rows.map(({ conv, matches }) => {
           const isSelected = conv.id === selectedId;
           const channel = getChannel(conv.igsid);
@@ -345,7 +385,7 @@ export default function ConversationSidebar({
                 isSelected ? "bg-accent/[.07] ring-1 ring-inset ring-accent/20" : "hover:bg-soft/70 active:bg-soft"
               }`}
             >
-              <Avatar conv={conv} channel={channel} showChannel={searching} />
+              <Avatar conv={conv} channel={channel} showChannel={searching || tab === "paused"} />
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline justify-between gap-2">
@@ -382,6 +422,25 @@ export default function ConversationSidebar({
           );
         })}
         </ul>
+
+        {/* Mais antigas: a lista vem em páginas de 200, até o fim do histórico */}
+        {!searching && hasMore && rows.length > 0 && (
+          <div className="px-2 pt-2 pb-1">
+            <button
+              type="button"
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="w-full h-9 rounded-lg border border-line bg-card hover:bg-soft text-[13px] font-medium text-ink-2 transition-colors disabled:opacity-60"
+            >
+              {loadingMore ? "Carregando…" : "Carregar conversas mais antigas"}
+            </button>
+            {typeof counts[tab] === "number" && (
+              <p className="text-center text-[11px] text-muted mt-1.5 tabular-nums">
+                {rows.length.toLocaleString("pt-BR")} de {(counts[tab] as number).toLocaleString("pt-BR")}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );

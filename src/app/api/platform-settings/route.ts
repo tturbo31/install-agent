@@ -20,13 +20,19 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "platform and paused required" }, { status: 400 });
   }
 
+  if (!["instagram", "facebook", "whatsapp"].includes(platform)) {
+    return NextResponse.json({ error: "canal inválido" }, { status: 400 });
+  }
   const { data, error } = await supabaseAdmin
     .from("platform_settings")
     .update({ paused })
     .eq("platform", platform)
-    .select()
-    .single();
+    .select("platform, paused")
+    .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data) return NextResponse.json({ error: `canal "${platform}" não encontrado` }, { status: 404 });
+  // Confirmação: o painel mostra o estado que o banco devolveu, não o pedido.
+  if (data.paused !== paused) return NextResponse.json({ error: "o banco não gravou a mudança", ...data }, { status: 409 });
   return NextResponse.json(data);
 }

@@ -6,6 +6,9 @@ export type Channel = "instagram" | "facebook" | "whatsapp";
 
 export const CHANNELS: Channel[] = ["instagram", "facebook", "whatsapp"];
 
+/** Abas da lista do painel: um canal, ou só as conversas com a IA pausada. */
+export type ListTab = Channel | "paused";
+
 export const CHANNEL_LABEL: Record<Channel, string> = {
   instagram: "Instagram",
   facebook: "Messenger",

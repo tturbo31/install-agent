@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { ConversationWithLastMessage, Message } from "@/lib/types";
-import { CHANNELS, CHANNEL_LABEL, type Channel } from "@/lib/channel";
+import { CHANNELS, CHANNEL_LABEL, type Channel, type ListTab } from "@/lib/channel";
 import ChannelIcon from "@/components/ChannelIcon";
 import ConversationSidebar from "@/components/ConversationSidebar";
 import ChatHeader from "@/components/ChatHeader";
@@ -37,21 +37,42 @@ function playNotification() {
   } catch { /* ignore audio errors */ }
 }
 
+// Lista paginada (04/11/2026): a rota devolve uma página por aba. Antes o
+// painel pedia TODAS as conversas de uma vez e o Supabase cortava em 1.000
+// (de 15.374): tudo sem atividade desde 29/10 sumia da lista ("China lavoile").
+const PAGE = 200;
+const MAX_REFRESH = 500;
+type ListResponse = {
+  conversations: ConversationWithLastMessage[];
+  hasMore: boolean;
+  counts: Partial<Record<ListTab, number | null>>;
+};
+
+type Toast = { text: string; tone: "ok" | "error" };
+
 export default function Dashboard() {
   // null = primeira carga ainda não chegou (a lista mostra esqueleto).
   const [conversations, setConversations] = useState<ConversationWithLastMessage[] | null>(null);
+  const [listTab, setListTab] = useState<ListTab>("instagram");
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [counts, setCounts] = useState<Partial<Record<ListTab, number | null>>>({});
   const [listError, setListError] = useState<string | null>(null);
   const [selectedConv, setSelectedConv] = useState<ConversationWithLastMessage | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [isTogglingMode, setIsTogglingMode] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
   const [activeTab, setActiveTab] = useState<"inbox" | "simulator">("inbox");
   const [live, setLive] = useState(false);
   const selectedConvRef = useRef<string | null>(null);
   const loadSeq = useRef(0);
+  const listTabRef = useRef<ListTab>("instagram");
+  const loadedCountRef = useRef(0);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [platformPaused, setPlatformPaused] = useState<Record<Channel, boolean>>({
     instagram: false,
     facebook: false,
@@ -59,19 +80,90 @@ export default function Dashboard() {
   });
   const [togglingPlatform, setTogglingPlatform] = useState<Channel | null>(null);
 
+  const showToast = useCallback((text: string, tone: Toast["tone"] = "ok") => {
+    setToast({ text, tone });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), tone === "error" ? 9000 : 4500);
+  }, []);
+
+  // A conversa aberta acompanha o banco: toda vez que uma versão mais nova
+  // chega (lista recarregada, tempo real, releitura), o cabeçalho e o aviso
+  // "IA pausada" passam a refletir ela. Antes o painel guardava a versão do
+  // momento do clique e mostrava "IA pausada" com a IA ativa no banco.
+  const syncSelected = useCallback((fresh: Partial<ConversationWithLastMessage> & { id: string }) => {
+    setSelectedConv((prev) => (prev && prev.id === fresh.id ? { ...prev, ...fresh } : prev));
+    setConversations((prev) => (prev ? prev.map((c) => (c.id === fresh.id ? { ...c, ...fresh } : c)) : prev));
+  }, []);
+
+  const fetchPage = useCallback(async (tab: ListTab, limit: number, before?: string): Promise<ListResponse> => {
+    const qs = new URLSearchParams({ channel: tab, limit: String(limit) });
+    if (before) qs.set("before", before);
+    const res = await fetch(`/api/conversations?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as ListResponse;
+    return { conversations: Array.isArray(data.conversations) ? data.conversations : [], hasMore: !!data.hasMore, counts: data.counts ?? {} };
+  }, []);
+
+  // Recarrega o topo da aba atual mantendo as páginas já abertas (até 500).
   const loadConversations = useCallback(async () => {
     const n = ++loadSeq.current;
+    const tab = listTabRef.current;
     try {
-      const res = await fetch("/api/conversations");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (n !== loadSeq.current) return; // uma carga mais nova já respondeu
-      setConversations(Array.isArray(data) ? data : []);
+      const data = await fetchPage(tab, Math.min(Math.max(PAGE, loadedCountRef.current), MAX_REFRESH));
+      if (n !== loadSeq.current || tab !== listTabRef.current) return; // uma carga mais nova já respondeu
+      loadedCountRef.current = data.conversations.length;
+      setConversations(data.conversations);
+      setHasMore(data.hasMore);
+      setCounts(data.counts);
       setListError(null);
+      const sel = selectedConvRef.current;
+      const fresh = sel ? data.conversations.find((c) => c.id === sel) : undefined;
+      if (fresh) setSelectedConv((prev) => (prev && prev.id === fresh.id ? { ...prev, ...fresh } : prev));
     } catch {
       if (n === loadSeq.current) setListError("Não deu para atualizar a lista.");
     }
-  }, []);
+  }, [fetchPage]);
+
+  // Mensagens chegam em rajada (o cliente manda 3 bolhas, o bot responde):
+  // uma recarga por rajada, não uma por mensagem.
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => { loadConversations(); }, 700);
+  }, [loadConversations]);
+
+  async function handleLoadMore() {
+    const list = conversations ?? [];
+    const last = list[list.length - 1];
+    if (!last || loadingMore) return;
+    const tab = listTabRef.current;
+    setLoadingMore(true);
+    try {
+      const data = await fetchPage(tab, PAGE, last.updated_at);
+      if (tab !== listTabRef.current) return;
+      setConversations((prev) => {
+        const seen = new Set((prev ?? []).map((c) => c.id));
+        const merged = [...(prev ?? []), ...data.conversations.filter((c) => !seen.has(c.id))];
+        loadedCountRef.current = merged.length;
+        return merged;
+      });
+      setHasMore(data.hasMore);
+      setCounts(data.counts);
+    } catch {
+      showToast("Não deu para carregar mais conversas. Tente de novo.", "error");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function handleListTabChange(tab: ListTab) {
+    if (tab === listTabRef.current) return;
+    listTabRef.current = tab;
+    loadedCountRef.current = 0;
+    setListTab(tab);
+    setConversations(null);
+    setHasMore(false);
+    loadConversations();
+  }
 
   const loadPlatformSettings = useCallback(async () => {
     const res = await fetch("/api/platform-settings");
@@ -84,39 +176,67 @@ export default function Dashboard() {
     setPlatformPaused(map);
   }, []);
 
+  // Interruptor do canal: o estado mostrado é o que o banco devolveu, e o dono
+  // vê a confirmação (ou o erro). Antes uma falha não mostrava nada.
   async function handleTogglePlatform(platform: Channel) {
     setTogglingPlatform(platform);
     const newPaused = !platformPaused[platform];
-    const res = await fetch("/api/platform-settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platform, paused: newPaused }),
-    });
-    if (res.ok) {
-      setPlatformPaused(prev => ({ ...prev, [platform]: newPaused }));
+    const label = CHANNEL_LABEL[platform];
+    try {
+      const res = await fetch("/api/platform-settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform, paused: newPaused }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { paused?: boolean; error?: string };
+      if (res.ok && typeof data.paused === "boolean") {
+        setPlatformPaused((prev) => ({ ...prev, [platform]: data.paused as boolean }));
+        showToast(data.paused ? `IA pausada no ${label} inteiro (confirmado)` : `IA ligada no ${label} (confirmado)`);
+      } else {
+        showToast(`Não consegui ${newPaused ? "pausar" : "ligar"} a IA no ${label}: ${data.error ?? `HTTP ${res.status}`}`, "error");
+        await loadPlatformSettings();
+      }
+    } catch (err) {
+      showToast(`Sem conexão: a IA no ${label} não mudou (${String(err).slice(0, 80)})`, "error");
+    } finally {
+      setTogglingPlatform(null);
     }
-    setTogglingPlatform(null);
   }
 
   const loadMessages = useCallback(async (convId: string) => {
     const res = await fetch(`/api/conversations/${convId}/messages`);
     const data = await res.json();
-    setMessages(data);
+    if (selectedConvRef.current === convId) setMessages(Array.isArray(data) ? data : []);
   }, []);
+
+  // Relê a conversa no banco (modo da IA atual).
+  const refreshSelected = useCallback(async (convId: string): Promise<ConversationWithLastMessage | null> => {
+    try {
+      const res = await fetch(`/api/conversations/${convId}`);
+      if (!res.ok) return null;
+      const fresh = (await res.json()) as ConversationWithLastMessage;
+      if (fresh?.id) syncSelected(fresh);
+      return fresh;
+    } catch {
+      return null;
+    }
+  }, [syncSelected]);
 
   useEffect(() => {
     loadConversations();
     loadPlatformSettings();
   }, [loadConversations, loadPlatformSettings]);
 
+  const selectedId = selectedConv?.id ?? null;
   useEffect(() => {
-    if (selectedConv) {
-      selectedConvRef.current = selectedConv.id;
-      loadMessages(selectedConv.id);
+    selectedConvRef.current = selectedId;
+    if (selectedId) {
+      loadMessages(selectedId);
+      refreshSelected(selectedId);
       // Mark as read when opening
-      setUnreadMap(prev => ({ ...prev, [selectedConv.id]: 0 }));
+      setUnreadMap(prev => ({ ...prev, [selectedId]: 0 }));
     }
-  }, [selectedConv, loadMessages]);
+  }, [selectedId, loadMessages, refreshSelected]);
 
   // Supabase Realtime — new messages trigger notification + unread count
   useEffect(() => {
@@ -146,19 +266,38 @@ export default function Dashboard() {
               }));
             }
 
-            loadConversations();
+            scheduleRefresh();
           }
         }
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "instagram_conversations" },
-        () => { loadConversations(); }
+        (payload) => {
+          // A mudança de modo (webhook pausou porque o dono respondeu pelo
+          // app, outro aparelho reativou) entra na hora na conversa aberta.
+          const row = payload.new as Partial<ConversationWithLastMessage> | null;
+          if (row && typeof row.id === "string" && (row.mode === "agent" || row.mode === "human")) {
+            syncSelected({ id: row.id, mode: row.mode });
+          }
+          scheduleRefresh();
+        }
       )
       .subscribe((status) => { setLive(status === "SUBSCRIBED"); });
 
     return () => { supabase.removeChannel(channel); };
-  }, [loadConversations]);
+  }, [scheduleRefresh, syncSelected]);
+
+  // Sem tempo real o painel não fica cego: a cada 30s relê a lista e a
+  // conversa aberta (o modo da IA pode ter mudado por outro caminho).
+  useEffect(() => {
+    if (live) return;
+    const t = setInterval(() => {
+      loadConversations();
+      if (selectedConvRef.current) refreshSelected(selectedConvRef.current);
+    }, 30000);
+    return () => clearInterval(t);
+  }, [live, loadConversations, refreshSelected]);
 
   async function handleSelectConversation(conv: ConversationWithLastMessage) {
     setSelectedConv(conv);
@@ -166,33 +305,64 @@ export default function Dashboard() {
     setUnreadMap(prev => ({ ...prev, [conv.id]: 0 }));
   }
 
+  // Pausar / reativar UMA conversa. O alvo é o que o botão mostra ("Pausar IA"
+  // → humano, "Reativar IA" → agente) e o estado final é o que o banco
+  // confirmou. Se o banco já estava no alvo (a tela estava velha), o dono é
+  // avisado em vez de o clique inverter o estado.
   async function handleToggleMode() {
     if (!selectedConv) return;
+    const convId = selectedConv.id;
+    const target = selectedConv.mode === "agent" ? "human" : "agent";
     setIsTogglingMode(true);
-    const newMode = selectedConv.mode === "agent" ? "human" : "agent";
-    const res = await fetch(`/api/conversations/${selectedConv.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: newMode }),
-    });
-    if (res.ok) {
-      const updated = await res.json();
-      setSelectedConv(prev => (prev ? { ...prev, ...updated } : prev));
-      setConversations(prev => (prev ? prev.map(c => c.id === updated.id ? { ...c, mode: updated.mode } : c) : prev));
+    try {
+      const current = await refreshSelected(convId);
+      if (current && current.mode === target) {
+        showToast(target === "human" ? "Esta conversa JÁ estava com a IA pausada (a tela estava desatualizada)" : "Esta conversa JÁ estava com a IA ativa (a tela estava desatualizada)");
+        return;
+      }
+      const res = await fetch(`/api/conversations/${convId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: target }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<ConversationWithLastMessage> & { error?: string; conversation?: ConversationWithLastMessage };
+      if (res.ok && data.id && data.mode === target) {
+        syncSelected(data as ConversationWithLastMessage);
+        showToast(target === "human" ? "IA pausada nesta conversa (confirmado no banco)" : "IA reativada nesta conversa (confirmado no banco)");
+      } else {
+        if (data.conversation?.id) syncSelected(data.conversation);
+        else await refreshSelected(convId);
+        showToast(`Não consegui ${target === "human" ? "pausar" : "reativar"} a IA: ${data.error ?? `HTTP ${res.status}`}`, "error");
+      }
+    } catch (err) {
+      await refreshSelected(convId);
+      showToast(`Sem conexão: o modo da IA não mudou (${String(err).slice(0, 80)})`, "error");
+    } finally {
+      setIsTogglingMode(false);
     }
-    setIsTogglingMode(false);
   }
 
   async function handleResumeAgent() {
-    if (!confirm("Reativar a IA em TODAS as conversas? Ela volta a responder automaticamente em cada uma.")) return;
+    const pausedNow = counts.paused;
+    const howMany = typeof pausedNow === "number" ? `as ${pausedNow} conversas pausadas` : "TODAS as conversas pausadas";
+    if (!confirm(`Reativar a IA em ${howMany}? Ela volta a responder sozinha em cada uma, inclusive nas que você pausou de propósito. Para ver quais são, abra a aba "Pausadas".`)) return;
     setIsResuming(true);
-    const res = await fetch(`/api/resume?secret=${process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka"}`, { method: "POST" });
-    const data = await res.json();
-    const n = Number(data.resumed ?? 0);
-    setToast(`IA reativada em ${n} ${n === 1 ? "conversa" : "conversas"}`);
-    await loadConversations();
-    setIsResuming(false);
-    setTimeout(() => setToast(null), 5000);
+    try {
+      const res = await fetch(`/api/resume?secret=${process.env.NEXT_PUBLIC_ADMIN_SECRET ?? "Pepeka"}`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { resumed?: number; error?: string };
+      if (!res.ok) {
+        showToast(`Não consegui reativar: ${data.error ?? `HTTP ${res.status}`}`, "error");
+      } else {
+        const n = Number(data.resumed ?? 0);
+        showToast(`IA reativada em ${n} ${n === 1 ? "conversa" : "conversas"} (confirmado no banco)`);
+      }
+    } catch (err) {
+      showToast(`Sem conexão: nada foi reativado (${String(err).slice(0, 80)})`, "error");
+    } finally {
+      await loadConversations();
+      if (selectedConvRef.current) await refreshSelected(selectedConvRef.current);
+      setIsResuming(false);
+    }
   }
 
   // 02/11/2026: o painel ignorava o status do envio — o texto sumia da caixa,
@@ -365,6 +535,12 @@ export default function Dashboard() {
                 selectedId={selectedConv?.id ?? null}
                 onSelect={handleSelectConversation}
                 unreadMap={unreadMap}
+                tab={listTab}
+                onTabChange={handleListTabChange}
+                counts={counts}
+                hasMore={hasMore}
+                loadingMore={loadingMore}
+                onLoadMore={handleLoadMore}
               />
             </div>
 
@@ -411,10 +587,12 @@ export default function Dashboard() {
 
       {toast && (
         <div
-          role="status"
-          className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 rounded-xl bg-tip text-white text-[13px] font-medium px-4 py-2.5 shadow-pop animate-fade-in whitespace-nowrap"
+          role={toast.tone === "error" ? "alert" : "status"}
+          className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50 rounded-xl text-white text-[13px] font-medium px-4 py-2.5 shadow-pop animate-fade-in w-max max-w-[calc(100vw-2rem)] text-center ${
+            toast.tone === "error" ? "bg-down" : "bg-tip"
+          }`}
         >
-          {toast}
+          {toast.text}
         </div>
       )}
     </div>
