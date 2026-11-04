@@ -319,17 +319,17 @@ const GRADERS = {
       !/\bvisit\b|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|which\s+(?:day|time|one)\s+works|what\s+day\s+works|\bvisita\b|presencial|pessoalmente/i.test(t) &&
       !/\b(?:don'?t|do not|cannot|can'?t|won'?t)\s+(?:do|offer|handle)\s+(?:bathroom|remodel)|only\s+(?:do|offer|handle)\s+(?:flooring|floors)|n[aã]o\s+fazemos|no\s+hacemos/i.test(t),
   },
-  ozziDirectSmallJob: {
-    // Owner rule 2026-09-11: a flooring job under 400 sqft is never priced,
-    // never declined and never sent to a visit: the client gets Ozzi's direct
-    // line. No price + the number proves it was NOT routed into a remodel visit
-    // either. A friendly mention of a remodel is fine.
-    label: 'Under 400 sqft flooring job → Ozzi direct line (no price, no visit, no decline)',
+  visitAnySize: {
+    // Owner rule 2026-11-04: EVERY size gets the free in-person visit (it
+    // replaced the under-400 Ozzi line and the 400-499 DM quote). The visit is
+    // proposed, no DM total ($100+), no Ozzi number because of the size, and
+    // never "too small" / a minimum.
+    label: 'Any size → the free visit (no DM total, no Ozzi line for size, never "too small")',
     check: (t: string) =>
-      /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t) &&
-      !/\$\s?\d/.test(t) &&
-      !/\bvisit\b|in.?person|come\s+(?:by|out|measure)|stop\s+by/i.test(t) &&
-      !/don'?t take|do not take|too small|we only (?:do|work|focus|take)|larger (?:projects|installations|jobs)/i.test(t),
+      /\bvisit\b|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|\bmeasure\b|visita|medir/i.test(t) &&
+      !/\$\s?\d{1,3}(?:,\d{3})+|\$\s?\d{3,}/.test(t) &&
+      !/\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t) &&
+      !/don'?t take|do not take|too small|minimum|we only (?:do|work|focus|take)|larger (?:projects|installations|jobs)|over\s+500|under\s+400/i.test(t),
   },
   repairPhotoAsk: {
     // Owner rule 2026-11-04 (Sandy Bell IG): a repair is never declined and
@@ -371,13 +371,6 @@ const GRADERS = {
       const claimsMaterialIncluded = /carpet[^.!?\n]{0,30}\bincluded\b|\bincludes?\b[^.!?\n]{0,30}\bcarpet\b/i.test(t);
       return rate && laborOnly && !claimsMaterialIncluded;
     },
-  },
-  carpetSmallJobTotal: {
-    // 400 to 499 sqft the client gets the number right here on the platform they
-    // wrote from. Carpet is a CLEAN multiplication: 450 x $2.20 = $990, nothing
-    // added (under 400 sqft is the Ozzi direct line, see ozziDirectSmallJob).
-    label: 'Quotes the carpet total by DM: 450 sqft = $990 (clean multiplication)',
-    check: (t: string) => /\$\s?990\b/.test(t) && !/\$\s?1[.,]?490\b/.test(t),
   },
 } satisfies Record<string, { label: string; check: (t: string) => boolean }>;
 
@@ -748,11 +741,11 @@ const SCENARIOS: Scenario[] = [
 
   // ── REGRESSIONS — the remodel rule must NOT hijack these existing flows ───
   {
-    // FLOORING in a bathroom under 400 sqft goes to Ozzi's direct line (owner
-    // rule 2026-09-11), NOT the remodel visit path. (Mirrors policy-verify.ts.)
-    name: '[REGRESSION] "vinyl flooring for my bathroom, 150 sqft" → Ozzi direct line (not a remodel)',
+    // FLOORING in a bathroom (150 sqft) is a normal flooring job: the free
+    // visit like any size (owner rule 2026-11-04), NOT the remodel Ozzi line.
+    name: '[REGRESSION] "vinyl flooring for my bathroom, 150 sqft" → the free visit (not a remodel, no size limit)',
     messages: [{ role: "user", content: "I need vinyl flooring for my bathroom, it's about 150 square feet." }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "ozziDirectSmallJob"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "visitAnySize"],
   },
   {
     // A small repair goes through the repair flow (owner rule 2026-11-04): the
@@ -766,23 +759,22 @@ const SCENARIOS: Scenario[] = [
   // ── CARPET (owner rule 2026-07-30) ───────────────────────────────────────
   // The bot told a real client we do NOT install carpet. We DO: $2.20/sqft for
   // the installation LABOR ONLY (the client buys the carpet, we never sell the
-  // material). 400 to 499 sqft it is quoted right here on the platform; under
-  // 400 sqft is Ozzi's direct line (owner rule 2026-09-11); 500+ goes to the
-  // free in-person visit like every other floor.
+  // material). Every size goes to the free in-person visit like every other
+  // floor (owner rule 2026-11-04).
   {
     name: '[CARPET] "Do you also install carpet? (deciding carpet vs vinyl vs hardwood)" → YES, $2.20/sqft labor only',
     messages: [{ role: "user", content: "Do you also install carpet? We are going back and forth between carpet, vinyl, or hardwood." }],
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "carpetRateLaborOnly"],
   },
   {
-    name: '[CARPET] "carpet in 2 bedrooms, about 450 sqft" → quotes $990 by DM (labor only, clean multiplication)',
+    name: '[CARPET] "carpet in 2 bedrooms, about 450 sqft" → the free visit, no DM total (owner rule 2026-11-04)',
     messages: [{ role: "user", content: "I need carpet installed in 2 bedrooms, about 450 square feet total. How much?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "carpetSmallJobTotal"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "visitAnySize"],
   },
   {
-    name: '[CARPET] "carpet in 2 bedrooms, about 300 sqft" → Ozzi direct line (under 400 sqft, no price, no visit)',
+    name: '[CARPET] "carpet in 2 bedrooms, about 300 sqft" → the free visit (owner rule 2026-11-04: no size limit)',
     messages: [{ role: "user", content: "I need carpet installed in 2 bedrooms, about 300 square feet total. How much?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "ozziDirectSmallJob"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "neverDeniesCarpet", "visitAnySize"],
   },
   {
     name: '[CARPET] "carpet for the whole house, 1500 sqft" → no DM total, proposes the free visit',

@@ -3403,32 +3403,10 @@ export function unsupportedImageClarifyMessage(lang: Lang): string {
 }
 
 
-// Projects UNDER 400 sqft are never quoted and never booked through the chat
-// (owner rule 2026-09-11): the client is pointed to Ozzi's direct line and
-// Ozzi gives the number himself. Sent when a price, a visit / slot offer, a
-// booking-details ask or a [BOOK] leaks through while the client's stated size
-// is under 400 sqft (ai.smallJobStanding), and as the guaranteed first reply
-// after the size comes up. No dashes except the one inside the phone number,
-// no ¿ ¡, usted register in Spanish, no "?" (a question with "número" would
-// read as a booking-details ask), and no visit / in-person / "works for you"
-// wording (containsSchedulingOffer / VISIT_OFFER would flag the message as a
-// leak of itself).
+// Ozzi's direct line, used by the bathroom / mobile home / Port St. Lucie lines.
+// (The under-400 sqft "speak with Ozzi directly" lines lived here until
+// 2026-11-04: owner rule, every size gets the visit.)
 export const OZZI_DIRECT_PHONE = "(561) 674-8334";
-export function smallJobOzziDirectMessage(lang: Lang): string {
-  if (lang === "pt") return `Para um projeto com menos de 400 pés quadrados, o melhor é falar direto com o Ozzi, ele mesmo confere os detalhes e te passa o orçamento. Você pode ligar para ele no ${OZZI_DIRECT_PHONE}.`;
-  return lang === "es"
-    ? `Para un proyecto de menos de 400 pies cuadrados, lo mejor es que hable directamente con Ozzi, él mismo revisa los detalles y le pasa el presupuesto. Puede llamarlo al ${OZZI_DIRECT_PHONE}.`
-    : `For a project under 400 square feet, the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at ${OZZI_DIRECT_PHONE}.`;
-}
-
-// The client already has Ozzi's number and insists on a price here: the bot
-// holds the line, never a figure, not even approximate.
-export function smallJobOzziInsistMessage(lang: Lang): string {
-  if (lang === "pt") return `Por aqui eu não consigo passar o orçamento para esse tamanho, esse realmente precisa vir direto do Ozzi. Liga para ele no ${OZZI_DIRECT_PHONE} que ele confere e te passa o valor.`;
-  return lang === "es"
-    ? `Por aquí no puedo pasarle un presupuesto para ese tamaño, ese realmente tiene que venir directo de Ozzi. Llámelo al ${OZZI_DIRECT_PHONE} y él lo revisa y le pasa el precio.`
-    : `I'm not able to give you a quote for that size through here, that one really has to come from Ozzi directly. Please call him at ${OZZI_DIRECT_PHONE} and he'll check it and give you the number.`;
-}
 
 // BATHROOM projects (a remodel or renovation, shower / tub / vanity work, a
 // bathroom quote, "do you do bathrooms?") are never quoted and never booked

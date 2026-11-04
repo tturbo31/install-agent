@@ -78,7 +78,7 @@ async function main() {
   ck("o porquê está escrito no código (para ninguém repetir a tentativa)", /WHY THERE IS NO LENGTH RULE IN THE DYNAMIC BLOCK/.test(ai));
   ck("orçamento do prompt (140 / 200) bate com as constantes do prompt; a rede (220) é mais folgada que o teto do prompt (29/09)", SYSTEM_PROMPT.includes("Under " + REPLY_PROMPT_TARGET_CHARS + " characters in total is the norm and " + REPLY_PROMPT_CEILING_CHARS + " is the ceiling") && REPLY_TIGHTEN_OVER >= REPLY_PROMPT_CEILING_CHARS && REPLY_TARGET_CHARS >= REPLY_PROMPT_TARGET_CHARS);
   ck("trava oferta + pedido de dados roda logo depois da rede, dentro do cérebro (vale para os 3 canais)", ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") > ai.indexOf("needsTightening(cleaned)") && ai.indexOf("cleaned = splitSlotOfferFromDetailsAsk(cleaned, messages, usersLang());") < ai.indexOf("cleaned = scrubForeignPhones(cleaned"));
-  const iNet = ai.indexOf("needsTightening(cleaned)"), iLeak = ai.indexOf("const leak = assessReasoningLeak(cleaned, leakOpts);"), iPhones = ai.indexOf("cleaned = scrubForeignPhones(cleaned"), iSmall = ai.indexOf("if (smallJobLeak(messages, cleaned))");
+  const iNet = ai.indexOf("needsTightening(cleaned)"), iLeak = ai.indexOf("const leak = assessReasoningLeak(cleaned, leakOpts);"), iPhones = ai.indexOf("cleaned = scrubForeignPhones(cleaned"), iSmall = ai.indexOf("if (bathroomLeak(messages, cleaned))");
   ck("a rede roda depois do scrubber de raciocínio e ANTES de todos os backstops", iLeak > 0 && iNet > iLeak && iPhones > iNet && iSmall > iNet, `${iLeak} ${iNet} ${iPhones} ${iSmall}`);
   ck("chave de emergência REPLY_TIGHTEN=off", /process\.env\.REPLY_TIGHTEN !== "off"/.test(ai));
   ck("falha da reescrita nunca derruba a resposta (try/catch devolve null)", /short-reply rewrite failed, keeping the original/.test(ai));
@@ -239,7 +239,7 @@ async function main() {
 
   const e = await ask([U("Hi"), A(OPENER_EN), U("tile, about 450 sqft" + sys())]);
   show("4e tile 450", e);
-  ck("4e: $2,025 e só mão de obra (curto não pode ser incompleto)", /2,?025/.test(e) && /labor|you (?:supply|provide|buy)|your own tile/i.test(e), e);
+  ck("4e: sem total por DM (regra do dono 04/11/2026), propõe a visita, tile só mão de obra se citar preço", !/2,?025/.test(e) && /visit|measure|come\b/i.test(e) && (!/\$/.test(e) || /labor|you (?:supply|provide|buy)|your own tile/i.test(e)), e);
   ck(`4e: <= ${CEIL} caracteres`, visibleLength(e) <= CEIL, e);
 
   const f = await ask([U("Hi"), A(OPENER_EN), U("vinyl"), A("Our vinyl promo is $5 per sqft, floor, installation and quarter round included. One area or the whole house?"), U("is it waterproof? I have dogs" + sys())]);
@@ -256,7 +256,7 @@ async function main() {
   const opn = "Hello, the promotional package already includes the flooring, installation labor, and the quarter round. I offer a free quote. One area or the whole house?";
   const h480 = await ask([U("hi"), A(opn), U("about 480 sqft one area")]);
   show("4h 480 sqft após o pacote de vinyl", h480);
-  ck("4h: dá o total ($2,400), NÃO volta a perguntar o tipo", /2[,.]?400/.test(h480) && !/tile, vinyl,? or hardwood/i.test(h480), h480);
+  ck("4h: SEM total por DM (regra do dono 04/11/2026), propõe a visita, NÃO volta a perguntar o tipo", !/2[,.]?400/.test(h480) && /visit|measure|come\b/i.test(h480) && !/tile, vinyl,? or hardwood/i.test(h480), h480);
   let mergedAsk = 0;
   for (let k = 0; k < 3; k++) {
     const any = await ask([U("Hi, I want luxury vinyl for my whole house, about 1200 sqft."), A("For that size I need to measure in person to give you the best price, it's free and I bring the samples. When works for you?"), U("I'm flexible, any day and time works for me." + sys())]);

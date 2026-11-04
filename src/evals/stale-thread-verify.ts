@@ -193,14 +193,15 @@ await turn("closing after 2 days (must stay [REACT_ONLY])", [
   ck("closing after a gap: still [REACT_ONLY]", /\[REACT_ONLY\]/.test(t), t);
 });
 
-// E. regression: the standing rules still win over the note (under 400 sqft)
-await turn("under-400 job re-asked after 2 days", [
+// E. regression: the standing rules still win over the note (small job =
+// the free visit since 2026-11-04, never a DM total, never the Ozzi line)
+await turn("small job re-asked after 2 days", [
   U("I need my hallway done, it's about 120 sqft", H(52)),
-  A("For a project under 400 square feet the best is to speak with Ozzi directly, he checks the details and gives you the quote himself. You can call him at (561) 674-8334.", H(52)),
+  A("Perfect, I can come measure the hallway for free and bring the samples. Is it vinyl, tile or hardwood?", H(52)),
   U("so how much would it be?", H(1.5)),
 ], (t) => {
-  ck("under 400 after a gap: still no price", !/\$\s?\d/.test(t) || /674[\s.-]?8334/.test(t), t);
-  ck("under 400 after a gap: still the Ozzi line", /674[\s.-]?8334/.test(t), t);
+  ck("small job after a gap: no DM total", !/\$\s?\d{1,3}(?:,\d{3})+|\$\s?\d{3,}/.test(t), t);
+  ck("small job after a gap: never the Ozzi line for the size", !/674[\s.-]?8334/.test(t), t);
 });
 
 console.log(`\n═══ STALE-THREAD-VERIFY: ${pass} passed, ${fail} failed ═══`);

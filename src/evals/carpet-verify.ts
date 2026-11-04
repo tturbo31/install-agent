@@ -59,7 +59,7 @@ const saysLaborOnly = (t: string) =>
   /\b(?:t[uú]|usted|voc[êe])\s+(?:compra|provee|fornece)/i.test(t);
 // $500+ figure = a project total. Per-sqft rates ($2.20, $5) stay under 100.
 const hasProjectTotal = (t: string) =>
-  [...t.matchAll(/\$\s?([\d,]+(?:\.\d{2})?)/g)].some(m => parseFloat(m[1].replace(/,/g, "")) >= 500);
+  [...t.matchAll(/\$\s?([\d,]+(?:\.\d{2})?)/g)].some(m => parseFloat(m[1].replace(/,/g, "")) >= 100);
 const proposesVisit = (t: string) =>
   /visit|in.?person|come\s+(?:by|out|over|measure)|stop\s+by|measure|visita|presencial|medir/i.test(t);
 
@@ -77,7 +77,7 @@ async function main() {
   ck("the old 'vinyl, tile, and hardwood only' claim is GONE", !/We install luxury vinyl, tile, and hardwood only/.test(promptSrc), "old exclusive-list claim still in the prompt");
   ck("no sentence asserts we don't do carpet", !/\b(?:We|we)\s+(?:do\s+not|don't)\s+install\s+carpet\b(?![^.!?\n]*\bNever\b)/.test(promptSrc.replace(/Never say we do not install carpet/g, "")), "a denial sentence survives");
   ck("carpet is in the PRICING list", /Carpet install only[^\n]*\$2\.20\/sqft/.test(promptSrc));
-  ck("500+ carpet still goes to the visit", /500 sqft or more: NEVER give a total or an estimate by DM/.test(promptSrc));
+  ck("carpet of ANY size goes to the visit (owner rule 2026-11-04)", /The size rules work for carpet exactly like every other floor \(owner rule 2026-11-04\): ANY size/.test(promptSrc));
   ck("carpet REMOVAL ($1/sqft) still exists and is kept separate", /Carpet removal: \$1\/sqft/.test(promptSrc) && /CARPET REMOVAL is a different service/.test(promptSrc));
 
   // ── 2. STATIC: the code guards ────────────────────────────────────────────
@@ -104,31 +104,21 @@ async function main() {
   ck("gives $2.20", hasRate(r1), r1);
   ck("says labor only / client provides the carpet", saysLaborOnly(r1), r1);
 
-  // ── 4. LIVE: under 400 sqft → Ozzi direct line (owner rule 2026-09-11), no $660, no visit
-  console.log("\n[4] 'carpet, 300 sqft' → Ozzi direct line, no price, no visit, still YES to carpet");
+  // ── 4. LIVE: 300 and 450 sqft → the free visit like any size (owner rule 2026-11-04)
   const OZZI_DIRECT = (t: string) => /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t);
-  const r2 = await ai([
-    { role: "user", content: "Do you install carpet?" },
-    { role: "assistant", content: "Yes, we install carpet, it's $2.20 per square foot for the installation labor and you provide the carpet material. About how many square feet is the area?" },
-    { role: "user", content: "It's 300 square feet, 2 bedrooms." },
-  ]);
-  console.log("   AI:", r2.replace(/\s+/g, " ").slice(0, 200));
-  ck("gives Ozzi's direct number", OZZI_DIRECT(r2), r2);
-  ck("no total, no rate ($)", !/\$\s?\d/.test(r2), r2);
-  ck("does not push a visit", !proposesVisit(r2), r2);
-  ck("does NOT deny carpet", !deniesCarpet(r2), r2);
-
-  // ── 4b. LIVE: 400 to 499 sqft → price on the spot, no visit (unchanged) ────
-  console.log("\n[4b] 'carpet, 450 sqft' → quotes $990 right here (clean multiplication)");
-  const r2b = await ai([
-    { role: "user", content: "Do you install carpet?" },
-    { role: "assistant", content: "Yes, we install carpet, it's $2.20 per square foot for the installation labor and you provide the carpet material. About how many square feet is the area?" },
-    { role: "user", content: "It's 450 square feet, 2 bedrooms." },
-  ]);
-  console.log("   AI:", r2b.replace(/\s+/g, " ").slice(0, 200));
-  ck("quotes $990 (450 x 2.20)", /\$\s?990\b/.test(r2b), r2b);
-  ck("does not send a 450 sqft job to Ozzi", !OZZI_DIRECT(r2b), r2b);
-  ck("does not push a visit for a small job", !proposesVisit(r2b), r2b);
+  for (const sq of ["300", "450"]) {
+    console.log(`\n[4] 'carpet, ${sq} sqft, 2 bedrooms' → the free visit, no total, still YES to carpet`);
+    const r = await ai([
+      { role: "user", content: "Do you install carpet?" },
+      { role: "assistant", content: "Yes, we install carpet, it's $2.20 per square foot for the installation labor and you provide the carpet material. Is it one area or the whole house?" },
+      { role: "user", content: `It's ${sq} square feet, 2 bedrooms.` },
+    ]);
+    console.log("   AI:", r.replace(/\s+/g, " ").slice(0, 200));
+    ck(`${sq} sqft: proposes the visit`, proposesVisit(r), r);
+    ck(`${sq} sqft: no project total by DM`, !hasProjectTotal(r), r);
+    ck(`${sq} sqft: no Ozzi number for the size`, !OZZI_DIRECT(r), r);
+    ck(`${sq} sqft: does NOT deny carpet`, !deniesCarpet(r), r);
+  }
 
   // ── 5. LIVE: large job (500+) → visit, never a total ──────────────────────
   console.log("\n[5] 'carpet, whole house 1500 sqft' → free visit, NO total by DM");

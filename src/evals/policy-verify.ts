@@ -34,7 +34,7 @@ const ai = (msgs: ChatMessage[]) => getAIResponse(msgs, null, null, undefined, f
 const DECLINES = (t: string) => /don'?t take|do not take|under 200|over 200|focus on larger|too small|won'?t be able|wouldn'?t be able|not able to take|we only|larger (projects|installations|jobs)/i.test(t);
 const HAS_PRICE = (t: string) => /\$\s?\d/.test(t);
 const PROPOSES_VISIT = (t: string) => /visit|in.?person|come (by|out|measure)|stop by|measure in person/i.test(t);
-// Owner rule 2026-09-11: under 400 sqft is never priced or declined, the client
+// Owner rule 2026-11-04: every size gets the visit (the under-400 Ozzi rule of 2026-09-11 is retired); the number below must NOT show up for a size. Was: under 400 sqft is never priced or declined, the client
 // gets Ozzi's direct line instead.
 const OZZI_DIRECT = (t: string) => /\(?\s?561\s?\)?[\s.-]*674[\s.-]*8334/.test(t);
 
@@ -71,29 +71,21 @@ async function main() {
   ];
   for (const n of negatives) ck(`negative: "${n}"`, isJobSeeker(n) === false, "false-positive (would silence a customer)");
 
-  // ── 2. Under 400 sqft → Ozzi direct (owner rule 2026-09-11): no price, no visit, no decline
-  console.log("\n[2] Under 400 sqft goes to Ozzi direct (no price, no visit, no decline)");
-  const u1 = await ai([{ role: "user", content: "Hi, I need new flooring for my bathroom, it's about 150 square feet." }]);
-  console.log("   150 sqft:", u1.replace(/\s+/g, " ").slice(0, 140));
-  ck("150 sqft → gives Ozzi's direct number", OZZI_DIRECT(u1), u1);
-  ck("150 sqft → does NOT decline the job", !DECLINES(u1), u1);
-  ck("150 sqft → no price quoted", !HAS_PRICE(u1), u1);
-  ck("150 sqft → no visit proposed", !PROPOSES_VISIT(u1), u1);
-
-  const u2 = await ai([{ role: "user", content: "just a small closet, maybe 100 sqft of vinyl" }]);
-  console.log("   100 sqft:", u2.replace(/\s+/g, " ").slice(0, 140));
-  ck("100 sqft → Ozzi direct, no price, no decline", OZZI_DIRECT(u2) && !HAS_PRICE(u2) && !DECLINES(u2), u2);
-
-  // ── 3. 400-499 sqft is STILL quoted by DM (no regression) ────────────────
-  console.log("\n[3] 400-499 sqft still quoted by DM (regression guard)");
-  const q1 = await ai([{ role: "user", content: "I want luxury vinyl for a 450 sqft room, how much?" }]);
-  console.log("   450 sqft:", q1.replace(/\s+/g, " ").slice(0, 140));
-  ck("450 sqft → gives a price (not declined, not sent to Ozzi)", HAS_PRICE(q1) && !DECLINES(q1) && !OZZI_DIRECT(q1), q1);
-  // 450 x $5 = $2,250, plain multiplication, no add-on
-  ck("450 sqft → total is $2,250 (no add-on)", /2[,.]?250/.test(q1) && !/2[,.]?750/.test(q1), q1);
-  const q2 = await ai([{ role: "user", content: "I want luxury vinyl for a 250 sqft room, how much?" }]);
-  console.log("   250 sqft:", q2.replace(/\s+/g, " ").slice(0, 140));
-  ck("250 sqft → Ozzi direct, no price, no decline", OZZI_DIRECT(q2) && !HAS_PRICE(q2) && !DECLINES(q2), q2);
+  // ── 2. EVERY size gets the free visit (owner rule 2026-11-04, replaces the
+  //       under-400 Ozzi rule and the 400-499 DM quote of 2026-09-11)
+  console.log("\n[2] Every size → the free visit (no Ozzi line for size, no DM total, no decline)");
+  const TOTAL = (t: string) => /\$\s?\d{1,3}(?:,\d{3})+|\$\s?\d{3,}/.test(t);
+  for (const [label, msg] of [
+    ["150 sqft bathroom floor", "Hi, I need new flooring for my bathroom, it's about 150 square feet."],
+    ["100 sqft closet", "just a small closet, maybe 100 sqft of vinyl"],
+    ["250 sqft room", "I want luxury vinyl for a 250 sqft room, how much?"],
+    ["450 sqft room", "I want luxury vinyl for a 450 sqft room, how much?"],
+  ] as const) {
+    const r = await ai([{ role: "user", content: msg }]);
+    console.log(`   ${label}:`, r.replace(/\s+/g, " ").slice(0, 140));
+    ck(`${label} → proposes the visit`, PROPOSES_VISIT(r), r);
+    ck(`${label} → no DM total, no decline, no Ozzi number for the size`, !TOTAL(r) && !DECLINES(r) && !OZZI_DIRECT(r), r);
+  }
 
   // ── 4. Job seeker → AI backup emits [REACT_ONLY] ─────────────────────────
   console.log("\n[4] AI backup silences a job seeker ([REACT_ONLY])");
@@ -119,7 +111,7 @@ async function main() {
   // ── 6. Prompt has the under-200 decline + job-seeker rules ───────────────
   console.log("\n[6] System prompt encodes both policies");
   const sp = readFileSync(join(process.cwd(), "src/lib/system-prompt.ts"), "utf-8");
-  ck("prompt: PROJECTS UNDER 400 SQFT section (Ozzi direct)", /## PROJECTS UNDER 400 SQFT/.test(sp) && /\(561\) 674-8334/.test(sp));
+  ck("prompt: NO SIZE THRESHOLD (owner rule 2026-11-04), the PROJECTS UNDER 400 SQFT section is gone", /NO SIZE THRESHOLD \(owner rule 2026-11-04/.test(sp) && !/## PROJECTS UNDER 400 SQFT/.test(sp));
   ck("prompt: the old under-200 decline is gone", !/UNDER 200 sqft: WE DO NOT TAKE THESE JOBS/.test(sp));
   ck("prompt: JOB SEEKERS section emits [REACT_ONLY]", /JOB SEEKERS \/ SERVICE PROVIDERS[\s\S]{0,900}\[REACT_ONLY\]/.test(sp));
 

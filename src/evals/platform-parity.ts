@@ -104,8 +104,8 @@ const SHARED: Check[] = [
   { label: "Unsupported-floor guard in processBookingCommand (epoxy/concrete/pavers never booked)", test: (s) => /if \(unsupportedFloorStanding\(history\)\)[\s\S]{0,400}unsupportedFloorReply\(history, lang\)/.test(s) },
   { label: "Unsupported-floor post-model backstop (visit offer / details ask replaced)", test: (s) => /unsupportedFloorLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}unsupportedFloorReply\(history, lang\)/.test(s) },
   // Under 400 sqft (owner rule 2026-09-11): never booked, never priced; Ozzi direct line instead
-  { label: "Under-400-sqft guard in processBookingCommand (Ozzi direct, never booked)", test: (s) => /if \(smallJobStanding\(history\) !== null\)[\s\S]{0,400}smallJobReply\(history, lang\)/.test(s) },
-  { label: "Under-400-sqft post-model backstop (price / visit offer / details ask replaced)", test: (s) => /smallJobLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}smallJobReply\(history, lang\)/.test(s) },
+  { label: "No size threshold: no under-400 guard / backstop left (owner rule 2026-11-04)", test: (s) => !/smallJobStanding\(history\) !== null/.test(s) && !/smallJobLeak\(/.test(s) },
+  { label: "SIZE STATED note for any stated size (visit, never a DM total)", test: (s) => /detectStatedSqft\(t\)/.test(s) && /\[SIZE STATED: Client stated about/.test(s) },
   // Bathroom projects (owner rule 2026-09-11, second part): never booked, never priced; bathroom Ozzi line instead
   { label: "Bathroom guard in processBookingCommand (Ozzi direct, never booked)", test: (s) => /if \(bathroomProjectStanding\(history\)\)[\s\S]{0,400}bathroomReply\(history, lang\)/.test(s) },
   { label: "Bathroom post-model backstop (price / visit offer / details ask replaced)", test: (s) => /bathroomLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}bathroomReply\(history, lang\)/.test(s) },

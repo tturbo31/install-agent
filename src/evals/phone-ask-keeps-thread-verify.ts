@@ -14,7 +14,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getAIResponse, isPhoneOnlyReply, keepBookingThreadAfterPhone, type ChatMessage } from "../lib/ai";
-import { smallJobOzziDirectMessage, bathroomOzziDirectMessage } from "../lib/scheduler";
+import { bathroomOzziDirectMessage } from "../lib/scheduler";
 
 function loadEnv() {
   const content = readFileSync(join(process.cwd(), ".env.local"), "utf-8");
@@ -64,7 +64,6 @@ async function main() {
   ck("number-only ES", isPhoneOnlyReply(esLine));
   ck("number-only EN", isPhoneOnlyReply(enLine));
   ck("number-only PT", isPhoneOnlyReply("Pode ligar ou mandar mensagem direto pro Ozzi no (561) 674-8334."));
-  ck("not number-only: under-400 referral", !isPhoneOnlyReply(smallJobOzziDirectMessage("en")));
   ck("not number-only: bathroom referral", !isPhoneOnlyReply(bathroomOzziDirectMessage("en")));
   ck("not number-only: financing line", !isPhoneOnlyReply("As soon as your application is approved, call or text Ozzi directly at (561) 674-8334 to finalize everything."));
   ck("not number-only: already carries a question", !isPhoneOnlyReply("You can reach Ozzi at (561) 674-8334. Which time works better for you?"));

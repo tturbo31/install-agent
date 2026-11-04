@@ -22,9 +22,10 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import {
   getAIResponse, bathroomProjectSignal, bathroomProjectStanding, mentionsBathroomProject, bathroomLeak, bathroomReply,
-  smallJobStanding, smallJobLeak, smallJobReferralSent, containsSchedulingOffer, isAskingForBookingInfo, type ChatMessage,
+  smallJobStanding, smallJobReferralSent, containsSchedulingOffer, isAskingForBookingInfo, type ChatMessage,
 } from "../lib/ai";
-import { bathroomOzziDirectMessage, bathroomOzziInsistMessage, smallJobOzziDirectMessage, OZZI_DIRECT_PHONE } from "../lib/scheduler";
+import { bathroomOzziDirectMessage, bathroomOzziInsistMessage, OZZI_DIRECT_PHONE } from "../lib/scheduler";
+const OZZI_LINE_EN = `For anything else, you can reach Ozzi directly at ${OZZI_DIRECT_PHONE}.`;
 import { OPENER_EN } from "../lib/system-prompt";
 
 function loadEnv() {
@@ -193,10 +194,10 @@ async function main() {
   ck("leak: unrelated answer after the referral WITH a $", bathroomLeak(B2, "Yes, it's waterproof, and at $5 per square foot it includes the labor."));
   ck("not standing (whole house + bathroom): a visit offer is fine", !bathroomLeak([u("Vinyl for the whole house, 1500 sqft, and remodel the bathroom too")], "For that size I do a free in-person visit. What day works best for you?"));
   ck("not standing (repair): the repair decline owns the reply", !bathroomLeak([u("Can you fix a few broken tiles in my bathroom?")], "We don't do repairs, installations only."));
-  ck("flooring 150 sqft in a bathroom: the small-job guard owns it (bathroomLeak false, smallJobLeak true)", !bathroomLeak([u("vinyl for my bathroom, 150 sqft")], "That's about $750.") && smallJobLeak([u("vinyl for my bathroom, 150 sqft")], "That's about $750."));
+  ck("flooring 150 sqft in a bathroom: NOT a bathroom project (a normal flooring job, the visit since 2026-11-04)", !bathroomLeak([u("vinyl for my bathroom, 150 sqft")], "I can come measure for free, Tuesday at 9am or 5pm?"));
   ck("bathroomReply before referral → direct line", bathroomReply(B, "en") === bathroomOzziDirectMessage("en"));
   ck("bathroomReply after referral → insist line", bathroomReply([...B, a(bathroomOzziDirectMessage("en")), u("just give me a rough number")], "en") === bathroomOzziInsistMessage("en"));
-  ck("bathroomReply after the SMALL-JOB referral → insist line too (number already given)", bathroomReply([u("300 sqft vinyl"), a(smallJobOzziDirectMessage("en")), u("and do you do bathrooms?")], "en") === bathroomOzziInsistMessage("en"));
+  ck("bathroomReply after the SMALL-JOB referral → insist line too (number already given)", bathroomReply([u("300 sqft vinyl"), a(OZZI_LINE_EN), u("and do you do bathrooms?")], "en") === bathroomOzziInsistMessage("en"));
   ck("bathroomReply ES/PT", bathroomReply(B, "es") === bathroomOzziDirectMessage("es") && bathroomReply(B, "pt") === bathroomOzziDirectMessage("pt"));
 
   // ── 4. Source wiring ─────────────────────────────────────────────────────
@@ -208,7 +209,7 @@ async function main() {
   ];
   for (const [name, rel] of hooks) {
     const src = readFileSync(join(process.cwd(), rel), "utf-8");
-    ck(`${name}: [BOOK] blocked while a bathroom project stands (before the under-400 guard)`, /if \(bathroomProjectStanding\(history\)\)[\s\S]{0,400}bathroomReply\(history, lang\)[\s\S]{0,600}if \(smallJobStanding\(history\) !== null\)/.test(src), rel);
+    ck(`${name}: [BOOK] blocked while a bathroom project stands (and no under-400 guard left, owner rule 2026-11-04)`, /if \(bathroomProjectStanding\(history\)\)[\s\S]{0,400}bathroomReply\(history, lang\)/.test(src) && !/smallJobStanding\(history\) !== null/.test(src), rel);
     ck(`${name}: post-model backstop (price / visit / details → bathroom Ozzi line)`, /bathroomLeak\(history, (?:safeAiText|safeResponse)\)[\s\S]{0,300}bathroomReply\(history, lang\)/.test(src), rel);
   }
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
@@ -309,11 +310,11 @@ async function main() {
   ck("no price, no visit", !HAS_PRICE(r10) && !PROPOSES_VISIT(r10), r10);
 
   // ── 6. REGRESSIONS ───────────────────────────────────────────────────────
-  console.log("\n[6a] REGRESSION: flooring for a bathroom, 150 sqft → Ozzi line (under-400 path), never a remodel visit");
+  console.log("\n[6a] REGRESSION: flooring for a bathroom, 150 sqft → the free visit (owner rule 2026-11-04: every size gets the visit), never the remodel line, never a DM total");
   const g1 = await ai([u("I need vinyl flooring for my bathroom, it's about 150 square feet.")]);
   console.log("   →", g1.replace(/\s+/g, " ").slice(0, 200));
-  ck("150 sqft: Ozzi's number, no price", OZZI_DIRECT(g1) && !HAS_PRICE(g1), g1);
-  ck("150 sqft: no visit, not declined", !PROPOSES_VISIT(g1) && !DECLINES(g1), g1);
+  ck("150 sqft: proposes the visit, not declined", PROPOSES_VISIT(g1) && !DECLINES(g1), g1);
+  ck("150 sqft: no DM total, no Ozzi number for the size", !/[$][0-9]{3,}/.test(g1.replace(/[, ]/g, "")) && !OZZI_DIRECT(g1), g1);
 
   console.log("\n[6b] REGRESSION: repair a few broken tiles in the bathroom → the repair flow (photo ask), never a decline, no visit, no price (owner rule 2026-11-04)");
   const g2 = await ai([u("Hi, can you repair a few broken tiles in my bathroom?")]);
@@ -321,10 +322,10 @@ async function main() {
   ck("repair: asks for the video / picture + description, never declines", /\b(?:video|picture|photo)\b/i.test(g2) && !DECLINES_REPAIR(g2), g2);
   ck("repair: no visit, no price, no Ozzi number", !PROPOSES_VISIT(g2) && !HAS_PRICE(g2) && !OZZI_DIRECT(g2), g2);
 
-  console.log("\n[6c] REGRESSION: tile installation for a bathroom, 450 sqft → still quoted by DM ($2,025)");
+  console.log("\n[6c] REGRESSION: tile installation for a bathroom, 450 sqft → the free visit, NO DM total (owner rule 2026-11-04)");
   const g3 = await ai([u("I need tile installation for my bathroom, around 450 sqft")]);
   console.log("   →", g3.replace(/\s+/g, " ").slice(0, 200));
-  ck("450 sqft tile → $2,025 by DM, not the Ozzi line", /2[,.]?025/.test(g3) && !OZZI_DIRECT(g3), g3);
+  ck("450 sqft tile → visit, no $2,025, not the Ozzi line", PROPOSES_VISIT(g3) && !/2[,.]?025/.test(g3) && !OZZI_DIRECT(g3), g3);
 
   console.log("\n[6d] REGRESSION: whole house 1500 sqft + bathroom remodel → the visit for the floors (never blocked) + Ozzi for the bathroom");
   const g4 = await ai([u("I want vinyl for the whole house, about 1500 sqft, and I also want to remodel the master bathroom")]);

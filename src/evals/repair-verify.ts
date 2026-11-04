@@ -358,8 +358,8 @@ async function main() {
   ]);
   console.log("   →", g4.replace(/\s+/g, " ").slice(0, 220));
   ck("does NOT repeat the photo ask and never declines", g4 !== ASK_EN && !isRepairPhotoAsk(g4) && !DECLINES_REPAIR(g4), g4);
-  // 300 sqft is under 400: the next step is Ozzi's direct line (owner rule 2026-09-11)
-  ck("engages the vinyl job (Ozzi direct line for 300 sqft, or price / next step)", /674[\s.-]*8334/.test(g4) || HAS_PRICE(g4) || /vinyl|promotion|\$5|per square foot/i.test(g4), g4);
+  // 300 sqft gets the free visit like any size (owner rule 2026-11-04)
+  ck("engages the vinyl job with the free visit (no Ozzi line for the size)", PROPOSES_VISIT(g4) && !/674[\s.-]*8334/.test(g4), g4);
 
   console.log(`\n================ RESULT: ${pass} passed, ${fail} failed ================`);
   if (fail) { console.log("FAILED:\n - " + fails.join("\n - ")); process.exit(1); }

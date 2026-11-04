@@ -241,8 +241,16 @@ export function tightenedIsSafe(
   // that keeps the new times and drops the acknowledgement is the silent slot
   // swap all over again (wa_17329668249, 2026-09-30).
   if (SLOT_GONE_ACK.test(od) && !SLOT_GONE_ACK.test(rd)) return { ok: false, reason: "the slot-gone acknowledgement was dropped" };
+  // The visit proposal is the next step for EVERY size (owner rule
+  // 2026-11-04): a rewrite that keeps the rates and drops "I measure in
+  // person / the free visit" turns the reply into a bare price list (probe
+  // 04/11: "2000 ft apartment", 324 -> 148 chars, the visit was cut).
+  // A rewrite that keeps the offered times or the booking-details ask still
+  // carries the visit forward, so only a reply left with neither is rejected.
+  if (VISIT_WORD.test(od) && !VISIT_WORD.test(rd) && rClock.size === 0 && !asksForDetails(r)) return { ok: false, reason: "the visit proposal was dropped" };
   return { ok: true };
 }
+const VISIT_WORD = /\bvisit\w*|in person|\bmeasure\w*|come (?:by|out|over|measure)|\bvisita\w*|\bmedir\b|pessoalmente|presencial/;
 const SLOT_GONE_ACK = /filled up|got (?:taken|booked|filled)|was (?:taken|booked|filled)|just (?:got )?taken|no longer (?:open|available|free)|(?:isn'?t|is not|not) (?:open|available|free)|se llen|se ocup|ya no (?:esta|tengo|lo tengo|la tengo)|encheu|lotou|nao tenho mais|nao esta mais/;
 
 const PRICE_ASK = /\bhow much\b|\bprices?\b|\bpricing\b|\bcosts?\b|\bquote\b|\bestimate\b|\brates?\b|\bper sq|\bcheap|\bcuanto\b|\bprecios?\b|\bcuesta\b|\bcosto\b|\bpresupuesto\b|\bcotiza|\bquanto\b|\bprecos?\b|\bcusta\b|\bvalor\b|\borcamento\b|\$/;

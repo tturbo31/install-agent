@@ -57,7 +57,7 @@ import {
   IG_CHANNEL_NOTE, IG_CHANNEL_TAG, SAMPLES_HANDOFF_LINE, IG_FINANCING_LINE, OZZI_NUMBER_RE, containsLink, neutralizeLinks,
   ensureFinancingHandoff, ensureIgFinancingHandoff, mentionsBioLink, dmChannelOf, isInstagramChannel,
 } from "../lib/ig-link-policy";
-import { getAIResponse, fixWhichFloorReply, withSiteForColor, portStLucieReply, stripForbiddenTags, smallJobPhotosMessage, containsSchedulingOffer, unansweredUserBurst, scrubLearnings, type ChatMessage } from "../lib/ai";
+import { getAIResponse, fixWhichFloorReply, withSiteForColor, portStLucieReply, stripForbiddenTags, containsSchedulingOffer, unansweredUserBurst, scrubLearnings, type ChatMessage } from "../lib/ai";
 import { zipFirstNote, ZIP_FIRST_NOTE_HEADER, getRealAvailabilityContext, getEasternDateContext, portStLucieVisitMessage } from "../lib/scheduler";
 import { SYSTEM_PROMPT } from "../lib/system-prompt";
 
@@ -154,7 +154,6 @@ async function main() {
   ck("Messenger/WA: a color-to-phone reply becomes the website (owner rule 2026-10-03)", /https:\/\/www\.ozzifloors\.com/.test(colorPhoneWa) && !OZZI_NUMBER_RE.test(colorPhoneWa), colorPhoneWa);
   ck("IG: a color-to-phone reply still becomes the bio sentence", mentionsBioLink(withSiteForColor(colorPhone, "en", { ig: true })) && !OZZI_NUMBER_RE.test(withSiteForColor(colorPhone, "en", { ig: true })), withSiteForColor(colorPhone, "en", { ig: true }));
   ck("tag-only reply untouched", withSiteForColor("[REACT_ONLY]", "en") === "[REACT_ONLY]" && withSiteForColor("[REACT_ONLY]", "en", { ig: true }) === "[REACT_ONLY]");
-  for (const l of ["en", "es", "pt"] as const) ck(`${l} smallJobPhotosMessage: Ozzi's number, no link`, OZZI_NUMBER_RE.test(smallJobPhotosMessage(l)) && !containsLink(smallJobPhotosMessage(l)), smallJobPhotosMessage(l));
   const sendImages = stripForbiddenTags("Here are some options [SEND_IMAGES: a,b]");
   ck("[SEND_IMAGES] fallback: samples + Ozzi line, no URL", OZZI_NUMBER_RE.test(sendImages) && !containsLink(sendImages), sendImages);
 

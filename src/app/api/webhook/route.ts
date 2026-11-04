@@ -56,7 +56,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, repairFlowReply, isRepairHandoffReply, REPAIR_HANDOFF_ALERT, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, repairFlowReply, isRepairHandoffReply, REPAIR_HANDOFF_ALERT, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, detectStatedSqft, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -196,13 +196,8 @@ async function processBookingCommand(
     console.warn("[IG] booking blocked — bathroom project (Ozzi direct); sending the bathroom Ozzi line");
     return { response: bathroomReply(history, lang), booked: false };
   }
-  // UNDER 400 SQFT guard (owner rule 2026-09-11): a job under 400 square feet
-  // is never booked through the chat. A [BOOK] while the client's stated size
-  // is under 400 sqft is replaced by the Ozzi direct line.
-  if (smallJobStanding(history) !== null) {
-    console.warn("[IG] booking blocked — the client's project is under 400 sqft (Ozzi direct); sending the Ozzi line");
-    return { response: smallJobReply(history, lang), booked: false };
-  }
+  // (The under-400 sqft [BOOK] guard lived here until 2026-11-04: owner rule,
+  // every size gets the visit and is booked like any other.)
   try {
     const bookingData = JSON.parse(bookingMatch[1]);
 
@@ -1855,6 +1850,14 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
         // no "propose the visit" alert, the PSL note owns that reply.
         if (detectedSqft && !portStLucieReferral(history)) {
           systemParts.push(`[LARGE LEAD ALERT: Client stated ${detectedSqft} sqft which is >= 500. This is a LARGE LEAD. You MUST propose the free in-person visit. Do NOT give any price or dollar amount by DM. Do NOT calculate "$X for this project". Respond with STEP 2B only.]`);
+        } else if (!portStLucieReferral(history)) {
+          // Owner rule 2026-11-04: EVERY size gets the visit ("300 sq ft, pode
+          // fazer"). A smaller stated size gets the same push, so the model
+          // never falls back to the retired under-400 Ozzi line or a DM total.
+          const statedSqft = recentUserTexts.reduce<number | null>((found, t) => found ?? detectStatedSqft(t), null);
+          if (statedSqft) {
+            systemParts.push(`[SIZE STATED: Client stated about ${statedSqft} sqft. Owner rule 2026-11-04: EVERY size gets the free in-person visit, there is no minimum. Propose the visit with two real times (STEP 2B), exactly as for a whole house. Do NOT give a total or dollar estimate by DM, do NOT say it is too small, do NOT send the client to Ozzi's number because of the size.]`);
+          }
         }
       }
       const systemNote = `[SYSTEM: ${systemParts.join("\n\n")}]`;
@@ -2146,15 +2149,6 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (!isBookingConfirmed && outOfAreaLeak(history, safeAiText)) {
       console.warn("[IG] ZIP " + outOfAreaZipStanding(history) + " out of area — model offered a visit / asked details / claimed coverage; replacing with the decline");
       safeAiText = outOfAreaDeclineMessage(lang);
-    }
-
-    // UNDER 400 SQFT backstop (owner rule 2026-09-11): while the client's stated
-    // size is under 400 sqft, a price, a visit or slot offer, a booking-details
-    // ask or a [BOOK] from the model is replaced by the Ozzi direct line (and the
-    // first reply after the size always carries Ozzi's number).
-    if (!isBookingConfirmed && smallJobLeak(history, safeAiText)) {
-      console.warn("[IG] project under 400 sqft — model priced / offered a visit / asked details; replacing with the Ozzi direct line");
-      safeAiText = smallJobReply(history, lang);
     }
 
     // BATHROOM backstop (owner rule 2026-09-11, second part): while a bathroom

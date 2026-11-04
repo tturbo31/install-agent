@@ -95,8 +95,8 @@ function buildMemoryContent(data: ClientMemory): string {
   if (data.lead_type) {
     lines.push(
       data.lead_type === "small"
-        ? "Lead type: SMALL — under 500 sqft (under 400 sqft: no DM price, Ozzi direct at (561) 674-8334; 400 to 499 sqft: quote by DM)"
-        : "Lead type: LARGE — over 500 sqft, must schedule free in-person visit"
+        ? "Lead type: SMALL — one area / small project (same flow as any size since 2026-11-04: free in-person visit, no DM total)"
+        : "Lead type: LARGE — whole house / several rooms, must schedule free in-person visit"
     );
   }
   if (data.project_summary) lines.push(`Project: ${data.project_summary}`);

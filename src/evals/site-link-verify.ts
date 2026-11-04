@@ -9,7 +9,7 @@
  *      subdomínios e caminhos reais ficam intactos
  *   3. stripForbiddenTags (portão final dos 3 webhooks) canonicaliza e, ao
  *      limpar [SEND_IMAGES], anexa o link novo
- *   4. smallJobPhotosMessage (menos de 400 sqft) nos 3 idiomas
+ *   4. (smallJobPhotosMessage saiu em 04/11/2026 com a regra dos <400 sqft)
  *   5. SYSTEM_PROMPT ensina o novo e proíbe o antigo
  *   6. respostas prontas see_options_en / see_options_pt (puro, 0 tokens)
  *   7. AO VIVO (pula com DET_ONLY=1): histórico com o link ANTIGO em fala nossa
@@ -40,7 +40,7 @@ function loadEnv() {
 }
 loadEnv();
 process.env.ANTHROPIC_API_KEY ||= "unused-pure-eval";
-import { getAIResponse, canonicalizeSiteLink, stripForbiddenTags, smallJobPhotosMessage, SITE_URL, type ChatMessage } from "../lib/ai";
+import { getAIResponse, canonicalizeSiteLink, stripForbiddenTags, SITE_URL, type ChatMessage } from "../lib/ai";
 import { SYSTEM_PROMPT } from "../lib/system-prompt";
 
 let pass = 0, fail = 0; const fails: string[] = [];
@@ -105,12 +105,6 @@ async function main() {
   const s3 = stripForbiddenTags("You can see our floors at https://ozzifloors.company, and I bring the samples.");
   ck("sem tag: ainda canonicaliza o link antigo", s3 === `You can see our floors at ${SITE_URL}, and I bring the samples.`, s3);
   ck("texto comum sem link: identidade", stripForbiddenTags("Monday at 9am or 11am?") === "Monday at 9am or 11am?");
-
-  console.log("\n━━ 4. smallJobPhotosMessage (menos de 400 sqft) ━━");
-  for (const l of ["en", "es", "pt"] as const) {
-    const m = smallJobPhotosMessage(l);
-    ck(`${l}: número do Ozzi, nenhum link (regra do dono 02/11/2026)`, !NEW_LINK.test(m) && /674[-\s]?8334/.test(m) && !OLD_LINK.test(m), m);
-  }
 
   console.log("\n━━ 5. SYSTEM_PROMPT ━━");
   ck("ensina o link novo (Messenger/WhatsApp, regra do dono 03/11/2026)", (SYSTEM_PROMPT.match(new RegExp(SITE_URL.replace(/[.\/]/g, "\\$&"), "g")) ?? []).length >= 3);

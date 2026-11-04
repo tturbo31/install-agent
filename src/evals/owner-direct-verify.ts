@@ -15,7 +15,7 @@
 import {
   redirectOwnerPromiseToPhone, promisesOwnerContact, ozziDirectLine, claimsVisitScheduled,
   bookingDataLooksComplete, forcedBookRetryReason, stripReasoningLeak, priceNegotiationHandoff,
-  BOOK_NOW_NOTE, smallJobPhotosMessage, smallJobLeak, type ChatMessage,
+  BOOK_NOW_NOTE, type ChatMessage,
 } from "../lib/ai";
 import {
   bookingFailureHandoffMessage, bookingUnverifiedHandoffMessage, aiOutageHandoffMessage,
@@ -166,14 +166,7 @@ console.log("\n[4] bookingDataLooksComplete / forcedBookRetryReason (casos reais
   ck("BOOK_NOW_NOTE: tag, tipo não obrigatório, nome NÃO obrigatório (nunca pedir)", /\[BOOK:/.test(BOOK_NOW_NOTE) && /flooring type is NOT required/i.test(BOOK_NOW_NOTE) && /name is NOT required/i.test(BOOK_NOW_NOTE) && !/name alone/i.test(BOOK_NOW_NOTE));
 }
 
-console.log("\n[4b] fotos/amostras com <400 sqft: resposta fixa em vez da linha de insistência");
-{
-  const hist: ChatMessage[] = [U("Hi, I need vinyl for my bedroom, about 300 sqft. How much?"), A("For a project under 400 square feet, the best is to speak with Ozzi directly at (561) 674-8334."), U("Can you send me some photos of your floors?")];
-  for (const l of ["en", "es", "pt"] as const) ck(`smallJobPhotosMessage ${l}: número sem link (regra 02/11/2026), não dispara o leak`, !/ozzifloors\.com/i.test(smallJobPhotosMessage(l)) && NUM.test(smallJobPhotosMessage(l)) && !smallJobLeak(hist, smallJobPhotosMessage(l)), smallJobPhotosMessage(l));
-  const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf8");
-  ck("getAIResponse: backstop da foto ligado após o smallJobLeak", /SMALL_JOB_INSIST_RE\.test\(cleaned\)/.test(aiSrc) && aiSrc.indexOf("SMALL_JOB_INSIST_RE.test(cleaned)") > aiSrc.indexOf("if (smallJobLeak(messages, cleaned)) {"));
-}
-
+// [4b] (fotos/amostras com <400 sqft) saiu em 04/11/2026: a regra dos <400 acabou (todo tamanho vai para a visita).
 console.log("\n[5] webhooks e prompt");
 {
   const root = process.cwd();
