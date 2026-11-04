@@ -315,11 +315,11 @@ async function main() {
   ck("150 sqft: Ozzi's number, no price", OZZI_DIRECT(g1) && !HAS_PRICE(g1), g1);
   ck("150 sqft: no visit, not declined", !PROPOSES_VISIT(g1) && !DECLINES(g1), g1);
 
-  console.log("\n[6b] REGRESSION: repair a few broken tiles in the bathroom → still declined (no visit, no price)");
+  console.log("\n[6b] REGRESSION: repair a few broken tiles in the bathroom → the repair flow (photo ask), never a decline, no visit, no price (owner rule 2026-11-04)");
   const g2 = await ai([u("Hi, can you repair a few broken tiles in my bathroom?")]);
   console.log("   →", g2.replace(/\s+/g, " ").slice(0, 200));
-  ck("repair: declined", DECLINES_REPAIR(g2), g2);
-  ck("repair: no visit, no price", !PROPOSES_VISIT(g2) && !HAS_PRICE(g2), g2);
+  ck("repair: asks for the video / picture + description, never declines", /\b(?:video|picture|photo)\b/i.test(g2) && !DECLINES_REPAIR(g2), g2);
+  ck("repair: no visit, no price, no Ozzi number", !PROPOSES_VISIT(g2) && !HAS_PRICE(g2) && !OZZI_DIRECT(g2), g2);
 
   console.log("\n[6c] REGRESSION: tile installation for a bathroom, 450 sqft → still quoted by DM ($2,025)");
   const g3 = await ai([u("I need tile installation for my bathroom, around 450 sqft")]);

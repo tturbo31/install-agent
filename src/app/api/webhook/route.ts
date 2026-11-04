@@ -56,7 +56,7 @@ import {
   isVisitDetailQuestion,
   pastVisitSystemNote,
   questionSwallowedByBooking,
-  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
+  assertsExistingAppointment, repairRequestActive, repairVisitOfferLeak, repairFlowReply, isRepairHandoffReply, REPAIR_HANDOFF_ALERT, unsupportedFloorStanding, unsupportedFloorLeak, unsupportedFloorReply, smallJobStanding, smallJobLeak, smallJobReply, bathroomProjectStanding, bathroomLeak, bathroomReply, mobileHomeStanding, mobileHomeLeak, mobileHomeReply, mobileHomeKind, portStLucieStanding, portStLucieLeak, portStLucieMode, portStLucieReply, portStLucieReferral, PORT_ST_LUCIE_ALERT, outOfAreaZipStanding, outOfAreaLeak,
   hasInstallationConfirmation,
   isBarePreBookingText,
   softenPrematureLockIn,
@@ -68,7 +68,7 @@ import { WebhookPayload } from "@/lib/types";
 import { verifyMetaSignature } from "@/lib/verify-meta";
 import { isDashboardAuthorized } from "@/lib/admin-auth";
 import { AD_REPLY_NOTE } from "@/lib/system-prompt";
-import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, repairDeclineMessage, portStLucieHourAllowed, portStLucieHoursMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
+import { reconcileBookingPhone, bookingUnverifiedHandoffMessage, createBooking, sameDayBookingAlert, cancelClientBooking, type Lang, rescheduleClientBooking, getRealAvailabilityContext, getEasternDateContext, detectLang, bookingSuccessMessage, bookingFailureHandoffMessage, slotConflictRecoveryMessage, rescheduleSuccessMessage, aiOutageHandoffMessage, getClientBookingSnapshot, visitDetailsMessage, reminderAckMessage, earlierSlotAckMessage, appendUpcomingBookingNote, appointmentMismatchHandoffMessage, isRealPhoneNumber, needPhoneMessage, resolveClientName, reconcileBookingWeekday, reconcileOfferedDates, clientConfirmedSlot, needSlotConfirmationMessage, bookedTimeSeenInConversation, needTimeChoiceMessage, bookedSlotMismatchesPromise, isRealAddress, needAddressMessage, addressHasStreetNumber, bookingAddressHasZip, needZipMessage, clientProvidedName, lookupClientNameByPhone, applyPostBookingAddressCorrection, addressCorrectedMessage, addressChangeHandoffMessage, postBookingAddressAlert, recentClientText, cancellationConfirmedMessage, cancellationHandoffMessage, cancellationAlert, portStLucieHourAllowed, portStLucieHoursMessage, outOfAreaDeclineMessage, bookingAddressOutOfArea, getUpcomingBookingRecord, bookingEpisodeHistory, dayOnlyPickNeedsTime, acceptedSlotGone, replyIgnoresGoneSlot, type AcceptedSlotGone } from "@/lib/scheduler";
 import {
   createClientMemoryStore,
   readClientMemory,
@@ -78,6 +78,7 @@ import {
 import { getOrCreateSystemStore, readSystemMemory } from "@/lib/dreaming";
 import { loadGlobalCorrections, isStructuredCorrection } from "@/lib/corrections";
 import { notifyOwners } from "@/lib/whatsapp";
+import { forwardRepairPhotoIfAwaited } from "@/lib/repair-photo";
 import { alertPausedBacklog, retryFailedSends, watchWaQueue, recoverLostReplies, recoverLostInbounds } from "@/lib/delivery";
 import { SEND_FAILED_DB_SUFFIX } from "@/lib/outbound-text";
 import { trackConversationMetrics } from "@/lib/metrics";
@@ -148,8 +149,8 @@ async function processBookingCommand(
   // booked as a tile visit). Decline instead of booking; the flag clears only
   // when the client pivots to a whole new floor.
   if (repairRequestActive(history)) {
-    console.warn(`[IG] booking blocked — the client asked for a REPAIR (we do not do repairs); sending the decline`);
-    return { response: repairDeclineMessage(lang), booked: false };
+    console.warn(`[IG] booking blocked — the client asked for a REPAIR (never booked); sending the repair flow line instead`);
+    return { response: repairFlowReply(history, lang) ?? "[REACT_ONLY]", booked: false };
   }
   // FLOOR WE DO NOT DO guard (JuanCarlos Briones, IG 2026-09-05; Frank
   // Fernandez, WA 2026-08-31): epoxy, concrete/cement, microcement, resin,
@@ -798,6 +799,13 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     if (imageUrl && !rawText) rawText = "[floor plan or photo]";
     if (shareUrl && !rawText) rawText = `[shared link: ${shareUrl}]`;
     if (audioUrl && !rawText) rawText = "[voice message]";
+    // A video or a file the client recorded / uploaded (type "video" / "file":
+    // not a feed share, and no ad referral, which Meta delivers as a video
+    // attachment too): the placeholder the repair flow and the model read,
+    // instead of the ad-reply tag (owner rule 2026-11-04: the video of the
+    // repair is what Ozzi needs to see).
+    const ownMediaAttachment = isAdReferral ? undefined : attachments.find((a) => a.type === "video" || a.type === "file");
+    if (ownMediaAttachment && !rawText) rawText = ownMediaAttachment.type === "video" ? "[video]" : "[document]";
     // Never drop an ad reply or an attachment-bearing event just because this event
     // carried no readable text — store it and engage instead of going silent.
     if (!rawText && (isAdReferral || hasAnyAttachment)) rawText = "[Client replied to our ad]";
@@ -971,6 +979,12 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
 
     if (insertErr && insertErr.code !== "23505") return;
     let thisMessageId = insertedMsg?.id ?? "";
+    // REPAIR (owner rule 2026-11-04): the client was asked for a picture of
+    // the repair and this is it → the team gets the photo right now, before
+    // the debounce (the burst's last handler sends the handoff line + alert).
+    if (imageUrl) {
+      waitUntil(forwardRepairPhotoIfAwaited({ conversationId: conversation.id, platform: "Instagram", clientName: conversation.username ?? null, clientId: senderIgsid, imageUrl, analysis: preAnalysis }));
+    }
     // Replay (delivery.recoverLostReplies): the bubble is already stored, so the
     // insert collides — adopt the stored row's id so the debounce/stale checks
     // below treat this run as the live handler for that message.
@@ -2094,8 +2108,8 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
     // standing request is a repair, a visit offer, a booking-details ask or a
     // [BOOK] from the model is replaced by the deterministic decline.
     if (!isBookingConfirmed && repairVisitOfferLeak(history, safeAiText)) {
-      console.warn("[IG] repair request — model offered a visit / asked for booking details; replacing with the repair decline");
-      safeAiText = repairDeclineMessage(lang);
+      console.warn("[IG] repair request — reply is not a line of the repair flow (visit / details / decline / price); replacing with the stage's line");
+      safeAiText = repairFlowReply(history, lang) ?? safeAiText;
     }
 
     // FLOOR WE DO NOT DO backstop (Briones IG 2026-09-05, Frank Fernandez WA
@@ -2228,7 +2242,7 @@ async function handleWebhook(body: WebhookPayload, opts?: { replay?: boolean }) 
       afterBookingText = semRepeticao;
     }
     const afterCancel = await processCancelCommand(afterBookingText, senderIgsid, conversation.id, conversation.username ?? null, lang);
-    const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid, portStLucieStanding(history) ? PORT_ST_LUCIE_ALERT : null);
+    const afterNotify = await processNotifyOwner(afterCancel, conversation.id, conversation.username ?? null, senderIgsid, isRepairHandoffReply(afterCancel) ? REPAIR_HANDOFF_ALERT : portStLucieStanding(history) ? PORT_ST_LUCIE_ALERT : null);
     // Owner rule 2026-09-14: any "Ozzi / the team will reach out" left in the
     // reply becomes his direct number. The owner alert (below) still fires.
     const promisedOwnerContact = promisesOwnerContact(afterNotify);

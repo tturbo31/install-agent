@@ -331,13 +331,16 @@ const GRADERS = {
       !/\bvisit\b|in.?person|come\s+(?:by|out|measure)|stop\s+by/i.test(t) &&
       !/don'?t take|do not take|too small|we only (?:do|work|focus|take)|larger (?:projects|installations|jobs)/i.test(t),
   },
-  declinesRepair: {
-    // Mirrors run-tests.mjs T34: a repair stays "installations only". Mentioning
-    // a remodel as a future invite is acceptable, so we do NOT fail on the word
-    // "remodel" (that was a false positive that flagged correct, friendly copy).
-    label: 'Declines a repair (installations only)',
+  repairPhotoAsk: {
+    // Owner rule 2026-11-04 (Sandy Bell IG): a repair is never declined and
+    // never booked. The reply asks for a video or a picture of the project and
+    // a description; the old "installations only" decline is the failure now.
+    label: 'Repair: asks for a video / picture + description, never declines, no visit, no price',
     check: (t: string) =>
-      /installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:small\s+)?repair|do not do (?:small )?repair|only.*install/i.test(t),
+      /\b(?:video|picture|photo)\b/i.test(t) &&
+      !/installations?\s+only|only\s+(?:do|handle)\s+install|don'?t\s+do\s+(?:any\s+|small\s+)?repair|do not do (?:any |small )?repair|only.*install/i.test(t) &&
+      !/\$\s?\d/.test(t) &&
+      !/\bvisit\b|in.?person|come\s+(?:by|out|measure)|stop\s+by/i.test(t),
   },
   neverDeniesCarpet: {
     // OWNER RULE (2026-07-30): WE DO INSTALL CARPET. The bot told a real client
@@ -752,11 +755,12 @@ const SCENARIOS: Scenario[] = [
     graders: ["noEmDash", "noEmojis", "noForbiddenTags", "ozziDirectSmallJob"],
   },
   {
-    // A small repair stays "installations only" — the remodel rule must not flip
-    // a repair into a yes. (Mirrors run-tests.mjs T34.)
-    name: '[REGRESSION] "repair a few broken tiles in my bathroom" → installations only (not a remodel)',
+    // A small repair goes through the repair flow (owner rule 2026-11-04): the
+    // photo / video ask, never a decline, never a yes, never the bathroom
+    // remodel line.
+    name: '[REGRESSION] "repair a few broken tiles in my bathroom" → photo / video ask (not a remodel, not a decline)',
     messages: [{ role: "user", content: "Hi, can you repair a few broken tiles in my bathroom?" }],
-    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "declinesRepair"],
+    graders: ["noEmDash", "noEmojis", "noForbiddenTags", "repairPhotoAsk"],
   },
 
   // ── CARPET (owner rule 2026-07-30) ───────────────────────────────────────

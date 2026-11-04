@@ -2,7 +2,7 @@ import { zipsInText, isOutOfAreaZip, PORT_ST_LUCIE_ZIPS } from "./zip-text";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { SYSTEM_PROMPT, WHAT_IS_INCLUDED_RESPONSE, WHAT_IS_INCLUDED_TILE_RESPONSE, WHAT_IS_INCLUDED_HARDWOOD_RESPONSE, WHAT_IS_INCLUDED_ASK_TYPE, WHAT_IS_INCLUDED_TWO_TIER_ASK, WHAT_IS_INCLUDED_TWO_TIER_VINYL_RESPONSE, INCLUSIONS_TWO_TIER_SENTENCE, AD_PRICE_TIER_NOTE, OPENER_EN, OPENER_ES, OPENER_PT, OPENER_LANG_EN, OPENER_LANG_ES, OPENER_LANG_PT, OPENER_PROCESS_EN, OPENER_PROCESS_ES, OPENER_DISCOUNT_EN, OPENER_DISCOUNT_ES, OPENER_LOCATION_EN, OPENER_LOCATION_ES, OPENER_LOCATION_PT, composeAdFaqOpener, type AdFaqTopic } from "@/lib/system-prompt";
-import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairDeclineMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, trailerDeclineMessage, mobileHomeOzziDirectMessage, mobileHomeOzziInsistMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
+import { clientConfirmedSlot, pickedHourInPhrase, detectLang, langScores, isDeferredReply, repairPhotoAskMessage, repairPhotoReminderMessage, repairHandoffMessage, repairHoldMessage, unsupportedFloorDeclineMessage, unsupportedImageClarifyMessage, smallJobOzziDirectMessage, smallJobOzziInsistMessage, bathroomOzziDirectMessage, bathroomOzziInsistMessage, trailerDeclineMessage, mobileHomeOzziDirectMessage, mobileHomeOzziInsistMessage, portStLucieSizeAskMessage, portStLucieCallOzziMessage, portStLucieCallOzziInsistMessage, portStLucieVisitMessage, outOfAreaDeclineMessage } from "@/lib/scheduler";
 import { stripInvertedPunctuation } from "@/lib/outbound-text";
 import { mentionsBioLink, isInstagramChannel, dmChannelOf, neutralizeLinks as neutralizeInstagramLinks, OZZI_NUMBER_RE as OZZI_HANDOFF_NUMBER_RE, SAMPLES_HANDOFF_LINE, SITE_LINE_OFF_IG } from "@/lib/ig-link-policy";
 import { needsTightening, tightenInstruction, tightenedIsSafe, visibleLength, sentenceCount, freeAlreadySaid, clientAskedPrice, clockTokens as offeredClockTimes } from "@/lib/reply-length";
@@ -2076,8 +2076,19 @@ const OWNER_PROMISE_PATTERNS: RegExp[] = [
   /\b(?:ele|algu[eé]m|o ozzi|nossa equipe)\b[^.!?\n]{0,40}\b(?:entrar[aá]|entra|vai entrar)\s+em\s+contato\b/i,
   /\bem\s+breve\s+(?:ele|algu[eé]m)?\s*te\s+(?:contata|liga|responde|chama)/i,
 ];
+// The ONE promise the owner wants kept as written (rule 2026-11-04): the repair
+// handoff / hold lines ("Ozzi is going to check it and will get back to you",
+// scheduler.repairHandoffMessage / repairHoldMessage, three languages). They
+// are not rewritten into his number, and they do not force a second team
+// alert (the handoff line carries its own [NOTIFY_OWNER]).
+const REPAIR_FLOW_SENTENCE_RE = /\bozzi\b[^.!?\n]{0,30}\b(?:is going to check it|already has it|ya lo va a revisar|ya lo tiene|j[aá] vai verificar|j[aá] est[aá] com tudo)\b/i;
+const SENTENCE_SPLIT_RE = /(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g;
+function withoutRepairFlowSentences(text: string): string {
+  if (!REPAIR_FLOW_SENTENCE_RE.test(text)) return text;
+  return (text.match(SENTENCE_SPLIT_RE) ?? [text]).filter((s) => !REPAIR_FLOW_SENTENCE_RE.test(s)).join("");
+}
 export function promisesOwnerContact(text: string): boolean {
-  const t = normalizeSmartPunct(text || "");
+  const t = withoutRepairFlowSentences(normalizeSmartPunct(text || ""));
   return OWNER_PROMISE_PATTERNS.some((p) => p.test(t));
 }
 
@@ -2100,14 +2111,14 @@ export function ozziDirectLine(lang: "en" | "es" | "pt"): string {
 }
 export function redirectOwnerPromiseToPhone(text: string, lang: "en" | "es" | "pt"): string {
   return withTagsProtected(text || "", (prose) => {
-    if (!OWNER_PROMISE_PATTERNS.some((p) => p.test(normalizeSmartPunct(prose)))) return prose;
-    const parts = prose.match(/(?:[^.!?\n]|\.(?=\d))+[.!?]*\s*/g) ?? [prose];
+    if (!OWNER_PROMISE_PATTERNS.some((p) => p.test(withoutRepairFlowSentences(normalizeSmartPunct(prose))))) return prose;
+    const parts = prose.match(SENTENCE_SPLIT_RE) ?? [prose];
     const hadNumber = OZZI_PHONE_RE.test(prose);
     let replaced = false;
     const out: string[] = [];
     for (const s of parts) {
       const ns = normalizeSmartPunct(s);
-      const isPromise = OWNER_PROMISE_PATTERNS.some((p) => p.test(ns)) && !ARRIVAL_NOTICE_RE.test(ns);
+      const isPromise = OWNER_PROMISE_PATTERNS.some((p) => p.test(ns)) && !ARRIVAL_NOTICE_RE.test(ns) && !REPAIR_FLOW_SENTENCE_RE.test(ns);
       if (!isPromise) { out.push(s); continue; }
       if (!replaced && !hadNumber) out.push(ozziDirectLine(lang) + " ");
       replaced = true;
@@ -2827,6 +2838,11 @@ const FIX_NOT_REPAIR = /\b(?:fix(?:ed|ing)?|arregl\w+|arrum\w+)\s+(?:up\s+)?(?:a
 // and the prompt, a false "repair" would block a real installation lead.
 const NEW_FLOOR_SIGNAL = /\b(whole|entire|everything|all\s+(?:of\s+)?(?:the|my|our|it|them)\b|toda\s+(?:a|la|mi|minha|nuestra|nossa)\b|todo\s+(?:o|el|mi|meu|nuestro|nosso)\b|inteir[ao]|complet[ao]|new\s+(?:floors?|flooring|tiles?|vinyl|hardwood|laminate)|piso\s+nov[oa]|pisos\s+novos|piso\s+nuev[oa]|pisos\s+nuevos|vinyl|laminate|hardwood|lvp|spc|carpet|installation|instala[çc][aã]o|instalaci[oó]n|remodel\w*|reforma\w*|renovat\w*|renova[çc][aã]o|renovaci[oó]n|redo|refazer|rehacer|(?:go(?:es)?|put|lay|install(?:ed)?|poured?|pour)\s+(?:right\s+)?(?:over|on\s+top\s+of)|over\s+(?:the\s+)?(?:existing|old|current)\s+(?:tiles?|floor)|on\s+top\s+of|liquid|l[ií]quido|encima\s+de|por\s+cima\s+d[oa]s?)\b/i;
 const ANY_SQFT = /\d[\d,.]*\s*(?:sq\.?\s*(?:ft|feet|foot)|sf\b|sqft|square\s*(?:feet|foot|ft)|ft2|ft²|pies(?:\s+cuadrados)?|m2|m²|mts?2|metros?(?:\s+quadrados|\s+cuadrados)?)\b/i;
+// The new-floor signals WITHOUT the bare floor-type words (Sandy Bell, IG
+// 2026-11-04: "Laminate cracked" names the damaged floor, not a new one).
+const NEW_FLOOR_SIGNAL_NO_TYPE = new RegExp(NEW_FLOOR_SIGNAL.source.replace("|vinyl|laminate|hardwood|lvp|spc|carpet", ""), "i");
+// Repair words proper (not "replace", which also opens a new-floor request).
+const EXPLICIT_REPAIR_VERB = /\b(repair(?:s|ed|ing)?|fix(?:es|ed|ing)?|patch(?:es|ed|ing)?|mend(?:ed|ing)?|reparar|reparen?|arreglar|arreglen?|arregla|consertar|consert[ae]m?|arrumar|arrum[ae]m?)\b/i;
 // System-ish bubbles that ride along as "user" content (floor-plan / image
 // analysis, ad tags) must never feed the detector.
 const NON_CLIENT_BUBBLE = /^\s*\[(?:Floor plan analysis|Image analysis|Image|Audio|Sticker|Attachment)\b/i;
@@ -2862,6 +2878,13 @@ export function isRepairRequest(text: string): boolean {
   if (!ANY_SQFT.test(t) && !REPLACE_ALL.test(t) &&
       (REPLACE_VERB.test(stripped) || REPAIR_VERB.test(stripped)) && MATCH_EXISTING.test(stripped) &&
       (DAMAGE.test(stripped) || PARTIAL_AREA.test(stripped) || NEEDS_REPLACING.test(stripped))) return true;
+  // "I need some stairs repaired and replace. Laminate cracked. 3 steps inside"
+  // (Sandy Bell, IG 2026-11-04): the floor type named is the EXISTING damaged
+  // floor, not a new one. An explicit repair word ("repaired", "fix", "repair")
+  // plus damage wins over a bare type word; every other new-floor signal
+  // (whole / entire / new floors / install / over the tile / a size) still wins.
+  if (!ANY_SQFT.test(t) && !REPLACE_ALL.test(t) && !NEW_FLOOR_SIGNAL_NO_TYPE.test(t) &&
+      (REPAIR_NOUN.test(stripped) || EXPLICIT_REPAIR_VERB.test(stripped)) && DAMAGE.test(stripped)) return true;
   if (NEW_FLOOR_SIGNAL.test(t) || ANY_SQFT.test(t)) return false;
   if (REPAIR_NOUN.test(t)) return true;
   if (REPAIR_VERB.test(stripped) && (DAMAGE.test(stripped) || FLOOR_PIECE.test(stripped))) return true;
@@ -2876,6 +2899,21 @@ export function isRepairRequest(text: string): boolean {
 // new floor (whole-floor / sqft / new-floor / remodel wording). This is what
 // the [BOOK] block reads: the booking turn itself ("Priti Budhrani, 801 S Miami
 // Ave...") carries no repair words, the request lives three bubbles earlier.
+// "I want vinyl instead", "en vez de eso quiero piso nuevo": a bare type word
+// WITH a pivot intent clears the flag even next to damage words.
+const PIVOT_INTENT = /\b(?:instead|rather\s+than|in\s+place\s+of|en\s+vez\s+de|en\s+lugar\s+de|em\s+vez\s+de|no\s+lugar\s+d[oa])\b/i;
+// The client pivots away from the repair: a size, a whole-floor / new-floor /
+// install / remodel signal, or a bare floor-type word that is NOT describing
+// the damaged floor. Since 2026-11-04 the flow asks the client to DESCRIBE the
+// repair, and "the laminate is cracked on the edges" names the existing floor:
+// a type word next to damage or repair words no longer clears the flag (the
+// FAQ taps "What types of vinyl flooring do you offer?" still do).
+function pivotsOffRepair(t: string): boolean {
+  if (ANY_SQFT.test(t) || NEW_FLOOR_SIGNAL_NO_TYPE.test(t)) return true;
+  if (!NEW_FLOOR_SIGNAL.test(t)) return false;
+  return PIVOT_INTENT.test(t) || !(DAMAGE.test(t) || REPAIR_NOUN.test(t) || EXPLICIT_REPAIR_VERB.test(t));
+}
+
 export function repairRequestActive(history: Array<{ role: string; content: string }>): boolean {
   let active = false;
   for (const m of history ?? []) {
@@ -2883,41 +2921,172 @@ export function repairRequestActive(history: Array<{ role: string; content: stri
     const t = clientTextForRepair(m.content);
     if (!t) continue;
     if (isRepairRequest(t)) active = true;
-    else if (NEW_FLOOR_SIGNAL.test(t) || ANY_SQFT.test(t)) active = false;
+    else if (pivotsOffRepair(t)) active = false;
   }
   return active;
 }
 
-// Post-model backstop while a repair request stands: the model offered a visit,
-// asked for the booking details, or wrote a [BOOK] anyway. The webhook swaps the
-// reply for the deterministic decline (scheduler.repairDeclineMessage).
+// Visit / estimate offers in a reply (shared by the bathroom, small-job, mobile
+// home and Port St. Lucie leak nets below).
 const VISIT_OFFER = /\b(free\s+(?:visit|estimate|quote)|in.?person|come\s+(?:by|out|over|measure|take\s+a\s+look|and\s+(?:measure|take))|stop\s+by|set\s+up\s+(?:a|your|the)\s+(?:free\s+)?(?:visit|estimate)|schedule\s+(?:a|the|your)\s+(?:free\s+)?(?:visit|estimate)|(?:which|what)\s+(?:day|time|one)\s+works|visita|presencial|pessoalmente|qu[eé]\s+d[ií]a\s+(?:te|le)\s+(?:queda|viene|funciona)|que\s+dia\s+(?:fica|funciona))\b/i;
-// "Yes, we do!" / "Perfect, we can do that" / a per-sqft price in the reply to
-// the repair message itself (Lily IG + fb_28104189355856705, 2026-09-29). Only
-// on the turn whose LAST client message is the repair ask, and never when the
-// reply already states the decline (it may still answer an unrelated question
-// with a price, note item 3).
-const REPAIR_AFFIRM = /\b(?:yes|yeah|yep|sure|absolutely|of\s+course|perfect|great)\b[^.!?\n]{0,30}\b(?:we\s+(?:do|can|handle|offer|install)|that'?s\s+something\s+we|i\s+can\s+help)\b|\bwe\s+(?:can|do)\s+(?:do|handle|take\s+care\s+of|help\s+with)\s+(?:that|this|it|those|them)\b|\bwe\s+do\s+(?:that|this)\b|\bclaro\s+que\s+s[ií]\b|\bs[ií],?\s+(?:lo|eso|claro)?\s*(?:hacemos|podemos)\b|\bpodemos\s+hacer(?:lo)?\b|\bsim,?\s+(?:a\s+gente\s+)?(?:faz|fazemos|podemos)\b|\bfazemos\s+(?:isso|sim)\b|\ba\s+gente\s+faz\b/i;
-const REPAIR_DECLINE_SAID = /\b(?:don'?t|do\s+not|can'?t|cannot|not\s+able\s+to|aren'?t\s+able\s+to|no\s+longer|not\s+(?:currently\s+)?(?:offering|doing|taking|handling))\b[^.!?\n]{0,40}\brepairs?\b|\brepairs?\b[^.!?\n]{0,40}\b(?:isn'?t|is\s+not|aren'?t|are\s+not)\s+something\s+we\b|\bonly\s+(?:do|handle|offer|take\s+on)\s+(?:full|new|complete|brand\s+new)\b|\bno\s+(?:hacemos|realizamos|ofrecemos)\b[^.!?\n]{0,30}\b(?:reparaci|arreglo)|\bsolo\s+(?:hacemos\s+)?instalaci|\bn[aã]o\s+(?:fazemos|trabalhamos\s+com|pegamos)\b[^.!?\n]{0,30}\b(?:reparo|conserto)|\bs[oó]\s+fazemos\s+instala/i;
-export function repairVisitOfferLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
-  if (!repairRequestActive(history)) return false;
-  const t = aiText || "";
-  if (/\[BOOK:/i.test(t) || containsSchedulingOffer(t) || VISIT_OFFER.test(t) || isAskingForBookingInfo(t)) return true;
-  const lastUser = [...(history ?? [])].reverse().find((m) => m.role === "user");
-  if (!lastUser || !isRepairRequest(lastUser.content)) return false;
-  if (REPAIR_DECLINE_SAID.test(t)) return false;
-  return REPAIR_AFFIRM.test(t) || /\$\s?\d/.test(t);
+
+// ─── The repair flow (owner rule 2026-11-04, Sandy Bell IG) ─────────────────
+// Until 2026-11-04 a standing repair request got the flat decline ("we only do
+// full installations, not repairs of any kind", rule of 2026-08-25). The owner
+// read that reply to "I need some stairs repaired and replace. Laminate
+// cracked. 3 steps inside" and changed the rule: the bot NEVER says we don't
+// do repairs. Instead:
+//   1. ASK: "Can you send me a video or a picture of the project and describe
+//      exactly what you want? That way we can help you better" (his words).
+//   2. HANDOFF: once the client sends the photo / video (or, after one
+//      reminder, the description alone), tell them Ozzi is going to check it
+//      and will get back to them, and alert the whole team (Ozzi, Vinicius,
+//      Ruani) with the photo. [NOTIFY_OWNER] rides on the handoff line.
+//   3. HOLD: after the handoff the client keeps asking → the hold line once,
+//      then reactions only. The thread is the team's; when Ozzi answers from
+//      the app the conversation goes mode=human anyway.
+// Still never a visit, never a price, never booking details, never a [BOOK]
+// for a repair: the model does not run while the repair stands (getAIResponse
+// returns repairFlowReply) and the webhooks' backstop swaps anything that is
+// not one of these lines for the stage's line. The flag clears when the client
+// pivots to a whole new floor (repairRequestActive). The stage is read from
+// the lines themselves (scheduler.repair*Message), in the three languages.
+const REPAIR_LANGS: Array<"en" | "es" | "pt"> = ["en", "es", "pt"];
+function normalizeFlowLine(s: string): string {
+  return normalizeSmartPunct((s || "").split(/\n\n?\[SYSTEM:/)[0]).replace(/\[[^\]]*\]/g, " ").replace(/[¿¡]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+function saidFlowLine(content: string, line: (lang: "en" | "es" | "pt") => string): boolean {
+  const t = normalizeFlowLine(content);
+  return !!t && REPAIR_LANGS.some((l) => t.includes(normalizeFlowLine(line(l))));
+}
+export function isRepairPhotoAsk(text: string): boolean {
+  return saidFlowLine(text, repairPhotoAskMessage) || saidFlowLine(text, repairPhotoReminderMessage);
+}
+export function isRepairHandoffReply(text: string): boolean {
+  return saidFlowLine(text, repairHandoffMessage);
+}
+export function isRepairHoldReply(text: string): boolean {
+  return saidFlowLine(text, repairHoldMessage);
+}
+export function isRepairFlowLine(text: string): boolean {
+  return isRepairPhotoAsk(text) || isRepairHandoffReply(text) || isRepairHoldReply(text);
 }
 
-export const REPAIR_REQUEST_NOTE = `CRITICAL, REPAIR REQUEST (WE DO NOT DO REPAIRS OF ANY KIND):
-The client is asking to FIX or REPLACE damaged, broken, cracked, chipped or loose pieces of an EXISTING floor. That is a REPAIR. We do NOT do repairs of any kind, on any floor, of any size, no exceptions, and the owner does not drive out to look at repairs.
-1. Tell them politely, in one or two sentences and in the client's language, that we only do full new installations (projects over 500 square feet) and do not do repairs, then close warmly. Example: "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!"
-2. NEVER offer, propose or set up a visit or estimate for a repair. NEVER ask for their name, address or phone. NEVER quote a price for it. NEVER say you need to see it in person. NEVER generate [BOOK:...].
-3. If the same message also asks something unrelated, answer that part normally.
-4. Only if the client clearly says they want a whole NEW floor installed (not the damaged pieces fixed) return to the normal flow.
-5. If earlier in this conversation a visit was already offered, a slot was "held" or the name, address or phone were collected for this repair, that was a MISTAKE: do NOT confirm it, do NOT write [BOOK:...], apologize briefly and give the decline above instead.
-6. Keep the figure as 500 square feet (pies cuadrados / pés quadrados), never convert it to square meters.
-7. STILL A REPAIR: "replace the damaged part and find a match for the rest" (even if that floor runs through the whole house), and "some planks / boards need to be replaced, I already have boxes of the floor" (even if the client has the material). The job is the damaged section, not a new floor. NEVER answer "Yes, we do!" or "Perfect, we can do that", NEVER give a labor rate, NEVER ask the zip code or the square footage for it, NEVER send it to Ozzi as a small job. The decline above, nothing else.`;
+// A client bubble that carries a photo, a video or a file: the stored image
+// analysis, the unreadable-photo placeholder, or the video / document
+// placeholders the three webhooks store.
+const CLIENT_MEDIA_BUBBLE = /\[(?:Floor plan analysis|Image analysis):|\[floor plan or photo\]|\[video\]|\[document\]|\[review screenshot\]/i;
+export function bubbleCarriesMedia(content: string): boolean {
+  return CLIENT_MEDIA_BUBBLE.test(content || "");
+}
+
+// "ok", "sure, one sec", "will do", "gracias", "ya te mando": the client is
+// about to send the photo, or just closing; not a description.
+const REPAIR_SHORT_ACK = /^(?:ok(?:ay|ey)?|k|sure|yes|yeah|yep|yup|alright|will do|sounds good|got it|perfect|great|cool|no problem|no worries|on it|one (?:sec|second|moment|minute)|hold on|hang on|give me (?:a )?(?:sec|second|minute|moment)|let me (?:see|check|take|get|find)|i(?:'?ll| can| will) (?:send|take|get|do)|will send|sending|coming|thanks?(?: you)?|thank u|ty|s[ií]|claro|vale|dale|listo|ahora|un momento|un segundo|ya (?:te )?(?:lo )?(?:mando|env[ií]o)|te (?:la |lo )?mando|ahorita|gracias|sim|t[aá]|beleza|j[aá] (?:te )?mando|um momento|um segundo|s[oó] um (?:momento|segundo|minuto)|vou mandar|obrigad[oa])\b[\s!.,]*[a-z ]{0,25}$/i;
+// An "ok" that carries the repair itself or a price question is an answer,
+// never an ack ("ok the stairs are broken", "ok I want a quote").
+const REPAIR_ACK_VETO = /\b(?:quote|price|cost|estimate|how\s+much|fix|repair|broken|cracked|damaged|steps?|stairs?|tiles?|planks?|boards?|floors?|presupuesto|precio|cu[aá]nto|arreglar|reparar|rot[oa]s?|quebrad[oa]s?|conserto|reparo|quanto|pre[çc]o|or[çc]amento|escal(?:era|ones)|degraus?)\b/i;
+function isRepairShortAck(text: string): boolean {
+  const t = normalizeSmartPunct(text || "").trim();
+  if (!t || /\?/.test(t) || t.split(/\s+/).length > 6 || REPAIR_ACK_VETO.test(t)) return false;
+  return REPAIR_SHORT_ACK.test(t) || isPureClosing(t);
+}
+// "I don't have a photo", "can't send pictures right now", "no tengo foto":
+// nothing more to wait for, the description goes to Ozzi as is. ("no problem,
+// sending the photo" is an ack, not a refusal.)
+const REPAIR_NO_PHOTO = /\b(?:don'?t have|do not have|can'?t (?:send|take|get|upload)|cannot (?:send|take|get|upload)|won'?t be able to (?:send|take)|not able to (?:send|take)|unable to (?:send|take)|no way to (?:send|take))\b[^.!?\n]{0,25}\b(?:photos?|pictures?|pics?|videos?|images?)\b|\bno\s+(?:photos?|pictures?|pics?|videos?)\b|\bno\s+(?:tengo|hay|puedo\s+(?:enviar|mandar|tomar|sacar))\b[^.!?\n]{0,25}\b(?:fotos?|videos?|im[aá]gen(?:es)?)|\bn[aã]o\s+(?:tenho|consigo\s+(?:mandar|enviar|tirar)|posso\s+(?:mandar|enviar)|d[aá]\s+(?:pra|para)\s+(?:mandar|enviar))\b[^.!?\n]{0,25}\b(?:fotos?|v[ií]deos?|imagens?)/i;
+
+type RepairStage = { asks: number; handedOff: boolean; held: boolean };
+// Our flow lines sent since the current repair run began (a run ends when the
+// client pivots to a new floor, exactly as in repairRequestActive).
+function repairStage(history: Array<{ role: string; content: string }>): RepairStage {
+  let active = false;
+  let st: RepairStage = { asks: 0, handedOff: false, held: false };
+  for (const m of history ?? []) {
+    if (m.role === "user") {
+      const t = clientTextForRepair(m.content);
+      if (!t) continue;
+      if (isRepairRequest(t)) {
+        if (!active) st = { asks: 0, handedOff: false, held: false };
+        active = true;
+      } else if (pivotsOffRepair(t)) active = false;
+      continue;
+    }
+    if (m.role !== "assistant" || !active) continue;
+    if (isRepairPhotoAsk(m.content)) st.asks++;
+    if (isRepairHandoffReply(m.content)) st.handedOff = true;
+    if (isRepairHoldReply(m.content)) st.held = true;
+  }
+  return st;
+}
+
+// The client bubbles after our last message (what this turn answers).
+function unansweredClientBubbles(history: Array<{ role: string; content: string }>): string[] {
+  const h = history ?? [];
+  let i = h.length;
+  while (i > 0 && h[i - 1].role === "user") i--;
+  return h.slice(i).map((m) => m.content || "");
+}
+
+// The ask went out and neither the handoff nor a photo came yet: the photo
+// handler of each webhook forwards the picture to the team the moment it
+// lands (before the debounce), so the team sees what Ozzi has to check.
+export function repairAwaitingMedia(history: Array<{ role: string; content: string }>): boolean {
+  if (!repairRequestActive(history)) return false;
+  const st = repairStage(history);
+  return st.asks >= 1 && !st.handedOff;
+}
+
+// The reply for this turn while a repair request stands, null when none
+// stands. "[REACT_ONLY]" = silence (a reaction on the client's message).
+export function repairFlowReply(history: Array<{ role: string; content: string }>, lang: "en" | "es" | "pt"): string | null {
+  if (!repairRequestActive(history)) return null;
+  const st = repairStage(history);
+  const burst = unansweredClientBubbles(history);
+  const burstHasMedia = burst.some(bubbleCarriesMedia);
+  // The client's words only: the media placeholders are not a description.
+  const burstText = burst
+    .map((c) => clientTextForRepair(c).replace(/\[(?:video|document|floor plan or photo|voice message|review screenshot)\]/gi, " ").trim())
+    .filter(Boolean).join(" ").trim();
+  const handoff = repairHandoffMessage(lang) + "[NOTIFY_OWNER]";
+  if (st.handedOff) {
+    if (st.held || !burstText || isRepairShortAck(burstText)) return "[REACT_ONLY]";
+    return repairHoldMessage(lang);
+  }
+  if (st.asks === 0) {
+    // Photo and description in the same burst: nothing left to ask for.
+    return burstHasMedia && burstText ? handoff : repairPhotoAskMessage(lang);
+  }
+  if (burstHasMedia) return handoff;
+  if (!burstText) return "[REACT_ONLY]";
+  if (REPAIR_NO_PHOTO.test(normalizeSmartPunct(burstText))) return handoff;
+  if (isRepairShortAck(burstText)) return "[REACT_ONLY]";
+  return st.asks >= 2 ? handoff : repairPhotoReminderMessage(lang);
+}
+
+// Post-model backstop while a repair request stands: the brain and the three
+// webhooks swap anything that is not a line of the flow (the old decline, a
+// visit offer, a booking-details ask, a price, "Yes we do", a [BOOK]) for the
+// stage's line (repairFlowReply). [REACT_ONLY] and an empty reply pass.
+export function repairVisitOfferLeak(history: Array<{ role: string; content: string }>, aiText: string): boolean {
+  if (!repairRequestActive(history)) return false;
+  const t = (aiText || "").trim();
+  if (!t || /^\[REACT_ONLY\]$/i.test(t)) return false;
+  return !isRepairFlowLine(t) || /\[BOOK:/i.test(t);
+}
+
+// Team alert (notifyOwners → Ozzi, Vinicius, Ruani) on the handoff turn.
+export const REPAIR_HANDOFF_ALERT = "REPARO: o cliente pediu um conserto e mandou a foto/descricao. O bot nao faz reparo pelo chat: disse ao cliente que o Ozzi vai verificar e entrar em contato. Ozzi, Ruani ou Vinicius: avaliem e respondam ao cliente direto pelo app.";
+
+export const REPAIR_REQUEST_NOTE = `CRITICAL, REPAIR REQUEST (owner rule 2026-11-04):
+The client is asking to FIX or REPLACE damaged, broken, cracked, chipped or loose pieces of an EXISTING floor (stairs included). That is a REPAIR. Repairs are NOT handled through this chat: the system itself runs the repair conversation (it asks for a video or a picture of the project plus a description, then tells the client that Ozzi is going to check it and will get back to them, and alerts the team). If you are writing while a repair request stands:
+1. NEVER say we don't do repairs, never decline, never apologize for not doing it, never mention a minimum size. Never "Yes, we do" and never a price either.
+2. If the client has not sent a picture or video yet: ask, in their language, for a video or a picture of the project and a description of exactly what they want, so we can help them better. Example: "Can you send me a video or a picture of the project and describe exactly what you want? That way we can help you better!"
+3. If the picture / video (or the description after that ask) is already in the conversation: say that Ozzi is going to check it and will get back to them, and end with [NOTIFY_OWNER]. Example: "Perfect, thank you! Ozzi is going to check it and will get back to you.[NOTIFY_OWNER]"
+4. NEVER offer, propose or set up a visit or estimate for a repair. NEVER ask for their name, address, phone or zip code. NEVER quote a price or a labor rate. NEVER generate [BOOK:...].
+5. If the same message also asks something unrelated, answer that part briefly in the same message.
+6. Only if the client clearly says they want a whole NEW floor installed (not the damaged pieces fixed) return to the normal flow.
+7. STILL A REPAIR: "replace the damaged part and find a match for the rest" (even if that floor runs through the whole house), and "some planks / boards need to be replaced, I already have boxes of the floor". The job is the damaged section, not a new floor: never "Yes, we do", never a labor rate, never the zip code or the square footage, never Ozzi's number for being small.`;
 
 // ─── Floors we do NOT do: epoxy, concrete/cement, microcement, resin, pavers, terrazzo ───
 // THE BUG (JuanCarlos Briones, IG 2026-09-05 → visit 09-09): "Need floor for new
@@ -5664,6 +5833,20 @@ export async function getAIResponse(
     }
   }
 
+  // REPAIR REQUEST (owner rule 2026-11-04, Sandy Bell IG): while the client's
+  // standing request is a repair the flow is deterministic and the model does
+  // not run: ask for the photo / video + description → handoff to Ozzi with
+  // the team alert → hold. Read BEFORE the first-contact opener so "do you do
+  // repairs?" never gets the type-ask. See repairFlowReply.
+  {
+    const repairLine = repairFlowReply(messages, conversationLang(messages, languageSwitchRequest(messages)?.target));
+    if (repairLine) {
+      const stage = repairLine === "[REACT_ONLY]" ? "silence" : isRepairHandoffReply(repairLine) ? "handoff + team alert" : isRepairHoldReply(repairLine) ? "hold" : "photo ask";
+      console.log(`[AI] repair request standing — deterministic repair flow (${stage})`);
+      return { text: repairLine, inputTokens: 0, outputTokens: 0 };
+    }
+  }
+
   // TYPE FIRST: on first contact, when we do NOT yet know the flooring type
   // (no ad detection, client has not named one), open by asking which of the
   // three types they want — for a bare greeting AND for a generic pricing/promo/
@@ -5905,7 +6088,7 @@ export async function getAIResponse(
 25. CAN BOOK ANY LISTED DAY, INCLUDING FUTURE WEEKS: The REAL-TIME SCHEDULE covers about three weeks ahead. You CAN and SHOULD book next week or the week after when the client wants it. NEVER say you cannot see, access, or open the calendar for a future week, and never say you can only book this week. Any date shown in the schedule is bookable. If the same weekday appears more than once, use the soonest one unless the client says "next week" or names a specific date.
 26. SERVICE AREA HARD GATE (overrides scheduling): We serve ONLY the Miami / South Florida EAST coast, from Homestead up to Jupiter (Miami-Dade, Broward, Palm Beach). We do NOT serve the Gulf / WEST coast at all (Tampa, St. Petersburg, Clearwater, Sarasota, Bradenton, Fort Myers, Cape Coral, Lehigh Acres, Estero, Bonita Springs, Naples, Marco Island, Port Charlotte, Punta Gorda), nor Central and North Florida (Orlando, Windermere, Kissimmee, Davenport, Clermont, Lakeland, Ocala, Jacksonville), nor north of Jupiter (Treasure Coast), nor the Florida Keys south of Homestead. By ZIP code our area is exactly 33000-33499 (330xx-334xx): any other ZIP is out of area, Port St. Lucie excepted, whatever city you think it is, and the city of a ZIP is never asserted. BEFORE proposing a visit, offering any time slot, confirming an appointment, or generating [BOOK:...], you MUST check the client's stated city/address. If it is on the west/Gulf coast or otherwise outside Homestead-to-Jupiter, you MUST NOT book — politely say we only serve the Miami area (the South Florida east coast from Homestead to Jupiter) and we do not cover their area. NEVER generate [BOOK:...] for an out-of-area address under any circumstance. This rule overrides every scheduling instruction.
 27. NO SQFT ARITHMETIC / NO INVENTED TOTALS: NEVER add, subtract, or recompute the client's stated square footage into a different number, and NEVER narrate a calculation out loud (forbidden examples: "that puts you at about 1,600 sqft to cover", "1900 minus 300", "so that's X sqft total"). Do NOT assume some rooms (bathrooms, laundry, kitchen) get a different material and subtract them, the whole job is the same flooring unless the client says otherwise. If you need to reference the size, repeat the client's own number back unchanged. For ANY job of 500 sqft or more, do NOT compute, quote, or restate any sqft total at all, just acknowledge warmly and move to the free in-person visit. Math errors and invented totals destroy trust, so when unsure, say nothing about the number and propose the visit.
-28. BATHROOM RULE (OZZI DIRECT, owner rule 2026-09-11): We DO bathroom remodels (reforma de banheiro, remodelación de baño) and bathroom work (shower, tub, vanity), but they are NOT quoted and NOT scheduled through this chat: Ozzi handles bathroom quotes and appointments personally. When the client asks if we do, offer, or want a bathroom remodel or renovation, any shower / tub / vanity work, a bathroom quote, or simply "do you do bathrooms?": confirm YES we do it in one short clause, then say bathroom quotes and appointments are handled by Ozzi directly and give his number (561) 674-8334, and stop. NEVER quote a bathroom price (not even approximate), NEVER propose or set up a visit, NEVER offer slots, NEVER ask for the name, address, phone or zip for it, NEVER generate [BOOK:...] for it, and never decline it for being small. If the client insists on a price or a visit here, hold the line: you can't give a quote or set anything up for a bathroom through here, it has to go through Ozzi, number repeated. This replaces the old "bathroom remodel = free visit" rule. FLOORING for a single bathroom and nothing else with no size stated is an obviously small area: Ozzi direct as well (rule 18), no need to ask the size; a stated size follows the size rules. A repair of any kind (fixing or replacing damaged tiles, patching) is something we do NOT do and never visit for, see rule 39. If the bathroom comes together with a flooring job for other rooms or the whole house, handle that flooring part by the normal rules and still send the bathroom part to Ozzi.
+28. BATHROOM RULE (OZZI DIRECT, owner rule 2026-09-11): We DO bathroom remodels (reforma de banheiro, remodelación de baño) and bathroom work (shower, tub, vanity), but they are NOT quoted and NOT scheduled through this chat: Ozzi handles bathroom quotes and appointments personally. When the client asks if we do, offer, or want a bathroom remodel or renovation, any shower / tub / vanity work, a bathroom quote, or simply "do you do bathrooms?": confirm YES we do it in one short clause, then say bathroom quotes and appointments are handled by Ozzi directly and give his number (561) 674-8334, and stop. NEVER quote a bathroom price (not even approximate), NEVER propose or set up a visit, NEVER offer slots, NEVER ask for the name, address, phone or zip for it, NEVER generate [BOOK:...] for it, and never decline it for being small. If the client insists on a price or a visit here, hold the line: you can't give a quote or set anything up for a bathroom through here, it has to go through Ozzi, number repeated. This replaces the old "bathroom remodel = free visit" rule. FLOORING for a single bathroom and nothing else with no size stated is an obviously small area: Ozzi direct as well (rule 18), no need to ask the size; a stated size follows the size rules. A repair of any kind (fixing or replacing damaged tiles, patching) is never visited or booked: it goes through the picture-and-Ozzi flow of rule 39. If the bathroom comes together with a flooring job for other rooms or the whole house, handle that flooring part by the normal rules and still send the bathroom part to Ozzi.
 29. ASK THE FLOORING TYPE AT MOST ONCE, NEVER LOOP IT: When you ask which flooring type the client wants, name all three (tile, vinyl, or hardwood) and quote NO price until you know it. Ask this AT MOST ONCE in the whole conversation. If you have already asked it, do NOT ask again and NEVER resend the same "which one, tile, vinyl, or hardwood?" line, that robotic repeat is the single worst thing you can do here. When the type is still unknown and the client asks something specific, first ACKNOWLEDGE or briefly answer what you can, then fold the type question into that SAME short message, so the client never feels ignored, and quote NO dollar figure until you know the type. For a "what is included / what materials / is labor extra" question, give the real reason it depends on the type instead of a bare re-ask, for example: "Good question, it depends on the floor, our vinyl promo already includes the material while tile and hardwood cover the installation labor only, which one are you interested in?" (no prices). For a "how much / how does the pricing work" question with the type still unknown, briefly say the rate depends on the floor type and ask which they want, with NO dollar figure yet. For a process/timeline/warranty/over-tile/service-area question, just ANSWER it and add the type question only if it still fits naturally. If the client keeps replying without naming a type ("ok", "yes", "sure"), STOP asking the type entirely: pivot warmly in one sentence to offering a FREE in-person estimate so we confirm everything and give the exact price on site. NEVER send the client two identical messages.
 30. ANSWER, DON'T DEFLECT-LOOP: When the client asks a real question you can answer (installation process, timeline, warranty, over-tile, service area, website), ANSWER it directly and move forward. Do NOT reply to a specific question with only a generic promotional line or a repeated question, and never hand an easily answerable question to "our specialist / our team". Escalate to Ozzi only for things you genuinely cannot answer, never as a way to avoid a normal question.
 31. PRICE NEGOTIATION RULE: When the client mentions a LOWER price from another company, asks you to lower/match/beat a price, or asks for a discount on a price you already gave: you must NEVER commit to beating or matching any number, NEVER say the final price "may end up lower than" the competitor's, NEVER invent a discount, and NEVER change the promo rates. The ONLY correct reply is ONE sentence saying the team will check the space in person and see if we can get to a better number, plus [NOTIFY_OWNER] so the owners take over the negotiation. Price decisions belong to Ozzi, not to you.
@@ -5913,10 +6096,10 @@ export async function getAIResponse(
 33. EXACTLY TWO SLOTS RULE: When offering visit times, offer exactly TWO concrete options ("Thursday at 9am or 11am"), never three or more in one message. A long slot menu reads desperate and overwhelms the client. Both options come from the SOONEST day in the schedule that has open times (today first, then tomorrow; see SOONEST DAY FIRST in the schedule) and give the client a real choice on that day: the two listed times that fit whatever the client said about when they are free, otherwise that day's EARLIEST and LATEST open times, both read from that day's line in the schedule (a line "3pm, 4pm, 5pm" gives "3pm or 5pm"; a line "9am, 11am, 1pm, 3pm, 5pm, 7pm" gives "9am or 7pm"; a time that is not printed on the line does not exist that day, whatever other days list, so read it on the line before you write it), never its first two hours by default (owner rule 2026-10-15: no preferred hour, the whole day is open to the client). If that day has only one open time, that one plus one open time of the next day. When the day's line lists two or more times, your two options both come from it and you do NOT add another day ('or Saturday at 9am or 11am' on top of Friday's two is four options and is forbidden). Every time on a line is open with someone on the team and there is no order between team members and no preferred hour (owner rules 2026-09-30 and 2026-10-15): the DAY fills, today before tomorrow, and whoever is free takes it. If the client asks for any other time listed on that day's line, it is open, confirm it. The CLIENT AVAILABILITY RULE still applies first.
 34. NO INVENTED COMPANY FACTS: NEVER state years in business, number of installers or crews, business hours, company history, or any company fact that is not written in these rules. If asked, keep it warm and general (the team has deep local experience across South Florida) and steer back to the free visit. Also never assert which city a zip code belongs to.
 35. REPEATED IDENTICAL QUESTION RULE: If the client re-sends the EXACT same question you already answered (typical of a re-tapped ad FAQ button, e.g. "What type of materials are included?" arriving again right after your answer), NEVER output [REACT_ONLY], NEVER stay silent, and NEVER resend your previous answer word-for-word. Send ONE short, DIFFERENTLY-WORDED reply that briefly re-answers and pivots to the free in-person visit (example: "It really depends on the floor you pick, vinyl includes the material while tile and hardwood are labor only, want me to set up your free visit so you can see samples and exact prices?"). If they send the identical question yet again after that, output [REACT_ONLY].
-36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR we decline and never visit for (rule 39).
+36. CRACKED, UNEVEN OR LOOSE TILES UNDER THE "LIQUID" AD: when a client mentions cracked, broken, uneven or loose tiles while asking about the floor from the ad (the one "poured" over old tile), that is NOT a repair request, it is a full vinyl-over-tile installation lead. Answer that our luxury vinyl goes right over the existing tile and covers cracked or uneven tiles cleanly (we assess the surface at the free visit), and move to the estimate. A request to fix or replace the damaged tiles themselves (any number) with no new floor going over them is a REPAIR: never a visit, ask for the picture and hand it to Ozzi (rule 39).
 37. NEVER INVENT PRODUCT SPECS: no plank width, thickness, wear layer, brand, collection, or color name unless it is written in this prompt. If asked for a spec you do not have ("what is the widest plank you have", "how thick is it"), say the estimator brings the samples with the exact specs to the free visit, or hand it to Ozzi with [NOTIFY_OWNER]. Never guess a number.
 38. AFTER "APPOINTMENT CONFIRMED", IF THE CLIENT SAYS THE TIME PASSED OR NOBODY CAME ("it's 5:10 now", "you guys never came", "no one showed up"): NEVER say the slot filled up, was taken, or got moved, and never invent an explanation. Apologize once, tell them to reach Ozzi directly at (561) 674-8334 right away about the visit, and end with [NOTIFY_OWNER]. Do not offer new slots in that same message.
-39. REPAIRS OF ANY KIND ARE DECLINED, NEVER BOOKED: fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks or boards, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. We do NOT do repairs of any kind and the owner never drives out to look at one. Say so politely, mention we only do full installations (projects over 500 sqft), and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair. Replacing the damaged PART of a floor and MATCHING the rest ("find a match", "same floor", the client has leftover boxes of it) IS a repair even when that floor covers the whole house, and a client who already has the material for the damaged planks is STILL asking for a repair: never "Yes, we do", never a labor price, never the zip code or the square footage, never Ozzi's number for being small.
+39. REPAIRS ARE NEVER BOOKED AND NEVER DECLINED (owner rule 2026-11-04): fixing, replacing, re-setting or re-grouting damaged, broken, cracked, chipped or loose tiles, planks, boards or stair steps, patching or leveling a damaged spot, or replacing a damaged section, is a REPAIR no matter how many pieces or how big the spot. Repairs are not handled through this chat: NEVER say we don't do repairs, NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. Ask for a video or a picture of the project and a description of exactly what they want ("Can you send me a video or a picture of the project and describe exactly what you want? That way we can help you better!"); once they sent it, say that Ozzi is going to check it and will get back to them, and add [NOTIFY_OWNER]. A whole NEW floor, a bathroom remodel (Ozzi direct, rule 28), or our vinyl going OVER existing cracked tile (rule 36) is NOT a repair. Replacing the damaged PART of a floor and MATCHING the rest ("find a match", "same floor", the client has leftover boxes of it) IS a repair even when that floor covers the whole house, and a client who already has the material for the damaged planks is STILL asking for a repair: never "Yes, we do", never a labor price, never the zip code or the square footage, never Ozzi's number for being small.
 40. FLOORS WE DO NOT DO, NEVER BOOKED: epoxy floors or coatings, concrete or cement floors of any kind (polished, stained, stamped, poured, self-leveling overlays, skim coats), microcement, resin or metallic floors, pavers, brick or any paving, terrazzo. We ONLY install luxury vinyl plank (wood or stone look, right over existing tile), porcelain and ceramic tile, hardwood, and carpet (plus laminate installation). OUTDOOR AREAS ARE A YES (owner rule 2026-10-31): patio, porch, lanai, balcony, terrace, pool deck, "área externa", "patio de afuera": we DO them with porcelain tile or vinyl, never say we only do indoor floors; decline only epoxy, pavers, cement/concrete or brick for them and offer porcelain tile or vinyl instead. When the client asks for one of those floors or answers the type question with one ("Epoxy", "Micro cemento", "Concrete", "Self leveling concrete"), say politely that we don't do it, name what we DO install, ask if one of those would work, and NEVER propose a visit, ask for the address or phone, quote a price, or generate [BOOK:...] for it. A bare "yes"/"ok" to that question is NOT a floor: ask which one in one short line (this single re-ask is allowed despite rule 29) and offer nothing until a floor we install is named. Concrete as the EXISTING surface or subfloor is a normal lead (our floors go over concrete), and the floor in our ads that clients call "cement over the tile", "the cement one" or microcement IS our luxury vinyl with a stone finish, correct it and continue as a vinyl lead. A photo that shows a concrete, paver or epoxy style floor with no floor of ours named yet: clarify what we install BEFORE any slot or visit. A photo you could not see ("[floor plan or photo]"): never pretend you saw it, ask what it shows and which type they have in mind (this re-ask is allowed despite rule 29).
 41. TILE OVER TILE (owner rule 2026-10-21): a client asking whether we install TILE over their existing tile ("tile over tile", "that tile over tile you guys do", "tile on top of the old tile", "cerámica sobre cerámica") gets YES, as long as the existing tile is in good condition: a leveling compound and a bonding primer go on first, then the new tile on top, and it is confirmed in person at the free visit. It is a TILE job ($4.50/sqft labor only, they buy the tile): NEVER answer it with our vinyl or the $5 promo even if they were looking at vinyl a minute ago, NEVER say the old tile must come out first, and never promise it works without the visit.`;
 
@@ -6419,8 +6602,8 @@ export async function getAIResponse(
     // replaced by the deterministic decline, for every caller of getAIResponse
     // (the three webhooks keep their own copy of this guard as a second net).
     if (repairVisitOfferLeak(messages, cleaned)) {
-      console.warn("[AI] repair request — model offered a visit / [BOOK]; replaced with the no-repairs decline");
-      cleaned = repairDeclineMessage(usersLang());
+      console.warn("[AI] repair request — reply is not a line of the repair flow (visit / [BOOK] / decline / price); replaced with the stage's line");
+      cleaned = repairFlowReply(messages, usersLang()) ?? cleaned;
     }
 
     // FLOOR WE DO NOT DO backstop inside the brain (Briones IG 2026-09-05,

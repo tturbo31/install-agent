@@ -142,6 +142,36 @@ export async function notifyOwnersReviewPhoto(params: {
   );
 }
 
+// REPARO (regra do dono 04/11/2026): o cliente que pediu um conserto recebeu o
+// pedido de foto/vídeo e mandou a foto. Ela vai na hora para o time inteiro
+// (Ozzi, Vinicius e Ruani, os mesmos do alerta "atencao necessaria") com a
+// legenda do caso, para o Ozzi avaliar e responder ao cliente. Se a imagem
+// não sair pela Z-API, vai o texto com o link: o aviso nunca se perde.
+export async function notifyTeamRepairPhoto(params: {
+  platform: string;
+  clientName: string | null;
+  clientId: string;
+  imageUrl: string;
+  analysis?: string | null;
+}): Promise<void> {
+  const { platform, clientName, clientId, imageUrl, analysis } = params;
+  const caption = [
+    `OzziFloors - REPARO: foto do cliente`,
+    ``,
+    `O cliente pediu um conserto e mandou esta foto. O bot nao faz reparo pelo chat: pediu a foto e vai dizer que o Ozzi verifica e retorna. Ozzi, Ruani ou Vinicius: avaliem e respondam ao cliente direto pelo app.`,
+    ``,
+    `Canal: ${platform}`,
+    `Cliente: ${clientName || clientId}`,
+    ...(analysis ? [``, `O que a foto mostra: ${analysis.replace(/\s+/g, " ").slice(0, 300)}`] : []),
+  ].join("\n");
+  await Promise.allSettled(
+    CLIENT_ATTENTION_PHONES.map(async (phone) => {
+      const r = await sendWhatsAppImage(phone, imageUrl, caption);
+      if (!r.ok) await sendWhatsAppMessage(phone, `${caption}\n\nFoto: ${imageUrl}`);
+    })
+  );
+}
+
 export async function downloadZApiImage(imageUrl: string): Promise<string | null> {
   try {
     const res = await fetch(imageUrl, { redirect: "follow" });

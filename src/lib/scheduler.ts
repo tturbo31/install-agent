@@ -3169,15 +3169,54 @@ export async function lookupClientNameByPhone(phone: string | null | undefined):
   }
 }
 
-// We do NOT do repairs of any kind (owner rule 2026-08-25, Priti Budhrani case:
-// a "replace the damaged tiles" request was booked as a visit). Sent by the
-// webhooks when a [BOOK], visit offer or booking-details ask leaks through while
-// the client's standing request is a repair (ai.repairRequestActive).
-export function repairDeclineMessage(lang: Lang): string {
-  if (lang === "pt") return "No momento só fazemos instalações completas, não fazemos reparos de nenhum tipo. Trabalhamos com projetos acima de 500 pés quadrados. Se um dia precisar de um piso novo, é só me chamar!";
+// ─── REPAIR REQUESTS (owner rule 2026-11-04, Sandy Bell IG case) ─────────────
+// Until 2026-11-04 a repair request got a flat decline ("we only do full
+// installations, not repairs of any kind", rule of 2026-08-25). The owner saw
+// that reply to "I need some stairs repaired, laminate cracked, 3 steps" and
+// changed the rule: the bot NEVER says we don't do repairs. It asks for a video
+// or a picture of the project plus a description (his exact words), and once
+// the client sends them it tells the client that Ozzi is going to check it and
+// will get back to them, while the team (Ozzi, Vinicius, Ruani) gets the alert
+// with the photo. Still never a visit, never a price, never a [BOOK] for a
+// repair. The four lines below are the whole client-facing flow
+// (ai.repairFlowReply picks the stage); their wording is what ai.ts matches to
+// know which stage the conversation is in, so change them there too.
+// No "¿ ¡" in Spanish (owner rule 2026-08-28), usted register.
+export function repairPhotoAskMessage(lang: Lang): string {
+  if (lang === "pt") return "Pode me mandar um vídeo ou uma foto do projeto e descrever exatamente o que você quer? Assim a gente consegue te ajudar melhor.";
   return lang === "es"
-    ? "Por el momento solo hacemos instalaciones completas, no hacemos reparaciones de ningún tipo. Trabajamos con proyectos de más de 500 pies cuadrados. Si algún día necesita un piso nuevo, con gusto le ayudo."
-    : "At the moment we only do full installations, we don't do repairs of any kind. We work with projects over 500 square feet. If you ever need a new floor, I'm happy to help!";
+    ? "Me puede enviar un video o una foto del proyecto y describir exactamente lo que quiere? Así podemos ayudarle mejor."
+    : "Can you send me a video or a picture of the project and describe exactly what you want? That way we can help you better!";
+}
+
+// The client answered the ask with words only (a description, a question): one
+// more ask for the picture, then the handoff whatever comes next.
+export function repairPhotoReminderMessage(lang: Lang): string {
+  if (lang === "pt") return "Entendi, obrigado! Pode me mandar também uma foto ou um vídeo curto? Assim a gente consegue te ajudar melhor.";
+  return lang === "es"
+    ? "Perfecto, gracias. Me puede enviar también una foto o un video corto? Así podemos ayudarle mejor."
+    : "Got it, thank you! Could you also send me a picture or a short video of it? That way we can help you better.";
+}
+
+// The photo / video (or the description, after the reminder) is in: the client
+// hears that Ozzi will check it and get back to them. The caller appends
+// [NOTIFY_OWNER] so the team alert goes out in the same turn. This is the ONE
+// place the bot may promise that Ozzi gets back to the client (owner rule
+// 2026-11-04); ai.promisesOwnerContact / redirectOwnerPromiseToPhone exempt it.
+export function repairHandoffMessage(lang: Lang): string {
+  if (lang === "pt") return "Perfeito, obrigado! O Ozzi já vai verificar e entra em contato com você novamente.";
+  return lang === "es"
+    ? "Perfecto, gracias. Ozzi ya lo va a revisar y se pone en contacto con usted de nuevo."
+    : "Perfect, thank you! Ozzi is going to check it and will get back to you.";
+}
+
+// After the handoff the client keeps asking about the repair: said once, then
+// the bot only reacts (the thread is the team's now).
+export function repairHoldMessage(lang: Lang): string {
+  if (lang === "pt") return "O Ozzi já está com tudo e te retorna assim que verificar.";
+  return lang === "es"
+    ? "Ozzi ya lo tiene y se comunica con usted en cuanto lo revise."
+    : "Ozzi already has it and will get back to you as soon as he checks it.";
 }
 
 // We do NOT work in trailers / RVs / campers (owner rule 2026-09-15; since
