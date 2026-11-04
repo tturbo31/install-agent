@@ -160,7 +160,9 @@ export interface BookingResult {
   error?: string;
 }
 
-async function getAuthenticatedClient() {
+// Exportado em 04/11/2026 para a busca do painel (/api/conversations/search)
+// LER as visitas marcadas pelo bot — leitura apenas, nunca escrita de fora daqui.
+export async function getAuthenticatedClient() {
   const db = createClient(SCHEDULER_URL, SCHEDULER_ANON_KEY, {
     auth: { persistSession: false },
   });

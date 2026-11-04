@@ -3,258 +3,385 @@
 import { useState } from "react";
 import Image from "next/image";
 import { ConversationWithLastMessage } from "@/lib/types";
+import {
+  CHANNELS,
+  CHANNEL_LABEL,
+  CHANNEL_TINT,
+  getChannel,
+  getInitials,
+  displayName,
+  waPhoneDigits,
+  formatPhone,
+  type Channel,
+} from "@/lib/channel";
+import {
+  parseSearchQuery,
+  matchConversationLocally,
+  highlightSegments,
+  mergeMatches,
+  scoreOf,
+  cleanClientText,
+  snippetAround,
+  MATCH_LABEL,
+  type ParsedQuery,
+  type SearchMatch,
+} from "@/lib/conversation-search";
+import ChannelIcon from "@/components/ChannelIcon";
+import { useConversationSearch } from "@/components/useConversationSearch";
 
-function getInitials(name: string | null, username: string | null): string {
-  const str = name || username || "?";
-  return str.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
-}
+// Lista de conversas (04/11/2026, skill dashboard-design aplicada):
+//  - a BUSCA fica no topo e cobre todos os canais: nome do perfil, telefone em
+//    qualquer formato, endereço/ZIP ou trecho de mensagem; o que bateu aparece
+//    destacado em cada resultado, com o rótulo da fonte (telefone, endereço…);
+//  - fora da busca, abas por canal (controle segmentado que encolhe, não rola);
+//  - seleção = tinta suave + anel fino; não lida = contador no acento; IA
+//    pausada = anel âmbar no avatar (cor só onde precisa de gente);
+//  - estados: esqueleto ao carregar, uma nota de erro mantendo a lista antiga,
+//    vazio com a dica do que fazer.
 
 function timeAgo(dateStr: string | null | undefined): string {
   if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
+  const d = new Date(dateStr);
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
   if (mins < 1) return "agora";
   if (mins < 60) return `${mins}m`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d`;
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
-function isFacebook(igsid: string): boolean {
-  return igsid?.startsWith("fb_") ?? false;
-}
-
-function isWhatsApp(igsid: string): boolean {
-  return igsid?.startsWith("wa_") ?? false;
-}
-
-function getChannel(igsid: string): "instagram" | "facebook" | "whatsapp" {
-  if (isFacebook(igsid)) return "facebook";
-  if (isWhatsApp(igsid)) return "whatsapp";
-  return "instagram";
-}
-
-type Channel = "instagram" | "facebook" | "whatsapp";
-
-const CHANNEL_META: Record<Channel, {
-  label: string;
-  activeText: string;
-  indicator: string;
-  countBg: string;
-  avatarGradient: string;
-  agentDot: string;
-  selectedRing: string;
-}> = {
-  instagram: {
-    label: "Instagram",
-    activeText: "text-fuchsia-300",
-    indicator: "bg-fuchsia-500",
-    countBg: "bg-fuchsia-500/15 text-fuchsia-300",
-    avatarGradient: "from-purple-500 to-pink-500",
-    agentDot: "bg-fuchsia-400",
-    selectedRing: "ring-fuchsia-500/30",
-  },
-  facebook: {
-    label: "Messenger",
-    activeText: "text-sky-300",
-    indicator: "bg-sky-500",
-    countBg: "bg-sky-500/15 text-sky-300",
-    avatarGradient: "from-sky-500 to-blue-600",
-    agentDot: "bg-sky-400",
-    selectedRing: "ring-sky-500/30",
-  },
-  whatsapp: {
-    label: "WhatsApp",
-    activeText: "text-emerald-300",
-    indicator: "bg-emerald-500",
-    countBg: "bg-emerald-500/15 text-emerald-300",
-    avatarGradient: "from-emerald-500 to-green-600",
-    agentDot: "bg-emerald-400",
-    selectedRing: "ring-emerald-500/30",
-  },
-};
-
-function ChannelIcon({ channel, className }: { channel: Channel; className?: string }) {
-  if (channel === "instagram") {
-    return (
-      <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-        <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
-      </svg>
-    );
+function subLine(conv: ConversationWithLastMessage, channel: Channel): string | null {
+  if (channel === "instagram") return conv.username ? `@${conv.username}` : null;
+  if (channel === "whatsapp") {
+    const phone = formatPhone(waPhoneDigits(conv.igsid));
+    return phone && phone !== conv.name ? phone : null;
   }
-  if (channel === "facebook") {
-    return (
-      <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-        <path d="M12 0C5.24 0 0 4.952 0 11.64c0 3.499 1.434 6.522 3.769 8.61a.96.96 0 01.323.683l.065 2.135a.96.96 0 001.347.849l2.381-1.051a.96.96 0 01.641-.047 13.07 13.07 0 003.474.468c6.76 0 12-4.952 12-11.64C24 4.952 18.76 0 12 0zm7.207 8.957l-3.525 5.593a1.8 1.8 0 01-2.604.48l-2.804-2.103a.72.72 0 00-.868.002l-3.786 2.874c-.505.383-1.165-.221-.826-.759l3.525-5.593a1.8 1.8 0 012.604-.48l2.804 2.103a.72.72 0 00.868-.002l3.786-2.874c.505-.383 1.165.221.826.759z"/>
-      </svg>
-    );
-  }
+  return null;
+}
+
+function Highlighted({ text, q }: { text: string; q: ParsedQuery }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
-    </svg>
+    <>
+      {highlightSegments(text, q).map((s, i) =>
+        s.hit ? (
+          <mark key={i} className="bg-accent/25 text-ink rounded-[3px] px-px">
+            {s.text}
+          </mark>
+        ) : (
+          <span key={i}>{s.text}</span>
+        )
+      )}
+    </>
+  );
+}
+
+/** Uma linha de match: rótulo da fonte + trecho recortado em volta do que bateu. */
+function MatchLine({ m, q }: { m: SearchMatch; q: ParsedQuery }) {
+  // "visita": "12/10 13:00 — nome · telefone · endereço" → data fica, o resto é recortado.
+  const dash = m.kind === "visita" ? m.text.indexOf(" — ") : -1;
+  const prefix = dash > 0 ? m.text.slice(0, dash) : null;
+  const body = dash > 0 ? m.text.slice(dash + 3) : m.text;
+  const shown = m.kind === "nome" ? body : snippetAround(body, q, 20);
+  return (
+    <p className="flex items-center gap-1.5 mt-0.5 text-[12px] text-ink-2 leading-snug min-w-0">
+      <span className="shrink-0 text-[10px] font-medium text-muted ring-1 ring-inset ring-line rounded px-1 leading-4">
+        {MATCH_LABEL[m.kind]}
+      </span>
+      <span className="truncate">
+        {prefix && <span className="text-muted tabular-nums">{prefix} · </span>}
+        <Highlighted text={shown} q={q} />
+      </span>
+    </p>
+  );
+}
+
+function Avatar({
+  conv,
+  channel,
+  showChannel,
+}: {
+  conv: ConversationWithLastMessage;
+  channel: Channel;
+  showChannel: boolean;
+}) {
+  const tint = CHANNEL_TINT[channel];
+  const paused = conv.mode === "human";
+  return (
+    <div className="relative shrink-0" aria-label={paused ? "IA pausada nesta conversa" : undefined} title={paused ? "IA pausada — atendimento manual" : undefined}>
+      {conv.profile_pic ? (
+        <Image
+          src={conv.profile_pic}
+          alt=""
+          width={40}
+          height={40}
+          className={`w-10 h-10 rounded-full object-cover ${paused ? "ring-2 ring-warn" : ""}`}
+          unoptimized
+        />
+      ) : (
+        <div
+          className={`w-10 h-10 rounded-full grid place-items-center text-[13px] font-semibold ${tint.bg} ${tint.text} ${
+            paused ? "ring-2 ring-warn" : ""
+          }`}
+        >
+          {getInitials(conv.name, conv.username)}
+        </div>
+      )}
+      {showChannel && (
+        <span
+          title={CHANNEL_LABEL[channel]}
+          className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-page grid place-items-center ${tint.text}`}
+        >
+          <ChannelIcon channel={channel} className="w-3 h-3" />
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SkeletonRows() {
+  return (
+    <div aria-hidden className="space-y-px animate-pulse">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="px-2.5 py-2.5 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-soft shrink-0" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 rounded bg-soft w-1/2" />
+            <div className="h-2.5 rounded bg-soft w-4/5" />
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
 interface Props {
-  conversations: ConversationWithLastMessage[];
+  /** null = primeira carga ainda não chegou. */
+  conversations: ConversationWithLastMessage[] | null;
+  listError: string | null;
+  onRetry: () => void;
   selectedId: string | null;
   onSelect: (conv: ConversationWithLastMessage) => void;
   unreadMap?: Record<string, number>;
 }
 
-export default function ConversationSidebar({ conversations, selectedId, onSelect, unreadMap = {} }: Props) {
+type Row = { conv: ConversationWithLastMessage; matches: SearchMatch[]; score: number };
+
+export default function ConversationSidebar({
+  conversations,
+  listError,
+  onRetry,
+  selectedId,
+  onSelect,
+  unreadMap = {},
+}: Props) {
   const [tab, setTab] = useState<Channel>("instagram");
   const [query, setQuery] = useState("");
 
-  const counts: Record<Channel, number> = {
-    instagram: conversations.filter((c) => getChannel(c.igsid) === "instagram").length,
-    facebook: conversations.filter((c) => getChannel(c.igsid) === "facebook").length,
-    whatsapp: conversations.filter((c) => getChannel(c.igsid) === "whatsapp").length,
-  };
+  const parsed = parseSearchQuery(query);
+  const searching = parsed.mode !== "none";
+  const server = useConversationSearch(query);
+  const loaded = conversations ?? [];
 
-  const q = query.trim().toLowerCase();
-  const filtered = conversations
-    .filter((c) => getChannel(c.igsid) === tab)
-    .filter((c) => {
-      if (!q) return true;
-      return (
-        (c.name ?? "").toLowerCase().includes(q) ||
-        (c.username ?? "").toLowerCase().includes(q) ||
-        (c.last_message ?? "").toLowerCase().includes(q)
-      );
-    });
+  const counts: Record<Channel, number> = { instagram: 0, facebook: 0, whatsapp: 0 };
+  for (const c of loaded) counts[getChannel(c.igsid)]++;
+
+  let rows: Row[];
+  if (!searching) {
+    rows = loaded.filter((c) => getChannel(c.igsid) === tab).map((conv) => ({ conv, matches: [], score: 0 }));
+  } else {
+    const map = new Map<string, Row>();
+    for (const conv of loaded) {
+      const m = matchConversationLocally(conv, parsed);
+      if (m) map.set(conv.id, { conv, matches: [m], score: 0 });
+    }
+    for (const r of server.results) {
+      const existing = map.get(r.conversation.id);
+      const conv = existing?.conv ?? loaded.find((c) => c.id === r.conversation.id) ?? r.conversation;
+      map.set(r.conversation.id, { conv, matches: mergeMatches(existing?.matches, r.matches), score: 0 });
+    }
+    const t = (c: ConversationWithLastMessage) => new Date(c.last_message_at ?? c.updated_at).getTime();
+    rows = [...map.values()]
+      .map((r) => ({ ...r, score: scoreOf(r.matches) }))
+      .sort((a, b) => b.score - a.score || t(b.conv) - t(a.conv));
+  }
+
+  const resultWord = rows.length === 1 ? "resultado" : "resultados";
 
   return (
-    <aside className="w-full flex flex-col h-full min-h-0">
-      {/* Channel tabs */}
-      <div className="flex shrink-0 border-b border-white/[0.06] px-2 pt-1">
-        {(Object.keys(CHANNEL_META) as Channel[]).map((ch) => {
-          const meta = CHANNEL_META[ch];
-          const active = tab === ch;
-          return (
-            <button
-              key={ch}
-              onClick={() => setTab(ch)}
-              className={`relative flex-1 min-w-0 h-11 flex items-center justify-center gap-1.5 text-xs font-semibold rounded-t-lg transition-colors ${
-                active ? `${meta.activeText} bg-white/[0.04]` : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <ChannelIcon channel={ch} className="w-4 h-4" />
-              <span className="hidden sm:inline lg:hidden xl:inline truncate">{meta.label}</span>
-              {counts[ch] > 0 && (
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none ${meta.countBg}`}>
-                  {counts[ch]}
-                </span>
-              )}
-              {active && <span className={`absolute bottom-0 inset-x-3 h-0.5 rounded-full ${meta.indicator}`} />}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Search */}
-      <div className="shrink-0 px-3 pt-3 pb-1.5">
-        <div className="relative">
+    <aside className="w-full flex flex-col h-full min-h-0 bg-side">
+      {/* Busca — o que o dono mais usa fica em cima, à esquerda */}
+      <div className="shrink-0 px-3 pt-3 pb-2">
+        <label className="relative block">
+          <span className="sr-only">Buscar cliente por nome, telefone ou endereço</span>
           <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
           </svg>
           <input
+            type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar conversa..."
-            className="w-full h-10 rounded-xl bg-zinc-900 border border-white/[0.08] pl-9 pr-3 text-base lg:text-sm text-white placeholder:text-zinc-500 outline-none focus:border-fuchsia-500/40 focus:ring-2 focus:ring-fuchsia-500/15 transition-colors"
+            onKeyDown={(e) => { if (e.key === "Escape") setQuery(""); }}
+            placeholder="Nome, telefone ou endereço"
+            autoComplete="off"
+            spellCheck={false}
+            enterKeyHint="search"
+            className="w-full h-10 rounded-xl bg-card border border-line pl-9 pr-9 text-base lg:text-[14px] text-ink placeholder:text-muted outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/20 transition-colors"
           />
-        </div>
+          {query && (
+            <span className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center">
+              {server.status === "loading" ? (
+                <span
+                  role="status"
+                  aria-label="Buscando no histórico"
+                  className="w-7 h-7 grid place-items-center text-muted"
+                >
+                  <span className="w-3.5 h-3.5 rounded-full border-2 border-line-strong border-t-accent animate-spin" />
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  aria-label="Limpar busca"
+                  title="Limpar busca (Esc)"
+                  className="w-7 h-7 grid place-items-center rounded-lg text-muted hover:text-ink hover:bg-soft transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.25}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </span>
+          )}
+        </label>
+        {searching && (
+          <p className="flex flex-wrap items-center gap-x-1.5 px-1 pt-2 text-[12px] text-muted tabular-nums" aria-live="polite">
+            <span>{rows.length} {resultWord} · todos os canais</span>
+            {server.status === "error" && (
+              <span className="text-down" title="A busca no histórico de mensagens e na agenda falhou; só o que já está na lista foi conferido.">· histórico indisponível</span>
+            )}
+            {server.status === "ok" && server.partial && (
+              <span className="text-warn" title="Uma das fontes (agenda ou funil) não respondeu; o resultado pode estar incompleto.">· parcial</span>
+            )}
+          </p>
+        )}
       </div>
 
-      {/* Conversation list */}
-      <div className="flex-1 overflow-y-auto px-2 py-1.5 space-y-0.5">
-        {filtered.length === 0 && (
-          <div className="flex flex-col items-center gap-3 px-6 py-12 text-center animate-fade-in">
-            <div className="w-12 h-12 rounded-2xl bg-white/[0.04] border border-white/[0.06] grid place-items-center text-zinc-500">
-              <ChannelIcon channel={tab} className="w-6 h-6" />
-            </div>
-            <p className="text-zinc-400 text-sm">
-              {q
-                ? "Nenhuma conversa encontrada para essa busca"
-                : `Nenhuma conversa no ${CHANNEL_META[tab].label} ainda`}
+      {/* Abas por canal — somem na busca, que cobre todos os canais */}
+      {!searching && (
+        <div role="tablist" aria-label="Canal" className="flex shrink-0 gap-1 px-3 pb-2">
+          {CHANNELS.map((ch) => {
+            const active = tab === ch;
+            return (
+              <button
+                key={ch}
+                role="tab"
+                aria-selected={active}
+                title={CHANNEL_LABEL[ch]}
+                onClick={() => setTab(ch)}
+                className={`flex-1 min-w-0 h-9 flex items-center justify-center gap-1.5 rounded-lg text-[13px] font-medium transition-colors ${
+                  active
+                    ? "bg-accent/[.08] text-ink ring-1 ring-inset ring-accent/20"
+                    : "text-muted hover:bg-soft hover:text-ink-2"
+                }`}
+              >
+                <ChannelIcon channel={ch} className={`w-4 h-4 shrink-0 ${active ? CHANNEL_TINT[ch].text : ""}`} />
+                <span className="hidden sm:inline lg:hidden xl:inline truncate">{CHANNEL_LABEL[ch]}</span>
+                {counts[ch] > 0 && (
+                  <span className={`tabular-nums text-[11px] leading-none ${active ? "text-ink-2" : "text-muted"}`}>{counts[ch]}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {listError && (
+        <div role="alert" className="mx-3 mb-2 shrink-0 flex items-center justify-between gap-2 rounded-lg bg-down/10 text-down text-[12px] px-3 py-2">
+          <span>{listError}</span>
+          <button type="button" onClick={onRetry} className="font-medium underline-offset-2 hover:underline shrink-0">
+            Tentar de novo
+          </button>
+        </div>
+      )}
+
+      {/* Lista */}
+      <div className="flex-1 overflow-y-auto px-2 pb-2">
+        {conversations === null && !listError && <SkeletonRows />}
+
+        {conversations !== null && rows.length === 0 && (
+          <div className="px-6 py-12 text-center">
+            <p className="text-ink-2 text-[14px] font-medium">
+              {searching ? `Nenhum cliente com “${parsed.raw}”` : `Nenhuma conversa no ${CHANNEL_LABEL[tab]} ainda`}
+            </p>
+            <p className="text-muted text-[13px] mt-1.5 leading-relaxed">
+              {searching
+                ? server.status === "loading"
+                  ? "Conferindo o histórico de mensagens e a agenda…"
+                  : "Tente só os 4 últimos dígitos do telefone, o número da casa ou o @ do perfil."
+                : "As conversas aparecem aqui assim que um cliente mandar mensagem."}
             </p>
           </div>
         )}
-        {filtered.map((conv) => {
+
+        <ul data-list="conversations" aria-label={searching ? "Resultados da busca" : `Conversas no ${CHANNEL_LABEL[tab]}`} className="space-y-px">
+        {rows.map(({ conv, matches }) => {
           const isSelected = conv.id === selectedId;
           const channel = getChannel(conv.igsid);
-          const meta = CHANNEL_META[channel];
           const unread = unreadMap[conv.id] ?? 0;
-          const fallbackLabel = channel === "facebook" ? "Cliente Messenger" : channel === "whatsapp" ? "Cliente WhatsApp" : conv.igsid;
-          const subLabel = channel === "instagram" ? (conv.username ? `@${conv.username}` : null) : meta.label;
+          const last = cleanClientText(conv.last_message);
+          const sub = subLine(conv, channel);
           return (
+            <li key={conv.id}>
             <button
-              key={conv.id}
+              type="button"
+              aria-current={isSelected ? "true" : undefined}
               onClick={() => onSelect(conv)}
-              className={`w-full text-left px-2.5 py-2.5 flex items-center gap-3 rounded-xl transition-colors ${
-                isSelected
-                  ? `bg-white/[0.07] ring-1 ${meta.selectedRing}`
-                  : "hover:bg-white/[0.04] active:bg-white/[0.06]"
+              className={`w-full text-left px-2.5 py-2.5 flex items-start gap-3 rounded-xl transition-colors ${
+                isSelected ? "bg-accent/[.07] ring-1 ring-inset ring-accent/20" : "hover:bg-soft/70 active:bg-soft"
               }`}
             >
-              {/* Avatar */}
-              <div className="relative shrink-0">
-                {conv.profile_pic ? (
-                  <Image
-                    src={conv.profile_pic}
-                    alt={conv.name ?? "Cliente"}
-                    width={44}
-                    height={44}
-                    className="w-11 h-11 rounded-full object-cover"
-                    unoptimized
-                  />
-                ) : (
-                  <div className={`w-11 h-11 rounded-full grid place-items-center text-white text-sm font-bold bg-gradient-to-br ${meta.avatarGradient}`}>
-                    {getInitials(conv.name, conv.username)}
-                  </div>
-                )}
-                <span
-                  title={conv.mode === "agent" ? "IA respondendo" : "Atendimento manual"}
-                  className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-zinc-950 ${
-                    conv.mode === "agent" ? meta.agentDot : "bg-amber-400"
-                  }`}
-                />
-              </div>
+              <Avatar conv={conv} channel={channel} showChannel={searching} />
 
-              {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className={`text-sm truncate ${unread > 0 ? "text-white font-semibold" : "text-zinc-100 font-medium"}`}>
-                    {conv.name ?? conv.username ?? fallbackLabel}
+                  <span className={`text-[14px] truncate text-ink ${unread > 0 ? "font-semibold" : "font-medium"}`}>
+                    {displayName(conv, channel)}
                   </span>
-                  <span className="text-zinc-500 text-[11px] shrink-0 tabular-nums">
+                  <span className="text-muted text-[11px] shrink-0 tabular-nums">
                     {timeAgo(conv.last_message_at ?? conv.updated_at)}
                   </span>
                 </div>
-                {subLabel && (
-                  <p className="text-zinc-500 text-[11px] truncate leading-tight">{subLabel}</p>
-                )}
-                {conv.last_message && (
-                  <p className={`text-xs truncate mt-0.5 ${unread > 0 ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>
-                    {conv.last_message}
-                  </p>
+
+                {searching ? (
+                  matches.slice(0, 2).map((m, i) => <MatchLine key={i} m={m} q={parsed} />)
+                ) : (
+                  <>
+                    {sub && <p className="text-muted text-[12px] truncate leading-snug tabular-nums">{sub}</p>}
+                    {last && (
+                      <p className={`text-[13px] truncate mt-0.5 ${unread > 0 ? "text-ink-2 font-medium" : "text-muted"}`}>{last}</p>
+                    )}
+                  </>
                 )}
               </div>
 
-              {/* Unread badge */}
               {unread > 0 && (
-                <span className="shrink-0 bg-red-600 text-white text-[11px] font-bold min-w-[20px] h-5 px-1 rounded-full grid place-items-center">
+                <span
+                  aria-label={`${unread} ${unread === 1 ? "mensagem nova" : "mensagens novas"}`}
+                  className="shrink-0 mt-0.5 bg-accent text-on-accent text-[11px] font-semibold min-w-5 h-5 px-1.5 rounded-full grid place-items-center tabular-nums"
+                >
                   {unread}
                 </span>
               )}
             </button>
+            </li>
           );
         })}
+        </ul>
       </div>
     </aside>
   );

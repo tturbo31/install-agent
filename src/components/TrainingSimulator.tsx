@@ -46,12 +46,12 @@ function toApiMessages(messages: TrainingMessage[]): ApiChatMessage[] {
 
 function ThinkingBubble() {
   return (
-    <div className="flex flex-col items-start gap-1 animate-fade-in">
-      <span className="text-[11px] font-semibold text-zinc-500 px-1">IA</span>
-      <div className="bg-zinc-800 rounded-2xl rounded-tl-md px-4 py-3.5 flex gap-1.5 items-center">
-        <span className="w-2 h-2 rounded-full bg-zinc-400 animate-bounce [animation-delay:0ms]" />
-        <span className="w-2 h-2 rounded-full bg-zinc-400 animate-bounce [animation-delay:150ms]" />
-        <span className="w-2 h-2 rounded-full bg-zinc-400 animate-bounce [animation-delay:300ms]" />
+    <div className="flex flex-col items-start gap-1" role="status" aria-label="A IA está escrevendo">
+      <span className="text-[11px] font-medium text-muted px-1">IA</span>
+      <div className="bg-accent/[.14] ring-1 ring-inset ring-accent/15 rounded-2xl rounded-tl-md px-4 py-3.5 flex gap-1.5 items-center">
+        <span className="w-2 h-2 rounded-full bg-muted animate-bounce [animation-delay:0ms]" />
+        <span className="w-2 h-2 rounded-full bg-muted animate-bounce [animation-delay:150ms]" />
+        <span className="w-2 h-2 rounded-full bg-muted animate-bounce [animation-delay:300ms]" />
       </div>
     </div>
   );
@@ -96,9 +96,9 @@ function MessageBubble({
 
   if (isUser) {
     return (
-      <div className="flex flex-col items-end gap-1 animate-fade-in">
-        <span className="text-[11px] font-semibold text-zinc-500 px-1">Cliente (você)</span>
-        <div className="bg-gradient-to-br from-violet-600 to-fuchsia-600 text-white rounded-2xl rounded-tr-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed whitespace-pre-wrap break-words shadow-lg shadow-fuchsia-950/25">
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-[11px] font-medium text-muted px-1">Cliente (você)</span>
+        <div className="bg-soft text-ink rounded-2xl rounded-tr-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-[14px] leading-relaxed whitespace-pre-wrap break-words">
           {msg.content}
         </div>
       </div>
@@ -106,31 +106,28 @@ function MessageBubble({
   }
 
   // Assistant bubble
-  const borderClass =
-    msg.status === "corrected"
-      ? "border border-red-400/50"
-      : "border border-transparent";
+  const wrong = msg.status === "corrected";
 
   return (
-    <div className="flex flex-col items-start gap-1 animate-fade-in">
-      <span className="text-[11px] font-semibold text-zinc-500 px-1">IA</span>
+    <div className="flex flex-col items-start gap-1">
+      <span className="text-[11px] font-medium text-muted px-1">IA</span>
 
-      {/* Original AI bubble */}
+      {/* Resposta original */}
       <div
-        className={`bg-zinc-800 text-zinc-50 rounded-2xl rounded-tl-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed whitespace-pre-wrap break-words ${borderClass}`}
+        className={`rounded-2xl rounded-tl-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-[14px] leading-relaxed whitespace-pre-wrap break-words text-ink ring-1 ring-inset ${
+          wrong ? "bg-down/[.08] ring-down/40" : "bg-accent/[.14] ring-accent/15"
+        }`}
       >
-        {msg.status === "corrected" && (
-          <p className="text-red-300 text-xs font-semibold mb-1">Resposta incorreta</p>
-        )}
+        {wrong && <p className="text-down text-[12px] font-medium mb-1">Resposta incorreta</p>}
         {msg.content}
       </div>
 
-      {/* Action buttons — only shown while pending */}
+      {/* Ações — só enquanto pendente */}
       {msg.status === "pending" && sandboxId && (
         <div className="flex gap-2 ml-1 mt-0.5">
           <button
             onClick={() => onMarkGood(msg.id)}
-            className="flex items-center gap-1.5 h-9 px-3.5 rounded-full text-xs font-semibold text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-400/25 transition-all active:scale-95"
+            className="flex items-center gap-1.5 h-8 px-3 rounded-full text-[12px] font-medium text-up bg-up/10 hover:bg-up/20 ring-1 ring-inset ring-up/25 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
@@ -139,7 +136,7 @@ function MessageBubble({
           </button>
           <button
             onClick={() => onStartCorrect(msg.id)}
-            className="flex items-center gap-1.5 h-9 px-3.5 rounded-full text-xs font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-400/25 transition-all active:scale-95"
+            className="flex items-center gap-1.5 h-8 px-3 rounded-full text-[12px] font-medium text-warn bg-warn/10 hover:bg-warn/20 ring-1 ring-inset ring-warn/25 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 11l6-6 3 3-6 6H9v-3z" />
@@ -149,7 +146,7 @@ function MessageBubble({
         </div>
       )}
 
-      {/* Correction textarea */}
+      {/* Caixa de correção */}
       {msg.status === "correcting" && (
         <div className="w-full max-w-[85%] sm:max-w-[75%] mt-1 ml-1 space-y-2 animate-fade-in">
           <textarea
@@ -158,31 +155,31 @@ function MessageBubble({
             onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setCorrectionText(e.target.value)}
             placeholder="Como deveria ter respondido?"
             rows={3}
-            className="w-full bg-zinc-900 border border-amber-500/30 focus:border-amber-400/60 rounded-xl px-3 py-2.5 text-base lg:text-sm text-white placeholder:text-zinc-500 outline-none focus:ring-2 focus:ring-amber-500/15 resize-none transition-colors"
+            className="w-full bg-card border border-warn/40 rounded-xl px-3 py-2.5 text-base lg:text-[14px] text-ink placeholder:text-muted outline-none focus:border-warn focus:ring-2 focus:ring-warn/20 resize-none transition-colors"
           />
           <div className="flex gap-2">
             <button
               onClick={() => onCancelCorrect(msg.id)}
-              className="h-9 px-3.5 rounded-full text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 border border-white/10 transition-colors"
+              className="h-8 px-3 rounded-full text-[12px] font-medium text-ink-2 hover:text-ink bg-card hover:bg-soft border border-line transition-colors"
             >
               Cancelar
             </button>
             <button
               onClick={handleSave}
               disabled={!correctionText.trim() || isSaving}
-              className="h-9 px-3.5 rounded-full text-xs font-bold text-zinc-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="h-8 px-3 rounded-full text-[12px] font-semibold text-on-warn bg-warn hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {isSaving ? "Salvando..." : "Salvar correção"}
+              {isSaving ? "Salvando…" : "Salvar correção"}
             </button>
           </div>
         </div>
       )}
 
-      {/* Corrected replacement bubble */}
+      {/* Resposta corrigida */}
       {msg.status === "corrected" && msg.correctedContent && (
         <div className="flex flex-col items-start gap-1 mt-1 animate-fade-in">
-          <div className="bg-emerald-500/10 border border-emerald-400/30 text-emerald-100 rounded-2xl rounded-tl-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-sm leading-relaxed whitespace-pre-wrap break-words">
-            <p className="text-emerald-300 text-xs font-semibold mb-1">✓ Correção salva</p>
+          <div className="bg-up/10 ring-1 ring-inset ring-up/25 text-ink rounded-2xl rounded-tl-md px-4 py-2.5 max-w-[85%] sm:max-w-[75%] text-[14px] leading-relaxed whitespace-pre-wrap break-words">
+            <p className="text-up text-[12px] font-medium mb-1">Correção salva</p>
             {msg.correctedContent}
           </div>
         </div>
@@ -375,55 +372,46 @@ export default function TrainingSimulator() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between gap-3 px-3 sm:px-5 py-3.5 border-b border-white/[0.06] bg-zinc-900/60 backdrop-blur-md">
+      {/* Cabeçalho */}
+      <div className="shrink-0 flex items-center justify-between gap-3 px-3 sm:px-5 h-14 lg:h-16 border-b border-line bg-page">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 border border-white/10 grid place-items-center shrink-0">
-            <svg className="w-5 h-5 text-fuchsia-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <div className="w-9 h-9 rounded-xl bg-soft ring-1 ring-inset ring-line grid place-items-center shrink-0 text-ink-2">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.63 48.63 0 0112 20.904a48.63 48.63 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15a.75.75 0 100-1.5.75.75 0 000 1.5zm0 0v-3.675A55.378 55.378 0 0112 8.443m-7.007 11.55A5.981 5.981 0 006.75 15.75v-1.5" />
             </svg>
           </div>
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-white tracking-tight leading-tight">Simulador de IA</h2>
-            <p className="text-[11px] text-zinc-400 leading-tight mt-0.5 truncate">
-              Escreva como cliente · A IA responde como no direct · Corrija quando errar
-            </p>
+          <div className="min-w-0" title="Escreva como um cliente; a IA responde como no direct. Corrija quando errar.">
+            <h2 className="text-[14px] font-semibold text-ink tracking-tight leading-tight">Simulador</h2>
+            <p className="text-[12px] text-muted leading-tight mt-0.5 truncate">Treino sem cliente real</p>
           </div>
         </div>
         <button
           onClick={handleNewSession}
-          className="flex items-center gap-1.5 h-9 px-3 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-800 hover:bg-zinc-700 border border-white/10 transition-all active:scale-95 shrink-0"
+          className="flex items-center gap-1.5 h-8 px-3 rounded-full border border-line bg-card hover:bg-soft text-ink-2 text-[12px] font-medium transition-colors shrink-0"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
           </svg>
           <span className="hidden sm:inline">Nova sessão</span>
         </button>
       </div>
 
-      {/* Message area */}
+      {/* Mensagens */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-5">
         <div className="max-w-3xl mx-auto w-full space-y-4 min-h-full flex flex-col justify-end">
         {messages.length === 0 && !isLoading ? (
-          /* Empty state */
-          <div className="flex-1 flex flex-col items-center justify-center gap-5 text-center py-10 animate-fade-in">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/15 to-fuchsia-500/15 border border-white/10 grid place-items-center">
-              <svg className="w-8 h-8 text-fuchsia-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-              </svg>
-            </div>
+          /* Vazio: diz o que fazer e dá por onde começar */
+          <div className="flex-1 flex flex-col items-center justify-center gap-5 text-center py-10">
             <div>
-              <p className="text-base font-semibold text-white tracking-tight">Simule uma conversa de cliente</p>
-              <p className="text-sm text-zinc-400 mt-1 max-w-xs">
-                A IA vai responder exatamente como faria no Instagram ou WhatsApp
-              </p>
+              <p className="text-[15px] font-semibold text-ink tracking-tight">Escreva como um cliente escreveria</p>
+              <p className="text-[13px] text-muted mt-1 max-w-xs">A IA responde exatamente como no Instagram, Messenger ou WhatsApp.</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2 max-w-md">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
                   onClick={() => setInputText(s)}
-                  className="text-xs font-medium text-zinc-200 bg-zinc-800/80 hover:bg-zinc-700 border border-white/10 px-3.5 py-2.5 rounded-full transition-all active:scale-95"
+                  className="text-[12px] font-medium text-ink-2 bg-card hover:bg-soft border border-line px-3.5 py-2 rounded-full transition-colors"
                 >
                   {s}
                 </button>
@@ -450,24 +438,25 @@ export default function TrainingSimulator() {
         </div>
       </div>
 
-      {/* Input area */}
-      <div className="shrink-0 border-t border-white/[0.06] bg-zinc-900/60 backdrop-blur-md px-3 sm:px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      {/* Caixa de envio */}
+      <div className="shrink-0 border-t border-line bg-page px-3 sm:px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="max-w-3xl mx-auto w-full">
-          {/* Image preview */}
+          {/* Prévia da imagem */}
           {imagePreview && (
             <div className="mb-2 flex items-center gap-2 animate-fade-in">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={imagePreview}
-                alt="Preview"
-                className="h-14 w-14 object-cover rounded-xl border border-white/10"
+                alt="Imagem anexada"
+                className="h-14 w-14 object-cover rounded-xl ring-1 ring-line"
               />
               <button
                 onClick={handleRemoveImage}
-                className="w-9 h-9 grid place-items-center rounded-lg text-zinc-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                className="w-8 h-8 grid place-items-center rounded-lg text-muted hover:text-down hover:bg-down/10 transition-colors"
                 aria-label="Remover imagem"
+                title="Remover imagem"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
@@ -475,11 +464,12 @@ export default function TrainingSimulator() {
           )}
 
           <div className="flex items-end gap-2">
-            {/* Image upload button */}
+            {/* Anexar imagem */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="shrink-0 w-12 h-12 grid place-items-center rounded-2xl bg-zinc-800 hover:bg-zinc-700 border border-white/[0.08] text-zinc-400 hover:text-zinc-200 transition-all active:scale-95"
+              className="shrink-0 w-12 h-12 grid place-items-center rounded-2xl bg-card hover:bg-soft border border-line text-muted hover:text-ink transition-colors"
               aria-label="Anexar imagem"
+              title="Anexar imagem (planta ou foto do piso)"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
@@ -493,22 +483,23 @@ export default function TrainingSimulator() {
               onChange={handleImageSelect}
             />
 
-            {/* Text input — 16px on mobile prevents iOS auto-zoom */}
+            {/* Texto — 16px no celular evita o zoom do iOS */}
             <textarea
               ref={inputRef}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Escreva como um cliente..."
+              placeholder="Escreva como um cliente…"
+              title="Enter envia · Shift+Enter quebra a linha"
               rows={1}
-              className="flex-1 min-h-12 max-h-40 bg-zinc-800 border border-white/[0.08] focus:border-fuchsia-500/40 focus:ring-2 focus:ring-fuchsia-500/15 rounded-2xl px-4 py-3 text-base lg:text-sm text-white placeholder:text-zinc-500 outline-none resize-none transition-colors overflow-y-auto"
+              className="flex-1 min-h-12 max-h-40 bg-card border border-line focus:border-accent/50 focus:ring-2 focus:ring-accent/20 rounded-2xl px-4 py-3 text-base lg:text-[14px] text-ink placeholder:text-muted outline-none resize-none transition-colors overflow-y-auto"
             />
 
-            {/* Send button */}
+            {/* Enviar */}
             <button
               onClick={handleSend}
               disabled={(!inputText.trim() && !imageBase64) || isLoading}
-              className="shrink-0 w-12 h-12 grid place-items-center rounded-2xl bg-gradient-to-br from-violet-600 to-fuchsia-600 hover:brightness-110 text-white shadow-lg shadow-fuchsia-950/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 active:scale-95"
+              className="shrink-0 w-12 h-12 grid place-items-center rounded-2xl bg-accent text-on-accent hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               aria-label="Enviar"
             >
               <svg className="w-5 h-5 -ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -516,10 +507,6 @@ export default function TrainingSimulator() {
               </svg>
             </button>
           </div>
-
-          <p className="hidden sm:block text-[11px] text-zinc-500 mt-2 text-center">
-            Enter para enviar · Shift+Enter para nova linha
-          </p>
         </div>
       </div>
     </div>
