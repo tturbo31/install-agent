@@ -6123,6 +6123,13 @@ export async function getAIResponse(
     dynamicSystem += `\n\n---\n\nCRITICAL — BOOKING ALREADY CONFIRMED:\nThe conversation is over. Do NOT answer any question or continue the conversation.\n- For ANY message — thank-you, question, or anything else — respond with ONE sentence redirecting to Ozzi, then add [NOTIFY_OWNER]\n- Required format: "For anything else, you can reach Ozzi directly at (561) 674-8334![NOTIFY_OWNER]"\n- NEVER say that Ozzi, the team or anyone will reach out, call or get back to them: give the number above instead\n- NEVER generate [BOOK:...] under any circumstance\n- NEVER answer questions about time, address, arrival, or any topic\n- NEVER say any slot is taken or unavailable\n- NEVER use any person's name other than Ozzi`;
   }
 
+  // BILLING ONLY (05/11/2026): everything appended to dynamicSystem from here
+  // on is a per-conversation note (repair, size, bathroom, stale thread, ...)
+  // that makes the dynamic block unique to this call. The cache breakpoint
+  // sits on this shared prefix (see systemBlocks); the notes ride after it,
+  // billed as plain input, and the model reads exactly the same text.
+  const dynamicFixed = dynamicSystem;
+
   // REPAIR REQUEST standing → the no-repairs block, read last (Priti, 2026-08-24).
   if (repairRequestActive(messages)) {
     console.log("[AI] Repair request active — injecting the no-repairs block");
@@ -6276,33 +6283,17 @@ export async function getAIResponse(
       // sentence answers are unaffected; the stop_reason guard below salvages any
       // reply that still hits the limit.
       max_tokens: 600,
-      // Three cache breakpoints (all zero-behavior-change, billing only):
-      // 1. Stable system block — shared by EVERY conversation on EVERY channel,
-      //    so any message from any client within the TTL of the previous one
-      //    reads the big base prompt at ~10% price.
-      // 2. Last message — caches the per-client system remainder + conversation
-      //    history, so a client's next reply in an active back-and-forth re-reads
-      //    the whole conversation prefix from cache instead of re-billing it.
-      // (2b. The dynamic block also carries a breakpoint: for brand-new leads it
-      // is byte-identical across conversations — memory/corrections empty, just
-      // the FINAL REMINDERS — so its ~5K tokens are shared cache too; for
-      // returning clients it caches across that client's own turns.)
-      // TTL is 1h, NOT the default 5m: measured over 72h of production traffic
-      // (535 calls), only 69% of calls arrive within 5min of the previous one —
-      // the other 31% found the 5m cache expired and paid full price PLUS the
-      // 1.25x write premium. 98% of calls arrive within 1h of the previous one.
-      // The 1h write costs 2x (vs 1.25x) but happens ~once an hour instead of
-      // dozens of times a day, so the effective input price drops from ~0.46x
-      // to ~0.14x of list. Same bytes, same model, same replies — billing only.
-      system: [
-        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-      ],
-      messages: messages.map((m, i) =>
-        i === messages.length - 1
-          ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
-          : { role: m.role, content: m.content }
-      ),
+      // Two cache breakpoints, TTL 1h (billing only, see systemBlocks): the
+      // stable block (shared by EVERY conversation on EVERY channel) and the
+      // fixed part of the dynamic block (shared by every conversation without
+      // a per-conversation note). 99% of calls arrive within 1h of the previous
+      // one (measured 2026-11-05 over 7 days, 2,204 calls), so the shared blocks
+      // are read at ~10% price on nearly every call. The notes and the messages
+      // are plain input: until 2026-11-05 the last message carried a third
+      // breakpoint, which wrote the conversation tail at 2x on every call and
+      // was almost never read back (the schedule note is rebuilt every turn).
+      system: systemBlocks(stableSystem, dynamicFixed, dynamicSystem),
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
     });
   } catch (err) {
     if (isLowCreditError(err)) {
@@ -6329,10 +6320,7 @@ export async function getAIResponse(
         const retry = await anthropic.messages.create({
           model: "claude-sonnet-4-6",
           max_tokens: 600,
-          system: [
-            { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-            { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-          ],
+          system: systemBlocks(stableSystem, dynamicFixed, dynamicSystem),
           messages: retryMsgs.map((m) => ({ role: m.role, content: m.content })),
         });
         const rb = retry.content[0];
@@ -6381,7 +6369,7 @@ export async function getAIResponse(
         console.warn(`[AI] reasoning leak in the draft (${leak.mode}${leak.signals.length ? ", " + leak.signals.join("+") : ""}) | draft: ${cleaned.replace(/\s+/g, " ").slice(0, 500)}`);
         let shipped = leak.text;
         if (leak.regenerate && process.env.LEAK_REGENERATE !== "off") {
-          const redo = await regenerateCleanReply(anthropic, stableSystem, dynamicSystem, messages, leakOpts);
+          const redo = await regenerateCleanReply(anthropic, stableSystem, dynamicFixed, dynamicSystem, messages, leakOpts);
           if (redo) {
             shipped = redo.text;
             leakIn = redo.inputTokens;
@@ -6406,7 +6394,7 @@ export async function getAIResponse(
     let tightenIn = 0;
     let tightenOut = 0;
     if (process.env.REPLY_TIGHTEN !== "off" && !tileOverTileBurst && needsTightening(cleaned)) {
-      const shorter = await tightenLongReply(anthropic, stableSystem, dynamicSystem, messages, cleaned);
+      const shorter = await tightenLongReply(anthropic, stableSystem, dynamicFixed, dynamicSystem, messages, cleaned);
       if (shorter) {
         cleaned = shorter.text;
         tightenIn = shorter.inputTokens;
@@ -6734,7 +6722,7 @@ export async function getAIResponse(
     if (process.env.LANG_MIX_REWRITE !== "off" && replyMixesLanguages(cleaned)) {
       const target = usersLang();
       console.warn("[AI] mixed-language reply (client writes " + target + "): " + cleaned.replace(/\s+/g, " ").slice(0, 200));
-      const redo = await rewriteInOneLanguage(anthropic, stableSystem, dynamicSystem, messages, cleaned, target);
+      const redo = await rewriteInOneLanguage(anthropic, stableSystem, dynamicFixed, dynamicSystem, messages, cleaned, target);
       if (redo) {
         cleaned = redo.text;
         tightenIn += redo.inputTokens;
@@ -6784,6 +6772,31 @@ export async function getAIResponse(
   return { text: "Sorry, I couldn't generate a response.", inputTokens: 0, outputTokens: 0 };
 }
 
+// ─── Prompt-cache blocks (billing only, 05/11/2026) ──────────────────────────
+// The system text the model reads is EXACTLY stableSystem + dynamicSystem, as
+// before: it is just sent as two or three text blocks (the API joins them with
+// nothing in between; 1, 2 or 3 blocks count the same tokens, verified).
+// Breakpoints (TTL 1h): the stable block, shared by every conversation, and the
+// FIXED part of the dynamic block (memory + corrections + FINAL REMINDERS),
+// shared by every conversation that carries no per-conversation note. The
+// notes and the messages carry NO breakpoint: a 1h cache write bills 2x the
+// plain input price, and this tail (the schedule note changes every turn, a
+// stored bubble never carries its note again, a note makes the block unique)
+// was being WRITTEN on every call and read back on almost none, so it is
+// cheaper billed as plain input. Before this, every noted call rewrote the
+// whole ~9.6K-token dynamic block at 2x. Same bytes, same model, same replies.
+function systemBlocks(stableSystem: string, dynamicFixed: string, dynamicSystem: string): Anthropic.TextBlockParam[] {
+  const stable: Anthropic.TextBlockParam = { type: "text", text: stableSystem, cache_control: { type: "ephemeral", ttl: "1h" } };
+  if (!dynamicSystem.startsWith(dynamicFixed)) {
+    // Never expected; keeps the exact text going out whatever happens upstream.
+    return [stable, { type: "text", text: dynamicSystem, cache_control: { type: "ephemeral", ttl: "1h" } }];
+  }
+  const notes = dynamicSystem.slice(dynamicFixed.length);
+  const blocks: Anthropic.TextBlockParam[] = [stable, { type: "text", text: dynamicFixed, cache_control: { type: "ephemeral", ttl: "1h" } }];
+  if (notes) blocks.push({ type: "text", text: notes });
+  return blocks;
+}
+
 // ─── Reasoning leak: the second sample (Julie, WA 2026-09-21) ────────────────
 // Same model, same two system blocks and the same cache breakpoint as the main
 // call (the whole prefix is a cache read), with one note on the client's last
@@ -6794,6 +6807,7 @@ export async function getAIResponse(
 async function regenerateCleanReply(
   anthropic: Anthropic,
   stableSystem: string,
+  dynamicFixed: string,
   dynamicSystem: string,
   messages: ChatMessage[],
   leakOpts: LeakOptions
@@ -6802,10 +6816,7 @@ async function regenerateCleanReply(
     const res = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 400,
-      system: [
-        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-      ],
+      system: systemBlocks(stableSystem, dynamicFixed, dynamicSystem),
       messages: messages.map((m, i) =>
         i === messages.length - 1 ? { role: m.role, content: `${m.content}\n\n[SYSTEM: ${CLEAN_REPLY_NOTE}]` } : { role: m.role, content: m.content }
       ),
@@ -6889,17 +6900,14 @@ export function splitSlotOfferFromDetailsAsk(reply: string, history: ChatMessage
 async function tightenLongReply(
   anthropic: Anthropic,
   stableSystem: string,
+  dynamicFixed: string,
   dynamicSystem: string,
   messages: ChatMessage[],
   draft: string
 ): Promise<AIResponse | null> {
   const before = visibleLength(draft);
-  const convo: Array<{ role: "user" | "assistant"; content: string | Array<{ type: "text"; text: string; cache_control: { type: "ephemeral"; ttl: "1h" } }> }> = [
-    ...messages.map((m, i) =>
-      i === messages.length - 1
-        ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
-        : { role: m.role, content: m.content }
-    ),
+  const convo: Array<{ role: "user" | "assistant"; content: string }> = [
+    ...messages.map((m) => ({ role: m.role, content: m.content })),
     { role: "assistant" as const, content: draft },
     { role: "user" as const, content: tightenInstruction(before, sentenceCount(draft)) },
   ];
@@ -6915,10 +6923,7 @@ async function tightenLongReply(
       const res = await anthropic.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 400,
-        system: [
-          { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-          { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-        ],
+        system: systemBlocks(stableSystem, dynamicFixed, dynamicSystem),
         messages: convo,
       });
       inputTokens += res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);
@@ -6985,6 +6990,7 @@ function productWords(text: string): Set<string> {
 export async function rewriteInOneLanguage(
   anthropic: Anthropic,
   stableSystem: string,
+  dynamicFixed: string,
   dynamicSystem: string,
   messages: ChatMessage[],
   draft: string,
@@ -6996,12 +7002,8 @@ export async function rewriteInOneLanguage(
     "Rewrite the draft as the message you will actually send, entirely in " + name + ": translate the sentences that are in the other language, keep the ones already in " + name + " as they are. " +
     "KEEP exactly: every sentence and every fact, the recommendation if there is one, every dollar amount together with what it covers, every day and clock time, any phone number, any link, any [TAG], the request for the address with the zip code if the draft asks for it, and the question that moves the conversation forward. Product names (tile, vinyl, hardwood, quarter round) stay as they are and every one of them must still be in the rewrite. " +
     "Do not add anything, do not drop anything, same length or shorter, no dashes, no emojis, no inverted Spanish marks. Output ONLY the rewritten message, with nothing before or after it.]";
-  const convo: Array<{ role: "user" | "assistant"; content: string | Array<{ type: "text"; text: string; cache_control: { type: "ephemeral"; ttl: "1h" } }> }> = [
-    ...messages.map((m, i) =>
-      i === messages.length - 1
-        ? { role: m.role, content: [{ type: "text" as const, text: m.content, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } }] }
-        : { role: m.role, content: m.content }
-    ),
+  const convo: Array<{ role: "user" | "assistant"; content: string }> = [
+    ...messages.map((m) => ({ role: m.role, content: m.content })),
     { role: "assistant" as const, content: draft },
     { role: "user" as const, content: instruction },
   ];
@@ -7009,10 +7011,7 @@ export async function rewriteInOneLanguage(
     const res = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 400,
-      system: [
-        { type: "text" as const, text: stableSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-        { type: "text" as const, text: dynamicSystem, cache_control: { type: "ephemeral" as const, ttl: "1h" as const } },
-      ],
+      system: systemBlocks(stableSystem, dynamicFixed, dynamicSystem),
       messages: convo,
     });
     const inputTokens = res.usage.input_tokens + (res.usage.cache_read_input_tokens ?? 0) + (res.usage.cache_creation_input_tokens ?? 0);

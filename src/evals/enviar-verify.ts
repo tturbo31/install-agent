@@ -307,17 +307,26 @@ function main() {
   // ── 8. ECONOMIA DE TOKENS: a integração não pode tocar o cache do cérebro ──
   console.log("\n[8] Economia de tokens (prompt caching) intacta");
   const aiSrc = readFileSync(join(process.cwd(), "src/lib/ai.ts"), "utf-8");
-  // A chamada PRINCIPAL (response = await anthropic.messages.create) tem os 3
-  // breakpoints; os retries (REACT_ONLY, resposta curta) reutilizam os mesmos
-  // blocos para LER esse cache, então o arquivo inteiro tem mais de 3. O que
-  // não pode existir é um cache_control sem o TTL de 1h (voltaria ao padrão 5m).
+  // Desde 05/11/2026 os breakpoints vivem em systemBlocks(): bloco estável +
+  // parte FIXA do bloco dinâmico (ambos compartilhados entre conversas, TTL 1h);
+  // notas por conversa e mensagens vão SEM breakpoint (gravação a 2x que nunca
+  // era relida). A chamada PRINCIPAL e os retries (REACT_ONLY, resposta curta,
+  // vazamento, idioma) usam o mesmo helper. O que não pode existir é um
+  // cache_control sem o TTL de 1h (voltaria ao padrão 5m) nem um breakpoint
+  // solto numa mensagem.
   const mainCall = aiSrc.slice(aiSrc.indexOf("let response;"));
   const mainBlock = mainCall.slice(0, mainCall.indexOf("} catch (err) {"));
-  const breakpoints = (mainBlock.match(/cache_control: \{ type: "ephemeral" as const, ttl: "1h" as const \}/g) ?? []).length;
+  const helperStart = aiSrc.indexOf("function systemBlocks(");
+  const helper = helperStart >= 0 ? aiSrc.slice(helperStart, aiSrc.indexOf("\n}", helperStart)) : "";
+  const breakpoints = (helper.match(/cache_control: \{ type: "ephemeral", ttl: "1h" \}/g) ?? []).length;
   const anyTtl = (aiSrc.match(/cache_control:/g) ?? []).length;
-  const oneHour = (aiSrc.match(/cache_control: \{ type: "ephemeral" as const, ttl: "1h" as const \}/g) ?? []).length;
-  ck("ai.ts mantém os 3 breakpoints de cache com TTL 1h na chamada principal", breakpoints === 3, `encontrados: ${breakpoints}`);
+  const oneHour = (aiSrc.match(/ttl: "1h"/g) ?? []).length;
+  ck("ai.ts: chamada principal usa systemBlocks (estável + dinâmico fixo) e nenhum breakpoint nas mensagens", /system: systemBlocks\(stableSystem, dynamicFixed, dynamicSystem\)/.test(mainBlock) && !/cache_control/.test(mainBlock));
+  ck("systemBlocks: 2 breakpoints TTL 1h (estável + dinâmico fixo) + 1 no fallback", breakpoints === 3, `encontrados: ${breakpoints}`);
+  ck("todos os cache_control de ai.ts vivem em systemBlocks", anyTtl === breakpoints, `${breakpoints} de ${anyTtl}`);
   ck("nenhum cache_control de ai.ts sem o TTL de 1h", anyTtl === oneHour, `${oneHour} de ${anyTtl}`);
+  ck("dynamicFixed é capturado ANTES da primeira nota por conversa (REPAIR_REQUEST_NOTE)", aiSrc.indexOf("const dynamicFixed = dynamicSystem;") > 0 && aiSrc.indexOf("const dynamicFixed = dynamicSystem;") < aiSrc.indexOf("${REPAIR_REQUEST_NOTE}"));
+  ck("todas as chamadas do cérebro passam pelo systemBlocks (principal + 4 retries)", (aiSrc.match(/system: systemBlocks\(stableSystem, dynamicFixed, dynamicSystem\)/g) ?? []).length === 5, `encontradas: ${(aiSrc.match(/system: systemBlocks\(/g) ?? []).length}`);
   ck("ai.ts ainda separa stableSystem (bloco compartilhado por todas as conversas)", /let stableSystem = SYSTEM_PROMPT;/.test(aiSrc));
   ck("stableSystem NÃO recebe timestamp/data (mataria o cache compartilhado)", !/stableSystem\s*\+=[^;]*(?:new Date|Date\.now|toISOString|getEasternDateContext)/.test(aiSrc));
   const qf = readFileSync(join(process.cwd(), "src/lib/quote-followup.ts"), "utf-8");

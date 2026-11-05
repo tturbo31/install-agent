@@ -169,7 +169,7 @@ async function live() {
   const stable = "You are the Ozzi Floors assistant chatting with a client on WhatsApp. Always reply in the client's language, in one or two short plain sentences, no dashes, no emojis, no inverted Spanish marks.";
   const base = lusniel([]);
   for (let i = 1; i <= 2; i++) {
-    const out = await rewriteInOneLanguage(anthropic, stable, "Keep the same facts.", base, LUSNIEL_SHIPPED, "es");
+    const out = await rewriteInOneLanguage(anthropic, stable, "Keep the same facts.", "Keep the same facts.", base, LUSNIEL_SHIPPED, "es");
     const text = out?.text ?? "";
     ck(`rewrite ${i}: devolveu uma reescrita`, !!out, "null");
     ck(`rewrite ${i}: inteira em espanhol, sem inglês`, !!out && !replyMixesLanguages(text) && !replyLanguageKinds(text).has("en"), text);
